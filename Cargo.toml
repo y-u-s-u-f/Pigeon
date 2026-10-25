@@ -1,0 +1,20 @@
+[package]
+name = "pigeon"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# gpui-kit re-exports the GPUI snapshot (gpui-pre) that gpui-component is built
+# against, so the two never drift apart. Renamed so code (and GPUI macros) say `gpui::`.
+gpui = { package = "gpui-kit", version = "0.8", default-features = false, features = ["component"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
