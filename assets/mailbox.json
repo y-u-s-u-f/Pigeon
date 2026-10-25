@@ -1,0 +1,4885 @@
+{
+  "account": {
+    "name": "Alex Rivera",
+    "email": "alex.rivera@example.com"
+  },
+  "labels": [
+    {
+      "id": "work",
+      "name": "Work",
+      "color": "#5b8def"
+    },
+    {
+      "id": "personal",
+      "name": "Personal",
+      "color": "#3fb984"
+    },
+    {
+      "id": "finance",
+      "name": "Finance",
+      "color": "#e5a50a"
+    },
+    {
+      "id": "travel",
+      "name": "Travel",
+      "color": "#9b6bd6"
+    },
+    {
+      "id": "receipts",
+      "name": "Receipts",
+      "color": "#e0716b"
+    },
+    {
+      "id": "newsletters",
+      "name": "Newsletters",
+      "color": "#7f8c8d"
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "color": "#6e40c9"
+    },
+    {
+      "id": "family",
+      "name": "Family",
+      "color": "#f08a5d"
+    },
+    {
+      "id": "side-projects",
+      "name": "Side Projects",
+      "color": "#2bb3c0"
+    },
+    {
+      "id": "urgent",
+      "name": "Urgent",
+      "color": "#e0445a"
+    }
+  ],
+  "threads": [
+    {
+      "id": "t-0001",
+      "subject": "Unusual transaction alert: $1,240.00 at Lumen Electronics",
+      "folder": "inbox",
+      "labels": [
+        "finance",
+        "urgent"
+      ],
+      "starred": true,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0001",
+          "from": {
+            "name": "Harbor Bank Alerts",
+            "email": "alerts@harborbank.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T11:02:00-04:00",
+          "snippet": "Harbor Bank Alert A transaction of $1,240.00 was made on your Debit Card ending in 9120 at Lumen Electronics (Austin, TX",
+          "html": "<p><b>Harbor Bank Alert</b></p><p>A transaction of <b>$1,240.00</b> was made on your Debit Card ending in <b>9120</b> at <b>Lumen Electronics</b> (Austin, TX).</p><p>If you did not make this purchase, reply STOP or call the number on the back of your card right away.</p><p style=\"color:#888\"><small>Do not reply with account numbers.</small></p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0002",
+      "subject": "Weekend hike plans — Mount Tam",
+      "folder": "inbox",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0002",
+          "from": {
+            "name": "Daniel Rivera",
+            "email": "daniel.r@example.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T10:50:00-04:00",
+          "snippet": "Still on for Sunday? Forecast looks clear before 1pm. I'm leaving around 8 from the Presidio lot.",
+          "html": "<p>Still on for Sunday? Forecast looks clear before 1pm. I'm leaving around 8 from the Presidio lot.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0003",
+      "subject": "[pigeon] Issue #42: Search crashes on empty query",
+      "folder": "inbox",
+      "labels": [
+        "github",
+        "side-projects"
+      ],
+      "starred": false,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0003",
+          "from": {
+            "name": "GitHub",
+            "email": "noreply@github.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T10:30:00-04:00",
+          "snippet": "rmehta-bot opened an issue in rahulm/pigeon#42 Search crashes on empty query Steps: open search, press Enter with an emp",
+          "html": "<p><b>rmehta-bot</b> opened an issue in <a href=\"https://github.com/rahulm/pigeon/pull/42\">rahulm/pigeon#42</a></p><h3>Search crashes on empty query</h3><blockquote>Steps: open search, press Enter with an empty box. Sidebar goes blank and console shows <code>TypeError: Cannot read properties of undefined (reading 'length')</code>.</blockquote><hr><p style=\"color:#57606a\">— Reply to this email directly or view it on GitHub.</p><p style=\"color:#57606a\">You are receiving this because you were mentioned.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0004",
+      "subject": "Lee Design: final logo files",
+      "folder": "inbox",
+      "labels": [
+        "side-projects"
+      ],
+      "starred": false,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0004",
+          "from": {
+            "name": "Dana Lee",
+            "email": "dana@lee-design.co"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T10:20:00-04:00",
+          "snippet": "Hi Alex, here are the final files for the Pigeon mark in three colorways plus the app icon set. Let me know which direc",
+          "html": "<p>Hi Alex, here are the final files for the Pigeon mark in three colorways plus the app icon set. Let me know which direction you pick and I'll finish the wordmark.</p><p>Dana</p>",
+          "attachments": [
+            {
+              "name": "pigeon-logo-final.zip",
+              "size_bytes": 5842310,
+              "mime": "application/zip"
+            },
+            {
+              "name": "pigeon-appicon-1024.png",
+              "size_bytes": 402118,
+              "mime": "image/png"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t-0005",
+      "subject": "Re: Q4 planning — hiring plan numbers",
+      "folder": "drafts",
+      "labels": [
+        "work"
+      ],
+      "starred": true,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0005",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Sarah Chen",
+              "email": "sarah.chen@acme.io"
+            },
+            {
+              "name": "Tom Keller",
+              "email": "tom.keller@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T10:10:00-04:00",
+          "snippet": "Second senior is approved from my side. I'll confirm the mid hire moves to May in the doc. [ draft — finish the justific",
+          "html": "<p>Second senior is approved from my side. I'll confirm the mid hire moves to May in the doc.</p><p>[ draft — finish the justification paragraph ]</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0006",
+      "subject": "Quarterly security review — access request",
+      "folder": "inbox",
+      "labels": [
+        "work",
+        "urgent"
+      ],
+      "starred": true,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0006",
+          "from": {
+            "name": "Tom Keller",
+            "email": "tom.keller@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T09:55:00-04:00",
+          "snippet": "Security review flagged that the staging DB credentials are still shared in the team vault. Can you rotate them and conf",
+          "html": "<p>Security review flagged that the staging DB credentials are still shared in the team vault. Can you rotate them and confirm by end of day? I've opened <a href=\"https://example.com/sec/4421\">ticket SEC-4421</a>.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0007",
+      "subject": "Feedback on onboarding copy",
+      "folder": "drafts",
+      "labels": [
+        "side-projects"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0007",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Priya Nair",
+              "email": "priya.nair@brightpath.dev"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T09:55:00-04:00",
+          "snippet": "Priya, the new copy is below. Tell me if the \"we never read your email bodies\" line is too strong. Connect your mailbox.",
+          "html": "<p>Priya, the new copy is below. Tell me if the \"we never read your email bodies\" line is too strong.</p><blockquote>Connect your mailbox. Pigeon only reads what you open.</blockquote>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0008",
+      "subject": "Re: Pigeon logo ideas",
+      "folder": "inbox",
+      "labels": [
+        "side-projects"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0008",
+          "from": {
+            "name": "Rahul Mehta",
+            "email": "rahul@mehta.dev"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T19:33:00-04:00",
+          "snippet": "Yo, I looped in a designer friend (Dana) who wants to try a few marks for Pigeon. Are you open to a quick logo pass? No ",
+          "html": "<p>Yo, I looped in a designer friend (Dana) who wants to try a few marks for Pigeon. Are you open to a quick logo pass? No pressure if it's not a priority.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0009",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Rahul Mehta",
+              "email": "rahul@mehta.dev"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T07:10:00-04:00",
+          "snippet": "Definitely open. Keep it simple: the bird should read at 16px in the dock. Dana can send whatever she has.",
+          "html": "<p>Definitely open. Keep it simple: the bird should read at 16px in the dock. Dana can send whatever she has.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0010",
+          "from": {
+            "name": "Rahul Mehta",
+            "email": "rahul@mehta.dev"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T09:48:00-04:00",
+          "snippet": "Dana is sending 3 options today. Here's the first one for a preview.",
+          "html": "<p>Dana is sending 3 options today. Here's the first one for a preview.</p>",
+          "attachments": [
+            {
+              "name": "pigeon-mark-A.png",
+              "size_bytes": 88211,
+              "mime": "image/png"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t-0009",
+      "subject": "Designer feedback on the onboarding flow",
+      "folder": "inbox",
+      "labels": [
+        "side-projects",
+        "work"
+      ],
+      "starred": true,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0011",
+          "from": {
+            "name": "Priya Nair",
+            "email": "priya.nair@brightpath.dev"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T09:05:00-04:00",
+          "snippet": "Hey Alex, I ran five quick tests on the onboarding screens last night. Biggest drop-off is at the \"Connect your mailbox",
+          "html": "<p>Hey Alex, I ran five quick tests on the onboarding screens last night. Biggest drop-off is at the <b>\"Connect your mailbox\"</b> step, where three of five participants paused for over a minute before clicking.</p><p>Notes and clips are linked in the doc. I think the copy needs to say what we <i>don't</i> access, not just what we do.</p><p>— Priya</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0012",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Priya Nair",
+              "email": "priya.nair@brightpath.dev"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T09:40:00-04:00",
+          "snippet": "Good catch. I'll rework the copy this morning and we can run another round Thursday.",
+          "html": "<p>Good catch. I'll rework the copy this morning and we can run another round Thursday.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0010",
+      "subject": "Re: Dinner Saturday with the Whitakers?",
+      "folder": "inbox",
+      "labels": [
+        "family"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0013",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Jess Whitaker",
+              "email": "jess@whitakerfamily.net"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T09:20:00-04:00",
+          "snippet": "Confirmed for 6:30. Mimi says yes. Lemon bars then, promise.",
+          "html": "<p>Confirmed for 6:30. Mimi says yes. Lemon bars then, promise.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0014",
+          "from": {
+            "name": "Jess Whitaker",
+            "email": "jess@whitakerfamily.net"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T09:35:00-04:00",
+          "snippet": "Perfect! See you then.",
+          "html": "<p>Perfect! See you then.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0011",
+      "subject": "Q4 planning doc — comments due Friday",
+      "folder": "inbox",
+      "labels": [
+        "work"
+      ],
+      "starred": true,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0015",
+          "from": {
+            "name": "Sarah Chen",
+            "email": "sarah.chen@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T09:12:00-04:00",
+          "snippet": "Hey Alex, I've shared the Q4 planning doc . Could you leave comments on the roadmap section by Friday ? Roadmap Hiring ",
+          "html": "<p>Hey Alex,</p><p>I've shared the <b>Q4 planning doc</b>. Could you leave comments on the roadmap section by <i>Friday</i>?</p><ul><li>Roadmap</li><li>Hiring plan</li></ul><p>Thanks,<br>Sarah</p>",
+          "attachments": [
+            {
+              "name": "Q4-planning.pdf",
+              "size_bytes": 482133,
+              "mime": "application/pdf"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t-0012",
+      "subject": "Re: Q4 planning — hiring plan numbers",
+      "folder": "inbox",
+      "labels": [
+        "work",
+        "urgent"
+      ],
+      "starred": true,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0016",
+          "from": {
+            "name": "Sarah Chen",
+            "email": "sarah.chen@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            },
+            {
+              "name": "Tom Keller",
+              "email": "tom.keller@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T10:02:00-04:00",
+          "snippet": "Adding Tom since he owns the headcount model. Alex, can you sanity check the frontend hires? I'm assuming two seniors a",
+          "html": "<p>Adding Tom since he owns the headcount model. Alex, can you sanity check the frontend hires? I'm assuming two seniors and one mid by March.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0017",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Sarah Chen",
+              "email": "sarah.chen@acme.io"
+            },
+            {
+              "name": "Tom Keller",
+              "email": "tom.keller@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T11:40:00-04:00",
+          "snippet": "Two seniors feels right for the desktop client, but I'd push the mid hire to May. We won't have the sync engine finished",
+          "html": "<p>Two seniors feels right for the desktop client, but I'd push the mid hire to May. We won't have the sync engine finished until April and onboarding someone before that is mostly wasted.</p><p>Happy to draft a short justification if it helps.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0018",
+          "from": {
+            "name": "Tom Keller",
+            "email": "tom.keller@acme.io"
+          },
+          "to": [
+            {
+              "name": "Sarah Chen",
+              "email": "sarah.chen@acme.io"
+            },
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T13:15:00-04:00",
+          "snippet": "May works for me. Updating the model now. One thing though: finance wants the total number in the board deck by Monday, ",
+          "html": "<p>May works for me. Updating the model now. One thing though: finance wants the total number in the board deck by Monday, so we need a yes/no on the second senior by then.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0019",
+          "from": {
+            "name": "Sarah Chen",
+            "email": "sarah.chen@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            },
+            {
+              "name": "Tom Keller",
+              "email": "tom.keller@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T08:55:00-04:00",
+          "snippet": "Second senior is a yes. Alex, please confirm in the doc and I'll lock it in. Two seniors feels right for the desktop cl",
+          "html": "<p>Second senior is a yes. Alex, please confirm in the doc and I'll lock it in.</p><blockquote>Two seniors feels right for the desktop client, but I'd push the mid hire to May.</blockquote>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0013",
+      "subject": "Staging checkout deploy failing on migration 0147",
+      "folder": "inbox",
+      "labels": [
+        "urgent",
+        "work"
+      ],
+      "starred": true,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0020",
+          "from": {
+            "name": "Hannah Brooks",
+            "email": "hbrooks@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [
+            {
+              "name": "Tom Keller",
+              "email": "tom.keller@acme.io"
+            }
+          ],
+          "date": "2026-10-25T08:40:00-04:00",
+          "snippet": "Hey, staging deploy is failing on migration 0147_add_idempotency_keys with: psycopg2.errors.LockNotAvailable: could not ",
+          "html": "<p>Hey, staging deploy is failing on migration <code>0147_add_idempotency_keys</code> with:</p><pre>psycopg2.errors.LockNotAvailable: could not obtain lock on relation \"orders\"</pre><p>I think the long-running report query from the analytics job is holding the lock. Can you take a look before the 11am release? I've paused the deploy pipeline.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0014",
+      "subject": "Sunday lunch?",
+      "folder": "inbox",
+      "labels": [
+        "family"
+      ],
+      "starred": true,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0021",
+          "from": {
+            "name": "Maria Rivera",
+            "email": "maria.rivera58@example.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            },
+            {
+              "name": "Sofia Rivera",
+              "email": "sofia.r@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T07:55:00-04:00",
+          "snippet": "Habibi, are you two coming for lunch on Sunday? Your dad wants to grill, and I'm making the lamb you like. Let me know b",
+          "html": "<p>Habibi, are you two coming for lunch on Sunday? Your dad wants to grill, and I'm making the lamb you like. Let me know by Friday so I can plan the shopping.</p><p>Love, Mama</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0022",
+          "from": {
+            "name": "Sofia Rivera",
+            "email": "sofia.r@example.com"
+          },
+          "to": [
+            {
+              "name": "Maria Rivera",
+              "email": "maria.rivera58@example.com"
+            },
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T08:20:00-04:00",
+          "snippet": "I'm in! Can I bring Jonah this time? He's been asking about the grill.",
+          "html": "<p>I'm in! Can I bring Jonah this time? He's been asking about the grill.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0023",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Maria Rivera",
+              "email": "maria.rivera58@example.com"
+            },
+            {
+              "name": "Sofia Rivera",
+              "email": "sofia.r@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T08:31:00-04:00",
+          "snippet": "Yes to lunch. I'll bring the good bread from the bakery on Clement.",
+          "html": "<p>Yes to lunch. I'll bring the good bread from the bakery on Clement.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0015",
+      "subject": "Quick question re: Stripe Connect onboarding",
+      "folder": "inbox",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0024",
+          "from": {
+            "name": "Rahul Mehta",
+            "email": "rahul@mehta.dev"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T08:26:00-04:00",
+          "snippet": "Hey, do we need Stripe Connect for the Pro plan or can we keep using standard Checkout? I'm reading the docs and it look",
+          "html": "<p>Hey, do we need Stripe Connect for the Pro plan or can we keep using standard Checkout? I'm reading the docs and it looks like Connect is only needed for payouts to third parties.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0016",
+      "subject": "Dinner Saturday? (Daniel)",
+      "folder": "inbox",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0025",
+          "from": {
+            "name": "Daniel Rivera",
+            "email": "daniel.r@example.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T08:14:00-04:00",
+          "snippet": "Brother, are you free Saturday night? A few of the old crew are coming to Tandoor Palace. Starts at 8, no need to dress ",
+          "html": "<p>Brother, are you free Saturday night? A few of the old crew are coming to Tandoor Palace. Starts at 8, no need to dress up.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0017",
+      "subject": "Hannah: auth token refresh bug (blocking beta)",
+      "folder": "inbox",
+      "labels": [
+        "work",
+        "urgent"
+      ],
+      "starred": true,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0026",
+          "from": {
+            "name": "Hannah Brooks",
+            "email": "hbrooks@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T07:12:00-04:00",
+          "snippet": "Alex, token refresh is racing when the app wakes from sleep. Two refreshes fire at once and the second one invalidates ",
+          "html": "<p>Alex, token refresh is racing when the app wakes from sleep. Two refreshes fire at once and the second one invalidates the first. Beta users are getting logged out.</p><pre>[auth] refresh 1 issued rt=abc…\n[auth] refresh 2 issued rt=abc…\n[auth] refresh 1 rejected: invalid_grant</pre><p>Can you pick this up? I'm out after 2pm.</p>",
+          "attachments": [
+            {
+              "name": "auth-trace.log",
+              "size_bytes": 8842,
+              "mime": "text/plain"
+            }
+          ]
+        },
+        {
+          "id": "m-0027",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Hannah Brooks",
+              "email": "hbrooks@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T07:40:00-04:00",
+          "snippet": "On it. I think we need a single-flight guard around refreshToken() . Will push a fix behind a flag so we can roll it out",
+          "html": "<p>On it. I think we need a single-flight guard around <code>refreshToken()</code>. Will push a fix behind a flag so we can roll it out gradually.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0028",
+          "from": {
+            "name": "Hannah Brooks",
+            "email": "hbrooks@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T08:05:00-04:00",
+          "snippet": "I think we need a single-flight guard around refreshToken(). Agreed. Keep the mutex in the keychain layer, not the HTTP ",
+          "html": "<blockquote>I think we need a single-flight guard around refreshToken().</blockquote><p>Agreed. Keep the mutex in the keychain layer, not the HTTP layer, so it covers the background worker too.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0018",
+      "subject": "Reply to Kevin Ortiz",
+      "folder": "drafts",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0029",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Kevin Ortiz",
+              "email": "kevin.ortiz@talentbridge.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T08:02:00-04:00",
+          "snippet": "Hi Kevin, thanks for following up. Not in the market right now, but I'd like to stay in touch for spring.",
+          "html": "<p>Hi Kevin, thanks for following up. Not in the market right now, but I'd like to stay in touch for spring.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0019",
+      "subject": "Dinner Saturday with the Whitakers?",
+      "folder": "inbox",
+      "labels": [
+        "family",
+        "personal"
+      ],
+      "starred": true,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0030",
+          "from": {
+            "name": "Jess Whitaker",
+            "email": "jess@whitakerfamily.net"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T18:44:00-04:00",
+          "snippet": "Hi Alex! We're planning a casual dinner Saturday at our place, 6:30ish. Kids will be doing their own thing upstairs. Br",
+          "html": "<p>Hi Alex! We're planning a casual dinner Saturday at our place, 6:30ish. Kids will be doing their own thing upstairs. Bring Mimi if she's around?</p><p>xJess</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0031",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Jess Whitaker",
+              "email": "jess@whitakerfamily.net"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T07:50:00-04:00",
+          "snippet": "We'd love to. I'll check with Mimi and bring dessert. Is the lemon thing still allowed?",
+          "html": "<p>We'd love to. I'll check with Mimi and bring dessert. Is the lemon thing still allowed?</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0020",
+      "subject": "Mateo: padel Thursday?",
+      "folder": "inbox",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0032",
+          "from": {
+            "name": "Mateo Ruiz",
+            "email": "mateo@ruizpadel.es"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T06:58:00-04:00",
+          "snippet": "Hola Alex! Thursday 7pm at Club Padel Mission? We need a fourth. Ana is bringing the new bat so you'll have no excuse.",
+          "html": "<p>Hola Alex! Thursday 7pm at Club Padel Mission? We need a fourth. Ana is bringing the new bat so you'll have no excuse.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0033",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Mateo Ruiz",
+              "email": "mateo@ruizpadel.es"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T07:44:00-04:00",
+          "snippet": "Count me in! Thursday at 7 works. Ask Ana to bring water this time.",
+          "html": "<p>Count me in! Thursday at 7 works. Ask Ana to bring water this time.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0021",
+      "subject": "Your package arrives today",
+      "folder": "inbox",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0034",
+          "from": {
+            "name": "ParcelWay",
+            "email": "updates@parcelway.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T07:30:00-04:00",
+          "snippet": "Good morning. Your package from Ferro & Finch is out for delivery and should arrive between 12:00 PM and 4:00 PM . Track",
+          "html": "<p>Good morning. Your package from <b>Ferro &amp; Finch</b> is out for delivery and should arrive between <b>12:00 PM and 4:00 PM</b>.</p><p>Tracking: <a href=\"https://example.com/track/PW99238814\">PW99238814</a></p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0022",
+      "subject": "Re: Dana — poster for the launch?",
+      "folder": "inbox",
+      "labels": [
+        "side-projects"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0035",
+          "from": {
+            "name": "Dana Lee",
+            "email": "dana@lee-design.co"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T06:45:00-04:00",
+          "snippet": "Quick question: do you want a launch poster too? I can do a small one for the Product Hunt page if you're going for it i",
+          "html": "<p>Quick question: do you want a launch poster too? I can do a small one for the Product Hunt page if you're going for it in November.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0036",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Dana Lee",
+              "email": "dana@lee-design.co"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T07:20:00-04:00",
+          "snippet": "Yes please. Keep the palette matching the app icon. We can talk Thursday.",
+          "html": "<p>Yes please. Keep the palette matching the app icon. We can talk Thursday.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0023",
+      "subject": "[acme/web-core] Dependabot: 3 alerts in pigeon-desktop",
+      "folder": "inbox",
+      "labels": [
+        "github"
+      ],
+      "starred": false,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0037",
+          "from": {
+            "name": "GitHub",
+            "email": "noreply@github.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T06:22:00-04:00",
+          "snippet": "Dependabot found 3 security alerts in pigeon-desktop : High : electron < 34.2.1 (use-after-free in IPC) Medium : undici ",
+          "html": "<p>Dependabot found <b>3 security alerts</b> in <code>pigeon-desktop</code>:</p><ul><li><b>High</b>: <code>electron</code> &lt; 34.2.1 (use-after-free in IPC)</li><li><b>Medium</b>: <code>undici</code> &lt; 6.21.2 (header parsing)</li><li><b>Low</b>: <code>semver</code> &lt; 7.5.2 (ReDoS)</li></ul><p>Open the Security tab to review and merge the auto-generated PRs.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0024",
+      "subject": "Stripe payout of $3,218.55 is on the way",
+      "folder": "inbox",
+      "labels": [
+        "finance",
+        "receipts"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0038",
+          "from": {
+            "name": "Stripe",
+            "email": "receipts@stripe.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T06:00:00-04:00",
+          "snippet": "Stripe payout Your payout to Chase ••4471 has been initiated and should arrive by Tuesday. Item Amount Gross sales (Oct ",
+          "html": "<h2>Stripe payout</h2><p>Your payout to Chase ••4471 has been initiated and should arrive by Tuesday.</p><table><tr><th>Item</th><th>Amount</th></tr><tr><td>Gross sales (Oct 17–23)</td><td style=\"text-align:right\">$3,604.00</td></tr><tr><td>Refunds</td><td style=\"text-align:right\">−$112.00</td></tr><tr><td>Fees</td><td style=\"text-align:right\">−$273.45</td></tr><tr><td><b>Total</b></td><td style=\"text-align:right\"><b>$3,218.55</b></td></tr></table><p style=\"color:#666\">Questions? Visit the Stripe dashboard or reply to this email.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0025",
+      "subject": "Rustacean Weekly #412 — async drop zones and a new lint pass",
+      "folder": "inbox",
+      "labels": [
+        "newsletters"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0039",
+          "from": {
+            "name": "Rustacean Weekly",
+            "email": "newsletter@rustacean-weekly.dev"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T06:00:00-04:00",
+          "snippet": "Rustacean Weekly #412 This week: a deep dive on async drop, a new clippy lint for unused futures, and the usual crate ro",
+          "html": "<h1>Rustacean Weekly #412</h1><p>This week: a deep dive on async drop, a new clippy lint for unused futures, and the usual crate roundup.</p><h3>Articles</h3><ul><li><a href=\"https://example.com/0\">Async drop, one more time</a> — Why the proposal stalled and what might come next</li><li><a href=\"https://example.com/1\">Writing fast parsers without unsafe</a> — Benchmarks and tradeoffs</li></ul><h3>Crates</h3><ul><li><a href=\"https://example.com/0\">tokio-timer-wheel 0.4</a> — Hierarchical timer wheel with cancel-safe handles</li><li><a href=\"https://example.com/1\">serde-lite</a> — Smaller serde for embedded targets</li></ul><hr><p><i>Happy hacking. Reply to this email with links you'd like featured next week.</i></p><p><a href=\"https://example.com/unsubscribe\">Unsubscribe</a></p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0026",
+      "subject": "Check-in is open for your flight SFO → JFK",
+      "folder": "inbox",
+      "labels": [
+        "travel"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0040",
+          "from": {
+            "name": "Skyline Air",
+            "email": "bookings@skylineair.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T05:00:00-04:00",
+          "snippet": "Skyline Air Hi Alex, online check-in for flight SK 214 on Tue, Nov 3 is now open. Your confirmation code is QX7PLM . It",
+          "html": "<h2>Skyline Air</h2><p>Hi Alex, online check-in for flight <b>SK 214</b> on <b>Tue, Nov 3</b> is now open. Your confirmation code is <b>QX7PLM</b>.</p><table><tr><th>Item</th><th>Amount</th></tr><tr><td>Departs SFO 7:45 AM</td><td style=\"text-align:right\">Seat 12C</td></tr><tr><td>Arrives JFK 4:10 PM</td><td style=\"text-align:right\">Bag: 1 checked</td></tr><tr><td><b>Total</b></td><td style=\"text-align:right\"><b>Confirmed</b></td></tr></table><p style=\"color:#666\">Check in 24 hours before departure at skylineair.com/checkin.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0027",
+      "subject": "Beta crash reports — 2.4.0 (macOS 15.2)",
+      "folder": "inbox",
+      "labels": [
+        "side-projects",
+        "urgent"
+      ],
+      "starred": true,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0041",
+          "from": {
+            "name": "Pigeon Beta Testers",
+            "email": "beta@pigeon-mail.app"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T03:12:00-04:00",
+          "snippet": "3 new crash reports for build 2.4.0 (318) . Thread 0 Crashed: 0 Pigeon SyncEngine.flushQueue() + 214 1 Pigeon MessageSto",
+          "html": "<p>3 new crash reports for build <b>2.4.0 (318)</b>.</p><pre>Thread 0 Crashed:\n0   Pigeon  SyncEngine.flushQueue()  + 214\n1   Pigeon  MessageStore.commit()    + 88</pre><p>Affected users: 3 · First seen: 2026-10-24 22:18 UTC</p>",
+          "attachments": [
+            {
+              "name": "crashlog-2.4.0.txt",
+              "size_bytes": 14210,
+              "mime": "text/plain"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t-0028",
+      "subject": "Q3 invoice from Pinecrest Cloud",
+      "folder": "inbox",
+      "labels": [
+        "finance",
+        "receipts"
+      ],
+      "starred": false,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0042",
+          "from": {
+            "name": "Amazon Web Services",
+            "email": "no-reply@aws.amazon.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T00:45:00-04:00",
+          "snippet": "Amazon Web Services Your AWS invoice for September 2026 is ready. Your payment method ending in 4471 will be charged on ",
+          "html": "<h2>Amazon Web Services</h2><p>Your AWS invoice for <b>September 2026</b> is ready. Your payment method ending in <b>4471</b> will be charged on <b>Nov 1</b>.</p><table><tr><th>Item</th><th>Amount</th></tr><tr><td>EC2 (us-east-1)</td><td style=\"text-align:right\">$412.18</td></tr><tr><td>RDS PostgreSQL</td><td style=\"text-align:right\">$288.40</td></tr><tr><td>S3 storage and requests</td><td style=\"text-align:right\">$61.05</td></tr><tr><td>Data transfer</td><td style=\"text-align:right\">$19.77</td></tr><tr><td><b>Total</b></td><td style=\"text-align:right\"><b>$781.40</b></td></tr></table><p style=\"color:#666\">View full invoice in the AWS Billing console.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0029",
+      "subject": "Uber: receipt for your trip on Oct 24",
+      "folder": "inbox",
+      "labels": [
+        "receipts"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0043",
+          "from": {
+            "name": "Uber Receipts",
+            "email": "noreply@uber.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T23:12:00-04:00",
+          "snippet": "Uber Thanks for riding, Alex. Here is your receipt. Item Amount UberX · 6.2 mi · 19 min $21.84 Booking fee $2.10 Total ",
+          "html": "<h2>Uber</h2><p>Thanks for riding, Alex. Here is your receipt.</p><table><tr><th>Item</th><th>Amount</th></tr><tr><td>UberX · 6.2 mi · 19 min</td><td style=\"text-align:right\">$21.84</td></tr><tr><td>Booking fee</td><td style=\"text-align:right\">$2.10</td></tr><tr><td><b>Total</b></td><td style=\"text-align:right\"><b>$23.94</b></td></tr></table><p style=\"color:#666\">Charged to Visa ••4471</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0030",
+      "subject": "Lisbon itinerary",
+      "folder": "drafts",
+      "labels": [
+        "travel"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0044",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Ben Carter",
+              "email": "ben.carter@gmail.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T22:40:00-04:00",
+          "snippet": "Ben, here's a rough plan: Nov 3: arrive, Alfama dinner Nov 4: Sintra day trip Nov 5: Pastéis and Miradouro walk Thoughts",
+          "html": "<p>Ben, here's a rough plan:</p><ol><li>Nov 3: arrive, Alfama dinner</li><li>Nov 4: Sintra day trip</li><li>Nov 5: Pastéis and Miradouro walk</li></ol><p>Thoughts?</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0031",
+      "subject": "Your Stripe account needs verification",
+      "folder": "inbox",
+      "labels": [
+        "finance",
+        "urgent"
+      ],
+      "starred": true,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0045",
+          "from": {
+            "name": "Stripe",
+            "email": "receipts@stripe.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T22:10:00-04:00",
+          "snippet": "Action required: Your Stripe account acct_1Pg83… needs additional verification before payouts can continue. Please uploa",
+          "html": "<p><b>Action required:</b> Your Stripe account <b>acct_1Pg83…</b> needs additional verification before payouts can continue.</p><p>Please upload a government ID and confirm your business address within <b>7 days</b> to avoid a payout hold.</p><p><a href=\"https://example.com/stripe/verify\">Verify your account</a></p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0032",
+      "subject": "Mom — Eid photos",
+      "folder": "inbox",
+      "labels": [
+        "family"
+      ],
+      "starred": true,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0046",
+          "from": {
+            "name": "Sofia Rivera",
+            "email": "sofia.r@example.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T21:10:00-04:00",
+          "snippet": "Sending the photos from the dinner! Mom says you need to frame the one with the lanterns.",
+          "html": "<p>Sending the photos from the dinner! Mom says you need to frame the one with the lanterns.</p>",
+          "attachments": [
+            {
+              "name": "IMG_4402.jpg",
+              "size_bytes": 2841033,
+              "mime": "image/jpeg"
+            },
+            {
+              "name": "IMG_4405.jpg",
+              "size_bytes": 2918822,
+              "mime": "image/jpeg"
+            },
+            {
+              "name": "IMG_4410.jpg",
+              "size_bytes": 3012907,
+              "mime": "image/jpeg"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t-0033",
+      "subject": "Re: Invoice #2291 — payment confirmation",
+      "folder": "sent",
+      "labels": [
+        "finance",
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0047",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Marcus Reyes",
+              "email": "marcus@northwindlabs.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T17:30:00-04:00",
+          "snippet": "Hi Marcus, sorry for the delay. The ACH went out this morning and should land within two business days. I'll forward the",
+          "html": "<p>Hi Marcus, sorry for the delay. The ACH went out this morning and should land within two business days. I'll forward the confirmation.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0048",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Marcus Reyes",
+              "email": "marcus@northwindlabs.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T17:32:00-04:00",
+          "snippet": "Confirmation attached.",
+          "html": "<p>Confirmation attached.</p>",
+          "attachments": [
+            {
+              "name": "ach-confirmation.pdf",
+              "size_bytes": 58201,
+              "mime": "application/pdf"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t-0034",
+      "subject": "Invoice #2291 overdue — Northwind Labs",
+      "folder": "inbox",
+      "labels": [
+        "finance",
+        "work"
+      ],
+      "starred": true,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0049",
+          "from": {
+            "name": "Marcus Reyes",
+            "email": "marcus@northwindlabs.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T16:05:00-04:00",
+          "snippet": "Hi Alex, Our records show invoice #2291 for September contract work ( $6,400.00 ) is now 14 days overdue. Could you con",
+          "html": "<p>Hi Alex,</p><p>Our records show invoice <b>#2291</b> for September contract work (<b>$6,400.00</b>) is now 14 days overdue. Could you confirm payment timing?</p><p>If there's an issue with the PO number, let me know and I'll reissue.</p><p>Best,<br>Marcus Reyes<br>Northwind Labs</p>",
+          "attachments": [
+            {
+              "name": "Invoice-2291.pdf",
+              "size_bytes": 133402,
+              "mime": "application/pdf"
+            }
+          ]
+        },
+        {
+          "id": "m-0050",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Marcus Reyes",
+              "email": "marcus@northwindlabs.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T17:30:00-04:00",
+          "snippet": "Hi Marcus, sorry for the delay. The ACH went out this morning and should land within two business days. I'll forward the",
+          "html": "<p>Hi Marcus, sorry for the delay. The ACH went out this morning and should land within two business days. I'll forward the confirmation.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0035",
+      "subject": "Review requested: acme/web-core #318 Add retry to webhook dispatcher",
+      "folder": "inbox",
+      "labels": [
+        "github",
+        "work"
+      ],
+      "starred": false,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0051",
+          "from": {
+            "name": "GitHub",
+            "email": "noreply@github.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T17:20:00-04:00",
+          "snippet": "Tom Keller requested your review on pull request in acme/web-core#318 Add retry with jitter to webhook dispatcher This w",
+          "html": "<p><b>Tom Keller</b> requested your review on pull request in <a href=\"https://github.com/acme/web-core/pull/318\">acme/web-core#318</a></p><h3>Add retry with jitter to webhook dispatcher</h3><blockquote>This wraps the dispatcher in exponential backoff. Max 5 attempts, jitter capped at 2s. Would love eyes on the timeout math in <code>dispatch.ts</code>.</blockquote><hr><p style=\"color:#57606a\">— Reply to this email directly or view it on GitHub.</p><p style=\"color:#57606a\">You are receiving this because you were mentioned.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0036",
+      "subject": "Out of office: Sarah Chen (Oct 27–31)",
+      "folder": "inbox",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0052",
+          "from": {
+            "name": "Sarah Chen",
+            "email": "sarah.chen@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T17:02:00-04:00",
+          "snippet": "I'm out of office until Monday, Nov 3. For urgent items, ping Tom.",
+          "html": "<p>I'm out of office until Monday, Nov 3. For urgent items, ping Tom.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0037",
+      "subject": "Dr. Roberts: lab results are ready",
+      "folder": "inbox",
+      "labels": [
+        "personal",
+        "urgent"
+      ],
+      "starred": true,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0053",
+          "from": {
+            "name": "Dr. Elena Alvarez",
+            "email": "office@alvarezdental.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T16:45:00-04:00",
+          "snippet": "Hi Alex, your recent lab results are now available in the patient portal. Dr. Roberts asked me to flag that your LDL is",
+          "html": "<p>Hi Alex, your recent lab results are now available in the patient portal. Dr. Roberts asked me to flag that your LDL is slightly above target. Please schedule a follow-up at your convenience.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0038",
+      "subject": "CI failed on main — build #2193",
+      "folder": "inbox",
+      "labels": [
+        "github",
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0054",
+          "from": {
+            "name": "GitHub",
+            "email": "noreply@github.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T15:02:00-04:00",
+          "snippet": "The workflow CI / integration failed on main (commit a81f0c2 by Hannah Brooks). FAIL tests/sync/conflict.spec.ts ● merge",
+          "html": "<p>The workflow <b>CI / integration</b> failed on <code>main</code> (commit <code>a81f0c2</code> by Hannah Brooks).</p><pre>FAIL  tests/sync/conflict.spec.ts\n  ● merges concurrent label edits\n    expect(received).toEqual(expected)</pre><p><a href=\"https://github.com/acme/web-core/actions/runs/2193\">View run</a></p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0039",
+      "subject": "Expense report #EXP-7741 needs your approval",
+      "folder": "inbox",
+      "labels": [
+        "work",
+        "finance"
+      ],
+      "starred": false,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0055",
+          "from": {
+            "name": "Tom Keller",
+            "email": "tom.keller@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T12:50:00-04:00",
+          "snippet": "Hi Alex, you have one expense report waiting for approval. Total: $742.31 for the September client offsite (flights, ho",
+          "html": "<p>Hi Alex, you have one expense report waiting for approval. Total: <b>$742.31</b> for the September client offsite (flights, hotel, meals).</p><p><a href=\"https://example.com/expenses/7741\">Review in Concur</a></p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0040",
+      "subject": "Lab tests ready — Maple Street Pharmacy refill",
+      "folder": "inbox",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0056",
+          "from": {
+            "name": "Maple Street Pharmacy",
+            "email": "refills@maplestreetrx.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T12:00:00-04:00",
+          "snippet": "Your refill of Atorvastatin 20mg is ready for pickup at our Maple Street location. Refill #: 448213 · Pickup by 10/31",
+          "html": "<p>Your refill of <b>Atorvastatin 20mg</b> is ready for pickup at our Maple Street location.</p><p>Refill #: 448213 · Pickup by 10/31</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0041",
+      "subject": "Senior Frontend Engineer — Lumen Health (remote)",
+      "folder": "inbox",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0057",
+          "from": {
+            "name": "Kevin Ortiz",
+            "email": "kevin.ortiz@talentbridge.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-22T11:00:00-04:00",
+          "snippet": "Hi Alex, I came across your work on Pigeon and thought of a role we're hiring for at Lumen Health : Senior Frontend Eng",
+          "html": "<p>Hi Alex,</p><p>I came across your work on Pigeon and thought of a role we're hiring for at <b>Lumen Health</b>: Senior Frontend Engineer, remote US, comp range $190k–$230k plus equity.</p><p>The team is building clinician-facing scheduling tools in React and TypeScript. Would you be open to a 20-minute intro call this week?</p><p>Best,<br>Kevin Ortiz<br>Senior Recruiter, TalentBridge</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0058",
+          "from": {
+            "name": "Kevin Ortiz",
+            "email": "kevin.ortiz@talentbridge.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T11:00:00-04:00",
+          "snippet": "Following up on the note below. Happy to work around your schedule if this week doesn't fit. Let me know either way. I c",
+          "html": "<p>Following up on the note below. Happy to work around your schedule if this week doesn't fit. Let me know either way.</p><blockquote><p>I came across your work on Pigeon and thought of a role we're hiring for...</p></blockquote>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0042",
+      "subject": "Re: Pigeon sync protocol draft v3",
+      "folder": "inbox",
+      "labels": [
+        "work",
+        "side-projects"
+      ],
+      "starred": true,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0059",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Rahul Mehta",
+              "email": "rahul@mehta.dev"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-23T16:20:00-04:00",
+          "snippet": "Attached is v3 of the sync protocol. I changed the conflict model to last-writer-wins per label set, which makes the UI ",
+          "html": "<p>Attached is v3 of the sync protocol. I changed the conflict model to last-writer-wins per label set, which makes the UI simpler. Let me know if you see holes.</p>",
+          "attachments": [
+            {
+              "name": "pigeon-sync-protocol-v3.docx",
+              "size_bytes": 88421,
+              "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            }
+          ]
+        },
+        {
+          "id": "m-0060",
+          "from": {
+            "name": "Rahul Mehta",
+            "email": "rahul@mehta.dev"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T08:33:00-04:00",
+          "snippet": "Looks solid. One concern: if two devices both move a thread to trash offline, which wins? LWW per label set would resurr",
+          "html": "<p>Looks solid. One concern: if two devices both move a thread to trash offline, which wins? LWW per label set would resurrect the thread on the other device.</p><blockquote>LWW per label set would resurrect the thread on the other device.</blockquote>",
+          "attachments": []
+        },
+        {
+          "id": "m-0061",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Rahul Mehta",
+              "email": "rahul@mehta.dev"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T10:02:00-04:00",
+          "snippet": "Good point. Folder moves should be a separate field with its own tombstone. Labels can stay LWW. I'll update section 4.",
+          "html": "<p>Good point. Folder moves should be a separate field with its own tombstone. Labels can stay LWW. I'll update section 4.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0062",
+          "from": {
+            "name": "Rahul Mehta",
+            "email": "rahul@mehta.dev"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T10:20:00-04:00",
+          "snippet": "That works. Ship it to the beta channel once the diagrams are in.",
+          "html": "<p>That works. Ship it to the beta channel once the diagrams are in.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0043",
+      "subject": "Ben Carter: Lisbon in November?",
+      "folder": "inbox",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0063",
+          "from": {
+            "name": "Ben Carter",
+            "email": "ben.carter@gmail.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-23T20:14:00-04:00",
+          "snippet": "Dude, I'm going to be in Lisbon the first week of November for a conference. Are you still around that time? We could ge",
+          "html": "<p>Dude, I'm going to be in Lisbon the first week of November for a conference. Are you still around that time? We could get the usual ridiculous pastries from Pastéis and walk up to Miradouro.</p><p>— Ben</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0064",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Ben Carter",
+              "email": "ben.carter@gmail.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T09:05:00-04:00",
+          "snippet": "Ha, yes! I'm flying in on the 3rd. Have a hotel recommendation? The Riverside one is booked up. I'll grab a table at the",
+          "html": "<p>Ha, yes! I'm flying in on the 3rd. Have a hotel recommendation? The Riverside one is booked up. I'll grab a table at the tiny place near Alfama.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0044",
+      "subject": "Oct 24 — Harbor Mutual Insurance: payment confirmed",
+      "folder": "inbox",
+      "labels": [
+        "finance",
+        "receipts"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0065",
+          "from": {
+            "name": "Harbor Mutual Insurance",
+            "email": "renewals@harbormutual.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T09:00:00-04:00",
+          "snippet": "Harbor Mutual Insurance Your payment of $312.00 to policy HM-44-2281 was received. Item Amount Auto premium installment ",
+          "html": "<h2>Harbor Mutual Insurance</h2><p>Your payment of <b>$312.00</b> to policy HM-44-2281 was received.</p><table><tr><th>Item</th><th>Amount</th></tr><tr><td>Auto premium installment 4 of 6</td><td style=\"text-align:right\">$312.00</td></tr><tr><td><b>Total</b></td><td style=\"text-align:right\"><b>$312.00</b></td></tr></table><p style=\"color:#666\">Thank you for being a Harbor Mutual customer.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0045",
+      "subject": "Reminder: dental cleaning on Thursday at 9:30",
+      "folder": "inbox",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0066",
+          "from": {
+            "name": "Dr. Elena Alvarez",
+            "email": "office@alvarezdental.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T08:00:00-04:00",
+          "snippet": "Hi Alex, This is a reminder for your 6-month cleaning on Thursday, October 30 at 9:30 AM . Please arrive 10 minutes ear",
+          "html": "<p>Hi Alex,</p><p>This is a reminder for your 6-month cleaning on <b>Thursday, October 30 at 9:30 AM</b>. Please arrive 10 minutes early.</p><p>To reschedule, reply here or call (415) 555-0142.</p><p>Warmly,<br>Elena Alvarez, DDS<br>Alvarez Family Dentistry</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0046",
+      "subject": "Your Netflix account is on hold",
+      "folder": "spam",
+      "labels": [
+        "urgent"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0067",
+          "from": {
+            "name": "Netflix Billing",
+            "email": "billing@netf1ix-account-check.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T06:44:00-04:00",
+          "snippet": "We couldn't verify your billing information. Your account will be suspended in 24 hours unless you update your payment d",
+          "html": "<p>We couldn't verify your billing information. Your account will be suspended in 24 hours unless you update your payment details.</p><p><a href=\"https://example.com/netflix-update\">Update payment</a></p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0047",
+      "subject": "Your weekly Makers Mail digest",
+      "folder": "inbox",
+      "labels": [
+        "newsletters"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0068",
+          "from": {
+            "name": "Makers Mail",
+            "email": "hello@makersmail.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-24T06:10:00-04:00",
+          "snippet": "This week in makers Five projects shipping this week, a founder interview, and tools worth trying. Shipping Tinylog 2.0 ",
+          "html": "<h1>This week in makers</h1><p>Five projects shipping this week, a founder interview, and tools worth trying.</p><h3>Shipping</h3><ul><li><a href=\"https://example.com/0\">Tinylog 2.0</a> — Static site builder with real-time previews</li><li><a href=\"https://example.com/1\">Ledgerly</a> — Plain-text accounting for freelancers</li></ul><h3>Reads</h3><ul><li><a href=\"https://example.com/0\">Pricing without fear</a> — How a two-person team tested three price points in a month</li></ul><hr><p><i>Make something small today.</i></p><p><a href=\"https://example.com/unsubscribe\">Unsubscribe</a></p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0048",
+      "subject": "Offer letter sign-off — Lumen?",
+      "folder": "sent",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0069",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Kevin Ortiz",
+              "email": "kevin.ortiz@talentbridge.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-23T15:20:00-04:00",
+          "snippet": "Hi Kevin, thanks for the follow-up. I'm not looking to move right now, but please keep me in mind for the principal-leve",
+          "html": "<p>Hi Kevin, thanks for the follow-up. I'm not looking to move right now, but please keep me in mind for the principal-level roles in the spring.</p><p>Best,<br>Alex</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0049",
+      "subject": "Lease renewal — 1205 Oak St, Unit 3",
+      "folder": "inbox",
+      "labels": [
+        "personal",
+        "finance"
+      ],
+      "starred": true,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0070",
+          "from": {
+            "name": "Greg Dunn",
+            "email": "gdunn@dunnproperties.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-23T14:20:00-04:00",
+          "snippet": "Hi Alex, Your lease at 1205 Oak Street ends on December 31 . I'd like to propose a renewal at $3,450/month , a 3% incre",
+          "html": "<p>Hi Alex,</p><p>Your lease at 1205 Oak Street ends on <b>December 31</b>. I'd like to propose a renewal at <b>$3,450/month</b>, a 3% increase from the current rate. The updated lease is attached.</p><p>Please let me know by November 15 whether you'd like to proceed.</p><p>Thanks,<br>Greg Dunn<br>Dunn Properties</p>",
+          "attachments": [
+            {
+              "name": "Lease-renewal-2027.pdf",
+              "size_bytes": 401220,
+              "mime": "application/pdf"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t-0050",
+      "subject": "Re: Sick leave policy question",
+      "folder": "drafts",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0071",
+          "from": {
+            "name": "Hannah Brooks",
+            "email": "hbrooks@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-23T09:10:00-04:00",
+          "snippet": "Hey, do we have a policy on sick leave for contractors? Asking for a friend on the design team.",
+          "html": "<p>Hey, do we have a policy on sick leave for contractors? Asking for a friend on the design team.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0072",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Hannah Brooks",
+              "email": "hbrooks@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-23T10:00:00-04:00",
+          "snippet": "Checking with People Ops and will confirm. Draft reply in progress.",
+          "html": "<p>Checking with People Ops and will confirm. Draft reply in progress.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0051",
+      "subject": "Shipping notice: Brass pen tray",
+      "folder": "inbox",
+      "labels": [
+        "receipts"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0073",
+          "from": {
+            "name": "Ferro & Finch",
+            "email": "orders@ferroandfinch.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-23T08:40:00-04:00",
+          "snippet": "Your brass pen tray is on its way. Tracking: PW99238814.",
+          "html": "<p>Your brass pen tray is on its way. Tracking: PW99238814.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0052",
+      "subject": "Bill: City Water — account 88-204-771",
+      "folder": "inbox",
+      "labels": [
+        "finance"
+      ],
+      "starred": false,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0074",
+          "from": {
+            "name": "City Water Utility",
+            "email": "billing@cwu-city.gov"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-23T08:00:00-04:00",
+          "snippet": "Your October water bill of $94.12 is due November 4 . Pay online or enroll in autopay to avoid late fees.",
+          "html": "<p>Your October water bill of <b>$94.12</b> is due <b>November 4</b>. Pay online or enroll in autopay to avoid late fees.</p>",
+          "attachments": [
+            {
+              "name": "water-bill-oct.pdf",
+              "size_bytes": 99201,
+              "mime": "application/pdf"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t-0053",
+      "subject": "CONGRATULATIONS!!! You have been selected as a WINNER",
+      "folder": "spam",
+      "labels": [],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0075",
+          "from": {
+            "name": "Lucky Prize Center",
+            "email": "winner@lucky-prize-claim.biz"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-23T03:12:00-04:00",
+          "snippet": "YOU WON $5,000,000!!! Claim your prize NOW. Reply with your full name, address, and bank details to receive your payout ",
+          "html": "<h1 style=\"color:#d00\">YOU WON $5,000,000!!!</h1><p>Claim your prize NOW. Reply with your full name, address, and bank details to receive your payout within 24 hours.</p><p><a href=\"https://example.com/claim\">CLAIM YOUR PRIZE</a></p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0054",
+      "subject": "Dinner Saturday?",
+      "folder": "archive",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0076",
+          "from": {
+            "name": "Daniel Rivera",
+            "email": "daniel.r@example.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-22T18:40:00-04:00",
+          "snippet": "Are you free for dinner Saturday? Thinking 7pm at the usual place.",
+          "html": "<p>Are you free for dinner Saturday? Thinking 7pm at the usual place.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0077",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Daniel Rivera",
+              "email": "daniel.r@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-22T19:05:00-04:00",
+          "snippet": "Sounds good, see you then.",
+          "html": "<p>Sounds good, see you then.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0055",
+      "subject": "Double your Bitcoin in 48 hours — guaranteed",
+      "folder": "spam",
+      "labels": [
+        "finance"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0078",
+          "from": {
+            "name": "Gainz Signal",
+            "email": "alerts@gainz-signal.xyz"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-22T19:02:00-04:00",
+          "snippet": "Our AI trading bot has a 100% win rate this month. Join today and start earning up to $12,000 per day. Start now",
+          "html": "<p>Our AI trading bot has a <b>100% win rate</b> this month. Join today and start earning up to $12,000 per day.</p><p><a href=\"https://example.com/gainz\">Start now</a></p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0056",
+      "subject": "Pigeon beta — release notes 2.4.1",
+      "folder": "sent",
+      "labels": [
+        "side-projects"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0079",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Pigeon Beta Testers",
+              "email": "beta@pigeon-mail.app"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-22T16:00:00-04:00",
+          "snippet": "Pigeon 2.4.1 Fixed token refresh race on wake from sleep Search no longer crashes on empty query New onboarding copy for",
+          "html": "<h2>Pigeon 2.4.1</h2><ul><li>Fixed token refresh race on wake from sleep</li><li>Search no longer crashes on empty query</li><li>New onboarding copy for mailbox connect</li></ul><p>Thanks for testing. Reply here with anything weird.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0057",
+      "subject": "Ferro & Finch — your order has shipped",
+      "folder": "inbox",
+      "labels": [
+        "receipts",
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0080",
+          "from": {
+            "name": "Ferro & Finch",
+            "email": "orders@ferroandfinch.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-22T13:18:00-04:00",
+          "snippet": "Ferro & Finch Good news, your order #FF-30821 has shipped. Item Amount Walnut desk organizer $68.00 Brass pen tray $34.0",
+          "html": "<h2>Ferro &amp; Finch</h2><p>Good news, your order <b>#FF-30821</b> has shipped.</p><table><tr><th>Item</th><th>Amount</th></tr><tr><td>Walnut desk organizer</td><td style=\"text-align:right\">$68.00</td></tr><tr><td>Brass pen tray</td><td style=\"text-align:right\">$34.00</td></tr><tr><td>Shipping</td><td style=\"text-align:right\">$0.00</td></tr><tr><td><b>Total</b></td><td style=\"text-align:right\"><b>$102.00</b></td></tr></table><p style=\"color:#666\">Estimated delivery: October 25 · Tracking: PW99238814</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0058",
+      "subject": "Re: Team charter — final",
+      "folder": "sent",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0081",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Hannah Brooks",
+              "email": "hbrooks@acme.io"
+            },
+            {
+              "name": "Sarah Chen",
+              "email": "sarah.chen@acme.io"
+            },
+            {
+              "name": "Tom Keller",
+              "email": "tom.keller@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-22T12:30:00-04:00",
+          "snippet": "Looks good. I'd add a line about paging the sync owner first, since most incidents start there.",
+          "html": "<p>Looks good. I'd add a line about paging the sync owner first, since most incidents start there.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0082",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Hannah Brooks",
+              "email": "hbrooks@acme.io"
+            },
+            {
+              "name": "Sarah Chen",
+              "email": "sarah.chen@acme.io"
+            },
+            {
+              "name": "Tom Keller",
+              "email": "tom.keller@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-22T12:31:00-04:00",
+          "snippet": "Also please add the on-call handoff reminder to the calendar.",
+          "html": "<p>Also please add the on-call handoff reminder to the calendar.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0059",
+      "subject": "Gather for Sofia's birthday — Saturday",
+      "folder": "inbox",
+      "labels": [
+        "family"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0083",
+          "from": {
+            "name": "Carlos Rivera",
+            "email": "carlos.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            },
+            {
+              "name": "Maria Rivera",
+              "email": "maria.rivera58@example.com"
+            },
+            {
+              "name": "Sofia Rivera",
+              "email": "sofia.r@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-22T10:10:00-04:00",
+          "snippet": "Quick reminder: Sofia's birthday party is Saturday at 4pm at the community hall. Please bring a dish if you can. I'll h",
+          "html": "<p>Quick reminder: Sofia's birthday party is Saturday at 4pm at the community hall. Please bring a dish if you can. I'll handle the cake.</p><p>Baba</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0060",
+      "subject": "Insurance renewal — Harbor Mutual auto policy",
+      "folder": "inbox",
+      "labels": [
+        "finance"
+      ],
+      "starred": true,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0084",
+          "from": {
+            "name": "Harbor Mutual Insurance",
+            "email": "renewals@harbormutual.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-22T09:00:00-04:00",
+          "snippet": "Your auto policy renews on December 1 . Your new premium is $1,184.00 for six months, down 4% from last term. Review you",
+          "html": "<p>Your auto policy renews on <b>December 1</b>. Your new premium is <b>$1,184.00</b> for six months, down 4% from last term.</p><p>Review your coverage or make a change in the Harbor Mutual portal before November 20.</p>",
+          "attachments": [
+            {
+              "name": "policy-renewal-2026.pdf",
+              "size_bytes": 311029,
+              "mime": "application/pdf"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t-0061",
+      "subject": "Re: Team charter draft",
+      "folder": "inbox",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0085",
+          "from": {
+            "name": "Hannah Brooks",
+            "email": "hbrooks@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            },
+            {
+              "name": "Sarah Chen",
+              "email": "sarah.chen@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-21T10:10:00-04:00",
+          "snippet": "Draft team charter is in the doc. The big change is the on-call section: we rotate weekly and handoffs happen on Mondays",
+          "html": "<p>Draft team charter is in the doc. The big change is the on-call section: we rotate weekly and handoffs happen on Mondays at 10.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0086",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Hannah Brooks",
+              "email": "hbrooks@acme.io"
+            },
+            {
+              "name": "Sarah Chen",
+              "email": "sarah.chen@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-21T12:30:00-04:00",
+          "snippet": "Looks good. I'd add a line about paging the sync owner first, since most incidents start there.",
+          "html": "<p>Looks good. I'd add a line about paging the sync owner first, since most incidents start there.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0087",
+          "from": {
+            "name": "Sarah Chen",
+            "email": "sarah.chen@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            },
+            {
+              "name": "Hannah Brooks",
+              "email": "hbrooks@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-22T09:00:00-04:00",
+          "snippet": "Added. Thanks both. I'll send to the group Friday.",
+          "html": "<p>Added. Thanks both. I'll send to the group Friday.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0062",
+      "subject": "Your Google Drive file was shared with you",
+      "folder": "inbox",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0088",
+          "from": {
+            "name": "Google Drive",
+            "email": "drive-shares-noreply@google.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-21T15:33:00-04:00",
+          "snippet": "Sarah Chen shared a file with you: Pigeon — Onboarding copy deck (v4) Open in Google Drive",
+          "html": "<p><b>Sarah Chen</b> shared a file with you:</p><p><b>Pigeon — Onboarding copy deck (v4)</b></p><p><a href=\"https://example.com/drive/onboarding-v4\">Open in Google Drive</a></p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0063",
+      "subject": "Offsite agenda — Nov 12–13",
+      "folder": "inbox",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0089",
+          "from": {
+            "name": "Sarah Chen",
+            "email": "sarah.chen@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            },
+            {
+              "name": "Tom Keller",
+              "email": "tom.keller@acme.io"
+            },
+            {
+              "name": "Hannah Brooks",
+              "email": "hbrooks@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-21T11:15:00-04:00",
+          "snippet": "Draft agenda for the offsite is below. Please add anything you want to discuss. Day 1: Roadmap and bets for H1 2027 Day ",
+          "html": "<p>Draft agenda for the offsite is below. Please add anything you want to discuss.</p><ol><li>Day 1: Roadmap and bets for H1 2027</li><li>Day 1: Platform reliability review</li><li>Day 2: Hiring plan, team charters</li><li>Day 2: Retro and next steps</li></ol><p>Thanks,<br>Sarah</p>",
+          "attachments": [
+            {
+              "name": "offsite-agenda.pdf",
+              "size_bytes": 74532,
+              "mime": "application/pdf"
+            }
+          ]
+        },
+        {
+          "id": "m-0090",
+          "from": {
+            "name": "Hannah Brooks",
+            "email": "hbrooks@acme.io"
+          },
+          "to": [
+            {
+              "name": "Sarah Chen",
+              "email": "sarah.chen@acme.io"
+            },
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            },
+            {
+              "name": "Tom Keller",
+              "email": "tom.keller@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-21T13:04:00-04:00",
+          "snippet": "Can we add a slot for the sync incident postmortem? Would take 30 minutes.",
+          "html": "<p>Can we add a slot for the sync incident postmortem? Would take 30 minutes.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0064",
+      "subject": "IRS: Your tax refund of $2,184.00 is pending",
+      "folder": "spam",
+      "labels": [
+        "finance"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0091",
+          "from": {
+            "name": "IRS Tax Refunds",
+            "email": "refund@irs-tax-return-claims.net"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-21T08:30:00-04:00",
+          "snippet": "Our records show you are eligible for a refund of $2,184.00 . Verify your identity with your Social Security number and ",
+          "html": "<p>Our records show you are eligible for a refund of <b>$2,184.00</b>. Verify your identity with your Social Security number and bank login to receive the funds.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0065",
+      "subject": "Lonely in your area? Hot singles near you",
+      "folder": "spam",
+      "labels": [],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0092",
+          "from": {
+            "name": "Dating Matches",
+            "email": "hot.singles@meetnearyou-now.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-20T23:59:00-04:00",
+          "snippet": "Hot singles are waiting to chat tonight. Click here to view profiles and meet someone today!",
+          "html": "<p>Hot singles are waiting to chat tonight. Click here to view profiles and meet someone today!</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0066",
+      "subject": "Amazon: delivered — USB-C hub",
+      "folder": "inbox",
+      "labels": [
+        "receipts"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0093",
+          "from": {
+            "name": "Amazon",
+            "email": "shipment-tracking@amazon.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-20T17:03:00-04:00",
+          "snippet": "Your package was delivered. USB-C 10-in-1 Hub (qty 1) was delivered to your front porch at 5:02 PM.",
+          "html": "<p>Your package was delivered. <b>USB-C 10-in-1 Hub</b> (qty 1) was delivered to your front porch at 5:02 PM.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0067",
+      "subject": "Notes for Pigeon launch post",
+      "folder": "drafts",
+      "labels": [
+        "side-projects"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0094",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Rahul Mehta",
+              "email": "rahul@mehta.dev"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-20T13:00:00-04:00",
+          "snippet": "Launch post outline: Why we built it (the inbox is a to-do list nobody asked for) Local-first sync Privacy defaults",
+          "html": "<p>Launch post outline:</p><ul><li>Why we built it (the inbox is a to-do list nobody asked for)</li><li>Local-first sync</li><li>Privacy defaults</li></ul>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0068",
+      "subject": "Sketchwave: new Auto Layout and variables",
+      "folder": "inbox",
+      "labels": [
+        "newsletters"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0095",
+          "from": {
+            "name": "Sketchwave",
+            "email": "news@sketchwave.app"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-20T10:00:00-04:00",
+          "snippet": "Sketchwave Product Update Auto layout now handles nested grids, and variables sync to code via the new export API. What'",
+          "html": "<h1>Sketchwave Product Update</h1><p>Auto layout now handles nested grids, and variables sync to code via the new export API.</p><h3>What's new</h3><ul><li><a href=\"https://example.com/0\">Nested grids</a> — Auto layout supports grids inside frames</li><li><a href=\"https://example.com/1\">Variables to code</a> — Export tokens as CSS or Swift</li></ul><hr><p><i>You're receiving this because you signed up for Sketchwave updates.</i></p><p><a href=\"https://example.com/unsubscribe\">Unsubscribe</a></p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0069",
+      "subject": "Invitation: Pigeon standup @ Mon 10:00 (weekly)",
+      "folder": "inbox",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0096",
+          "from": {
+            "name": "Google Calendar",
+            "email": "calendar-notification@google.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-20T09:00:00-04:00",
+          "snippet": "Tom Keller invited you to Pigeon standup When: Mondays, 10:00 – 10:15 AM (ET), weekly Where: Meet link in invite View in",
+          "html": "<p><b>Tom Keller</b> invited you to <b>Pigeon standup</b></p><p>When: Mondays, 10:00 – 10:15 AM (ET), weekly</p><p>Where: Meet link in invite</p><p><a href=\"https://example.com/cal/invite/standup\">View invitation</a></p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0070",
+      "subject": "Parking pass renewal — Eastside Garage",
+      "folder": "archive",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0097",
+          "from": {
+            "name": "City Water Utility",
+            "email": "billing@cwu-city.gov"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-19T10:10:00-04:00",
+          "snippet": "Your monthly parking pass expires on October 31. Renew online to keep your spot.",
+          "html": "<p>Your monthly parking pass expires on October 31. Renew online to keep your spot.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0071",
+      "subject": "Dana — thanks for the logo sketches",
+      "folder": "sent",
+      "labels": [
+        "side-projects"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0098",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Dana Lee",
+              "email": "dana@lee-design.co"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-19T09:00:00-04:00",
+          "snippet": "Dana, the first round looks great. Can we see a version where the bird is a little more abstract?",
+          "html": "<p>Dana, the first round looks great. Can we see a version where the bird is a little more abstract?</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0072",
+      "subject": "Your Pigeon beta invite is confirmed",
+      "folder": "archive",
+      "labels": [
+        "side-projects"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0099",
+          "from": {
+            "name": "Pigeon Beta Testers",
+            "email": "beta@pigeon-mail.app"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-19T08:01:00-04:00",
+          "snippet": "Welcome to the Pigeon beta! Your license key is PGN-7Q2X-91KD-AA30 . Download the latest build from the link in the emai",
+          "html": "<p>Welcome to the Pigeon beta! Your license key is <code>PGN-7Q2X-91KD-AA30</code>. Download the latest build from the link in the email.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0073",
+      "subject": "Cheap prescriptions — no prescription needed",
+      "folder": "spam",
+      "labels": [],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0100",
+          "from": {
+            "name": "Dr. Miracle Health",
+            "email": "offers@miracle-pharma-deals.info"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-19T01:14:00-04:00",
+          "snippet": "Save up to 90% on prescription meds shipped discreetly. No prescription needed. Order now.",
+          "html": "<p>Save up to 90% on prescription meds shipped discreetly. No prescription needed. Order now.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0074",
+      "subject": "Quick check: Eid dinner menu?",
+      "folder": "inbox",
+      "labels": [
+        "family"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0101",
+          "from": {
+            "name": "Maria Rivera",
+            "email": "maria.rivera58@example.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-18T19:00:00-04:00",
+          "snippet": "Should I make the lamb or the chicken? Your dad says both, which means I'll make both.",
+          "html": "<p>Should I make the lamb or the chicken? Your dad says both, which means I'll make both.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0075",
+      "subject": "Your ticket confirmation — Lumen Nights, Nov 8",
+      "folder": "inbox",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0102",
+          "from": {
+            "name": "Eastside Concert Hall",
+            "email": "tickets@eastsideconcerts.org"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-18T12:00:00-04:00",
+          "snippet": "Your tickets are confirmed Lumen Nights — Nov 8, 8:00 PM Eastside Concert Hall, Section B, Row F, Seats 14–15 Order #EC-",
+          "html": "<h2>Your tickets are confirmed</h2><p><b>Lumen Nights — Nov 8, 8:00 PM</b><br>Eastside Concert Hall, Section B, Row F, Seats 14–15</p><p>Order #EC-882014 · Total: $124.00</p>",
+          "attachments": [
+            {
+              "name": "tickets-EC-882014.pdf",
+              "size_bytes": 210334,
+              "mime": "application/pdf"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t-0076",
+      "subject": "Urgent: request from a family friend",
+      "folder": "spam",
+      "labels": [],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0103",
+          "from": {
+            "name": "Mrs. Adeyemi Okoro",
+            "email": "okoro.family.trust@mail-services.co"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-18T04:40:00-04:00",
+          "snippet": "Dear friend, I am writing with an urgent business proposal that will benefit both of us. Please reply privately with you",
+          "html": "<p>Dear friend, I am writing with an urgent business proposal that will benefit both of us. Please reply privately with your phone number and a copy of your ID.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0077",
+      "subject": "Q4 all-hands recording and notes",
+      "folder": "archive",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0104",
+          "from": {
+            "name": "Sarah Chen",
+            "email": "sarah.chen@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            },
+            {
+              "name": "Tom Keller",
+              "email": "tom.keller@acme.io"
+            },
+            {
+              "name": "Hannah Brooks",
+              "email": "hbrooks@acme.io"
+            },
+            {
+              "name": "Priya Nair",
+              "email": "priya.nair@brightpath.dev"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-17T17:30:00-04:00",
+          "snippet": "Thanks all for a good all-hands. Recording and notes are linked below. Recording (52 min) Slides Q&A doc Sarah",
+          "html": "<p>Thanks all for a good all-hands. Recording and notes are linked below.</p><ul><li>Recording (52 min)</li><li>Slides</li><li>Q&amp;A doc</li></ul><p>Sarah</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0078",
+      "subject": "Wallet security alert — verify your seed phrase",
+      "folder": "spam",
+      "labels": [
+        "urgent"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0105",
+          "from": {
+            "name": "Crypto Wallet Support",
+            "email": "support@walet-verify-now.net"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-17T17:25:00-04:00",
+          "snippet": "Unusual sign-in detected on your wallet. To keep your funds safe, enter your 12-word recovery phrase at the link below w",
+          "html": "<p>Unusual sign-in detected on your wallet. To keep your funds safe, enter your 12-word recovery phrase at the link below within 2 hours.</p><p><a href=\"https://example.com/wallet\">Verify now</a></p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0079",
+      "subject": "Sprint review recording — Oct 17",
+      "folder": "archive",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0106",
+          "from": {
+            "name": "Sarah Chen",
+            "email": "sarah.chen@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            },
+            {
+              "name": "Tom Keller",
+              "email": "tom.keller@acme.io"
+            },
+            {
+              "name": "Hannah Brooks",
+              "email": "hbrooks@acme.io"
+            },
+            {
+              "name": "Priya Nair",
+              "email": "priya.nair@brightpath.dev"
+            },
+            {
+              "name": "Lena Park",
+              "email": "lena@parkstudio.co"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-17T15:40:00-04:00",
+          "snippet": "Recording is up for the sprint review. The sync demo is at 22:10 if you only want that part.",
+          "html": "<p>Recording is up for the sprint review. The sync demo is at 22:10 if you only want that part.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0080",
+      "subject": "Re: Friday coffee?",
+      "folder": "sent",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0107",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Lena Park",
+              "email": "lena@parkstudio.co"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-17T09:44:00-04:00",
+          "snippet": "Friday 10 works. Blue Bottle on Valencia?",
+          "html": "<p>Friday 10 works. Blue Bottle on Valencia?</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0108",
+          "from": {
+            "name": "Lena Park",
+            "email": "lena@parkstudio.co"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-17T10:05:00-04:00",
+          "snippet": "Perfect, see you there.",
+          "html": "<p>Perfect, see you there.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0081",
+      "subject": "Friday coffee?",
+      "folder": "archive",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0109",
+          "from": {
+            "name": "Lena Park",
+            "email": "lena@parkstudio.co"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-17T09:00:00-04:00",
+          "snippet": "Hey! Are you around Friday morning? I have a question about the brand system and I'd rather talk than email.",
+          "html": "<p>Hey! Are you around Friday morning? I have a question about the brand system and I'd rather talk than email.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0110",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Lena Park",
+              "email": "lena@parkstudio.co"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-17T09:44:00-04:00",
+          "snippet": "Friday 10 works. Blue Bottle on Valencia?",
+          "html": "<p>Friday 10 works. Blue Bottle on Valencia?</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0082",
+      "subject": "Wedding invitation — Ben & Tasha, June 2027",
+      "folder": "archive",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0111",
+          "from": {
+            "name": "Ben Carter",
+            "email": "ben.carter@gmail.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-16T19:27:00-04:00",
+          "snippet": "Ben & Tasha Together with their families, request your presence at their wedding celebration on June 12, 2027 in Ashevil",
+          "html": "<h1>Ben &amp; Tasha</h1><p>Together with their families, request your presence at their wedding celebration on <b>June 12, 2027</b> in Asheville, North Carolina.</p><p>RSVP by March 1. Please let us know if you'll be bringing a plus one.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0083",
+      "subject": "Pharmacy message: vaccine appointment",
+      "folder": "archive",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0112",
+          "from": {
+            "name": "Maple Street Pharmacy",
+            "email": "refills@maplestreetrx.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-16T10:00:00-04:00",
+          "snippet": "Reminder: your flu shot is due. Walk in any weekday before 6 PM.",
+          "html": "<p>Reminder: your flu shot is due. Walk in any weekday before 6 PM.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0084",
+      "subject": "Ferro & Finch: 20% off wall shelves",
+      "folder": "inbox",
+      "labels": [
+        "newsletters"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0113",
+          "from": {
+            "name": "Ferro & Finch",
+            "email": "orders@ferroandfinch.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-16T08:00:00-04:00",
+          "snippet": "Ferro & Finch: Autumn Edit Twenty percent off wall shelves through Sunday. Free shipping over $75. New arrivals Oak wall",
+          "html": "<h1>Ferro & Finch: Autumn Edit</h1><p>Twenty percent off wall shelves through Sunday. Free shipping over $75.</p><h3>New arrivals</h3><ul><li><a href=\"https://example.com/0\">Oak wall shelf</a> — Three sizes, hand-finished</li><li><a href=\"https://example.com/1\">Linen tray</a> — Washable, stacks neatly</li></ul><hr><p><i>You are receiving this because you bought from Ferro & Finch.</i></p><p><a href=\"https://example.com/unsubscribe\">Unsubscribe</a></p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0085",
+      "subject": "Lisbon Riverside Hotel — booking confirmation",
+      "folder": "inbox",
+      "labels": [
+        "travel"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0114",
+          "from": {
+            "name": "Lisbon Riverside Hotel",
+            "email": "reservations@riversidehotel.pt"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-14T11:08:00-04:00",
+          "snippet": "Lisbon Riverside Hotel Thanks for booking! Your stay is confirmed. Item Amount Check-in Nov 3 · Check-out Nov 7 (4 night",
+          "html": "<h2>Lisbon Riverside Hotel</h2><p>Thanks for booking! Your stay is confirmed.</p><table><tr><th>Item</th><th>Amount</th></tr><tr><td>Check-in Nov 3 · Check-out Nov 7 (4 nights)</td><td style=\"text-align:right\">€612.00</td></tr><tr><td>Breakfast (add-on)</td><td style=\"text-align:right\">€48.00</td></tr><tr><td><b>Total</b></td><td style=\"text-align:right\"><b>€660.00</b></td></tr></table><p style=\"color:#666\">Confirmation #LRH-220918 · Free cancellation until Oct 31.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0086",
+      "subject": "Parking ticket notice",
+      "folder": "archive",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0115",
+          "from": {
+            "name": "City Water Utility",
+            "email": "billing@cwu-city.gov"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-10T13:00:00-04:00",
+          "snippet": "This is a notice regarding a parking violation issued on October 8 at 500 Kearny St. Payment due within 21 days.",
+          "html": "<p>This is a notice regarding a parking violation issued on October 8 at 500 Kearny St. Payment due within 21 days.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0087",
+      "subject": "Stripe Connect — question for the eng team",
+      "folder": "sent",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0116",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Tom Keller",
+              "email": "tom.keller@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-08T14:20:00-04:00",
+          "snippet": "Tom, does our current Stripe setup support Checkout with multiple currencies? Want to know before we promise EU pricing.",
+          "html": "<p>Tom, does our current Stripe setup support Checkout with multiple currencies? Want to know before we promise EU pricing.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0088",
+      "subject": "Re: Migration plan for local-first storage",
+      "folder": "archive",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0117",
+          "from": {
+            "name": "Marcus Reyes",
+            "email": "marcus@northwindlabs.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            },
+            {
+              "name": "Priya Nair",
+              "email": "priya.nair@brightpath.dev"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-06T11:00:00-04:00",
+          "snippet": "Here's the plan for moving the store to SQLite with CRDT sync. Phase one is read-only. Schema freeze Read path behind a ",
+          "html": "<p>Here's the plan for moving the store to SQLite with CRDT sync. Phase one is read-only.</p><ol><li>Schema freeze</li><li>Read path behind a flag</li><li>Write path</li></ol>",
+          "attachments": [
+            {
+              "name": "local-first-plan.pdf",
+              "size_bytes": 245110,
+              "mime": "application/pdf"
+            }
+          ]
+        },
+        {
+          "id": "m-0118",
+          "from": {
+            "name": "Priya Nair",
+            "email": "priya.nair@brightpath.dev"
+          },
+          "to": [
+            {
+              "name": "Marcus Reyes",
+              "email": "marcus@northwindlabs.com"
+            },
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-06T14:12:00-04:00",
+          "snippet": "Phase one timeline feels tight given the holiday freeze. Can we move the flag to week 3?",
+          "html": "<p>Phase one timeline feels tight given the holiday freeze. Can we move the flag to week 3?</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0119",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Marcus Reyes",
+              "email": "marcus@northwindlabs.com"
+            },
+            {
+              "name": "Priya Nair",
+              "email": "priya.nair@brightpath.dev"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-07T09:30:00-04:00",
+          "snippet": "Agreed on week 3. I'll update the doc and add the rollback plan.",
+          "html": "<p>Agreed on week 3. I'll update the doc and add the rollback plan.</p>",
+          "attachments": [
+            {
+              "name": "rollback-plan.docx",
+              "size_bytes": 61120,
+              "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            }
+          ]
+        },
+        {
+          "id": "m-0120",
+          "from": {
+            "name": "Marcus Reyes",
+            "email": "marcus@northwindlabs.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            },
+            {
+              "name": "Priya Nair",
+              "email": "priya.nair@brightpath.dev"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-07T10:01:00-04:00",
+          "snippet": "Approved. Let's review the rollback doc in Monday's architecture sync.",
+          "html": "<p>Approved. Let's review the rollback doc in Monday's architecture sync.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0089",
+      "subject": "GitHub: [rahulm/pigeon] PR #29 merged",
+      "folder": "archive",
+      "labels": [
+        "github",
+        "side-projects"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0121",
+          "from": {
+            "name": "GitHub",
+            "email": "noreply@github.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-03T14:02:00-04:00",
+          "snippet": "rahulm merged pull request in rahulm/pigeon#29 Add dark mode tokens Merged into main. Thanks for the review! — Reply to ",
+          "html": "<p><b>rahulm</b> merged pull request in <a href=\"https://github.com/rahulm/pigeon/pull/29\">rahulm/pigeon#29</a></p><h3>Add dark mode tokens</h3><blockquote>Merged into main. Thanks for the review!</blockquote><hr><p style=\"color:#57606a\">— Reply to this email directly or view it on GitHub.</p><p style=\"color:#57606a\">You are receiving this because you were mentioned.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0090",
+      "subject": "Quick intro: Priya ↔ Rahul",
+      "folder": "sent",
+      "labels": [
+        "work",
+        "side-projects"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0122",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Priya Nair",
+              "email": "priya.nair@brightpath.dev"
+            },
+            {
+              "name": "Rahul Mehta",
+              "email": "rahul@mehta.dev"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-02T10:00:00-04:00",
+          "snippet": "Priya, Rahul. You two should talk about the sync protocol. Rahul has the most context on the conflict model, and Priya h",
+          "html": "<p>Priya, Rahul. You two should talk about the sync protocol. Rahul has the most context on the conflict model, and Priya has the clearest view of the UX.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0091",
+      "subject": "Lease questions for Greg",
+      "folder": "sent",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0123",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Greg Dunn",
+              "email": "gdunn@dunnproperties.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-02T09:15:00-04:00",
+          "snippet": "Greg, quick question on the renewal. Is the rate fixed for the first year or does it adjust in July?",
+          "html": "<p>Greg, quick question on the renewal. Is the rate fixed for the first year or does it adjust in July?</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0092",
+      "subject": "Harbor Bank: your October statement is ready",
+      "folder": "inbox",
+      "labels": [
+        "finance"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0124",
+          "from": {
+            "name": "Harbor Bank Alerts",
+            "email": "alerts@harborbank.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-01T07:00:00-04:00",
+          "snippet": "Your October statement for checking ••4471 is now available in online banking.",
+          "html": "<p>Your October statement for checking ••4471 is now available in online banking.</p>",
+          "attachments": [
+            {
+              "name": "statement-2026-10.pdf",
+              "size_bytes": 144239,
+              "mime": "application/pdf"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t-0093",
+      "subject": "Your Stripe invoice for September",
+      "folder": "archive",
+      "labels": [
+        "finance",
+        "receipts"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0125",
+          "from": {
+            "name": "Stripe",
+            "email": "receipts@stripe.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-01T06:00:00-04:00",
+          "snippet": "Stripe Your monthly Stripe usage invoice for September 2026. Item Amount Standard processing fees $211.84 Radar $24.00 T",
+          "html": "<h2>Stripe</h2><p>Your monthly Stripe usage invoice for September 2026.</p><table><tr><th>Item</th><th>Amount</th></tr><tr><td>Standard processing fees</td><td style=\"text-align:right\">$211.84</td></tr><tr><td>Radar</td><td style=\"text-align:right\">$24.00</td></tr><tr><td><b>Total</b></td><td style=\"text-align:right\"><b>$235.84</b></td></tr></table><p style=\"color:#666\">Paid automatically with Visa ••4471</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0094",
+      "subject": "Your Amazon order has been delivered",
+      "folder": "archive",
+      "labels": [
+        "receipts"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0126",
+          "from": {
+            "name": "Amazon",
+            "email": "shipment-tracking@amazon.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-09-30T15:20:00-04:00",
+          "snippet": "Delivered: Mechanical keyboard switches (90-pack) . Left in the mail room.",
+          "html": "<p>Delivered: <b>Mechanical keyboard switches (90-pack)</b>. Left in the mail room.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0095",
+      "subject": "Reminder: your free trial ends tomorrow",
+      "folder": "trash",
+      "labels": [
+        "receipts"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0127",
+          "from": {
+            "name": "Sketchwave",
+            "email": "news@sketchwave.app"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-09-30T09:00:00-04:00",
+          "snippet": "Your Sketchwave Pro trial ends tomorrow. Subscribe to keep your files.",
+          "html": "<p>Your Sketchwave Pro trial ends tomorrow. Subscribe to keep your files.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0096",
+      "subject": "Thank you — Mateo, Thursday padel",
+      "folder": "sent",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0128",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Mateo Ruiz",
+              "email": "mateo@ruizpadel.es"
+            }
+          ],
+          "cc": [],
+          "date": "2026-09-29T22:10:00-04:00",
+          "snippet": "Thanks for the game! My backhand is finally improving. Next week on me for the drinks.",
+          "html": "<p>Thanks for the game! My backhand is finally improving. Next week on me for the drinks.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0097",
+      "subject": "Weekly digest: 5 new jobs match your profile",
+      "folder": "trash",
+      "labels": [
+        "newsletters"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0129",
+          "from": {
+            "name": "Job Alerts",
+            "email": "digest@jobalerts-weekly.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-09-28T07:00:00-04:00",
+          "snippet": "Your weekly job digest Five new roles match your saved search for senior frontend. Matches Senior Engineer, Atlas — Remo",
+          "html": "<h1>Your weekly job digest</h1><p>Five new roles match your saved search for senior frontend.</p><h3>Matches</h3><ul><li><a href=\"https://example.com/0\">Senior Engineer, Atlas</a> — Remote, $180k–$210k</li><li><a href=\"https://example.com/1\">Staff Frontend, Brightwave</a> — Hybrid, SF</li></ul><hr><p><i>You can change your alert settings anytime.</i></p><p><a href=\"https://example.com/unsubscribe\">Unsubscribe</a></p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0098",
+      "subject": "Thoughts on hiring plan v2",
+      "folder": "sent",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0130",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Sarah Chen",
+              "email": "sarah.chen@acme.io"
+            },
+            {
+              "name": "Tom Keller",
+              "email": "tom.keller@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-09-26T16:10:00-04:00",
+          "snippet": "Attached is my take on the hiring plan. I think we're over-indexing on platform engineers and under-indexing on product ",
+          "html": "<p>Attached is my take on the hiring plan. I think we're over-indexing on platform engineers and under-indexing on product frontend.</p>",
+          "attachments": [
+            {
+              "name": "hiring-plan-v2.docx",
+              "size_bytes": 97330,
+              "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            }
+          ]
+        },
+        {
+          "id": "m-0131",
+          "from": {
+            "name": "Sarah Chen",
+            "email": "sarah.chen@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            },
+            {
+              "name": "Tom Keller",
+              "email": "tom.keller@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-09-26T17:01:00-04:00",
+          "snippet": "Makes sense. Let's discuss at Monday's planning.",
+          "html": "<p>Makes sense. Let's discuss at Monday's planning.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0099",
+      "subject": "Newsletter: 50% off everything this weekend",
+      "folder": "trash",
+      "labels": [
+        "newsletters"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0132",
+          "from": {
+            "name": "Ferro & Finch",
+            "email": "orders@ferroandfinch.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-09-20T08:00:00-04:00",
+          "snippet": "Ferro & Finch: Flash Sale Half off everything for 48 hours. No code needed. Sale Walnut desk — Was $420, now $210 Brass ",
+          "html": "<h1>Ferro & Finch: Flash Sale</h1><p>Half off everything for 48 hours. No code needed.</p><h3>Sale</h3><ul><li><a href=\"https://example.com/0\">Walnut desk</a> — Was $420, now $210</li><li><a href=\"https://example.com/1\">Brass lamp</a> — Was $145, now $72</li></ul><hr><p><i>Limited time only.</i></p><p><a href=\"https://example.com/unsubscribe\">Unsubscribe</a></p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0100",
+      "subject": "Re: Benchmark numbers for the parser",
+      "folder": "archive",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0133",
+          "from": {
+            "name": "Tom Keller",
+            "email": "tom.keller@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            },
+            {
+              "name": "Hannah Brooks",
+              "email": "hbrooks@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-09-18T16:40:00-04:00",
+          "snippet": "Ran the parser benchmark on the new M4 box. p95 went from 14ms to 6ms with the lexer rewrite. parse/small 0.42ms (was 0.",
+          "html": "<p>Ran the parser benchmark on the new M4 box. p95 went from 14ms to 6ms with the lexer rewrite.</p><pre>parse/small   0.42ms  (was 0.91ms)\nparse/large  11.8ms   (was 27.4ms)</pre>",
+          "attachments": []
+        },
+        {
+          "id": "m-0134",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Tom Keller",
+              "email": "tom.keller@acme.io"
+            },
+            {
+              "name": "Hannah Brooks",
+              "email": "hbrooks@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-09-18T17:05:00-04:00",
+          "snippet": "Nice. Let's keep the old path behind the flag for one release just in case.",
+          "html": "<p>Nice. Let's keep the old path behind the flag for one release just in case.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0101",
+      "subject": "Your Dropbox trial has ended",
+      "folder": "trash",
+      "labels": [
+        "receipts"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0135",
+          "from": {
+            "name": "Pigeon Beta Testers",
+            "email": "beta@pigeon-mail.app"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-09-15T10:00:00-04:00",
+          "snippet": "Your Dropbox Plus trial has ended. Upgrade any time to keep your extra storage.",
+          "html": "<p>Your Dropbox Plus trial has ended. Upgrade any time to keep your extra storage.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0102",
+      "subject": "Re: Birthday present for Dad",
+      "folder": "sent",
+      "labels": [
+        "family"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0136",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Sofia Rivera",
+              "email": "sofia.r@example.com"
+            },
+            {
+              "name": "Maria Rivera",
+              "email": "maria.rivera58@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-09-14T11:00:00-04:00",
+          "snippet": "I'm getting him the new cast iron pan he wanted. Can you two split the card?",
+          "html": "<p>I'm getting him the new cast iron pan he wanted. Can you two split the card?</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0137",
+          "from": {
+            "name": "Sofia Rivera",
+            "email": "sofia.r@example.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            },
+            {
+              "name": "Maria Rivera",
+              "email": "maria.rivera58@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-09-14T11:10:00-04:00",
+          "snippet": "Done. He's going to love it.",
+          "html": "<p>Done. He's going to love it.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0103",
+      "subject": "Clement Street Bakery — loyalty points update",
+      "folder": "archive",
+      "labels": [
+        "personal",
+        "receipts"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0138",
+          "from": {
+            "name": "Ferro & Finch",
+            "email": "orders@ferroandfinch.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-09-12T08:00:00-04:00",
+          "snippet": "You have 340 points . Redeem 500 for a free loaf by October 31.",
+          "html": "<p>You have <b>340 points</b>. Redeem 500 for a free loaf by October 31.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0104",
+      "subject": "Get well soon",
+      "folder": "sent",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0139",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Daniel Rivera",
+              "email": "daniel.r@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-09-10T08:45:00-04:00",
+          "snippet": "Hope you feel better soon, brother. Let me know if you need anything from the store.",
+          "html": "<p>Hope you feel better soon, brother. Let me know if you need anything from the store.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0105",
+      "subject": "GitHub: New sign-in from Chrome on Linux",
+      "folder": "trash",
+      "labels": [
+        "github"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0140",
+          "from": {
+            "name": "GitHub",
+            "email": "noreply@github.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-09-10T06:12:00-04:00",
+          "snippet": "We noticed a new sign-in to your GitHub account from Chrome on Linux near Portland, OR. If this was you, you can ignore ",
+          "html": "<p>We noticed a new sign-in to your GitHub account from <b>Chrome on Linux</b> near Portland, OR.</p><p>If this was you, you can ignore this email. Otherwise, secure your account.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0106",
+      "subject": "Quick favor?",
+      "folder": "trash",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0141",
+          "from": {
+            "name": "Daniel Rivera",
+            "email": "daniel.r@example.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-09-04T17:30:00-04:00",
+          "snippet": "Can you send me that link to the restaurant from last week? Thanks.",
+          "html": "<p>Can you send me that link to the restaurant from last week? Thanks.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0107",
+      "subject": "Re: Old tweet thread (delete me)",
+      "folder": "trash",
+      "labels": [],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0142",
+          "from": {
+            "name": "Ben Carter",
+            "email": "ben.carter@gmail.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-09-02T11:00:00-04:00",
+          "snippet": "Lol, deleted that thread. Sorry about the rant.",
+          "html": "<p>Lol, deleted that thread. Sorry about the rant.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0108",
+      "subject": "Your AWS invoice for August 2026",
+      "folder": "archive",
+      "labels": [
+        "finance",
+        "receipts"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0143",
+          "from": {
+            "name": "Amazon Web Services",
+            "email": "no-reply@aws.amazon.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-09-01T00:30:00-04:00",
+          "snippet": "Amazon Web Services Your AWS invoice for August 2026 is ready. Item Amount EC2 $398.03 RDS $288.40 S3 $54.92 Total $741.",
+          "html": "<h2>Amazon Web Services</h2><p>Your AWS invoice for <b>August 2026</b> is ready.</p><table><tr><th>Item</th><th>Amount</th></tr><tr><td>EC2</td><td style=\"text-align:right\">$398.03</td></tr><tr><td>RDS</td><td style=\"text-align:right\">$288.40</td></tr><tr><td>S3</td><td style=\"text-align:right\">$54.92</td></tr><tr><td><b>Total</b></td><td style=\"text-align:right\"><b>$741.35</b></td></tr></table><p style=\"color:#666\">View full invoice in the AWS Billing console.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0109",
+      "subject": "Ticket receipt — Dumbo Jazz Festival",
+      "folder": "archive",
+      "labels": [
+        "personal",
+        "receipts"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0144",
+          "from": {
+            "name": "Eastside Concert Hall",
+            "email": "tickets@eastsideconcerts.org"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-08-28T13:22:00-04:00",
+          "snippet": "Eastside Concert Hall Thanks for your purchase. Two passes for Sat, Sep 12. Item Amount 2-day pass x2 $180.00 Service fe",
+          "html": "<h2>Eastside Concert Hall</h2><p>Thanks for your purchase. Two passes for Sat, Sep 12.</p><table><tr><th>Item</th><th>Amount</th></tr><tr><td>2-day pass x2</td><td style=\"text-align:right\">$180.00</td></tr><tr><td>Service fee</td><td style=\"text-align:right\">$14.40</td></tr><tr><td><b>Total</b></td><td style=\"text-align:right\"><b>$194.40</b></td></tr></table><p style=\"color:#666\">Show this email at the gate.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0110",
+      "subject": "Zoom: meeting recording available",
+      "folder": "trash",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0145",
+          "from": {
+            "name": "Google Calendar",
+            "email": "calendar-notification@google.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-08-25T16:00:00-04:00",
+          "snippet": "Your recording of Weekly sync (Aug 25) is ready to view.",
+          "html": "<p>Your recording of <b>Weekly sync (Aug 25)</b> is ready to view.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0111",
+      "subject": "Lisbon trip planning",
+      "folder": "archive",
+      "labels": [
+        "travel",
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0146",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Ben Carter",
+              "email": "ben.carter@gmail.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-08-21T21:01:00-04:00",
+          "snippet": "Early November works for me. Let me look at flights. Is Tasha coming?",
+          "html": "<p>Early November works for me. Let me look at flights. Is Tasha coming?</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0147",
+          "from": {
+            "name": "Ben Carter",
+            "email": "ben.carter@gmail.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-08-21T21:30:00-04:00",
+          "snippet": "She's not sure yet. Let's see how the conference schedule shakes out.",
+          "html": "<p>She's not sure yet. Let's see how the conference schedule shakes out.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0112",
+      "subject": "Rustacean Weekly #398 — const generics stabilization",
+      "folder": "archive",
+      "labels": [
+        "newsletters"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0148",
+          "from": {
+            "name": "Rustacean Weekly",
+            "email": "newsletter@rustacean-weekly.dev"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-08-18T06:00:00-04:00",
+          "snippet": "Rustacean Weekly #398 Const generics ship another step closer, plus a look at the new allocator APIs. Articles Const gen",
+          "html": "<h1>Rustacean Weekly #398</h1><p>Const generics ship another step closer, plus a look at the new allocator APIs.</p><h3>Articles</h3><ul><li><a href=\"https://example.com/0\">Const generics, step by step</a> — What's left before stabilization</li><li><a href=\"https://example.com/1\">Allocators in practice</a> — Benchmarks on three allocators</li></ul><hr><p><i>Happy hacking.</i></p><p><a href=\"https://example.com/unsubscribe\">Unsubscribe</a></p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0113",
+      "subject": "Fwd: vacation photos, final set",
+      "folder": "trash",
+      "labels": [
+        "family"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0149",
+          "from": {
+            "name": "Sofia Rivera",
+            "email": "sofia.r@example.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-08-17T12:40:00-04:00",
+          "snippet": "Here's the final set. Mom is going to cry when she sees these.",
+          "html": "<p>Here's the final set. Mom is going to cry when she sees these.</p>",
+          "attachments": [
+            {
+              "name": "beach-final.jpg",
+              "size_bytes": 3001992,
+              "mime": "image/jpeg"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t-0114",
+      "subject": "Re: Coffee machine broke again",
+      "folder": "archive",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0150",
+          "from": {
+            "name": "Tom Keller",
+            "email": "tom.keller@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            },
+            {
+              "name": "Sarah Chen",
+              "email": "sarah.chen@acme.io"
+            },
+            {
+              "name": "Hannah Brooks",
+              "email": "hbrooks@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-08-12T09:02:00-04:00",
+          "snippet": "The espresso machine on 3 is dead again. Facilities says a part is on order until the 20th.",
+          "html": "<p>The espresso machine on 3 is dead again. Facilities says a part is on order until the 20th.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0151",
+          "from": {
+            "name": "Hannah Brooks",
+            "email": "hbrooks@acme.io"
+          },
+          "to": [
+            {
+              "name": "Tom Keller",
+              "email": "tom.keller@acme.io"
+            },
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            },
+            {
+              "name": "Sarah Chen",
+              "email": "sarah.chen@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-08-12T09:20:00-04:00",
+          "snippet": "Adding the dripper from the pantry to the kitchen counter. It's not great but it's something.",
+          "html": "<p>Adding the dripper from the pantry to the kitchen counter. It's not great but it's something.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0115",
+      "subject": "Harbor Mutual — Auto policy quote",
+      "folder": "archive",
+      "labels": [
+        "finance"
+      ],
+      "starred": true,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0152",
+          "from": {
+            "name": "Harbor Mutual Insurance",
+            "email": "renewals@harbormutual.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-08-10T10:00:00-04:00",
+          "snippet": "Here is your updated quote for the 2027 policy term. Compare coverage options in the attached sheet.",
+          "html": "<p>Here is your updated quote for the 2027 policy term. Compare coverage options in the attached sheet.</p>",
+          "attachments": [
+            {
+              "name": "auto-quote-2027.xlsx",
+              "size_bytes": 44212,
+              "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t-0116",
+      "subject": "Renovation quote for kitchen backsplash",
+      "folder": "archive",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0153",
+          "from": {
+            "name": "Greg Dunn",
+            "email": "gdunn@dunnproperties.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-08-05T13:10:00-04:00",
+          "snippet": "I talked to the contractor about the kitchen backsplash. He can do tile by late September for about $2,100. Let me know ",
+          "html": "<p>I talked to the contractor about the kitchen backsplash. He can do tile by late September for about $2,100. Let me know if you want me to set it up.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0154",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Greg Dunn",
+              "email": "gdunn@dunnproperties.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-08-05T16:20:00-04:00",
+          "snippet": "Let's go with it. Please schedule for the week of Sept 22.",
+          "html": "<p>Let's go with it. Please schedule for the week of Sept 22.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0117",
+      "subject": "Skyline Air — trip itinerary (Denver, Aug)",
+      "folder": "archive",
+      "labels": [
+        "travel"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0155",
+          "from": {
+            "name": "Skyline Air",
+            "email": "bookings@skylineair.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-07-28T09:12:00-04:00",
+          "snippet": "Skyline Air Your itinerary for confirmation K9TR2V is below. Item Amount SK 118 · SFO → DEN · Aug 19, 7:10 AM Seat 9A SK",
+          "html": "<h2>Skyline Air</h2><p>Your itinerary for confirmation <b>K9TR2V</b> is below.</p><table><tr><th>Item</th><th>Amount</th></tr><tr><td>SK 118 · SFO → DEN · Aug 19, 7:10 AM</td><td style=\"text-align:right\">Seat 9A</td></tr><tr><td>SK 122 · DEN → SFO · Aug 21, 6:40 PM</td><td style=\"text-align:right\">Seat 21F</td></tr><tr><td><b>Total</b></td><td style=\"text-align:right\"><b>Paid $486.20</b></td></tr></table><p style=\"color:#666\">Bags: 1 checked on each leg.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0118",
+      "subject": "Mom's birthday gift ideas",
+      "folder": "archive",
+      "labels": [
+        "family"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0156",
+          "from": {
+            "name": "Sofia Rivera",
+            "email": "sofia.r@example.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-07-20T12:00:00-04:00",
+          "snippet": "Ideas for Mom's birthday: the cookbook she mentioned, a set of Kashmiri teapots, or a trip to see Nani in August.",
+          "html": "<p>Ideas for Mom's birthday: the cookbook she mentioned, a set of Kashmiri teapots, or a trip to see Nani in August.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0157",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Sofia Rivera",
+              "email": "sofia.r@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-07-20T13:30:00-04:00",
+          "snippet": "Cookbook plus a dinner out. Dad can handle the teapots.",
+          "html": "<p>Cookbook plus a dinner out. Dad can handle the teapots.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0119",
+      "subject": "Q2 offsite photos",
+      "folder": "archive",
+      "labels": [
+        "work",
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0158",
+          "from": {
+            "name": "Hannah Brooks",
+            "email": "hbrooks@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            },
+            {
+              "name": "Tom Keller",
+              "email": "tom.keller@acme.io"
+            },
+            {
+              "name": "Sarah Chen",
+              "email": "sarah.chen@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-07-14T18:20:00-04:00",
+          "snippet": "Photos from the offsite are in the shared folder. Favorite is the one at the ferry, Tom looks fine in it.",
+          "html": "<p>Photos from the offsite are in the shared folder. Favorite is the one at the ferry, Tom looks fine in it.</p>",
+          "attachments": [
+            {
+              "name": "offsite-01.jpg",
+              "size_bytes": 2210442,
+              "mime": "image/jpeg"
+            },
+            {
+              "name": "offsite-02.jpg",
+              "size_bytes": 2318001,
+              "mime": "image/jpeg"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t-0120",
+      "subject": "Podcast: Alex on local-first apps",
+      "folder": "archive",
+      "labels": [
+        "side-projects"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0159",
+          "from": {
+            "name": "Rahul Mehta",
+            "email": "rahul@mehta.dev"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-07-08T09:00:00-04:00",
+          "snippet": "The episode is live! You come in at 22 minutes. The clip about CRDTs got a lot of retweets.",
+          "html": "<p>The episode is live! You come in at 22 minutes. The clip about CRDTs got a lot of retweets.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0121",
+      "subject": "Sync demo: recording link",
+      "folder": "archive",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0160",
+          "from": {
+            "name": "Priya Nair",
+            "email": "priya.nair@brightpath.dev"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            },
+            {
+              "name": "Sarah Chen",
+              "email": "sarah.chen@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-07-02T11:30:00-04:00",
+          "snippet": "Here's the recording of the sync demo from Tuesday. Skip to 12:40 for the conflict resolution walkthrough.",
+          "html": "<p>Here's the recording of the sync demo from Tuesday. Skip to 12:40 for the conflict resolution walkthrough.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0122",
+      "subject": "Sketchwave: welcome to the Team plan",
+      "folder": "archive",
+      "labels": [
+        "newsletters"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0161",
+          "from": {
+            "name": "Sketchwave",
+            "email": "news@sketchwave.app"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-07-02T09:00:00-04:00",
+          "snippet": "Welcome to Sketchwave Team Your team workspace is ready. Invite your teammates and start a shared library. Getting start",
+          "html": "<h1>Welcome to Sketchwave Team</h1><p>Your team workspace is ready. Invite your teammates and start a shared library.</p><h3>Getting started</h3><ul><li><a href=\"https://example.com/0\">Invite your team</a> — Up to 25 seats on the Team plan</li><li><a href=\"https://example.com/1\">Shared libraries</a> — Publish components to everyone</li></ul><hr><p><i>Questions? Reply to this email.</i></p><p><a href=\"https://example.com/unsubscribe\">Unsubscribe</a></p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0123",
+      "subject": "Thanks for coming to Ada's birthday",
+      "folder": "archive",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0162",
+          "from": {
+            "name": "Ben Carter",
+            "email": "ben.carter@gmail.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-06-29T20:12:00-04:00",
+          "snippet": "Good time! Thanks for lending the speaker. Let's do Tahoe next year.",
+          "html": "<p>Good time! Thanks for lending the speaker. Let's do Tahoe next year.</p>",
+          "attachments": []
+        }
+      ]
+    },
+    {
+      "id": "t-0124",
+      "subject": "Re: Hiring pipeline — June",
+      "folder": "archive",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0163",
+          "from": {
+            "name": "Sarah Chen",
+            "email": "sarah.chen@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            },
+            {
+              "name": "Tom Keller",
+              "email": "tom.keller@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-06-19T10:00:00-04:00",
+          "snippet": "Pipeline summary for June: 14 applied, 5 screened, 2 onsite. Offer out to one senior candidate.",
+          "html": "<p>Pipeline summary for June: 14 applied, 5 screened, 2 onsite. Offer out to one senior candidate.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0164",
+          "from": {
+            "name": "Tom Keller",
+            "email": "tom.keller@acme.io"
+          },
+          "to": [
+            {
+              "name": "Sarah Chen",
+              "email": "sarah.chen@acme.io"
+            },
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-06-19T11:40:00-04:00",
+          "snippet": "Good. I'll make the offer call tomorrow morning.",
+          "html": "<p>Good. I'll make the offer call tomorrow morning.</p>",
+          "attachments": []
+        },
+        {
+          "id": "m-0165",
+          "from": {
+            "name": "Alex Rivera",
+            "email": "alex.rivera@example.com"
+          },
+          "to": [
+            {
+              "name": "Sarah Chen",
+              "email": "sarah.chen@acme.io"
+            },
+            {
+              "name": "Tom Keller",
+              "email": "tom.keller@acme.io"
+            }
+          ],
+          "cc": [],
+          "date": "2026-06-19T12:15:00-04:00",
+          "snippet": "Great. Let me know if you want a second reviewer on the take-home.",
+          "html": "<p>Great. Let me know if you want a second reviewer on the take-home.</p>",
+          "attachments": []
+        }
+      ]
+    }
+  ]
+}
