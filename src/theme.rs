@@ -24,6 +24,8 @@ pub struct Theme {
     // Interactive surfaces.
     pub hover_bg: Hsla,
     pub selected_bg: Hsla,
+    /// The list's selection while the reader has keyboard focus.
+    pub selected_inactive_bg: Hsla,
     pub nav_active_bg: Hsla,
     pub card_bg: Hsla,
     pub chip_bg: Hsla,
@@ -32,6 +34,18 @@ pub struct Theme {
     pub icon_active: Hsla,
     pub accent: Hsla,
     pub star: Hsla,
+
+    // Floating overlays: the command palette and the shortcuts sheet.
+    pub backdrop: Hsla,
+    pub overlay_bg: Hsla,
+    pub overlay_border: Hsla,
+    pub overlay_shadow: Hsla,
+    /// Matched characters in palette results.
+    pub match_text: Hsla,
+    // Keycaps.
+    pub kbd_bg: Hsla,
+    pub kbd_border: Hsla,
+    pub kbd_text: Hsla,
 
     /// Avatar backgrounds, picked by hashing the contact's email.
     pub avatar_palette: [Hsla; 8],
@@ -61,6 +75,7 @@ impl Theme {
 
             hover_bg: hex(0xffffff0a),
             selected_bg: hex(0xffffff1c),
+            selected_inactive_bg: hex(0xffffff0f),
             nav_active_bg: hex(0xffffff17),
             card_bg: hex(0xffffff08),
             chip_bg: hex(0xffffff12),
@@ -69,6 +84,15 @@ impl Theme {
             icon_active: hex(0xf2f2f5ff),
             accent: hex(0x6e9bffff),
             star: hex(0xf5bf4fff),
+
+            backdrop: hex(0x00000052),
+            overlay_bg: hex(0x222226fd),
+            overlay_border: hex(0xffffff1c),
+            overlay_shadow: hex(0x00000099),
+            match_text: hex(0x8fb3ffff),
+            kbd_bg: hex(0xffffff10),
+            kbd_border: hex(0xffffff17),
+            kbd_text: hex(0xb4b4bdff),
 
             avatar_palette: Self::avatar_palette(0.42),
             avatar_text: hex(0xffffffff),
@@ -91,6 +115,7 @@ impl Theme {
 
             hover_bg: hex(0x0000000a),
             selected_bg: hex(0x00000012),
+            selected_inactive_bg: hex(0x0000000a),
             nav_active_bg: hex(0x00000012),
             card_bg: hex(0xffffff99),
             chip_bg: hex(0x0000000d),
@@ -99,6 +124,15 @@ impl Theme {
             icon_active: hex(0x1c1c1fff),
             accent: hex(0x2f6fedff),
             star: hex(0xe2a21cff),
+
+            backdrop: hex(0x0000001f),
+            overlay_bg: hex(0xfdfdfefd),
+            overlay_border: hex(0x00000017),
+            overlay_shadow: hex(0x00000038),
+            match_text: hex(0x2f6fedff),
+            kbd_bg: hex(0x0000000a),
+            kbd_border: hex(0x00000014),
+            kbd_text: hex(0x5f5f67ff),
 
             avatar_palette: Self::avatar_palette(0.5),
             avatar_text: hex(0xffffffff),

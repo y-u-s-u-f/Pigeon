@@ -274,7 +274,9 @@ impl PigeonApp {
                     .line_height(px(18.))
                     .rounded(px(9.))
                     .map(|this| {
-                        if selected {
+                        if selected && self.reader_focused {
+                            this.bg(theme.selected_inactive_bg)
+                        } else if selected {
                             this.bg(theme.selected_bg)
                         } else {
                             this.hover(|s| s.bg(theme.hover_bg))

@@ -1,15 +1,18 @@
 //! Panes and the small building blocks they share.
 
+pub mod command_palette;
+pub mod html_view;
 pub mod rail;
 pub mod reader;
+pub mod shortcuts_help;
 pub mod sidebar;
 pub mod thread_list;
 
 use gpui::{
-    Action, AnyElement, App, AppContext as _, Axis, Context, Div, ElementId, FontWeight, Hsla,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString,
-    Stateful, StatefulInteractiveElement, Styled, Svg, Window, component::tooltip::Tooltip, div,
-    px, svg,
+    Action, AnyElement, App, AppContext as _, AsKeystroke as _, Axis, Context, Div, ElementId,
+    FontWeight, Hsla, InteractiveElement, IntoElement, KeyBinding, Keystroke, MouseButton,
+    ParentElement, Pixels, Render, SharedString, Stateful, StatefulInteractiveElement, Styled, Svg,
+    Window, component::tooltip::Tooltip, div, px, svg,
 };
 
 use crate::{assets::Icon, data::Label, theme::Theme};
@@ -164,4 +167,84 @@ pub fn pane_divider(kind: PaneResize) -> impl IntoElement {
     )
     .inside(gpui::component::resizable::HandleEdge::Trailing)
     .on_drag(kind, |kind, _, _, cx: &mut App| cx.new(|_| *kind))
+}
+
+/// The keycaps of one keystroke: each modifier, then the key.
+fn keystroke_caps(keystroke: &Keystroke) -> Vec<SharedString> {
+    let m = keystroke.modifiers;
+    let mut caps: Vec<SharedString> = [
+        (m.control, "⌃"),
+        (m.alt, "⌥"),
+        (m.shift, "⇧"),
+        (m.platform, "⌘"),
+    ]
+    .into_iter()
+    .filter(|(on, _)| *on)
+    .map(|(_, symbol)| symbol.into())
+    .collect();
+    caps.push(match keystroke.key.as_str() {
+        "escape" => "Esc".into(),
+        "enter" => "↵".into(),
+        "up" => "↑".into(),
+        "down" => "↓".into(),
+        "left" => "←".into(),
+        "right" => "→".into(),
+        "space" => "Space".into(),
+        "tab" => "Tab".into(),
+        "backspace" => "⌫".into(),
+        key => key.to_uppercase().into(),
+    });
+    caps
+}
+
+pub fn keycap(label: impl Into<SharedString>, theme: &Theme) -> Div {
+    div()
+        .flex_none()
+        .h(px(20.))
+        .min_w(px(20.))
+        .px(px(5.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(5.))
+        .bg(theme.kbd_bg)
+        .border_1()
+        .border_color(theme.kbd_border)
+        .text_size(px(11.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.kbd_text)
+        .child(label.into())
+}
+
+/// A binding as keycaps; sequences like `g i` read "G then I".
+pub fn binding_caps(binding: &KeyBinding, theme: &Theme) -> Div {
+    let mut row = div().flex_none().flex().items_center().gap(px(3.));
+    for (ix, keystroke) in binding.keystrokes().iter().enumerate() {
+        if ix > 0 {
+            row = row.child(
+                div()
+                    .px(px(2.))
+                    .text_size(px(11.))
+                    .text_color(theme.text_faint)
+                    .child("then"),
+            );
+        }
+        row = row.children(
+            keystroke_caps(keystroke.as_keystroke())
+                .into_iter()
+                .map(|cap| keycap(cap, theme)),
+        );
+    }
+    row
+}
+
+/// The shadow under floating panels.
+pub fn overlay_shadow(theme: &Theme) -> Vec<gpui::BoxShadow> {
+    vec![gpui::BoxShadow {
+        color: theme.overlay_shadow,
+        offset: gpui::point(px(0.), px(18.)),
+        blur_radius: px(48.),
+        spread_radius: px(-8.),
+        inset: false,
+    }]
 }

@@ -2,6 +2,7 @@ mod actions;
 mod app;
 mod assets;
 mod data;
+mod html;
 mod theme;
 mod ui;
 

@@ -7,14 +7,15 @@ use gpui::{
 };
 
 use super::{
-    HEADER_HEIGHT, avatar, empty_state, icon, icon_button, icon_button_tinted, label_chip,
-    window_drag_area,
+    HEADER_HEIGHT, avatar, empty_state, html_view, icon, icon_button, icon_button_tinted,
+    label_chip, window_drag_area,
 };
 use crate::{
     actions::*,
     app::PigeonApp,
     assets::Icon,
-    data::{Contact, Folder, Message, Thread, file_size, full_date, html_to_text},
+    data::{Contact, Folder, Message, Thread, file_size, full_date},
+    html::Document,
     theme::Theme,
 };
 
@@ -254,6 +255,8 @@ impl PigeonApp {
             .collect::<Vec<_>>()
             .join(" · ");
 
+        let body = self.html_cache.get(&message.html);
+
         let attachments = message.attachments.iter().map(|attachment| {
             div()
                 .h(px(34.))
@@ -345,9 +348,10 @@ impl PigeonApp {
             .child(header)
             .child(
                 div()
+                    .id(("message-body", ix))
                     .mt(px(14.))
                     .pl(px(46.))
-                    .child(render_body(message, theme)),
+                    .child(render_body(&body, theme)),
             )
             .when(!message.attachments.is_empty(), |this| {
                 this.child(
@@ -381,13 +385,11 @@ impl PigeonApp {
     }
 }
 
-/// Seam for the HTML renderer: turn `message.html` into elements. For now the
-/// HTML is flattened to plain text.
-fn render_body(message: &Message, theme: &Theme) -> impl IntoElement {
+/// The message's HTML, rendered natively. Parsed once per message and cached.
+fn render_body(doc: &Document, theme: &Theme) -> impl IntoElement {
     div()
         .text_size(px(14.))
         .line_height(relative(1.55))
         .text_color(theme.text)
-        .whitespace_normal()
-        .child(html_to_text(&message.html))
+        .child(html_view::render(doc, theme))
 }
