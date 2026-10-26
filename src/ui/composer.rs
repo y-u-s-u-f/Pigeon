@@ -21,6 +21,7 @@ use nucleo_matcher::{
 };
 
 use super::{avatar, html_view, icon, keycap};
+use crate::ui::style::*;
 use crate::{
     actions::{COMPOSER, DiscardDraft, RECIPIENTS, SendMessage, ShowCcBcc},
     app::ComposeKind,
@@ -723,11 +724,11 @@ impl Composer {
             div()
                 .id(("chip", ix * 1000 + chip_ix))
                 .h(px(24.))
-                .pl(px(3.))
-                .pr(px(4.))
+                .pl(SPACE_XS)
+                .pr(SPACE_XS)
                 .flex()
                 .items_center()
-                .gap(px(5.))
+                .gap(SPACE_XS)
                 .rounded_full()
                 .bg(if invalid {
                     theme.danger.alpha(0.16)
@@ -744,7 +745,7 @@ impl Composer {
                 ))
                 .child(
                     div()
-                        .text_size(px(12.5))
+                        .text_size(TEXT_SM)
                         .font_weight(FontWeight::MEDIUM)
                         .child(contact.display_name().to_string()),
                 )
@@ -775,11 +776,11 @@ impl Composer {
                     div()
                         .id(("suggestion", row))
                         .h(px(40.))
-                        .px(px(8.))
+                        .px(SPACE_SM)
                         .flex()
                         .items_center()
-                        .gap(px(10.))
-                        .rounded(px(7.))
+                        .gap(SPACE_SM)
+                        .rounded(RADIUS_MD)
                         .when(highlighted, |d| d.bg(theme.selected_bg))
                         .hover(|d| d.bg(theme.hover_bg))
                         .child(avatar(
@@ -796,14 +797,14 @@ impl Composer {
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_size(px(13.))
+                                        .text_size(TEXT_BASE)
                                         .font_weight(FontWeight::MEDIUM)
                                         .child(contact.display_name().to_string()),
                                 )
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_size(px(11.5))
+                                        .text_size(TEXT_SM)
                                         .text_color(theme.text_muted)
                                         .child(contact.email.clone()),
                                 ),
@@ -820,12 +821,12 @@ impl Composer {
                     anchored().snap_to_window_with_margin(px(8.)).child(
                         div()
                             .occlude()
-                            .mt(px(6.))
+                            .mt(SPACE_SM)
                             .w(px(320.))
-                            .p(px(4.))
+                            .p(SPACE_XS)
                             .flex()
                             .flex_col()
-                            .rounded(px(10.))
+                            .rounded(RADIUS_MD)
                             .bg(theme.overlay_bg)
                             .border_1()
                             .border_color(theme.overlay_border)
@@ -840,10 +841,10 @@ impl Composer {
         div()
             .key_context(RECIPIENTS)
             .min_h(px(40.))
-            .py(px(6.))
+            .py(SPACE_SM)
             .flex()
             .items_start()
-            .gap(px(8.))
+            .gap(SPACE_SM)
             .border_b_1()
             .border_color(theme.border)
             .child(field_label(label, theme))
@@ -854,7 +855,7 @@ impl Composer {
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .gap(px(4.))
+                    .gap(SPACE_XS)
                     .children(chips)
                     .child(
                         div()
@@ -866,7 +867,7 @@ impl Composer {
                             .child(
                                 Input::new(&field.input)
                                     .appearance(false)
-                                    .px(px(2.))
+                                    .px(SPACE_2XS)
                                     .h(px(28.)),
                             )
                             .children(suggestions),
@@ -878,11 +879,11 @@ impl Composer {
                         .id("show-cc-bcc")
                         .flex_none()
                         .h(px(28.))
-                        .px(px(8.))
+                        .px(SPACE_SM)
                         .flex()
                         .items_center()
-                        .rounded(px(6.))
-                        .text_size(px(12.))
+                        .rounded(RADIUS_SM)
+                        .text_size(TEXT_SM)
                         .text_color(theme.text_muted)
                         .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
                         .child("Cc Bcc")
@@ -907,32 +908,32 @@ impl Render for Composer {
 
         let quoted = self.quoted.as_ref().map(|quoted| {
             div()
-                .mt(px(16.))
-                .pl(px(14.))
+                .mt(SPACE_LG)
+                .pl(SPACE_LG)
                 .border_l_2()
                 .border_color(theme.border)
                 .flex()
                 .flex_col()
-                .gap(px(2.))
-                .text_size(px(12.5))
+                .gap(SPACE_2XS)
+                .text_size(TEXT_SM)
                 .text_color(theme.text_muted)
                 .child(
                     div()
-                        .pb(px(4.))
+                        .pb(SPACE_XS)
                         .text_color(theme.text_faint)
                         .child("Forwarded message"),
                 )
                 .children(quoted.header.iter().map(|(label, value)| {
                     div()
                         .flex()
-                        .gap(px(6.))
+                        .gap(SPACE_SM)
                         .child(div().flex_none().text_color(theme.text_faint).child(*label))
                         .child(div().min_w_0().truncate().child(value.clone()))
                 }))
                 .child(
                     div()
-                        .mt(px(12.))
-                        .text_size(px(13.5))
+                        .mt(SPACE_MD)
+                        .text_size(TEXT_BASE)
                         .line_height(relative(1.55))
                         .text_color(theme.text_muted)
                         .child(html_view::render(&quoted.doc, &theme)),
@@ -943,29 +944,29 @@ impl Render for Composer {
             div()
                 .flex()
                 .items_center()
-                .gap(px(4.))
+                .gap(SPACE_XS)
                 .children(keys.iter().map(|k| keycap(*k, &theme)))
-                .child(div().ml(px(2.)).child(label))
+                .child(div().ml(SPACE_2XS).child(label))
         };
 
         let footer = div()
-            .mt(px(14.))
+            .mt(SPACE_LG)
             .flex()
             .items_center()
-            .gap(px(14.))
+            .gap(SPACE_MD)
             .child(
                 div()
                     .id("send")
                     .h(px(32.))
-                    .pl(px(12.))
-                    .pr(px(14.))
+                    .pl(SPACE_MD)
+                    .pr(SPACE_LG)
                     .flex()
                     .items_center()
-                    .gap(px(7.))
-                    .rounded(px(8.))
+                    .gap(SPACE_SM)
+                    .rounded(RADIUS_MD)
                     .bg(theme.accent)
                     .text_color(theme.accent_text)
-                    .text_size(px(13.))
+                    .text_size(TEXT_BASE)
                     .font_weight(FontWeight::SEMIBOLD)
                     .hover(|s| s.opacity(0.9))
                     .active(|s| s.opacity(0.8))
@@ -977,8 +978,8 @@ impl Render for Composer {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(14.))
-                    .text_size(px(11.5))
+                    .gap(SPACE_MD)
+                    .text_size(TEXT_SM)
                     .text_color(theme.text_faint)
                     .child(hint(&["⌘", "↵"], "Send"))
                     .child(hint(&["Esc"], "Save draft")),
@@ -986,7 +987,7 @@ impl Render for Composer {
             .child(div().flex_1())
             .children(self.error.clone().map(|error| {
                 div()
-                    .text_size(px(12.))
+                    .text_size(TEXT_SM)
                     .text_color(theme.danger)
                     .child(error)
             }))
@@ -1011,15 +1012,15 @@ impl Render for Composer {
             .on_action(cx.listener(Self::dismiss_suggestions))
             .flex()
             .flex_col()
-            .text_size(px(13.5))
+            .text_size(TEXT_BASE)
             .when(!standalone, |this| {
                 this.child(
                     div()
-                        .pb(px(4.))
+                        .pb(SPACE_XS)
                         .flex()
                         .items_center()
-                        .gap(px(8.))
-                        .text_size(px(12.))
+                        .gap(SPACE_SM)
+                        .text_size(TEXT_SM)
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme.text_muted)
                         .child(icon(
@@ -1045,14 +1046,14 @@ impl Render for Composer {
                         .h(px(42.))
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(SPACE_SM)
                         .border_b_1()
                         .border_color(theme.border)
                         .child(field_label("Subject", &theme))
                         .child(
                             div()
                                 .flex_1()
-                                .text_size(px(14.))
+                                .text_size(TEXT_MD)
                                 .font_weight(FontWeight::MEDIUM)
                                 .child(Input::new(&self.subject).appearance(false).px(px(0.))),
                         ),
@@ -1062,9 +1063,9 @@ impl Render for Composer {
                 // Cancels the textarea's own padding, so text lines up with
                 // the field labels.
                 div()
-                    .pt(px(8.))
+                    .pt(SPACE_SM)
                     .mx(px(-10.))
-                    .text_size(px(14.))
+                    .text_size(TEXT_MD)
                     .line_height(relative(1.55))
                     .child(Textarea::new(&self.body).appearance(false)),
             )
@@ -1080,7 +1081,7 @@ fn field_label(label: &'static str, theme: &Theme) -> impl IntoElement {
         .h(px(28.))
         .flex()
         .items_center()
-        .text_size(px(12.5))
+        .text_size(TEXT_SM)
         .text_color(theme.text_faint)
         .child(label)
 }

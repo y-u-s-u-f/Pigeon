@@ -1,7 +1,5 @@
 //! The virtualized thread list.
 
-use std::time::Duration;
-
 use gpui::{
     Animation, AnimationExt as _, AnyElement, Context, FontWeight, InteractiveElement, IntoElement,
     ParentElement, SharedString, StatefulInteractiveElement, Styled, Window,
@@ -11,20 +9,20 @@ use gpui::{
     px, relative,
 };
 
-use super::{
-    HEADER_HEIGHT, PaneResize, empty_state, icon, icon_button, label_chip, pane_divider,
-    window_drag_area,
-};
+use super::{HEADER_HEIGHT, empty_state, icon, icon_button, label_chip, window_drag_area};
+use crate::ui::style::*;
 use crate::{
     actions::{CloseSearch, SEARCH, ToggleArchivedSection, ToggleSearch, ToggleSidebar},
-    app::{Nav, PigeonApp, RAIL_WIDTH, Row},
+    app::{Nav, PigeonApp, Row},
     assets::Icon,
     data::{Folder, list_date},
     theme::Theme,
 };
 
-/// Where the traffic lights end, measured from the window's left edge.
-const TRAFFIC_LIGHTS_END: gpui::Pixels = px(84.);
+/// Where a row's text starts: the row's margin plus its inset, which holds
+/// the unread dot. The header and the result count line up with it.
+const ROW_MARGIN: gpui::Pixels = SPACE_SM;
+const ROW_INSET: gpui::Pixels = SPACE_XL;
 
 impl PigeonApp {
     pub fn nav_title(&self) -> SharedString {
@@ -45,6 +43,8 @@ impl PigeonApp {
 
     pub(crate) fn render_thread_list(
         &self,
+        width: gpui::Pixels,
+        sidebar_shown: bool,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -66,14 +66,14 @@ impl PigeonApp {
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(8.))
-            .pr(px(10.))
+            .gap(SPACE_SM)
+            .pr(SPACE_MD)
             .map(|this| {
-                if self.sidebar_open {
-                    this.pl(px(18.))
+                if sidebar_shown {
+                    this.pl(ROW_MARGIN + ROW_INSET)
                 } else {
-                    // Clear the traffic lights, then offer the way back.
-                    this.pl(TRAFFIC_LIGHTS_END - RAIL_WIDTH).child(icon_button(
+                    // The way back, in the sidebar's button's place.
+                    this.pl(SPACE_SM).child(icon_button(
                         "show-sidebar",
                         Icon::PanelLeft,
                         "Show sidebar",
@@ -88,14 +88,14 @@ impl PigeonApp {
                 }
                 this.child(
                     div()
-                        .text_size(px(15.))
+                        .text_size(TEXT_LG)
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(self.nav_title()),
                 )
                 .when(unread > 0, |this| {
                     this.child(
                         div()
-                            .text_size(px(12.))
+                            .text_size(TEXT_SM)
                             .text_color(theme.text_faint)
                             .child(format!("{unread} unread")),
                     )
@@ -132,6 +132,9 @@ impl PigeonApp {
         } else {
             let view = cx.entity();
             div()
+                .id("thread-list")
+                .role(gpui::Role::ListBox)
+                .aria_label(self.nav_title())
                 .relative()
                 .size_full()
                 .child(
@@ -139,7 +142,7 @@ impl PigeonApp {
                         view.update(cx, |this, cx| this.render_row(ix, window, cx))
                     })
                     .size_full()
-                    .pb(px(8.)),
+                    .pb(SPACE_SM),
                 )
                 .vertical_scrollbar(&self.list_state)
                 .into_any_element()
@@ -147,7 +150,7 @@ impl PigeonApp {
 
         div()
             .relative()
-            .w(self.list_width)
+            .w(width)
             .h_full()
             .flex_none()
             .flex()
@@ -161,9 +164,10 @@ impl PigeonApp {
                 this.child(
                     div()
                         .flex_none()
-                        .px(px(18.))
-                        .pb(px(6.))
-                        .text_size(px(12.))
+                        .pl(ROW_MARGIN + ROW_INSET)
+                        .pr(SPACE_LG)
+                        .pb(SPACE_SM)
+                        .text_size(TEXT_SM)
                         .text_color(theme.text_faint)
                         .child(format!(
                             "{count} result{} {}",
@@ -173,7 +177,6 @@ impl PigeonApp {
                 )
             })
             .child(div().flex_1().min_h_0().child(body))
-            .child(pane_divider(PaneResize::List))
     }
 
     /// "in Inbox", or where an `in:` operator points.
@@ -203,16 +206,16 @@ impl PigeonApp {
         let field = div()
             .key_context(SEARCH)
             .h(px(32.))
-            .pl(px(10.))
-            .pr(px(4.))
+            .pl(SPACE_MD)
+            .pr(SPACE_XS)
             .flex()
             .items_center()
-            .gap(px(8.))
-            .rounded(px(8.))
+            .gap(SPACE_SM)
+            .rounded(RADIUS_MD)
             .bg(theme.search_bg)
             .border_1()
             .border_color(theme.border)
-            .text_size(px(13.))
+            .text_size(TEXT_BASE)
             .overflow_hidden()
             .child(icon(Icon::Search, px(14.), theme.text_muted))
             .child(
@@ -229,11 +232,11 @@ impl PigeonApp {
                     Box::new(CloseSearch),
                     theme,
                 )
-                .size(px(24.)),
+                .size(HIT_TARGET),
             )
             .with_animation(
                 "search-expand",
-                Animation::new(Duration::from_millis(180)).with_easing(ease_out_quint()),
+                Animation::new(MOTION_PANE).with_easing(ease_out_quint()),
                 |field, delta| {
                     field
                         .w(relative(0.12 + 0.88 * delta))
@@ -258,19 +261,19 @@ impl PigeonApp {
         _: &mut Context<Self>,
     ) -> AnyElement {
         div()
-            .px(px(8.))
-            .pt(px(10.))
+            .px(ROW_MARGIN)
+            .pt(SPACE_MD)
             .child(
                 div()
                     .id("archived-header")
                     .h(px(30.))
-                    .pl(px(22.))
-                    .pr(px(12.))
+                    .pl(ROW_INSET)
+                    .pr(SPACE_MD)
                     .flex()
                     .items_center()
-                    .gap(px(6.))
-                    .rounded(px(7.))
-                    .text_size(px(12.))
+                    .gap(SPACE_SM)
+                    .rounded(RADIUS_MD)
+                    .text_size(TEXT_SM)
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_muted)
                     .hover(|s| s.bg(theme.hover_bg))
@@ -344,20 +347,28 @@ impl PigeonApp {
             .map(|label| label_chip(label, theme));
 
         div()
-            .px(px(8.))
-            .pt(px(2.))
+            .px(ROW_MARGIN)
+            .pt(SPACE_2XS)
             .child(
                 div()
                     .id(("thread", thread_ix))
+                    .role(gpui::Role::ListBoxOption)
+                    .aria_label(format!(
+                        "{}{who}, {}, {}",
+                        if unread { "Unread, " } else { "" },
+                        thread.subject,
+                        list_date(&last.date)
+                    ))
+                    .aria_selected(selected)
                     .relative()
-                    .pl(px(22.))
-                    .pr(px(12.))
-                    .py(px(10.))
+                    .pl(ROW_INSET)
+                    .pr(SPACE_MD)
+                    .py(SPACE_MD)
                     .flex()
                     .flex_col()
-                    .gap(px(2.))
-                    .line_height(px(18.))
-                    .rounded(px(9.))
+                    .gap(SPACE_2XS)
+                    .line_height(relative(1.4))
+                    .rounded(RADIUS_MD)
                     .map(|this| {
                         if selected && self.reader_focused {
                             this.bg(theme.selected_inactive_bg)
@@ -367,28 +378,32 @@ impl PigeonApp {
                             this.hover(|s| s.bg(theme.hover_bg))
                         }
                     })
-                    .when(unread, |this| {
-                        this.child(
-                            div()
-                                .absolute()
-                                .left(px(9.))
-                                .top(px(16.))
-                                .size(px(6.))
-                                .rounded_full()
-                                .bg(theme.accent),
-                        )
-                    })
                     // Sender, icons, date.
                     .child(
                         div()
+                            .relative()
                             .flex()
                             .items_center()
-                            .gap(px(6.))
+                            .gap(SPACE_SM)
+                            .when(unread, |this| {
+                                // Centered in the inset, level with this line
+                                // at any text size.
+                                this.child(
+                                    div()
+                                        .absolute()
+                                        .left(px(-15.))
+                                        .top_0()
+                                        .bottom_0()
+                                        .flex()
+                                        .items_center()
+                                        .child(div().size(px(6.)).rounded_full().bg(theme.accent)),
+                                )
+                            })
                             .child(
                                 div()
                                     .min_w_0()
                                     .truncate()
-                                    .text_size(px(13.5))
+                                    .text_size(TEXT_BASE)
                                     .font_weight(if unread {
                                         FontWeight::SEMIBOLD
                                     } else {
@@ -401,7 +416,7 @@ impl PigeonApp {
                                 this.child(
                                     div()
                                         .flex_none()
-                                        .text_size(px(11.5))
+                                        .text_size(TEXT_SM)
                                         .text_color(secondary)
                                         .child(count.to_string()),
                                 )
@@ -416,7 +431,7 @@ impl PigeonApp {
                             .child(
                                 div()
                                     .flex_none()
-                                    .text_size(px(12.))
+                                    .text_size(TEXT_SM)
                                     .text_color(secondary)
                                     .child(list_date(&last.date)),
                             ),
@@ -426,13 +441,13 @@ impl PigeonApp {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(6.))
+                            .gap(SPACE_SM)
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
                                     .truncate()
-                                    .text_size(px(13.))
+                                    .text_size(TEXT_BASE)
                                     .font_weight(if unread {
                                         FontWeight::MEDIUM
                                     } else {
@@ -450,7 +465,7 @@ impl PigeonApp {
                     .child(
                         div()
                             .truncate()
-                            .text_size(px(12.5))
+                            .text_size(TEXT_SM)
                             .text_color(secondary)
                             .child(last.snippet.clone()),
                     )

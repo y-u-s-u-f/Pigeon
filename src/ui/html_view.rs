@@ -8,13 +8,14 @@ use gpui::{
     component::tooltip::Tooltip, div, prelude::FluentBuilder as _, px, relative,
 };
 
+use crate::ui::style::*;
 use crate::{
     html::{Align, Block, Document, Inline, Style, Table, TextKind},
     theme::Theme,
 };
 
 const MONO: &str = "Menlo";
-const BLOCK_GAP: f32 = 12.;
+const BLOCK_GAP: gpui::Pixels = SPACE_MD;
 
 pub fn render(doc: &Document, theme: &Theme) -> impl IntoElement {
     let mut renderer = Renderer {
@@ -33,8 +34,8 @@ struct Renderer<'a> {
 }
 
 impl Renderer<'_> {
-    fn blocks(&mut self, blocks: &[Block], gap: f32) -> Div {
-        div().flex().flex_col().gap(px(gap)).children(
+    fn blocks(&mut self, blocks: &[Block], gap: gpui::Pixels) -> Div {
+        div().flex().flex_col().gap(gap).children(
             blocks
                 .iter()
                 .enumerate()
@@ -50,13 +51,12 @@ impl Renderer<'_> {
                 match kind {
                     TextKind::Paragraph => el,
                     TextKind::Heading(level) => el
-                        .when(!first, |d| d.pt(px(6.)))
-                        .text_size(px(match level {
-                            1 => 21.,
-                            2 => 18.,
-                            3 => 16.,
-                            _ => 14.5,
-                        }))
+                        .when(!first, |d| d.pt(SPACE_SM))
+                        .text_size(match level {
+                            1 => TEXT_XL,
+                            2 => TEXT_LG,
+                            _ => TEXT_MD,
+                        })
                         .line_height(relative(1.3))
                         .font_weight(FontWeight::SEMIBOLD),
                 }
@@ -64,12 +64,12 @@ impl Renderer<'_> {
                 .into_any_element()
             }
             Block::Pre(text) => div()
-                .px(px(12.))
-                .py(px(10.))
-                .rounded(px(8.))
+                .px(SPACE_MD)
+                .py(SPACE_MD)
+                .rounded(RADIUS_MD)
                 .bg(theme.chip_bg)
                 .font_family(MONO)
-                .text_size(px(12.5))
+                .text_size(TEXT_SM)
                 .line_height(relative(1.5))
                 .child(self.text(text))
                 .into_any_element(),
@@ -84,7 +84,7 @@ impl Renderer<'_> {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(4.))
+                        .gap(SPACE_XS)
                         .children(items.iter().enumerate().map(|(ix, item)| {
                             let marker = if *ordered {
                                 format!("{}.", ix + 1)
@@ -93,7 +93,7 @@ impl Renderer<'_> {
                             };
                             div()
                                 .flex()
-                                .gap(px(6.))
+                                .gap(SPACE_SM)
                                 .child(
                                     div()
                                         .flex_none()
@@ -102,13 +102,13 @@ impl Renderer<'_> {
                                         .text_color(theme.text_muted)
                                         .child(marker),
                                 )
-                                .child(div().flex_1().min_w_0().child(self.blocks(item, 4.)))
+                                .child(div().flex_1().min_w_0().child(self.blocks(item, SPACE_XS)))
                         }));
                 self.list_depth -= 1;
                 list.into_any_element()
             }
             Block::Quote(blocks) => div()
-                .pl(px(12.))
+                .pl(SPACE_MD)
                 .border_l_2()
                 .border_color(theme.text_faint.alpha(0.45))
                 .text_color(theme.text_muted)
@@ -121,13 +121,13 @@ impl Renderer<'_> {
                 .items_center()
                 .justify_center()
                 .min_h(px(44.))
-                .px(px(12.))
-                .py(px(8.))
-                .rounded(px(8.))
+                .px(SPACE_MD)
+                .py(SPACE_SM)
+                .rounded(RADIUS_MD)
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.chip_bg)
-                .text_size(px(12.5))
+                .text_size(TEXT_SM)
                 .text_color(theme.text_faint)
                 .child(if alt.is_empty() {
                     SharedString::from("Image")
@@ -137,7 +137,7 @@ impl Renderer<'_> {
                 .into_any_element(),
             Block::Rule => div()
                 .h(px(1.))
-                .my(px(4.))
+                .my(SPACE_XS)
                 .bg(theme.border)
                 .into_any_element(),
         }
@@ -156,13 +156,13 @@ impl Renderer<'_> {
                         .flex_basis(px(0.))
                         .flex_grow(weight)
                         .min_w_0()
-                        .px(px(12.))
-                        .py(px(7.));
+                        .px(SPACE_MD)
+                        .py(SPACE_SM);
                     match row.get(col) {
                         Some(c) => cell
                             .map(|d| aligned(d, c.align))
                             .when(c.header, |d| d.font_weight(FontWeight::SEMIBOLD))
-                            .child(self.blocks(&c.blocks, 6.)),
+                            .child(self.blocks(&c.blocks, SPACE_XS)),
                         None => cell,
                     }
                 });
@@ -179,11 +179,11 @@ impl Renderer<'_> {
             .w_full()
             .flex()
             .flex_col()
-            .rounded(px(8.))
+            .rounded(RADIUS_MD)
             .border_1()
             .border_color(theme.border)
             .overflow_hidden()
-            .text_size(px(13.))
+            .text_size(TEXT_BASE)
             .line_height(relative(1.45))
             .children(rows)
             .into_any_element()

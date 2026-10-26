@@ -10,6 +10,7 @@ use gpui::{
 };
 
 use super::{CalendarView, now, occurrence_key, today, week_view::Look};
+use crate::ui::style::*;
 use crate::{
     calendar::{
         Occurrence,
@@ -69,10 +70,10 @@ impl CalendarView {
                 let date = grid_start + Duration::days(i);
                 div()
                     .flex_1()
-                    .pl(px(12.))
+                    .pl(SPACE_MD)
                     .flex()
                     .items_center()
-                    .text_size(px(11.))
+                    .text_size(TEXT_XS)
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(if is_weekend(date) {
                         theme.text_faint
@@ -207,8 +208,8 @@ impl CalendarView {
                 .border_color(theme.cal_line)
                 .when(is_weekend(date), |d| d.bg(theme.cal_weekend_bg))
                 .when(is_today, |d| d.bg(theme.cal_today_bg))
-                .pt(px(5.))
-                .pl(px(6.))
+                .pt(SPACE_XS)
+                .pl(SPACE_SM)
                 .flex()
                 .flex_col()
                 .items_start()
@@ -217,13 +218,13 @@ impl CalendarView {
                         .id(("month-day", date.num_days_from_ce() as usize))
                         .h(px(22.))
                         .min_w(px(22.))
-                        .px(px(6.))
+                        .px(SPACE_SM)
                         .flex()
                         .flex_none()
                         .items_center()
                         .justify_center()
                         .rounded_full()
-                        .text_size(px(12.5))
+                        .text_size(TEXT_SM)
                         .cursor_pointer()
                         .map(|d| {
                             if is_today {
@@ -258,16 +259,16 @@ impl CalendarView {
                 .left(relative(d as f32 / 7.))
                 .w(relative(1. / 7.))
                 .h(px(SLOT - 2.))
-                .px(px(4.))
+                .px(SPACE_XS)
                 .child(
                     div()
                         .id(("more", date.num_days_from_ce() as usize))
                         .size_full()
-                        .px(px(6.))
+                        .px(SPACE_SM)
                         .flex()
                         .items_center()
-                        .rounded(px(5.))
-                        .text_size(px(11.5))
+                        .rounded(RADIUS_SM)
+                        .text_size(TEXT_SM)
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text_muted)
                         .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
@@ -323,14 +324,17 @@ impl CalendarView {
                     (week_start.date().num_days_from_ce() + start as i32) as i64,
                 ),
             ))
+            .role(gpui::Role::Button)
+            .aria_label(self.occurrence_label(&occurrence))
+            .aria_selected(selected)
             .size_full()
-            .px(px(6.))
+            .px(SPACE_SM)
             .flex()
             .items_center()
-            .gap(px(5.))
+            .gap(SPACE_XS)
             .overflow_hidden()
-            .rounded(px(5.))
-            .text_size(px(11.5))
+            .rounded(RADIUS_SM)
+            .text_size(TEXT_SM)
             .cursor_pointer();
 
         let pill = if item.bar {

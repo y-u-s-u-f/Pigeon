@@ -15,6 +15,7 @@ use gpui::{
 use super::{
     CalendarView, HOUR_HEIGHT, ViewKind, event_panel::PANEL_WIDTH, now, occurrence_key, today,
 };
+use crate::ui::style::*;
 use crate::{
     app::RAIL_WIDTH,
     assets::Icon,
@@ -75,7 +76,7 @@ impl CalendarView {
         let today = today();
         let n = days.len();
         // Roughly how wide a day is, to fit each event's text to its width.
-        let panel = if self.panel.is_some() {
+        let panel = if self.panel.is_some() && self.panel_docked(window) {
             PANEL_WIDTH
         } else {
             0.
@@ -126,17 +127,17 @@ impl CalendarView {
                 .flex()
                 .flex_col()
                 .justify_center()
-                .gap(px(1.))
+                .gap(SPACE_2XS)
                 .map(|d| {
                     if single {
-                        d.items_start().pl(px(14.))
+                        d.items_start().pl(SPACE_LG)
                     } else {
                         d.items_center()
                     }
                 })
                 .child(
                     div()
-                        .text_size(px(11.))
+                        .text_size(TEXT_XS)
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(if is_today {
                             theme.accent
@@ -155,7 +156,7 @@ impl CalendarView {
                         .items_center()
                         .justify_center()
                         .rounded_full()
-                        .text_size(px(19.))
+                        .text_size(TEXT_XL)
                         .map(|d| {
                             if is_today {
                                 d.bg(theme.accent)
@@ -193,12 +194,17 @@ impl CalendarView {
             .border_b_1()
             .border_color(theme.cal_line)
             .child(
-                gutter().pt(px(7.)).pr(px(8.)).flex().justify_end().child(
-                    div()
-                        .text_size(px(10.5))
-                        .text_color(theme.text_faint)
-                        .when(lane_count > 0, |d| d.child("all-day")),
-                ),
+                gutter()
+                    .pt(SPACE_SM)
+                    .pr(SPACE_SM)
+                    .flex()
+                    .justify_end()
+                    .child(
+                        div()
+                            .text_size(TEXT_XS)
+                            .text_color(theme.text_faint)
+                            .when(lane_count > 0, |d| d.child("all-day")),
+                    ),
             )
             .child(
                 div()
@@ -227,7 +233,7 @@ impl CalendarView {
                     .absolute()
                     .top(px(hour as f32 * HOUR_HEIGHT - 7.))
                     .right(px(9.))
-                    .text_size(px(10.5))
+                    .text_size(TEXT_XS)
                     .text_color(theme.text_faint)
                     .child(compact_time_label(
                         chrono::NaiveTime::from_hms_opt(hour as u32, 0, 0).unwrap(),
@@ -359,12 +365,12 @@ impl CalendarView {
                 .right(px(5.))
                 .top(px(now_minutes as f32 / 60. * HOUR_HEIGHT - 8.))
                 .h(px(16.))
-                .px(px(4.))
+                .px(SPACE_XS)
                 .flex()
                 .items_center()
-                .rounded(px(4.))
+                .rounded(RADIUS_SM)
                 .bg(theme.cal_now)
-                .text_size(px(10.))
+                .text_size(TEXT_XS)
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.cal_selected_text)
                 .child(now.format("%-I:%M").to_string())
@@ -478,7 +484,7 @@ impl CalendarView {
             div()
                 .flex()
                 .items_center()
-                .gap(px(5.))
+                .gap(SPACE_XS)
                 .overflow_hidden()
                 .child(
                     div()
@@ -514,12 +520,12 @@ impl CalendarView {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(1.))
+                .gap(SPACE_2XS)
                 .child(
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(text)
-                        .line_height(px(15.))
+                        .line_height(relative(1.25))
                         .line_clamp(title_lines)
                         .text_ellipsis()
                         .when(look == Look::Declined, |d| d.line_through())
@@ -535,7 +541,7 @@ impl CalendarView {
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(4.))
+                                .gap(SPACE_XS)
                                 .text_color(muted)
                                 .child(icon(Icon::MapPin, px(11.), muted))
                                 .child(div().truncate().child(event.location.clone())),
@@ -547,7 +553,7 @@ impl CalendarView {
                     |d| {
                         d.child(
                             div()
-                                .mt(px(3.))
+                                .mt(SPACE_XS)
                                 .text_color(muted)
                                 .line_clamp(2)
                                 .child(event.description.clone()),
@@ -583,17 +589,20 @@ impl CalendarView {
                         // is drawn on the next day.
                         key,
                     ))
+                    .role(gpui::Role::Button)
+                    .aria_label(self.occurrence_label(&occurrence))
+                    .aria_selected(selected)
                     .relative()
                     .size_full()
                     .overflow_hidden()
-                    .rounded(px(6.))
+                    .rounded(RADIUS_SM)
                     .bg(fill)
-                    .pl(px(8.))
-                    .pr(px(5.))
+                    .pl(SPACE_SM)
+                    .pr(SPACE_XS)
                     .py(px(if compact { 0. } else { 4. }))
                     .when(compact, |d| d.flex().items_center())
-                    .text_size(px(11.5))
-                    .line_height(px(15.))
+                    .text_size(TEXT_SM)
+                    .line_height(relative(1.25))
                     .cursor_pointer()
                     .map(|d| match look {
                         _ if selected => d.shadow(vec![gpui::BoxShadow {
@@ -695,18 +704,20 @@ impl CalendarView {
             .child(
                 div()
                     .id(("bar", occurrence_key(&occurrence, 0)))
+                    .role(gpui::Role::Button)
+                    .aria_label(self.occurrence_label(&occurrence))
                     .size_full()
-                    .px(px(8.))
+                    .px(SPACE_SM)
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(SPACE_SM)
                     .overflow_hidden()
-                    .rounded(px(5.))
+                    .rounded(RADIUS_SM)
                     .when(clipped_left, |d| d.rounded_l(px(0.)))
                     .when(clipped_right, |d| d.rounded_r(px(0.)))
                     .bg(fill)
                     .when(!selected, |d| d.hover(move |s| s.bg(hover)))
-                    .text_size(px(11.5))
+                    .text_size(TEXT_SM)
                     .cursor_pointer()
                     .when(single_view || !clipped_left, |d| {
                         d.children(

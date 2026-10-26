@@ -87,6 +87,20 @@ actions!(
         DeclineInvite,
         OpenInviteInCalendar,
         RemoveCancelledEvent,
+        ZoomIn,
+        ZoomOut,
+        ResetZoom,
+        FocusNextControl,
+        FocusPrevControl,
+        FocusPanes,
+        About,
+        OpenSettings,
+        Hide,
+        HideOthers,
+        ShowAll,
+        CloseWindow,
+        Minimize,
+        ZoomWindow,
     ]
 );
 
@@ -107,12 +121,16 @@ pub const DATE_FIELD: &str = "DateField";
 pub const TIME_FIELD: &str = "TimeField";
 pub const GUESTS: &str = "Guests";
 pub const PANEL_CONTROL: &str = "PanelControl";
+/// A focusable button or row outside the event panel (see
+/// `ui::style::focusable_control`): enter and space press it.
+pub const CONTROL: &str = "Control";
 
 /// The keymap. Where an action has several bindings, the one added last is
 /// the one the palette shows.
 pub fn bind_keys(cx: &mut App) {
     const MAIL: &str = "Mailbox && !Input";
-    const LIST: &str = "Mailbox && !Reader && !Input";
+    const LIST: &str = "Mailbox && !Reader && !Input && !Control";
+    const TABBING: &str = "Mailbox && !Input && !Composer";
     const READING: &str = "Mailbox && Reader && !Input";
     const PALETTE_INPUT: &str = "CommandPalette > Input";
     const COMPOSER_INPUT: &str = "Composer > Input";
@@ -124,9 +142,25 @@ pub fn bind_keys(cx: &mut App) {
     const GUESTS_INPUT: &str = "Guests > Input";
 
     cx.bind_keys([
+        // Menu-bar shortcuts first: the menu shows an action's first binding.
         KeyBinding::new("cmd-q", Quit, None),
-        KeyBinding::new("cmd-shift-p", ToggleCommandPalette, Some(CONTEXT)),
+        KeyBinding::new("cmd-h", Hide, None),
+        KeyBinding::new("alt-cmd-h", HideOthers, None),
+        KeyBinding::new("cmd-w", CloseWindow, None),
+        KeyBinding::new("cmd-m", Minimize, None),
+        KeyBinding::new("cmd-,", OpenSettings, None),
+        KeyBinding::new("cmd-=", ZoomIn, Some(CONTEXT)),
+        KeyBinding::new("cmd-+", ZoomIn, Some(CONTEXT)),
+        KeyBinding::new("cmd--", ZoomOut, Some(CONTEXT)),
+        KeyBinding::new("cmd-0", ResetZoom, Some(CONTEXT)),
+        KeyBinding::new("cmd-n", Compose, Some(MAILBOX)),
+        KeyBinding::new("cmd-n", NewEvent, Some(CALENDAR)),
+        KeyBinding::new("cmd-f", ToggleSearch, Some(MAILBOX)),
+        KeyBinding::new("tab", FocusNextControl, Some(TABBING)),
+        KeyBinding::new("shift-tab", FocusPrevControl, Some(TABBING)),
+        KeyBinding::new("escape", FocusPanes, Some(CONTROL)),
         KeyBinding::new("cmd-k", ToggleCommandPalette, Some(CONTEXT)),
+        KeyBinding::new("cmd-shift-p", ToggleCommandPalette, Some(CONTEXT)),
         KeyBinding::new("cmd-\\", ToggleSidebar, Some(CONTEXT)),
         KeyBinding::new("cmd-1", GoToMail, Some(CONTEXT)),
         KeyBinding::new("cmd-2", GoToCalendar, Some(CONTEXT)),

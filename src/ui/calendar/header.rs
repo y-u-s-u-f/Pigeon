@@ -9,16 +9,13 @@ use gpui::{
 };
 
 use super::{CalendarView, Menu, ViewKind};
+use crate::ui::style::*;
 use crate::{
     actions::*,
-    app::RAIL_WIDTH,
     assets::Icon,
     theme::Theme,
     ui::{HEADER_HEIGHT, icon, icon_button, popover_shadow, window_drag_area},
 };
-
-/// Where the traffic lights end, measured from the window's left edge.
-const TRAFFIC_LIGHTS_END: gpui::Pixels = px(84.);
 
 impl CalendarView {
     /// "October 2026", "Oct – Nov 2026", "Dec 2026 – Jan 2027", or for a day
@@ -69,11 +66,11 @@ impl CalendarView {
                 div()
                     .id(id)
                     .h(px(24.))
-                    .px(px(12.))
+                    .px(SPACE_MD)
                     .flex()
                     .items_center()
-                    .rounded(px(6.))
-                    .text_size(px(12.5))
+                    .rounded(RADIUS_SM)
+                    .text_size(TEXT_SM)
                     .font_weight(FontWeight::MEDIUM)
                     .map(|this| {
                         if active {
@@ -103,11 +100,11 @@ impl CalendarView {
 
         let segmented = div()
             .flex_none()
-            .p(px(2.))
+            .p(SPACE_2XS)
             .flex()
             .items_center()
-            .gap(px(2.))
-            .rounded(px(8.))
+            .gap(SPACE_2XS)
+            .rounded(RADIUS_MD)
             .bg(theme.chip_bg)
             .child(segment(
                 "view-day",
@@ -132,13 +129,13 @@ impl CalendarView {
             .id("today")
             .flex_none()
             .h(px(28.))
-            .px(px(12.))
+            .px(SPACE_MD)
             .flex()
             .items_center()
-            .rounded(px(7.))
+            .rounded(RADIUS_MD)
             .border_1()
             .border_color(theme.border)
-            .text_size(px(12.5))
+            .text_size(TEXT_SM)
             .font_weight(FontWeight::MEDIUM)
             .hover(|s| s.bg(theme.hover_bg))
             .active(|s| s.bg(theme.selected_bg))
@@ -155,15 +152,15 @@ impl CalendarView {
             .id("new-event")
             .flex_none()
             .h(px(28.))
-            .pl(px(8.))
-            .pr(px(12.))
+            .pl(SPACE_SM)
+            .pr(SPACE_MD)
             .flex()
             .items_center()
-            .gap(px(5.))
-            .rounded(px(7.))
+            .gap(SPACE_XS)
+            .rounded(RADIUS_MD)
             .bg(theme.accent)
             .text_color(theme.accent_text)
-            .text_size(px(12.5))
+            .text_size(TEXT_SM)
             .font_weight(FontWeight::SEMIBOLD)
             .hover(|s| s.opacity(0.9))
             .active(|s| s.opacity(0.8))
@@ -182,24 +179,26 @@ impl CalendarView {
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(8.))
-            .pl(TRAFFIC_LIGHTS_END - RAIL_WIDTH + px(14.))
-            .pr(px(14.))
+            .gap(SPACE_SM)
+            .pl(SPACE_LG)
+            .pr(SPACE_LG)
             .child(
                 div()
-                    .flex_none()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
                     .flex()
                     .items_baseline()
-                    .gap(px(7.))
+                    .gap(SPACE_SM)
                     .child(
                         div()
-                            .text_size(px(19.))
+                            .text_size(TEXT_XL)
                             .font_weight(FontWeight::BOLD)
                             .child(title),
                     )
                     .child(
                         div()
-                            .text_size(px(19.))
+                            .text_size(TEXT_XL)
                             .font_weight(FontWeight::NORMAL)
                             .text_color(theme.text_faint)
                             .child(rest),
@@ -208,7 +207,7 @@ impl CalendarView {
             .child(div().flex_1())
             .child(self.render_calendars_button(&theme, window, cx))
             .child(segmented)
-            .child(div().w(px(1.)).h(px(18.)).mx(px(4.)).bg(theme.border))
+            .child(div().w(px(1.)).h(px(18.)).mx(SPACE_XS).bg(theme.border))
             .child(icon_button(
                 "prev-period",
                 Icon::ChevronLeft,
@@ -268,11 +267,11 @@ impl CalendarView {
                     div()
                         .id(("calendar-toggle", ix))
                         .h(px(32.))
-                        .px(px(10.))
+                        .px(SPACE_MD)
                         .flex()
                         .items_center()
-                        .gap(px(10.))
-                        .rounded(px(7.))
+                        .gap(SPACE_SM)
+                        .rounded(RADIUS_MD)
                         .hover(|s| s.bg(theme.hover_bg))
                         .child(
                             div()
@@ -281,7 +280,7 @@ impl CalendarView {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .rounded(px(4.))
+                                .rounded(RADIUS_SM)
                                 .border_1()
                                 .border_color(calendar.color)
                                 .when(visible, |d| d.bg(calendar.color))
@@ -292,7 +291,7 @@ impl CalendarView {
                         .child(
                             div()
                                 .flex_1()
-                                .text_size(px(13.))
+                                .text_size(TEXT_BASE)
                                 .text_color(if visible {
                                     theme.text
                                 } else {
@@ -307,22 +306,22 @@ impl CalendarView {
                     div()
                         .id("calendars-menu")
                         .occlude()
-                        .mt(px(34.))
+                        .mt(SPACE_2XL)
                         .w(px(220.))
-                        .p(px(4.))
+                        .p(SPACE_XS)
                         .flex()
                         .flex_col()
-                        .rounded(px(10.))
+                        .rounded(RADIUS_MD)
                         .bg(theme.overlay_bg)
                         .border_1()
                         .border_color(theme.overlay_border)
                         .shadow(popover_shadow(theme))
                         .child(
                             div()
-                                .px(px(10.))
-                                .pt(px(6.))
-                                .pb(px(4.))
-                                .text_size(px(11.))
+                                .px(SPACE_MD)
+                                .pt(SPACE_SM)
+                                .pb(SPACE_XS)
+                                .text_size(TEXT_XS)
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(theme.text_faint)
                                 .child("CALENDARS"),
@@ -345,16 +344,16 @@ impl CalendarView {
                 div()
                     .id("calendars-button")
                     .h(px(28.))
-                    .px(px(10.))
+                    .px(SPACE_MD)
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .rounded(px(7.))
-                    .text_size(px(12.5))
+                    .gap(SPACE_SM)
+                    .rounded(RADIUS_MD)
+                    .text_size(TEXT_SM)
                     .text_color(theme.text_muted)
                     .when(open, |d| d.bg(theme.selected_bg))
                     .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
-                    .child(div().flex().items_center().pl(px(4.)).children(dots))
+                    .child(div().flex().items_center().pl(SPACE_XS).children(dots))
                     .child(label)
                     .child(icon(Icon::ChevronDown, px(13.), theme.text_faint))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())

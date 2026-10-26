@@ -12,6 +12,7 @@ use gpui::{
 };
 
 use super::{icon, keycap};
+use crate::ui::style::*;
 use crate::{
     actions::*,
     app::{Mode, PigeonApp},
@@ -128,8 +129,8 @@ impl PigeonApp {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
-                        .text_size(px(13.))
+                        .gap(SPACE_SM)
+                        .text_size(TEXT_BASE)
                         .text_color(theme.text_muted)
                         .child(icon(Icon::Check, px(15.), theme.text_faint))
                         .child(text),
@@ -151,18 +152,19 @@ impl PigeonApp {
 
         let kicker = div()
             .flex()
+            .flex_wrap()
             .items_center()
-            .gap(px(8.))
+            .gap(SPACE_SM)
             .child(
                 div()
-                    .text_size(px(11.))
+                    .text_size(TEXT_XS)
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(if cancelled { theme.danger } else { color })
                     .child(if cancelled { "CANCELLED" } else { "INVITATION" }),
             )
             .child(
                 div()
-                    .text_size(px(11.5))
+                    .text_size(TEXT_SM)
                     .text_color(theme.text_faint)
                     .child(calendar_name),
             )
@@ -188,8 +190,8 @@ impl PigeonApp {
             });
 
         let title = div()
-            .mt(px(4.))
-            .text_size(px(16.))
+            .mt(SPACE_XS)
+            .text_size(TEXT_LG)
             .font_weight(FontWeight::SEMIBOLD)
             .line_height(relative(1.3))
             .when(cancelled, |d| d.line_through().text_color(theme.text_muted))
@@ -217,9 +219,9 @@ impl PigeonApp {
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(SPACE_SM)
                 .min_w_0()
-                .text_size(px(13.))
+                .text_size(TEXT_BASE)
                 .text_color(theme.text_muted)
                 .child(icon(glyph, px(14.), theme.text_faint))
                 .child(div().min_w_0().truncate().child(text))
@@ -242,10 +244,10 @@ impl PigeonApp {
         let link = event.video_link.clone();
 
         let details = div()
-            .mt(px(10.))
+            .mt(SPACE_MD)
             .flex()
             .flex_col()
-            .gap(px(6.))
+            .gap(SPACE_SM)
             .child(detail(
                 Icon::Clock,
                 match event.recurrence {
@@ -266,8 +268,8 @@ impl PigeonApp {
                         div()
                             .id("invite-join")
                             .flex_none()
-                            .ml(px(4.))
-                            .text_size(px(12.5))
+                            .ml(SPACE_XS)
+                            .text_size(TEXT_SM)
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme.accent)
                             .cursor_pointer()
@@ -307,17 +309,17 @@ impl PigeonApp {
             return card
                 .child(
                     div()
-                        .mt(px(12.))
-                        .pt(px(12.))
+                        .mt(SPACE_MD)
+                        .pt(SPACE_MD)
                         .border_t_1()
                         .border_color(theme.border)
                         .flex()
                         .items_center()
-                        .gap(px(10.))
+                        .gap(SPACE_SM)
                         .child(
                             div()
                                 .flex_1()
-                                .text_size(px(13.))
+                                .text_size(TEXT_BASE)
                                 .text_color(theme.text_muted)
                                 .child(format!("{by} cancelled this event.")),
                         )
@@ -341,19 +343,20 @@ impl PigeonApp {
 
         let status = event.my_status(&data.account.email);
         let answers = div()
-            .mt(px(12.))
-            .pt(px(12.))
+            .mt(SPACE_MD)
+            .pt(SPACE_MD)
             .border_t_1()
             .border_color(theme.border)
             .flex()
+            .flex_wrap()
             .items_center()
-            .gap(px(6.))
+            .gap(SPACE_SM)
             .map(|d| match status {
                 Some(status) => d
                     .child(
                         div()
-                            .mr(px(4.))
-                            .text_size(px(13.))
+                            .mr(SPACE_XS)
+                            .text_size(TEXT_BASE)
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text_muted)
                             .child("Going?"),
@@ -371,7 +374,7 @@ impl PigeonApp {
                         }),
                     )
                     .child(div().flex_1())
-                    .child(div().text_size(px(12.)).text_color(theme.text_faint).child(
+                    .child(div().text_size(TEXT_SM).text_color(theme.text_faint).child(
                         match status {
                             RsvpStatus::NeedsAction => "Not answered yet",
                             RsvpStatus::Accepted => "You're going",
@@ -381,7 +384,7 @@ impl PigeonApp {
                     )),
                 None => d.child(
                     div()
-                        .text_size(px(13.))
+                        .text_size(TEXT_BASE)
                         .text_color(theme.text_muted)
                         .child("You're the organizer"),
                 ),
@@ -473,19 +476,19 @@ impl PigeonApp {
                     .left(relative(left))
                     .w(relative(width))
                     .h(px(LANE_HEIGHT))
-                    .px(px(1.))
+                    .px(SPACE_2XS)
                     .child(
                         div()
                             .size_full()
-                            .px(px(5.))
+                            .px(SPACE_XS)
                             .flex()
                             .items_center()
                             .overflow_hidden()
-                            .rounded(px(4.))
+                            .rounded(RADIUS_SM)
                             .bg(theme.event_fill(tint, false))
                             .border_l_2()
                             .border_color(theme.event_accent(tint, false))
-                            .text_size(px(10.5))
+                            .text_size(TEXT_XS)
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.event_text(tint, false))
                             .child(div().truncate().child(other.display_title().to_string())),
@@ -499,7 +502,7 @@ impl PigeonApp {
             .bottom_0()
             .left(relative(x(s)))
             .w(relative(x(e) - x(s)))
-            .rounded(px(5.))
+            .rounded(RADIUS_SM)
             .bg(color.alpha(0.12))
             .border_2()
             .border_color(color);
@@ -523,7 +526,7 @@ impl PigeonApp {
                             .top(px(track_height + 3.))
                             .left(px(3.))
                             .whitespace_nowrap()
-                            .text_size(px(10.))
+                            .text_size(TEXT_XS)
                             .text_color(theme.text_faint)
                             .child(label),
                     )
@@ -544,26 +547,26 @@ impl PigeonApp {
                 .collect::<Vec<_>>()
                 .join(", ");
             div()
-                .mt(px(8.))
+                .mt(SPACE_SM)
                 .flex()
                 .items_start()
-                .gap(px(7.))
-                .text_size(px(12.5))
+                .gap(SPACE_SM)
+                .text_size(TEXT_SM)
                 .text_color(theme.danger)
                 .child(
                     div()
-                        .mt(px(1.))
+                        .mt(SPACE_2XS)
                         .child(icon(Icon::OctagonAlert, px(14.), theme.danger)),
                 )
                 .child(div().min_w_0().child(format!("Conflicts with {names}")))
         });
         let free = (conflicts.is_empty()).then(|| {
             div()
-                .mt(px(8.))
+                .mt(SPACE_SM)
                 .flex()
                 .items_center()
-                .gap(px(7.))
-                .text_size(px(12.5))
+                .gap(SPACE_SM)
+                .text_size(TEXT_SM)
                 .text_color(theme.text_muted)
                 .child(icon(Icon::Check, px(14.), theme.success))
                 .child(if others.is_empty() {
@@ -579,15 +582,15 @@ impl PigeonApp {
 
         Some(
             div()
-                .mt(px(14.))
+                .mt(SPACE_LG)
                 .flex()
                 .flex_col()
                 .child(
                     div()
                         .relative()
                         .h(px(track_height))
-                        .mb(px(16.))
-                        .rounded(px(6.))
+                        .mb(SPACE_LG)
+                        .rounded(RADIUS_SM)
                         .bg(theme.chip_bg)
                         .children(hours)
                         .children(bars)
@@ -604,14 +607,14 @@ impl PigeonApp {
 fn card(color: Hsla, theme: &Theme) -> gpui::Div {
     div()
         .relative()
-        .mb(px(16.))
-        .pl(px(18.))
-        .pr(px(14.))
-        .py(px(12.))
+        .mb(SPACE_LG)
+        .pl(SPACE_LG)
+        .pr(SPACE_LG)
+        .py(SPACE_MD)
         .flex()
         .flex_col()
         .overflow_hidden()
-        .rounded(px(10.))
+        .rounded(RADIUS_MD)
         .border_1()
         .border_color(theme.border)
         .bg(theme.card_bg)
@@ -637,15 +640,15 @@ fn button(
         .id(id)
         .flex_none()
         .h(px(28.))
-        .px(px(10.))
+        .px(SPACE_MD)
         .flex()
         .items_center()
-        .gap(px(6.))
-        .rounded(px(7.))
+        .gap(SPACE_SM)
+        .rounded(RADIUS_MD)
         .border_1()
         .border_color(theme.border)
         .bg(theme.chip_bg)
-        .text_size(px(12.5))
+        .text_size(TEXT_SM)
         .font_weight(FontWeight::MEDIUM)
         .hover(|s| s.bg(theme.selected_bg))
         .active(|s| s.opacity(0.8))
@@ -672,13 +675,13 @@ fn rsvp_button(
     div()
         .id(("invite-rsvp", ix))
         .h(px(28.))
-        .px(px(12.))
+        .px(SPACE_MD)
         .flex()
         .items_center()
-        .gap(px(6.))
-        .rounded(px(7.))
+        .gap(SPACE_SM)
+        .rounded(RADIUS_MD)
         .border_1()
-        .text_size(px(12.5))
+        .text_size(TEXT_SM)
         .font_weight(FontWeight::SEMIBOLD)
         .map(|d| {
             if chosen {

@@ -5,7 +5,8 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _, px,
 };
 
-use super::{HEADER_HEIGHT, PaneResize, avatar, icon, icon_button, pane_divider, window_drag_area};
+use super::{HEADER_HEIGHT, avatar, icon, icon_button, window_drag_area};
+use crate::ui::style::*;
 use crate::{
     actions::ToggleSidebar,
     app::{Nav, PigeonApp},
@@ -48,6 +49,7 @@ impl PigeonApp {
 
     pub(crate) fn render_sidebar(
         &self,
+        width: gpui::Pixels,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -81,7 +83,7 @@ impl PigeonApp {
 
         div()
             .relative()
-            .w(self.sidebar_width)
+            .w(width)
             .h_full()
             .flex_none()
             .flex()
@@ -96,7 +98,7 @@ impl PigeonApp {
                     .flex()
                     .items_center()
                     .justify_end()
-                    .px(px(10.))
+                    .px(SPACE_MD)
                     .child(icon_button(
                         "toggle-sidebar",
                         Icon::PanelLeft,
@@ -108,13 +110,13 @@ impl PigeonApp {
             .child(
                 // Account card.
                 div()
-                    .mx(px(10.))
-                    .mb(px(14.))
-                    .p(px(8.))
+                    .mx(SPACE_MD)
+                    .mb(SPACE_LG)
+                    .p(SPACE_SM)
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .rounded(px(10.))
+                    .gap(SPACE_SM)
+                    .rounded(RADIUS_MD)
                     .bg(theme.card_bg)
                     .border_1()
                     .border_color(theme.border)
@@ -132,14 +134,14 @@ impl PigeonApp {
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(px(13.))
+                                    .text_size(TEXT_BASE)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(account.name.clone()),
                             )
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(px(11.5))
+                                    .text_size(TEXT_SM)
                                     .text_color(theme.text_muted)
                                     .child(account.email.clone()),
                             ),
@@ -148,28 +150,29 @@ impl PigeonApp {
             .child(
                 div()
                     .id("sidebar-nav")
+                    .role(gpui::Role::Navigation)
+                    .aria_label("Mailboxes")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .px(px(10.))
-                    .pb(px(12.))
+                    .px(SPACE_MD)
+                    .pb(SPACE_MD)
                     .flex()
                     .flex_col()
-                    .gap(px(1.))
+                    .gap(SPACE_2XS)
                     .children(folders)
                     .child(
                         div()
-                            .pt(px(18.))
-                            .pb(px(6.))
-                            .px(px(10.))
-                            .text_size(px(11.))
+                            .pt(SPACE_LG)
+                            .pb(SPACE_SM)
+                            .px(SPACE_MD)
+                            .text_size(TEXT_XS)
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme.text_faint)
                             .child("Labels"),
                     )
                     .children(labels),
             )
-            .child(pane_divider(PaneResize::Sidebar))
     }
 
     fn nav_item(
@@ -188,15 +191,17 @@ impl PigeonApp {
             Nav::Label(ix) => ("nav-label", ix),
         };
 
-        div()
-            .id(id)
+        focusable_control(div().id(id), theme)
+            .role(gpui::Role::Link)
+            .aria_label(name.clone())
+            .aria_selected(active)
             .h(px(30.))
-            .px(px(10.))
+            .px(SPACE_MD)
             .flex()
             .items_center()
-            .gap(px(10.))
-            .rounded(px(7.))
-            .text_size(px(13.))
+            .gap(SPACE_SM)
+            .rounded(RADIUS_MD)
+            .text_size(TEXT_BASE)
             .map(|this| {
                 if active {
                     this.bg(theme.nav_active_bg)
@@ -231,7 +236,7 @@ impl PigeonApp {
             .when(count > 0, |this| {
                 this.child(
                     div()
-                        .text_size(px(11.5))
+                        .text_size(TEXT_SM)
                         .text_color(if active {
                             theme.text_muted
                         } else {
@@ -240,7 +245,16 @@ impl PigeonApp {
                         .child(count.to_string()),
                 )
             })
-            .on_click(cx.listener(move |this, _, _, cx| this.set_nav(nav, cx)))
+            .on_click(
+                cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                    this.set_nav(nav, cx);
+                    // A click hands the keyboard back to the list; Enter on a
+                    // focused row keeps focus on the row.
+                    if !event.is_keyboard() {
+                        window.focus(&this.focus_handle, cx);
+                    }
+                }),
+            )
             .into_any_element()
     }
 }

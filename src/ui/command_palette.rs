@@ -17,6 +17,7 @@ use nucleo_matcher::{
 };
 
 use super::{binding_caps, icon, keycap, overlay_shadow};
+use crate::ui::style::*;
 use crate::{actions::PALETTE, app::Nav, assets::Icon, theme::Theme};
 
 actions!(command_palette, [SelectNext, SelectPrev, Confirm, Dismiss]);
@@ -256,16 +257,19 @@ impl CommandPalette {
 
         div()
             .id(ix)
+            .role(gpui::Role::ListBoxOption)
+            .aria_label(item.title.clone())
+            .aria_selected(selected)
             .h(px(ROW_HEIGHT))
-            .px(px(6.))
+            .px(SPACE_SM)
             .child(
                 div()
                     .size_full()
-                    .px(px(10.))
+                    .px(SPACE_MD)
                     .flex()
                     .items_center()
-                    .gap(px(11.))
-                    .rounded(px(8.))
+                    .gap(SPACE_MD)
+                    .rounded(RADIUS_MD)
                     .when(selected, |this| this.bg(theme.selected_bg))
                     .child(match item.leading {
                         Leading::Icon(glyph) => icon(
@@ -293,14 +297,14 @@ impl CommandPalette {
                             .min_w_0()
                             .flex()
                             .items_baseline()
-                            .gap(px(8.))
+                            .gap(SPACE_SM)
                             .overflow_hidden()
                             .child(
                                 div()
                                     .flex_none()
                                     .max_w(px(380.))
                                     .truncate()
-                                    .text_size(px(13.5))
+                                    .text_size(TEXT_BASE)
                                     .text_color(theme.text)
                                     .child(highlighted(&item.title, title_hl, highlight)),
                             )
@@ -308,7 +312,7 @@ impl CommandPalette {
                                 div()
                                     .min_w_0()
                                     .truncate()
-                                    .text_size(px(12.5))
+                                    .text_size(TEXT_SM)
                                     .text_color(theme.text_faint)
                                     .child(highlighted(subtitle, subtitle_hl, highlight))
                             })),
@@ -349,7 +353,7 @@ impl Render for CommandPalette {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(px(13.))
+                .text_size(TEXT_BASE)
                 .text_color(theme.text_faint)
                 .child(format!("No matching commands or {}", self.results_noun))
                 .into_any_element()
@@ -373,9 +377,9 @@ impl Render for CommandPalette {
             div()
                 .flex()
                 .items_center()
-                .gap(px(4.))
+                .gap(SPACE_XS)
                 .children(keys.iter().map(|k| keycap(*k, &theme)))
-                .child(div().ml(px(2.)).child(label))
+                .child(div().ml(SPACE_2XS).child(label))
         };
 
         div()
@@ -389,7 +393,7 @@ impl Render for CommandPalette {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .rounded(px(14.))
+            .rounded(RADIUS_LG)
             .bg(theme.overlay_bg)
             .border_1()
             .border_color(theme.overlay_border)
@@ -399,31 +403,31 @@ impl Render for CommandPalette {
             .child(
                 div()
                     .h(px(54.))
-                    .px(px(18.))
+                    .px(SPACE_LG)
                     .flex()
                     .items_center()
-                    .gap(px(12.))
+                    .gap(SPACE_MD)
                     .border_b_1()
                     .border_color(theme.border)
                     .child(icon(Icon::Search, px(17.), theme.text_faint))
                     .child(
                         div()
                             .flex_1()
-                            .text_size(px(15.))
+                            .text_size(TEXT_LG)
                             .child(Input::new(&self.input).appearance(false)),
                     ),
             )
-            .child(div().py(px(6.)).child(results))
+            .child(div().py(SPACE_SM).child(results))
             .child(
                 div()
                     .h(px(34.))
-                    .px(px(16.))
+                    .px(SPACE_LG)
                     .flex()
                     .items_center()
-                    .gap(px(16.))
+                    .gap(SPACE_LG)
                     .border_t_1()
                     .border_color(theme.border)
-                    .text_size(px(11.5))
+                    .text_size(TEXT_SM)
                     .text_color(theme.text_faint)
                     .child(hint(&["↑", "↓"], "Navigate"))
                     .child(hint(&["↵"], "Run"))

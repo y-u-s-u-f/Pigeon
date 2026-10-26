@@ -9,15 +9,17 @@ pub mod rail;
 pub mod reader;
 pub mod shortcuts_help;
 pub mod sidebar;
+pub mod style;
 pub mod thread_list;
 
 use gpui::{
-    Action, AnyElement, App, AppContext as _, AsKeystroke as _, Axis, Context, Div, ElementId,
+    Action, AnyElement, App, AppContext as _, AsKeystroke as _, Context, Div, ElementId,
     FontWeight, Hsla, InteractiveElement, IntoElement, KeyBinding, Keystroke, MouseButton,
     ParentElement, Pixels, Render, SharedString, Stateful, StatefulInteractiveElement, Styled, Svg,
-    Window, component::tooltip::Tooltip, div, px, svg,
+    Window, component::tooltip::Tooltip, div, prelude::FluentBuilder as _, px, svg,
 };
 
+use self::style::*;
 use crate::{assets::Icon, data::Label, theme::Theme};
 
 /// Height of the top bar of every pane; the traffic lights sit in it.
@@ -52,14 +54,15 @@ pub fn icon_button_tinted(
     theme: &Theme,
 ) -> Stateful<Div> {
     let tooltip_action = action.boxed_clone();
-    div()
-        .id(id)
+    style::focusable_control(div().id(id), theme)
+        .aria_label(tooltip)
+        .role(gpui::Role::Button)
         .size(px(30.))
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(7.))
+        .rounded(RADIUS_MD)
         .hover(|s| s.bg(theme.hover_bg))
         .active(|s| s.bg(theme.selected_bg))
         .child(icon(glyph, px(16.), color))
@@ -104,13 +107,13 @@ pub fn label_chip(label: &Label, theme: &Theme) -> Div {
     div()
         .flex_none()
         .h(px(18.))
-        .px(px(6.))
+        .px(SPACE_SM)
         .flex()
         .items_center()
-        .rounded(px(5.))
+        .rounded(RADIUS_SM)
         .bg(theme.label_chip_bg(label.color))
         .text_color(theme.label_chip_text(label.color))
-        .text_size(px(11.))
+        .text_size(TEXT_XS)
         .font_weight(FontWeight::MEDIUM)
         .child(label.name.clone())
 }
@@ -128,18 +131,18 @@ pub fn empty_state(
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(px(10.))
+        .gap(SPACE_SM)
         .child(icon(glyph, px(28.), theme.text_faint))
         .child(
             div()
-                .text_size(px(13.))
+                .text_size(TEXT_BASE)
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text_muted)
                 .child(title.into()),
         )
         .children(hint.map(|hint| {
             div()
-                .text_size(px(12.))
+                .text_size(TEXT_SM)
                 .text_color(theme.text_faint)
                 .child(hint)
         }))
@@ -159,17 +162,49 @@ impl Render for PaneResize {
     }
 }
 
-/// The draggable divider on a pane's trailing edge.
-pub fn pane_divider(kind: PaneResize) -> impl IntoElement {
-    gpui::component::resize_handle::<PaneResize, PaneResize>(
-        match kind {
-            PaneResize::Sidebar => "sidebar-divider",
-            PaneResize::List => "list-divider",
-        },
-        Axis::Horizontal,
-    )
-    .inside(gpui::component::resizable::HandleEdge::Trailing)
-    .on_drag(kind, |kind, _, _, cx: &mut App| cx.new(|_| *kind))
+/// The draggable divider over the border at `x`: a 6pt band centered on
+/// it, lit with a 1px accent line on hover and while `active` (dragged).
+/// Double-clicking calls `on_reset`. Drawn over the panes, after them, so
+/// both halves of the band take the mouse.
+pub fn pane_divider(
+    kind: PaneResize,
+    x: Pixels,
+    active: bool,
+    theme: &Theme,
+    on_reset: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let (id, group) = match kind {
+        PaneResize::Sidebar => ("sidebar-divider", "sidebar-divider"),
+        PaneResize::List => ("list-divider", "list-divider"),
+    };
+    let accent = theme.accent;
+    div()
+        .id(id)
+        .group(group)
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left(x - px(3.))
+        .w(px(6.))
+        .occlude()
+        .cursor_col_resize()
+        .child(
+            // Over the pane's own 1px border, the band's third pixel.
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(px(2.))
+                .w(px(1.))
+                .when(active, |d| d.bg(accent))
+                .group_hover(group, |s| s.bg(accent)),
+        )
+        .on_drag(kind, |kind, _, _, cx: &mut App| cx.new(|_| *kind))
+        .on_click(move |event, window, cx| {
+            if event.click_count() == 2 {
+                on_reset(window, cx);
+            }
+        })
 }
 
 /// The keycaps of one keystroke: each modifier, then the key.
@@ -206,15 +241,15 @@ pub fn keycap(label: impl Into<SharedString>, theme: &Theme) -> Div {
         .flex_none()
         .h(px(20.))
         .min_w(px(20.))
-        .px(px(5.))
+        .px(SPACE_XS)
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(5.))
+        .rounded(RADIUS_SM)
         .bg(theme.kbd_bg)
         .border_1()
         .border_color(theme.kbd_border)
-        .text_size(px(11.))
+        .text_size(TEXT_XS)
         .font_weight(FontWeight::MEDIUM)
         .text_color(theme.kbd_text)
         .child(label.into())
@@ -222,13 +257,13 @@ pub fn keycap(label: impl Into<SharedString>, theme: &Theme) -> Div {
 
 /// A binding as keycaps; sequences like `g i` read "G then I".
 pub fn binding_caps(binding: &KeyBinding, theme: &Theme) -> Div {
-    let mut row = div().flex_none().flex().items_center().gap(px(3.));
+    let mut row = div().flex_none().flex().items_center().gap(SPACE_XS);
     for (ix, keystroke) in binding.keystrokes().iter().enumerate() {
         if ix > 0 {
             row = row.child(
                 div()
-                    .px(px(2.))
-                    .text_size(px(11.))
+                    .px(SPACE_2XS)
+                    .text_size(TEXT_XS)
                     .text_color(theme.text_faint)
                     .child("then"),
             );

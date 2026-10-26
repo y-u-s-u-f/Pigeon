@@ -14,6 +14,7 @@ use gpui::{
     px,
 };
 
+use crate::ui::style::*;
 use crate::{
     actions::*,
     assets::Icon,
@@ -33,9 +34,25 @@ use crate::{
 /// How long the "Sent" toast, and its Undo, stays up.
 const TOAST_DURATION: Duration = Duration::from_secs(5);
 
-pub const RAIL_WIDTH: Pixels = px(52.);
+/// Wide enough to hold the traffic lights above its icons.
+pub const RAIL_WIDTH: Pixels = px(80.);
 const SIDEBAR_WIDTH: (Pixels, Pixels) = (px(180.), px(360.));
+const SIDEBAR_DEFAULT: Pixels = px(236.);
 const LIST_WIDTH: (Pixels, Pixels) = (px(300.), px(640.));
+const LIST_DEFAULT: Pixels = px(400.);
+/// How narrow the list gets when the user keeps the sidebar open in a narrow
+/// window.
+const LIST_SQUEEZED: Pixels = px(220.);
+pub const READER_MIN: Pixels = px(360.);
+
+/// The widths the mail panes get in a window, from the user's widths: the
+/// list gives way first (down to its minimum), then the sidebar hides.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaneLayout {
+    /// Zero while the sidebar is hidden.
+    pub sidebar: Pixels,
+    pub list: Pixels,
+}
 
 /// Which app fills the window, beside the rail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,6 +91,8 @@ pub enum ComposeKind {
 pub struct Toast {
     pub message: SharedString,
     pub undo: Option<UndoAction>,
+    /// Counts toasts shown back to back, so each one animates in.
+    serial: usize,
     _timer: Task<()>,
 }
 
@@ -109,9 +128,17 @@ pub struct PigeonApp {
     /// always expanded.
     pub expanded_messages: HashSet<usize>,
     pub archived_expanded: bool,
+    /// The user's choice; the sidebar also hides by itself while the window
+    /// is too narrow for it (see `pane_layout`).
     pub sidebar_open: bool,
+    /// Shown by the user while the window is too narrow for it.
+    sidebar_forced: bool,
     pub sidebar_width: Pixels,
     pub list_width: Pixels,
+    /// The divider being dragged, for its highlight.
+    resizing: Option<PaneResize>,
+    /// ⌘= / ⌘-: scales all text through the window's rem size.
+    pub text_scale: f32,
     pub search_open: bool,
     pub list_state: ListState,
     pub reader_scroll: ScrollHandle,
@@ -149,6 +176,13 @@ impl PigeonApp {
             Theme::sync(window, cx);
             cx.notify();
         });
+        // Reduce Motion is read at startup; this catches a change made while
+        // Pigeon was in the background.
+        let activation = cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() {
+                gpui::base::apply_system_reduce_motion(cx);
+            }
+        });
         let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search mail"));
         let search_events = cx.subscribe_in(&search_input, window, Self::on_search_event);
         let contact_book = Rc::new(ContactBook::new(data.contacts()));
@@ -174,8 +208,11 @@ impl PigeonApp {
             expanded_messages: HashSet::new(),
             archived_expanded: false,
             sidebar_open: true,
-            sidebar_width: px(236.),
-            list_width: px(400.),
+            sidebar_forced: false,
+            sidebar_width: SIDEBAR_DEFAULT,
+            list_width: LIST_DEFAULT,
+            resizing: None,
+            text_scale: 1.,
             search_open: false,
             list_state: ListState::new(0, ListAlignment::Top, px(400.)),
             reader_scroll: ScrollHandle::new(),
@@ -192,7 +229,7 @@ impl PigeonApp {
             focused_message: None,
             toast: None,
             next_id: 0,
-            _subscriptions: vec![appearance, search_events, calendar_events],
+            _subscriptions: vec![appearance, activation, search_events, calendar_events],
         };
         this.refresh_rows(false);
         this
@@ -367,9 +404,99 @@ impl PigeonApp {
 
     // Action handlers.
 
-    fn toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
-        self.sidebar_open = !self.sidebar_open;
+    /// The panes' widths in a window `width` wide. The sidebar hides while
+    /// it would squeeze the list under its minimum, unless the user showed it
+    /// anyway; then the list squeezes further. The reader takes the rest,
+    /// never less than `READER_MIN`.
+    pub fn pane_layout(&self, width: Pixels) -> PaneLayout {
+        let room = width - RAIL_WIDTH - READER_MIN;
+        let sidebar = if self.sidebar_open && (self.sidebar_fits(width) || self.sidebar_forced) {
+            self.sidebar_width
+                .min(room - LIST_SQUEEZED)
+                .max(SIDEBAR_WIDTH.0)
+        } else {
+            px(0.)
+        };
+        let list = self.list_width.min(room - sidebar).max(LIST_SQUEEZED);
+        PaneLayout { sidebar, list }
+    }
+
+    fn sidebar_fits(&self, width: Pixels) -> bool {
+        width - RAIL_WIDTH - READER_MIN - self.sidebar_width >= LIST_WIDTH.0
+    }
+
+    fn toggle_sidebar(&mut self, _: &ToggleSidebar, window: &mut Window, cx: &mut Context<Self>) {
+        let shown = self.pane_layout(window.viewport_size().width).sidebar > px(0.);
+        if shown {
+            self.sidebar_open = false;
+            self.sidebar_forced = false;
+        } else {
+            self.sidebar_open = true;
+            self.sidebar_forced = !self.sidebar_fits(window.viewport_size().width);
+        }
         cx.notify();
+    }
+
+    fn set_text_scale(&mut self, scale: f32, cx: &mut Context<Self>) {
+        let (min, max) = ui::style::TEXT_SCALE_RANGE;
+        // Rounded, so repeated steps land back on 1.
+        self.text_scale = ((scale * 10.).round() / 10.).clamp(min, max);
+        cx.notify();
+    }
+
+    fn zoom_in(&mut self, _: &ZoomIn, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_text_scale(self.text_scale + ui::style::TEXT_SCALE_STEP, cx);
+    }
+
+    fn zoom_out(&mut self, _: &ZoomOut, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_text_scale(self.text_scale - ui::style::TEXT_SCALE_STEP, cx);
+    }
+
+    fn reset_zoom(&mut self, _: &ResetZoom, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_text_scale(1., cx);
+    }
+
+    // Keyboard access to the buttons and rows: Tab moves between them,
+    // escape goes back to the panes.
+
+    fn focus_next_control(
+        &mut self,
+        _: &FocusNextControl,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.focus_next(cx);
+    }
+
+    fn focus_prev_control(
+        &mut self,
+        _: &FocusPrevControl,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.focus_prev(cx);
+    }
+
+    fn focus_panes(&mut self, _: &FocusPanes, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.pane_focus(cx), cx);
+        cx.notify();
+    }
+
+    fn about(&mut self, _: &About, _: &mut Window, cx: &mut Context<Self>) {
+        let version = env!("CARGO_PKG_VERSION");
+        self.show_toast(format!("Pigeon {version} · mail and calendar"), None, cx);
+    }
+
+    fn close_window(&mut self, _: &CloseWindow, window: &mut Window, _: &mut Context<Self>) {
+        window.remove_window();
+    }
+
+    fn minimize(&mut self, _: &Minimize, window: &mut Window, _: &mut Context<Self>) {
+        window.minimize_window();
+    }
+
+    fn zoom_window(&mut self, _: &ZoomWindow, window: &mut Window, _: &mut Context<Self>) {
+        window.zoom_window();
     }
 
     /// Opens the search bar, or returns to it, and focuses it.
@@ -497,6 +624,8 @@ impl PigeonApp {
     }
 
     fn compose_new(&mut self, _: &Compose, window: &mut Window, cx: &mut Context<Self>) {
+        // From the menu while the calendar shows.
+        self.set_mode(Mode::Mail, window, cx);
         self.compose(ComposeKind::New, window, cx);
     }
 
@@ -776,9 +905,11 @@ impl PigeonApp {
             })
             .ok();
         });
+        let serial = self.toast.as_ref().map_or(0, |t| t.serial + 1);
         self.toast = Some(Toast {
             message: message.into(),
             undo,
+            serial,
             _timer: timer,
         });
         cx.notify();
@@ -1082,32 +1213,38 @@ impl PigeonApp {
 
     // Go to.
 
-    fn go_to_inbox(&mut self, _: &GoToInbox, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_nav(Nav::Folder(Folder::Inbox), cx);
+    fn go_to_inbox(&mut self, _: &GoToInbox, window: &mut Window, cx: &mut Context<Self>) {
+        self.go_to(Nav::Folder(Folder::Inbox), window, cx);
     }
 
-    fn go_to_starred(&mut self, _: &GoToStarred, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_nav(Nav::Starred, cx);
+    fn go_to_starred(&mut self, _: &GoToStarred, window: &mut Window, cx: &mut Context<Self>) {
+        self.go_to(Nav::Starred, window, cx);
     }
 
-    fn go_to_sent(&mut self, _: &GoToSent, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_nav(Nav::Folder(Folder::Sent), cx);
+    fn go_to_sent(&mut self, _: &GoToSent, window: &mut Window, cx: &mut Context<Self>) {
+        self.go_to(Nav::Folder(Folder::Sent), window, cx);
     }
 
-    fn go_to_drafts(&mut self, _: &GoToDrafts, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_nav(Nav::Folder(Folder::Drafts), cx);
+    fn go_to_drafts(&mut self, _: &GoToDrafts, window: &mut Window, cx: &mut Context<Self>) {
+        self.go_to(Nav::Folder(Folder::Drafts), window, cx);
     }
 
-    fn go_to_archive(&mut self, _: &GoToArchive, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_nav(Nav::Folder(Folder::Archive), cx);
+    fn go_to_archive(&mut self, _: &GoToArchive, window: &mut Window, cx: &mut Context<Self>) {
+        self.go_to(Nav::Folder(Folder::Archive), window, cx);
     }
 
-    fn go_to_spam(&mut self, _: &GoToSpam, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_nav(Nav::Folder(Folder::Spam), cx);
+    fn go_to_spam(&mut self, _: &GoToSpam, window: &mut Window, cx: &mut Context<Self>) {
+        self.go_to(Nav::Folder(Folder::Spam), window, cx);
     }
 
-    fn go_to_trash(&mut self, _: &GoToTrash, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_nav(Nav::Folder(Folder::Trash), cx);
+    fn go_to_trash(&mut self, _: &GoToTrash, window: &mut Window, cx: &mut Context<Self>) {
+        self.go_to(Nav::Folder(Folder::Trash), window, cx);
+    }
+
+    /// A Go menu item, from Calendar too.
+    fn go_to(&mut self, nav: Nav, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_mode(Mode::Mail, window, cx);
+        self.set_nav(nav, cx);
     }
 
     /// Gmail's `g l`: the palette, narrowed to labels.
@@ -1303,39 +1440,39 @@ impl PigeonApp {
         Some(
             div()
                 .absolute()
-                .bottom(px(22.))
+                .bottom(SPACE_XL)
                 .left_0()
                 .right_0()
                 .flex()
                 .justify_center()
-                .child(
+                .child(ui::style::enter(
+                    ("toast-enter", toast.serial),
                     div()
                         .id("toast")
                         .occlude()
                         .h(px(40.))
-                        .pl(px(14.))
-                        .pr(px(6.))
+                        .pl(SPACE_LG)
+                        .pr(SPACE_SM)
                         .flex()
                         .items_center()
-                        .gap(px(10.))
-                        .rounded(px(10.))
+                        .gap(SPACE_SM)
+                        .rounded(RADIUS_MD)
                         .bg(theme.overlay_bg)
                         .border_1()
                         .border_color(theme.overlay_border)
                         .shadow(ui::overlay_shadow(theme))
-                        .text_size(px(13.))
+                        .text_size(TEXT_BASE)
                         .child(ui::icon(Icon::Check, px(15.), theme.accent))
                         .child(toast.message.clone())
                         .when(toast.undo.is_some(), |this| {
                             this.child(
-                                div()
-                                    .id("toast-undo")
+                                ui::style::focusable_control(div().id("toast-undo"), theme)
                                     .h(px(28.))
-                                    .px(px(10.))
+                                    .px(SPACE_MD)
                                     .flex()
                                     .items_center()
-                                    .gap(px(6.))
-                                    .rounded(px(7.))
+                                    .gap(SPACE_SM)
+                                    .rounded(RADIUS_MD)
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(theme.accent)
                                     .hover(|s| s.bg(theme.hover_bg))
@@ -1346,8 +1483,8 @@ impl PigeonApp {
                                     }),
                             )
                         })
-                        .when(toast.undo.is_none(), |this| this.pr(px(14.))),
-                )
+                        .when(toast.undo.is_none(), |this| this.pr(SPACE_LG)),
+                ))
                 .into_any_element(),
         )
     }
@@ -1358,9 +1495,10 @@ impl PigeonApp {
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
         let content = if let Some((palette, _)) = &self.palette {
-            palette.clone().into_any_element()
+            ui::style::enter("palette-enter", div().child(palette.clone())).into_any_element()
         } else if self.help_open {
-            self.render_shortcuts_help(window, cx).into_any_element()
+            ui::style::enter("help-enter", self.render_shortcuts_help(window, cx))
+                .into_any_element()
         } else {
             return None;
         };
@@ -1375,9 +1513,9 @@ impl PigeonApp {
                 .items_center()
                 .map(|this| {
                     if self.help_open {
-                        this.justify_center().p(px(40.))
+                        this.justify_center().p(SPACE_2XL)
                     } else {
-                        this.pt(px(110.)).px(px(40.))
+                        this.pt(px(110.)).px(SPACE_2XL)
                     }
                 })
                 .bg(theme.backdrop)
@@ -1394,22 +1532,38 @@ impl PigeonApp {
     fn resize_pane(
         &mut self,
         event: &DragMoveEvent<PaneResize>,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let kind = *event.drag(cx);
+        if self.resizing != Some(kind) {
+            self.resizing = Some(kind);
+            // The cursor stays a resize cursor off the divider too.
+            cx.set_active_drag_cursor_style(gpui::CursorStyle::ResizeLeftRight, window);
+        }
+        let width = window.viewport_size().width;
         let x = event.event.position.x - RAIL_WIDTH;
-        match event.drag(cx) {
+        // Leave the reader its minimum, and the list its own beside a sidebar.
+        let room = width - RAIL_WIDTH - READER_MIN;
+        match kind {
             PaneResize::Sidebar => {
-                self.sidebar_width = x.clamp(SIDEBAR_WIDTH.0, SIDEBAR_WIDTH.1);
+                let max = (room - LIST_WIDTH.0).min(SIDEBAR_WIDTH.1);
+                self.sidebar_width = x.min(max).max(SIDEBAR_WIDTH.0);
             }
             PaneResize::List => {
-                let sidebar = if self.sidebar_open {
-                    self.sidebar_width
-                } else {
-                    px(0.)
-                };
-                self.list_width = (x - sidebar).clamp(LIST_WIDTH.0, LIST_WIDTH.1);
+                let sidebar = self.pane_layout(width).sidebar;
+                let max = (room - sidebar).min(LIST_WIDTH.1);
+                self.list_width = (x - sidebar).min(max).max(LIST_WIDTH.0);
             }
+        }
+        cx.notify();
+    }
+
+    /// Double-clicking a divider puts its pane back to the default width.
+    pub fn reset_pane(&mut self, kind: PaneResize, cx: &mut Context<Self>) {
+        match kind {
+            PaneResize::Sidebar => self.sidebar_width = SIDEBAR_DEFAULT,
+            PaneResize::List => self.list_width = LIST_DEFAULT,
         }
         cx.notify();
     }
@@ -1421,7 +1575,41 @@ impl Render for PigeonApp {
         if window.focused(cx).is_none() {
             window.focus(&self.pane_focus(cx), cx);
         }
+        window.set_rem_size(px(ui::style::BASE_REM * self.text_scale));
         let theme = Theme::of(cx).clone();
+
+        let width = window.viewport_size().width;
+        if self.sidebar_fits(width) {
+            // Wide enough again: hiding by itself works as before next time.
+            self.sidebar_forced = false;
+        }
+        if !cx.has_active_drag() {
+            self.resizing = None;
+        }
+        let layout = self.pane_layout(width);
+        // The sidebar slides open and shut; its content keeps its width and
+        // is clipped, so nothing reflows while it moves.
+        let sidebar_width = if layout.sidebar > px(0.) {
+            layout.sidebar
+        } else {
+            self.sidebar_width
+        };
+        let sidebar_open = gpui::base::motion::transition(
+            "sidebar-open",
+            if layout.sidebar > px(0.) { 1f32 } else { 0. },
+            ui::style::pane_transition(),
+            window,
+            cx,
+        );
+        let sidebar_shown = sidebar_width * sidebar_open;
+        let entity = cx.entity();
+        let reset = move |kind| {
+            let entity = entity.clone();
+            move |_: &mut Window, cx: &mut gpui::App| {
+                entity.update(cx, |this, cx| this.reset_pane(kind, cx))
+            }
+        };
+
         // Handlers sit on the root, so actions reach them from the overlays too.
         div()
             .id("pigeon")
@@ -1470,6 +1658,16 @@ impl Render for PigeonApp {
             .on_action(cx.listener(Self::decline_invite))
             .on_action(cx.listener(Self::open_invite_in_calendar))
             .on_action(cx.listener(Self::remove_cancelled_event))
+            .on_action(cx.listener(Self::zoom_in))
+            .on_action(cx.listener(Self::zoom_out))
+            .on_action(cx.listener(Self::reset_zoom))
+            .on_action(cx.listener(Self::focus_next_control))
+            .on_action(cx.listener(Self::focus_prev_control))
+            .on_action(cx.listener(Self::focus_panes))
+            .on_action(cx.listener(Self::about))
+            .on_action(cx.listener(Self::close_window))
+            .on_action(cx.listener(Self::minimize))
+            .on_action(cx.listener(Self::zoom_window))
             .on_drag_move(cx.listener(Self::resize_pane))
             .relative()
             .size_full()
@@ -1490,12 +1688,20 @@ impl Render for PigeonApp {
                     div()
                         .key_context(self.mailbox_key_context())
                         .track_focus(&self.focus_handle)
+                        .relative()
                         .size_full()
                         .flex()
                         .flex_row()
                         .child(ui::rail::render(self.mode, &theme))
-                        .when(self.sidebar_open, |this| {
-                            this.child(self.render_sidebar(window, cx))
+                        .when(sidebar_open > 0., |this| {
+                            this.child(
+                                div()
+                                    .w(sidebar_shown)
+                                    .h_full()
+                                    .flex_none()
+                                    .overflow_hidden()
+                                    .child(self.render_sidebar(sidebar_width, window, cx)),
+                            )
                         })
                         .child(
                             div()
@@ -1511,12 +1717,17 @@ impl Render for PigeonApp {
                                         cx.notify();
                                     }),
                                 )
-                                .child(self.render_thread_list(window, cx)),
+                                .child(self.render_thread_list(
+                                    layout.list,
+                                    layout.sidebar > px(0.),
+                                    window,
+                                    cx,
+                                )),
                         )
                         .child(
                             div()
                                 .flex_1()
-                                .min_w(px(360.))
+                                .min_w_0()
                                 .h_full()
                                 .flex()
                                 .on_mouse_down(
@@ -1527,7 +1738,23 @@ impl Render for PigeonApp {
                                     }),
                                 )
                                 .child(self.render_reader(window, cx)),
-                        ),
+                        )
+                        .when(layout.sidebar > px(0.), |this| {
+                            this.child(ui::pane_divider(
+                                PaneResize::Sidebar,
+                                RAIL_WIDTH + sidebar_shown,
+                                self.resizing == Some(PaneResize::Sidebar),
+                                &theme,
+                                reset(PaneResize::Sidebar),
+                            ))
+                        })
+                        .child(ui::pane_divider(
+                            PaneResize::List,
+                            RAIL_WIDTH + sidebar_shown + layout.list,
+                            self.resizing == Some(PaneResize::List),
+                            &theme,
+                            reset(PaneResize::List),
+                        )),
                 )
             })
             .children(self.render_toast(cx))

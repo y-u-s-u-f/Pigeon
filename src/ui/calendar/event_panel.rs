@@ -14,6 +14,7 @@ use gpui::{
 };
 
 use super::{CalendarView, Menu, today};
+use crate::ui::style::*;
 use crate::{
     actions::*,
     assets::Icon,
@@ -888,9 +889,9 @@ impl CalendarView {
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(2.))
-            .pl(px(16.))
-            .pr(px(10.))
+            .gap(SPACE_2XS)
+            .pl(SPACE_LG)
+            .pr(SPACE_MD)
             .child(self.render_calendar_picker(event, &theme, window, cx))
             .child(div().flex_1())
             .child(icon_button(
@@ -909,20 +910,20 @@ impl CalendarView {
             ));
 
         let title = div()
-            .px(px(20.))
-            .pt(px(4.))
-            .pb(px(14.))
+            .px(SPACE_XL)
+            .pt(SPACE_XS)
+            .pb(SPACE_LG)
             .flex()
             .flex_col()
-            .gap(px(6.))
+            .gap(SPACE_SM)
             .child(
                 div()
                     .flex()
                     .items_start()
-                    .gap(px(12.))
+                    .gap(SPACE_MD)
                     .child(
                         div()
-                            .mt(px(5.))
+                            .mt(SPACE_XS)
                             .w(px(4.))
                             .h(px(24.))
                             .flex_none()
@@ -935,18 +936,18 @@ impl CalendarView {
                                 .appearance(false)
                                 .px(px(0.))
                                 .h(px(32.))
-                                .text_size(px(19.))
+                                .text_size(TEXT_XL)
                                 .font_weight(FontWeight::SEMIBOLD),
                         ),
                     ),
             )
             .children(event.recurrence.map(|recurrence| {
                 div()
-                    .pl(px(16.))
+                    .pl(SPACE_LG)
                     .flex()
                     .items_center()
-                    .gap(px(6.))
-                    .text_size(px(12.))
+                    .gap(SPACE_SM)
+                    .text_size(TEXT_SM)
                     .text_color(theme.text_muted)
                     .child(icon(Icon::Repeat, px(13.), theme.text_faint))
                     .child(recurrence.label())
@@ -962,7 +963,7 @@ impl CalendarView {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .pb(px(24.))
+            .pb(SPACE_XL)
             .child(title)
             .child(divider(&theme))
             .child(self.render_when(panel, event, &theme, window, cx))
@@ -977,34 +978,34 @@ impl CalendarView {
                 field_box(panel.is_focused(Field::Notes, window, cx), &theme)
                     .h_auto()
                     .min_h(px(30.))
-                    .py(px(5.))
+                    .py(SPACE_XS)
                     .px(px(0.))
                     .child(
                         div()
                             .w_full()
-                            .text_size(px(13.))
+                            .text_size(TEXT_BASE)
                             .line_height(relative(1.5))
                             .mx(px(-2.))
                             .child(
                                 Textarea::new(&panel.notes)
                                     .appearance(false)
-                                    .text_size(px(13.)),
+                                    .text_size(TEXT_BASE),
                             ),
                     ),
             ))
             .child(divider(&theme))
             .child(self.render_options(event, &theme, window, cx))
             .child(
-                div().px(px(20.)).pt(px(18.)).child(
+                div().px(SPACE_XL).pt(SPACE_LG).child(
                     div()
                         .id("event-delete-button")
                         .h(px(32.))
-                        .px(px(10.))
+                        .px(SPACE_MD)
                         .flex()
                         .items_center()
-                        .gap(px(8.))
-                        .rounded(px(8.))
-                        .text_size(px(13.))
+                        .gap(SPACE_SM)
+                        .rounded(RADIUS_MD)
+                        .text_size(TEXT_BASE)
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.danger)
                         .hover(|s| s.bg(theme.danger.alpha(0.1)))
@@ -1093,13 +1094,13 @@ impl CalendarView {
             .child(
                 control(div().id("event-calendar"), focus, theme)
                     .h(px(28.))
-                    .pl(px(8.))
-                    .pr(px(6.))
+                    .pl(SPACE_SM)
+                    .pr(SPACE_SM)
                     .flex()
                     .items_center()
-                    .gap(px(7.))
-                    .rounded(px(7.))
-                    .text_size(px(12.5))
+                    .gap(SPACE_SM)
+                    .rounded(RADIUS_MD)
+                    .text_size(TEXT_SM)
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_muted)
                     .when(open, |d| d.bg(theme.selected_bg))
@@ -1136,7 +1137,7 @@ impl CalendarView {
             div()
                 .flex()
                 .items_center()
-                .gap(px(4.))
+                .gap(SPACE_XS)
                 .child(field(Field::StartDate, None, cx))
                 .child(dash())
                 .child(field(Field::EndDate, None, cx))
@@ -1144,20 +1145,20 @@ impl CalendarView {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(2.))
+                .gap(SPACE_2XS)
                 .child(field(Field::StartDate, None, cx))
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(4.))
+                        .gap(SPACE_XS)
                         .child(field(Field::StartTime, Some(92.), cx))
                         .child(dash())
                         .child(field(Field::EndTime, Some(92.), cx))
                         .child(
                             div()
-                                .ml(px(6.))
-                                .text_size(px(12.))
+                                .ml(SPACE_SM)
+                                .text_size(TEXT_SM)
                                 .text_color(theme.text_faint)
                                 .child(
                                     if end.date() != start.date()
@@ -1177,15 +1178,15 @@ impl CalendarView {
             Some(panel.all_day_focus.clone()),
             theme,
         )
-        .mt(px(6.))
-        .px(px(8.))
+        .mt(SPACE_SM)
+        .px(SPACE_SM)
         .h(px(26.))
         .w_auto()
         .flex()
         .items_center()
-        .gap(px(9.))
-        .rounded(px(7.))
-        .text_size(px(12.5))
+        .gap(SPACE_SM)
+        .rounded(RADIUS_MD)
+        .text_size(TEXT_SM)
         .text_color(theme.text_muted)
         .hover(|s| s.bg(theme.hover_bg))
         .child(switch(all_day, theme))
@@ -1243,7 +1244,7 @@ impl CalendarView {
                         .appearance(false)
                         .px(px(0.))
                         .h(px(28.))
-                        .text_size(px(13.5))
+                        .text_size(TEXT_BASE)
                         .font_weight(FontWeight::MEDIUM),
                 ),
             )
@@ -1271,11 +1272,11 @@ impl CalendarView {
         let nav = |id: &'static str, glyph: Icon, months: i32| {
             div()
                 .id(id)
-                .size(px(26.))
+                .size(HIT_TARGET)
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(6.))
+                .rounded(RADIUS_SM)
                 .hover(|s| s.bg(theme.hover_bg))
                 .child(icon(glyph, px(14.), theme.icon))
                 .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
@@ -1291,7 +1292,7 @@ impl CalendarView {
                 .w(px(32.))
                 .flex()
                 .justify_center()
-                .text_size(px(10.5))
+                .text_size(TEXT_XS)
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.text_faint)
                 .child(d)
@@ -1308,7 +1309,7 @@ impl CalendarView {
                     .items_center()
                     .justify_center()
                     .rounded_full()
-                    .text_size(px(12.5))
+                    .text_size(TEXT_SM)
                     .map(|d| {
                         if is_chosen {
                             d.bg(theme.accent)
@@ -1335,9 +1336,9 @@ impl CalendarView {
         });
         div()
             .occlude()
-            .mt(px(4.))
-            .p(px(10.))
-            .rounded(px(12.))
+            .mt(SPACE_XS)
+            .p(SPACE_MD)
+            .rounded(RADIUS_LG)
             .bg(theme.overlay_bg)
             .border_1()
             .border_color(theme.overlay_border)
@@ -1345,21 +1346,21 @@ impl CalendarView {
             .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
             .child(
                 div()
-                    .pb(px(6.))
-                    .pl(px(6.))
+                    .pb(SPACE_SM)
+                    .pl(SPACE_SM)
                     .flex()
                     .items_center()
                     .child(
                         div()
                             .flex_1()
-                            .text_size(px(13.))
+                            .text_size(TEXT_BASE)
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(month.format("%B %Y").to_string()),
                     )
                     .child(nav("picker-prev", Icon::ChevronLeft, -1))
                     .child(nav("picker-next", Icon::ChevronRight, 1)),
             )
-            .child(div().flex().pb(px(2.)).children(weekdays))
+            .child(div().flex().pb(SPACE_2XS).children(weekdays))
             .children(weeks)
             .into_any_element()
     }
@@ -1403,12 +1404,12 @@ impl CalendarView {
                 .id(("time-slot", ix))
                 .h(px(30.))
                 .flex_none()
-                .px(px(10.))
+                .px(SPACE_MD)
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .rounded(px(6.))
-                .text_size(px(13.))
+                .gap(SPACE_SM)
+                .rounded(RADIUS_SM)
+                .text_size(TEXT_BASE)
                 .map(|d| {
                     if chosen {
                         d.bg(theme.selected_bg).font_weight(FontWeight::SEMIBOLD)
@@ -1419,7 +1420,7 @@ impl CalendarView {
                 .child(time_label(value.time()))
                 .children(length.map(|l| {
                     div()
-                        .text_size(px(12.))
+                        .text_size(TEXT_SM)
                         .text_color(theme.text_faint)
                         .child(l)
                 }))
@@ -1430,9 +1431,9 @@ impl CalendarView {
         });
         div()
             .occlude()
-            .mt(px(4.))
+            .mt(SPACE_XS)
             .w(px(if field == Field::EndTime { 190. } else { 140. }))
-            .rounded(px(10.))
+            .rounded(RADIUS_MD)
             .bg(theme.overlay_bg)
             .border_1()
             .border_color(theme.overlay_border)
@@ -1443,7 +1444,7 @@ impl CalendarView {
                 div()
                     .id("time-picker")
                     .h(px(240.))
-                    .p(px(4.))
+                    .p(SPACE_XS)
                     .overflow_y_scroll()
                     .track_scroll(&panel.picker_scroll)
                     .flex()
@@ -1469,7 +1470,7 @@ impl CalendarView {
                 Icon::MapPin,
                 theme,
                 field_box(panel.is_focused(Field::Location, window, cx), theme)
-                    .text_size(px(13.))
+                    .text_size(TEXT_BASE)
                     .child(field_input(&panel.location)),
             ))
             .child(
@@ -1479,12 +1480,12 @@ impl CalendarView {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(SPACE_SM)
                         .child(
                             field_box(panel.is_focused(Field::Video, window, cx), theme)
                                 .flex_1()
                                 .min_w_0()
-                                .text_size(px(13.))
+                                .text_size(TEXT_BASE)
                                 .child(field_input(&panel.video)),
                         )
                         .when(!link.is_empty(), |d| {
@@ -1493,14 +1494,14 @@ impl CalendarView {
                                     .id("join-call")
                                     .flex_none()
                                     .h(px(28.))
-                                    .px(px(12.))
+                                    .px(SPACE_MD)
                                     .flex()
                                     .items_center()
-                                    .gap(px(6.))
-                                    .rounded(px(7.))
+                                    .gap(SPACE_SM)
+                                    .rounded(RADIUS_MD)
                                     .bg(theme.accent)
                                     .text_color(theme.accent_text)
-                                    .text_size(px(12.5))
+                                    .text_size(TEXT_SM)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .hover(|s| s.opacity(0.9))
                                     .child(icon(Icon::Video, px(14.), theme.accent_text))
@@ -1548,11 +1549,11 @@ impl CalendarView {
                 .id(id)
                 .group("guest")
                 .h(px(40.))
-                .px(px(8.))
+                .px(SPACE_SM)
                 .flex()
                 .items_center()
-                .gap(px(10.))
-                .rounded(px(8.))
+                .gap(SPACE_SM)
+                .rounded(RADIUS_MD)
                 .hover(|s| s.bg(theme.hover_bg))
                 .child(
                     div()
@@ -1575,14 +1576,14 @@ impl CalendarView {
                         .child(
                             div()
                                 .truncate()
-                                .text_size(px(13.))
+                                .text_size(TEXT_BASE)
                                 .font_weight(FontWeight::MEDIUM)
                                 .child(name),
                         )
                         .child(
                             div()
                                 .truncate()
-                                .text_size(px(11.5))
+                                .text_size(TEXT_SM)
                                 .text_color(theme.text_faint)
                                 .child(detail),
                         ),
@@ -1590,7 +1591,7 @@ impl CalendarView {
                 .children(removable.map(|ix| {
                     div()
                         .id(("guest-remove", ix))
-                        .size(px(22.))
+                        .size(HIT_TARGET)
                         .flex()
                         .items_center()
                         .justify_center()
@@ -1655,9 +1656,9 @@ impl CalendarView {
                 parts.push(format!("{awaiting} awaiting"));
             }
             div()
-                .px(px(8.))
-                .pb(px(2.))
-                .text_size(px(12.))
+                .px(SPACE_SM)
+                .pb(SPACE_2XS)
+                .text_size(TEXT_SM)
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text_muted)
                 .child(parts.join(" · "))
@@ -1670,11 +1671,11 @@ impl CalendarView {
                 div()
                     .id(("guest-suggestion", row))
                     .h(px(40.))
-                    .px(px(8.))
+                    .px(SPACE_SM)
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .rounded(px(7.))
+                    .gap(SPACE_SM)
+                    .rounded(RADIUS_MD)
                     .when(row == panel.highlighted, |d| d.bg(theme.selected_bg))
                     .hover(|d| d.bg(theme.hover_bg))
                     .child(avatar(
@@ -1691,14 +1692,14 @@ impl CalendarView {
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(px(13.))
+                                    .text_size(TEXT_BASE)
                                     .font_weight(FontWeight::MEDIUM)
                                     .child(contact.display_name().to_string()),
                             )
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(px(11.5))
+                                    .text_size(TEXT_SM)
                                     .text_color(theme.text_muted)
                                     .child(contact.email.clone()),
                             ),
@@ -1712,12 +1713,12 @@ impl CalendarView {
             below(
                 div()
                     .occlude()
-                    .mt(px(4.))
+                    .mt(SPACE_XS)
                     .w(px(300.))
-                    .p(px(4.))
+                    .p(SPACE_XS)
                     .flex()
                     .flex_col()
-                    .rounded(px(10.))
+                    .rounded(RADIUS_MD)
                     .bg(theme.overlay_bg)
                     .border_1()
                     .border_color(theme.overlay_border)
@@ -1747,7 +1748,7 @@ impl CalendarView {
                         .flex_col()
                         .child(
                             field_box(focused, theme)
-                                .text_size(px(13.))
+                                .text_size(TEXT_BASE)
                                 .child(field_input(&panel.guests)),
                         )
                         .children(suggestions),
@@ -1798,12 +1799,12 @@ impl CalendarView {
                         theme,
                     )
                     .h(px(28.))
-                    .px(px(8.))
+                    .px(SPACE_SM)
                     .flex()
                     .items_center()
-                    .gap(px(6.))
-                    .rounded(px(7.))
-                    .text_size(px(13.))
+                    .gap(SPACE_SM)
+                    .rounded(RADIUS_MD)
+                    .text_size(TEXT_BASE)
                     .when(open, |d| d.bg(theme.selected_bg))
                     .hover(|s| s.bg(theme.hover_bg))
                     .child(reminder_label(current))
@@ -1837,10 +1838,10 @@ impl CalendarView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
+                    .gap(SPACE_SM)
                     .child(
                         div()
-                            .text_size(px(13.))
+                            .text_size(TEXT_BASE)
                             .text_color(theme.text_muted)
                             .child("Going?"),
                     )
@@ -1878,10 +1879,10 @@ impl CalendarView {
 /// A row of the panel: an icon in the gutter, then its content.
 fn section(glyph: Icon, theme: &Theme, content: impl IntoElement) -> gpui::Div {
     div()
-        .px(px(20.))
-        .py(px(8.))
+        .px(SPACE_XL)
+        .py(SPACE_SM)
         .flex()
-        .gap(px(10.))
+        .gap(SPACE_SM)
         .child(
             div()
                 .w(px(18.))
@@ -1899,21 +1900,21 @@ fn field_input(input: &Entity<InputState>) -> Input {
     Input::new(input)
         .appearance(false)
         .px(px(0.))
-        .text_size(px(13.))
+        .text_size(TEXT_BASE)
 }
 
 fn divider(theme: &Theme) -> impl IntoElement {
-    div().mx(px(20.)).my(px(6.)).h(px(1.)).bg(theme.border)
+    div().mx(SPACE_XL).my(SPACE_SM).h(px(1.)).bg(theme.border)
 }
 
 /// The box around an editable field: plain text until hovered or focused.
 fn field_box(focused: bool, theme: &Theme) -> gpui::Div {
     div()
         .h(px(30.))
-        .px(px(8.))
+        .px(SPACE_SM)
         .flex()
         .items_center()
-        .rounded(px(7.))
+        .rounded(RADIUS_MD)
         .border_1()
         .map(|d| {
             if focused {
@@ -1939,10 +1940,10 @@ fn dropdown(top: gpui::Pixels, width: gpui::Pixels, theme: &Theme) -> gpui::Stat
         .occlude()
         .mt(top)
         .w(width)
-        .p(px(4.))
+        .p(SPACE_XS)
         .flex()
         .flex_col()
-        .rounded(px(10.))
+        .rounded(RADIUS_MD)
         .bg(theme.overlay_bg)
         .border_1()
         .border_color(theme.overlay_border)
@@ -1957,12 +1958,12 @@ fn menu_row(
     div()
         .id(id)
         .h(px(30.))
-        .px(px(10.))
+        .px(SPACE_MD)
         .flex()
         .items_center()
-        .gap(px(10.))
-        .rounded(px(7.))
-        .text_size(px(13.))
+        .gap(SPACE_SM)
+        .rounded(RADIUS_MD)
+        .text_size(TEXT_BASE)
         .when(highlighted, |d| d.bg(theme.selected_bg))
         .hover(|s| s.bg(theme.hover_bg))
 }
@@ -1987,7 +1988,7 @@ fn switch(on: bool, theme: &Theme) -> impl IntoElement {
         .w(px(28.))
         .h(px(16.))
         .flex_none()
-        .p(px(2.))
+        .p(SPACE_2XS)
         .flex()
         .rounded_full()
         .bg(if on { theme.accent } else { theme.selected_bg })
@@ -2017,9 +2018,9 @@ fn segmented<const N: usize>(
 ) -> impl IntoElement {
     div()
         .flex()
-        .p(px(2.))
-        .gap(px(2.))
-        .rounded(px(8.))
+        .p(SPACE_2XS)
+        .gap(SPACE_2XS)
+        .rounded(RADIUS_MD)
         .bg(theme.chip_bg)
         .children(
             options
@@ -2030,11 +2031,11 @@ fn segmented<const N: usize>(
                     div()
                         .id((id, ix))
                         .h(px(24.))
-                        .px(px(12.))
+                        .px(SPACE_MD)
                         .flex()
                         .items_center()
-                        .rounded(px(6.))
-                        .text_size(px(12.5))
+                        .rounded(RADIUS_SM)
+                        .text_size(TEXT_SM)
                         .font_weight(FontWeight::MEDIUM)
                         .map(|d| {
                             if active {

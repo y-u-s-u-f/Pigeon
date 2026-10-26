@@ -10,6 +10,7 @@ use super::{
     HEADER_HEIGHT, avatar, empty_state, html_view, icon, icon_button, icon_button_tinted,
     label_chip, window_drag_area,
 };
+use crate::ui::style::*;
 use crate::{
     actions::*,
     app::PigeonApp,
@@ -35,7 +36,7 @@ impl PigeonApp {
 
         div()
             .flex_1()
-            .min_w(px(360.))
+            .min_w_0()
             .h_full()
             .flex()
             .flex_col()
@@ -54,9 +55,9 @@ impl PigeonApp {
                                     .size_full()
                                     .overflow_y_scroll()
                                     .track_scroll(&self.reader_scroll)
-                                    .px(px(28.))
-                                    .pt(px(2.))
-                                    .pb(px(40.))
+                                    .px(SPACE_XL)
+                                    .pt(SPACE_2XS)
+                                    .pb(SPACE_2XL)
                                     .child(composer),
                             )
                             .vertical_scrollbar(&self.reader_scroll),
@@ -96,12 +97,12 @@ impl PigeonApp {
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(2.))
-            .pl(px(28.))
-            .pr(px(12.))
+            .gap(SPACE_2XS)
+            .pl(SPACE_XL)
+            .pr(SPACE_MD)
             .child(
                 div()
-                    .text_size(px(15.))
+                    .text_size(TEXT_LG)
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(title),
             )
@@ -128,13 +129,13 @@ impl PigeonApp {
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(2.))
-            .px(px(12.));
+            .gap(SPACE_2XS)
+            .px(SPACE_MD);
         let Some(thread) = thread else {
             return header;
         };
 
-        let separator = || div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(theme.border);
+        let separator = || div().w(px(1.)).h(px(16.)).mx(SPACE_SM).bg(theme.border);
 
         header
             .when_some(thread.folder.archive_target(), |this, target| {
@@ -234,13 +235,21 @@ impl PigeonApp {
                 self.render_collapsed_message(ix, message, theme, cx)
             };
             div()
+                .id(("message-card", ix))
+                .role(gpui::Role::Article)
+                .aria_label(format!(
+                    "{}, {}: {}",
+                    self.contact_name(&message.from),
+                    full_date(&message.date),
+                    message.snippet
+                ))
                 .relative()
                 .bg(theme.card_bg)
                 .border_x_1()
                 .border_t_1()
                 .border_color(theme.border)
-                .when(ix == 0, |d| d.rounded_t(px(12.)))
-                .when(ix == last, |d| d.border_b_1().rounded_b(px(12.)))
+                .when(ix == 0, |d| d.rounded_t(RADIUS_LG))
+                .when(ix == last, |d| d.border_b_1().rounded_b(RADIUS_LG))
                 .when(focused, |d| d.bg(theme.card_focused_bg))
                 .child(body)
                 .when(focused, |d| {
@@ -251,7 +260,7 @@ impl PigeonApp {
                             .top(px(10.))
                             .bottom(px(10.))
                             .w(px(3.))
-                            .rounded_r(px(3.))
+                            .rounded_r(RADIUS_SM)
                             .bg(theme.accent),
                     )
                 })
@@ -263,11 +272,11 @@ impl PigeonApp {
             .filter(|_| self.composer_inline(cx))
             .map(|(composer, _)| {
                 div()
-                    .mt(px(16.))
-                    .px(px(16.))
-                    .pt(px(12.))
-                    .pb(px(14.))
-                    .rounded(px(12.))
+                    .mt(SPACE_LG)
+                    .px(SPACE_LG)
+                    .pt(SPACE_MD)
+                    .pb(SPACE_LG)
+                    .rounded(RADIUS_LG)
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.card_bg)
@@ -284,26 +293,29 @@ impl PigeonApp {
                     .size_full()
                     .overflow_y_scroll()
                     .track_scroll(&self.reader_scroll)
-                    .px(px(28.))
-                    .pt(px(6.))
-                    .pb(px(40.))
+                    .px(SPACE_XL)
+                    .pt(SPACE_SM)
+                    .pb(SPACE_2XL)
                     .child(
                         div()
-                            .text_size(px(20.))
+                            .id("subject")
+                            .role(gpui::Role::Heading)
+                            .aria_label(thread.subject.clone())
+                            .text_size(TEXT_XL)
                             .line_height(relative(1.3))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(thread.subject.clone()),
                     )
                     .child(
                         div()
-                            .mt(px(10.))
-                            .mb(px(18.))
+                            .mt(SPACE_MD)
+                            .mb(SPACE_LG)
                             .flex()
                             .flex_wrap()
                             .items_center()
-                            .gap(px(6.))
+                            .gap(SPACE_SM)
                             .children(chips)
-                            .child(div().text_size(px(12.)).text_color(theme.text_faint).child(
+                            .child(div().text_size(TEXT_SM).text_color(theme.text_faint).child(
                                 match thread.messages.len() {
                                     1 => "1 message".to_string(),
                                     n => format!("{n} messages"),
@@ -327,17 +339,17 @@ impl PigeonApp {
         div()
             .id(("message", ix))
             .h(px(46.))
-            .px(px(16.))
+            .px(SPACE_LG)
             .flex()
             .items_center()
-            .gap(px(10.))
-            .rounded(px(12.))
+            .gap(SPACE_SM)
+            .rounded(RADIUS_LG)
             .hover(|s| s.bg(theme.hover_bg))
             .child(self.sender_avatar(&message.from, px(24.), theme))
             .child(
                 div()
                     .flex_none()
-                    .text_size(px(13.))
+                    .text_size(TEXT_BASE)
                     .font_weight(FontWeight::MEDIUM)
                     .child(self.contact_name(&message.from).to_string()),
             )
@@ -346,14 +358,14 @@ impl PigeonApp {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(px(12.5))
+                    .text_size(TEXT_SM)
                     .text_color(theme.text_faint)
                     .child(message.snippet.clone()),
             )
             .child(
                 div()
                     .flex_none()
-                    .text_size(px(12.))
+                    .text_size(TEXT_SM)
                     .text_color(theme.text_faint)
                     .child(full_date(&message.date)),
             )
@@ -386,22 +398,22 @@ impl PigeonApp {
         let attachments = message.attachments.iter().map(|attachment| {
             div()
                 .h(px(34.))
-                .px(px(10.))
+                .px(SPACE_MD)
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .rounded(px(8.))
+                .gap(SPACE_SM)
+                .rounded(RADIUS_MD)
                 .bg(theme.chip_bg)
                 .child(icon(Icon::File, px(15.), theme.icon))
                 .child(
                     div()
-                        .text_size(px(12.5))
+                        .text_size(TEXT_SM)
                         .font_weight(FontWeight::MEDIUM)
                         .child(attachment.name.clone()),
                 )
                 .child(
                     div()
-                        .text_size(px(12.))
+                        .text_size(TEXT_SM)
                         .text_color(theme.text_faint)
                         .child(file_size(attachment.size_bytes)),
                 )
@@ -411,7 +423,7 @@ impl PigeonApp {
             .id(("message-header", ix))
             .flex()
             .items_start()
-            .gap(px(12.))
+            .gap(SPACE_MD)
             .child(self.sender_avatar(&message.from, px(34.), theme))
             .child(
                 div()
@@ -419,16 +431,16 @@ impl PigeonApp {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(px(2.))
+                    .gap(SPACE_2XS)
                     .child(
                         div()
                             .flex()
                             .items_baseline()
-                            .gap(px(8.))
+                            .gap(SPACE_SM)
                             .child(
                                 div()
                                     .flex_none()
-                                    .text_size(px(13.5))
+                                    .text_size(TEXT_BASE)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(self.contact_name(&message.from).to_string()),
                             )
@@ -436,7 +448,7 @@ impl PigeonApp {
                                 div()
                                     .min_w_0()
                                     .truncate()
-                                    .text_size(px(12.))
+                                    .text_size(TEXT_SM)
                                     .text_color(theme.text_faint)
                                     .child(message.from.email.clone()),
                             ),
@@ -444,7 +456,7 @@ impl PigeonApp {
                     .child(
                         div()
                             .truncate()
-                            .text_size(px(12.))
+                            .text_size(TEXT_SM)
                             .text_color(theme.text_muted)
                             .child(to_line),
                     ),
@@ -452,7 +464,7 @@ impl PigeonApp {
             .child(
                 div()
                     .flex_none()
-                    .text_size(px(12.))
+                    .text_size(TEXT_SM)
                     .text_color(theme.text_faint)
                     .child(full_date(&message.date)),
             )
@@ -462,16 +474,16 @@ impl PigeonApp {
             });
 
         div()
-            .px(px(16.))
-            .pt(px(16.))
-            .pb(px(20.))
+            .px(SPACE_LG)
+            .pt(SPACE_LG)
+            .pb(SPACE_XL)
             .flex()
             .flex_col()
             .child(header)
             .child(
                 div()
                     .id(("message-body", ix))
-                    .mt(px(14.))
+                    .mt(SPACE_LG)
                     .pl(px(46.))
                     .children(
                         message
@@ -484,11 +496,11 @@ impl PigeonApp {
             .when(!message.attachments.is_empty(), |this| {
                 this.child(
                     div()
-                        .mt(px(16.))
+                        .mt(SPACE_LG)
                         .pl(px(46.))
                         .flex()
                         .flex_wrap()
-                        .gap(px(8.))
+                        .gap(SPACE_SM)
                         .children(attachments),
                 )
             })
@@ -516,7 +528,7 @@ impl PigeonApp {
 /// The message's HTML, rendered natively. Parsed once per message and cached.
 fn render_body(doc: &Document, theme: &Theme) -> impl IntoElement {
     div()
-        .text_size(px(14.))
+        .text_size(TEXT_MD)
         .line_height(relative(1.55))
         .text_color(theme.text)
         .child(html_view::render(doc, theme))

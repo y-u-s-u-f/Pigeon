@@ -19,12 +19,14 @@ use std::{cell::Cell, rc::Rc, time::Duration as StdDuration};
 
 use chrono::{Duration, Local, NaiveDate, NaiveDateTime};
 use gpui::{
-    AnyElement, Bounds, Context, EventEmitter, FocusHandle, InteractiveElement, IntoElement,
-    MouseButton, ParentElement, Pixels, Render, ScrollHandle, SharedString, Styled, Task, Window,
-    anchored, deferred, div, point, prelude::FluentBuilder as _, px,
+    Animation, AnimationExt as _, AnyElement, Bounds, Context, EventEmitter, FocusHandle,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, ScrollHandle,
+    SharedString, Styled, Task, Window, anchored, deferred, div, ease_out_quint, point,
+    prelude::FluentBuilder as _, px,
 };
 
 use self::{drag::GridDrag, event_panel::EventPanel};
+use crate::ui::style::*;
 use crate::{
     actions::*,
     calendar::{
@@ -37,6 +39,9 @@ use crate::{
 
 /// Height of an hour in the Day and Week grids.
 pub const HOUR_HEIGHT: f32 = 50.;
+/// The narrowest the grid and header get beside a docked event panel; in a
+/// narrower window the panel floats over the grid instead.
+const GRID_MIN_BESIDE_PANEL: f32 = 680.;
 /// The hour the grids open scrolled to.
 const FIRST_VISIBLE_HOUR: f32 = 7.5;
 
@@ -717,6 +722,24 @@ impl CalendarView {
         .into_any_element()
     }
 
+    /// Whether the open event panel sits beside the grid (true) or over it.
+    pub fn panel_docked(&self, window: &Window) -> bool {
+        let width = window.viewport_size().width - crate::app::RAIL_WIDTH;
+        f32::from(width) - event_panel::PANEL_WIDTH >= GRID_MIN_BESIDE_PANEL
+    }
+
+    /// What VoiceOver reads for an occurrence: title, day and time.
+    pub fn occurrence_label(&self, occurrence: &Occurrence) -> String {
+        let event = &self.data.events[occurrence.event];
+        let day = time::date_label(occurrence.start.date(), today());
+        if event.all_day {
+            format!("{}, {day}, all day", event.display_title())
+        } else {
+            let times = time::time_range_label(occurrence.start.time(), occurrence.end.time());
+            format!("{}, {day}, {times}", event.display_title())
+        }
+    }
+
     pub fn calendar_name(&self, event: &Event) -> SharedString {
         self.data
             .calendar(&event.calendar)
@@ -739,6 +762,7 @@ impl Render for CalendarView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         let panel = self.panel.is_some().then(|| self.render_panel(window, cx));
+        let docked = self.panel_docked(window);
         div()
             .id("calendar")
             .key_context(CALENDAR)
@@ -756,6 +780,7 @@ impl Render for CalendarView {
             .on_action(cx.listener(Self::delete_selected))
             .on_action(cx.listener(Self::close_event))
             .on_action(cx.listener(Self::toggle_calendars_menu))
+            .relative()
             .flex_1()
             .min_w_0()
             .h_full()
@@ -781,7 +806,30 @@ impl Render for CalendarView {
                             .child(self.render_body(window, cx)),
                     ),
             )
-            .when_some(panel, |this, panel| this.child(panel))
+            .when_some(panel, |this, panel| {
+                // Slides open from the right edge.
+                this.child(
+                    div()
+                        .h_full()
+                        .flex_none()
+                        .overflow_hidden()
+                        .when(!docked, |d| {
+                            // Opaque, so the grid doesn't show through.
+                            d.absolute()
+                                .top_0()
+                                .right_0()
+                                .occlude()
+                                .bg(theme.overlay_bg)
+                                .shadow(crate::ui::popover_shadow(&theme))
+                        })
+                        .child(panel)
+                        .with_animation(
+                            "event-panel-open",
+                            Animation::new(MOTION_PANE).with_easing(ease_out_quint()),
+                            |el, delta| el.w(px(event_panel::PANEL_WIDTH * delta)),
+                        ),
+                )
+            })
             .when(self.drag.is_some(), |this| {
                 this.child(self.render_drag_layer(window, cx))
             })

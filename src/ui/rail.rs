@@ -7,6 +7,7 @@ use gpui::{
 };
 
 use super::{HEADER_HEIGHT, icon, window_drag_area};
+use crate::ui::style::*;
 use crate::{
     actions::{GoToCalendar, GoToMail},
     app::{Mode, RAIL_WIDTH},
@@ -22,13 +23,15 @@ pub fn render(mode: Mode, theme: &Theme) -> impl IntoElement {
                 action: Box<dyn Action>| {
         let active = mode == item_mode;
         let tooltip_action = action.boxed_clone();
-        div()
-            .id(id)
+        focusable_control(div().id(id), theme)
+            .role(gpui::Role::Tab)
+            .aria_label(tooltip)
+            .aria_selected(active)
             .size(px(36.))
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(9.))
+            .rounded(RADIUS_MD)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
             .tooltip(move |window, cx| {
@@ -57,13 +60,15 @@ pub fn render(mode: Mode, theme: &Theme) -> impl IntoElement {
     window_drag_area(
         div()
             .id("rail")
+            .role(gpui::Role::TabList)
+            .aria_label("Apps")
             .w(RAIL_WIDTH)
             .h_full()
             .flex_none()
             .flex()
             .flex_col()
             .items_center()
-            .gap(px(6.))
+            .gap(SPACE_SM)
             .pt(HEADER_HEIGHT)
             .bg(theme.rail_bg)
             .border_r_1()

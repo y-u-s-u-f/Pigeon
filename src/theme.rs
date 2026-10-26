@@ -7,9 +7,9 @@ use gpui::{App, Global, Hsla, Window, WindowAppearance, hsla, rgba, transparent_
 pub struct Theme {
     pub is_dark: bool,
 
-    // Pane tints, painted over the blurred window background. Low alpha so the
-    // wallpaper shows through; the sidebar is the most see-through, the reader
-    // the most solid. GPUI adds the alphas of stacked layers (and clamps), so
+    // Pane tints, painted over the blurred window background. Enough alpha
+    // that text keeps 4.5:1 whatever the wallpaper, while it still tints
+    // through; the sidebar is the most see-through, the reader the most solid. GPUI adds the alphas of stacked layers (and clamps), so
     // a light layer over a light pane turns gray rather than whiter: keep
     // light-mode cards and fields faint.
     pub rail_bg: Hsla,
@@ -93,16 +93,16 @@ impl Theme {
     pub fn dark() -> Self {
         Self {
             is_dark: true,
-            rail_bg: hex(0x0c0c1073),
-            sidebar_bg: hex(0x11111566),
-            list_bg: hex(0x1414188c),
-            reader_bg: hex(0x18181ca6),
+            rail_bg: hex(0x0c0c10b3),
+            sidebar_bg: hex(0x111115bf),
+            list_bg: hex(0x141418d1),
+            reader_bg: hex(0x18181ce0),
             border: hex(0xffffff14),
 
             text: hex(0xf4f4f7ff),
-            text_muted: hex(0xb6b6bfff),
-            text_dim: hex(0x9c9ca6ff),
-            text_faint: hex(0x80808aff),
+            text_muted: hex(0xb8b8c1ff),
+            text_dim: hex(0xa8a8b2ff),
+            text_faint: hex(0x9a9aa4ff),
 
             hover_bg: hex(0xffffff0a),
             selected_bg: hex(0xffffff1c),
@@ -113,9 +113,9 @@ impl Theme {
             chip_bg: hex(0xffffff12),
             search_bg: hex(0xffffff14),
 
-            icon: hex(0xa8a8b2ff),
+            icon: hex(0xadadb7ff),
             icon_active: hex(0xf2f2f5ff),
-            accent: hex(0x6e9bffff),
+            accent: hex(0x7aa5ffff),
             accent_text: hex(0x0b1530ff),
             danger: hex(0xff7b72ff),
             success: hex(0x4fd07fff),
@@ -128,13 +128,13 @@ impl Theme {
             match_text: hex(0x8fb3ffff),
             kbd_bg: hex(0xffffff10),
             kbd_border: hex(0xffffff17),
-            kbd_text: hex(0xb4b4bdff),
+            kbd_text: hex(0xb8b8c1ff),
 
             avatar_palette: Self::avatar_palette(0.42),
             avatar_text: hex(0xffffffff),
 
-            cal_bg: hex(0x18181ca6),
-            cal_panel_bg: hex(0x1c1c20c4),
+            cal_bg: hex(0x18181ce0),
+            cal_panel_bg: hex(0x1c1c20ea),
             cal_line: hex(0xffffff12),
             cal_line_faint: hex(0xffffff08),
             cal_weekend_bg: hex(0x00000010),
@@ -148,16 +148,16 @@ impl Theme {
     pub fn light() -> Self {
         Self {
             is_dark: false,
-            rail_bg: hex(0xf2f2f65c),
-            sidebar_bg: hex(0xf7f7fa4d),
-            list_bg: hex(0xfafafc80),
-            reader_bg: hex(0xffffff9e),
+            rail_bg: hex(0xf2f2f699),
+            sidebar_bg: hex(0xf7f7faa6),
+            list_bg: hex(0xfafafcbf),
+            reader_bg: hex(0xffffffd1),
             border: hex(0x0000001a),
 
             text: hex(0x141417ff),
-            text_muted: hex(0x55555cff),
-            text_dim: hex(0x6c6c75ff),
-            text_faint: hex(0x8a8a93ff),
+            text_muted: hex(0x48484fff),
+            text_dim: hex(0x52525aff),
+            text_faint: hex(0x5a5a62ff),
 
             hover_bg: hex(0x0000000a),
             selected_bg: hex(0x00000012),
@@ -168,9 +168,9 @@ impl Theme {
             chip_bg: hex(0x0000000d),
             search_bg: hex(0x0000000a),
 
-            icon: hex(0x5f5f67ff),
+            icon: hex(0x55555dff),
             icon_active: hex(0x1c1c1fff),
-            accent: hex(0x2f6fedff),
+            accent: hex(0x1d5bd1ff),
             accent_text: hex(0xffffffff),
             danger: hex(0xd93a32ff),
             success: hex(0x1e9a52ff),
@@ -180,20 +180,20 @@ impl Theme {
             overlay_bg: hex(0xfdfdfefd),
             overlay_border: hex(0x00000017),
             overlay_shadow: hex(0x00000038),
-            match_text: hex(0x2f6fedff),
+            match_text: hex(0x1d5bd1ff),
             kbd_bg: hex(0x0000000a),
             kbd_border: hex(0x00000014),
-            kbd_text: hex(0x5f5f67ff),
+            kbd_text: hex(0x48484fff),
 
             avatar_palette: Self::avatar_palette(0.5),
             avatar_text: hex(0xffffffff),
 
-            cal_bg: hex(0xffffff9e),
+            cal_bg: hex(0xffffffd1),
             cal_panel_bg: hex(0xfbfbfdd9),
             cal_line: hex(0x00000014),
             cal_line_faint: hex(0x0000000a),
             cal_weekend_bg: hex(0x00000007),
-            cal_today_bg: hex(0x2f6fed08),
+            cal_today_bg: hex(0x1d5bd108),
             cal_now: hex(0xe5483bff),
             cal_selected_text: hex(0xffffffff),
             cal_ring: hex(0xffffffff),
@@ -234,12 +234,12 @@ impl Theme {
     /// crisp over the glass; past events fade back.
     pub fn event_fill(&self, color: Hsla, past: bool) -> Hsla {
         let fill = if self.is_dark {
-            hsla(color.h, color.s * 0.5, 0.25, 0.9)
+            hsla(color.h, color.s * 0.6, 0.3, 0.9)
         } else {
             hsla(color.h, (color.s * 0.85).min(0.9), 0.93, 0.96)
         };
         if past {
-            fill.alpha(fill.a * 0.55)
+            fill.alpha(fill.a * if self.is_dark { 0.45 } else { 0.55 })
         } else {
             fill
         }
@@ -247,7 +247,7 @@ impl Theme {
 
     pub fn event_fill_hover(&self, color: Hsla) -> Hsla {
         if self.is_dark {
-            hsla(color.h, color.s * 0.5, 0.29, 0.95)
+            hsla(color.h, color.s * 0.6, 0.34, 0.95)
         } else {
             hsla(color.h, (color.s * 0.85).min(0.9), 0.895, 1.)
         }

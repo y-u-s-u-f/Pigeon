@@ -7,6 +7,7 @@ use gpui::{
 };
 
 use super::{binding_caps, keycap, overlay_shadow};
+use crate::ui::style::*;
 use crate::{
     actions::{COMMANDS, Group, HELP, Scope, lookup_contexts},
     app::{Mode, PigeonApp},
@@ -33,7 +34,7 @@ impl PigeonApp {
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> gpui::Stateful<gpui::Div> {
         let theme = Theme::of(cx).clone();
         let (columns, scope) = match self.mode {
             Mode::Mail => (MAIL_COLUMNS, Scope::Mail),
@@ -45,7 +46,7 @@ impl PigeonApp {
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(22.))
+                .gap(SPACE_XL)
                 .children(
                     groups
                         .iter()
@@ -63,7 +64,7 @@ impl PigeonApp {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .rounded(px(14.))
+            .rounded(RADIUS_LG)
             .bg(theme.overlay_bg)
             .border_1()
             .border_color(theme.overlay_border)
@@ -73,14 +74,14 @@ impl PigeonApp {
                 div()
                     .h(px(52.))
                     .flex_none()
-                    .px(px(22.))
+                    .px(SPACE_XL)
                     .flex()
                     .items_center()
                     .border_b_1()
                     .border_color(theme.border)
                     .child(
                         div()
-                            .text_size(px(15.))
+                            .text_size(TEXT_LG)
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Keyboard Shortcuts"),
                     )
@@ -89,8 +90,8 @@ impl PigeonApp {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(6.))
-                            .text_size(px(11.5))
+                            .gap(SPACE_SM)
+                            .text_size(TEXT_SM)
                             .text_color(theme.text_faint)
                             .child(keycap("Esc", &theme))
                             .child("to close"),
@@ -102,11 +103,11 @@ impl PigeonApp {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .px(px(22.))
-                    .pt(px(18.))
-                    .pb(px(22.))
+                    .px(SPACE_XL)
+                    .pt(SPACE_LG)
+                    .pb(SPACE_XL)
                     .flex()
-                    .gap(px(36.))
+                    .gap(SPACE_2XL)
                     .children(columns),
             )
     }
@@ -123,20 +124,20 @@ fn render_group(group: Group, scope: Scope, window: &Window, theme: &Theme) -> A
                     .h(px(30.))
                     .flex()
                     .items_center()
-                    .gap(px(12.))
+                    .gap(SPACE_MD)
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(px(13.))
+                            .text_size(TEXT_BASE)
                             .text_color(theme.text_muted)
                             .child(command.name),
                     )
                     .children(bindings.iter().enumerate().flat_map(|(ix, binding)| {
                         let or = (ix > 0).then(|| {
                             div()
-                                .text_size(px(11.))
+                                .text_size(TEXT_XS)
                                 .text_color(theme.text_faint)
                                 .child("or")
                                 .into_any_element()
@@ -152,8 +153,8 @@ fn render_group(group: Group, scope: Scope, window: &Window, theme: &Theme) -> A
         .flex_col()
         .child(
             div()
-                .pb(px(6.))
-                .text_size(px(11.))
+                .pb(SPACE_SM)
+                .text_size(TEXT_XS)
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.text_faint)
                 .child(group.title().to_uppercase()),

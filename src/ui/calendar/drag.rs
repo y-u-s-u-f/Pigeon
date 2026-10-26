@@ -17,6 +17,7 @@ use gpui::{
 };
 
 use super::{CalendarView, HOUR_HEIGHT, Selection, ViewKind};
+use crate::ui::style::*;
 use crate::{
     calendar::{
         Occurrence,
@@ -318,13 +319,13 @@ impl CalendarView {
                 .left(px(2.))
                 .right(px(6.))
                 .h(px(height))
-                .px(px(8.))
+                .px(SPACE_SM)
                 .py(px(if compact { 0. } else { 4. }))
                 .flex()
-                .when(compact, |d| d.items_center().gap(px(6.)))
+                .when(compact, |d| d.items_center().gap(SPACE_SM))
                 .when(!compact, |d| d.flex_col())
                 .overflow_hidden()
-                .rounded(px(6.))
+                .rounded(RADIUS_SM)
                 .bg(theme.event_selected_fill(color))
                 .border_1()
                 .border_color(text.alpha(0.5))
@@ -335,8 +336,8 @@ impl CalendarView {
                     spread_radius: px(-2.),
                     inset: false,
                 }])
-                .text_size(px(11.5))
-                .line_height(px(15.))
+                .text_size(TEXT_SM)
+                .line_height(gpui::relative(1.25))
                 .text_color(text)
                 .child(
                     div()
