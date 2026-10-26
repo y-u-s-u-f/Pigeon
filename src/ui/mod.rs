@@ -1,6 +1,7 @@
 //! Panes and the small building blocks they share.
 
 pub mod command_palette;
+pub mod composer;
 pub mod html_view;
 pub mod rail;
 pub mod reader;

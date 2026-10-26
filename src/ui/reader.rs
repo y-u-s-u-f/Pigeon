@@ -19,10 +19,19 @@ use crate::{
     theme::Theme,
 };
 
+/// Children of the conversation's scroll view before its first message: the
+/// subject and the line under it.
+pub const MESSAGES_START: usize = 2;
+
 impl PigeonApp {
     pub(crate) fn render_reader(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         let thread = self.selected.map(|ix| &self.data.threads[ix]);
+        let standalone = self
+            .composer
+            .as_ref()
+            .filter(|_| !self.composer_inline(cx))
+            .map(|(composer, _)| composer.clone());
 
         div()
             .flex_1()
@@ -31,16 +40,86 @@ impl PigeonApp {
             .flex()
             .flex_col()
             .bg(theme.reader_bg)
-            .child(self.render_toolbar(thread, &theme))
-            .child(match thread {
-                Some(thread) => self.render_conversation(thread, &theme, cx),
-                None => empty_state(
-                    Icon::Mail,
-                    "No conversation selected",
-                    Some("Pick a thread from the list to read it here"),
-                    &theme,
-                ),
+            .map(|this| match standalone {
+                Some(composer) => this
+                    .child(self.render_compose_toolbar(&composer, &theme, cx))
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_h_0()
+                            .child(
+                                div()
+                                    .id("compose-scroll")
+                                    .size_full()
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.reader_scroll)
+                                    .px(px(28.))
+                                    .pt(px(2.))
+                                    .pb(px(40.))
+                                    .child(composer),
+                            )
+                            .vertical_scrollbar(&self.reader_scroll),
+                    ),
+                None => this
+                    .child(self.render_toolbar(thread, &theme))
+                    .child(match thread {
+                        Some(thread) => self.render_conversation(thread, &theme, cx),
+                        None => empty_state(
+                            Icon::Mail,
+                            "No conversation selected",
+                            Some("Pick a thread from the list to read it here"),
+                            &theme,
+                        ),
+                    }),
             })
+    }
+
+    fn render_compose_toolbar(
+        &self,
+        composer: &gpui::Entity<crate::ui::composer::Composer>,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let composer = composer.read(cx);
+        let title = if composer.draft_id.is_some() {
+            "Draft"
+        } else {
+            match composer.kind {
+                crate::app::ComposeKind::Forward => "Forward",
+                crate::app::ComposeKind::New => "New Message",
+                _ => "Reply",
+            }
+        };
+        window_drag_area(div().id("compose-toolbar"))
+            .h(HEADER_HEIGHT)
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .pl(px(28.))
+            .pr(px(12.))
+            .child(
+                div()
+                    .text_size(px(15.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(title),
+            )
+            .child(div().flex_1())
+            .child(icon_button(
+                "compose-discard",
+                Icon::Trash,
+                "Discard draft",
+                Box::new(DiscardDraft),
+                theme,
+            ))
+            .child(icon_button(
+                "compose-close",
+                Icon::X,
+                "Close and save draft",
+                Box::new(CloseDraft),
+                theme,
+            ))
     }
 
     fn render_toolbar(&self, thread: Option<&Thread>, theme: &Theme) -> impl IntoElement {
@@ -130,13 +209,55 @@ impl PigeonApp {
             .map(|label| label_chip(label, theme));
         let last = thread.messages.len() - 1;
 
+        // Each message is a child of the scroll view, so `n` and `p` can
+        // scroll to it; together they read as one card.
         let messages = thread.messages.iter().enumerate().map(|(ix, message)| {
-            if ix == last || self.expanded_messages.contains(&ix) {
+            let focused = self.reader_focused && self.focused_message == Some(ix);
+            let body = if ix == last || self.expanded_messages.contains(&ix) {
                 self.render_message(ix, message, ix != last, theme, cx)
             } else {
                 self.render_collapsed_message(ix, message, theme, cx)
-            }
+            };
+            div()
+                .relative()
+                .bg(theme.card_bg)
+                .border_x_1()
+                .border_t_1()
+                .border_color(theme.border)
+                .when(ix == 0, |d| d.rounded_t(px(12.)))
+                .when(ix == last, |d| d.border_b_1().rounded_b(px(12.)))
+                .when(focused, |d| d.bg(theme.card_focused_bg))
+                .child(body)
+                .when(focused, |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .left(px(-1.))
+                            .top(px(10.))
+                            .bottom(px(10.))
+                            .w(px(3.))
+                            .rounded_r(px(3.))
+                            .bg(theme.accent),
+                    )
+                })
         });
+        let messages = messages.collect::<Vec<_>>();
+        let composer = self
+            .composer
+            .as_ref()
+            .filter(|_| self.composer_inline(cx))
+            .map(|(composer, _)| {
+                div()
+                    .mt(px(16.))
+                    .px(px(16.))
+                    .pt(px(12.))
+                    .pb(px(14.))
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.card_bg)
+                    .child(composer.clone())
+            });
 
         div()
             .relative()
@@ -174,17 +295,8 @@ impl PigeonApp {
                                 },
                             )),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .rounded(px(12.))
-                            .border_1()
-                            .border_color(theme.border)
-                            .bg(theme.card_bg)
-                            .overflow_hidden()
-                            .children(messages),
-                    ),
+                    .children(messages)
+                    .children(composer),
             )
             .vertical_scrollbar(&self.reader_scroll)
             .into_any_element()
@@ -204,8 +316,7 @@ impl PigeonApp {
             .flex()
             .items_center()
             .gap(px(10.))
-            .when(ix > 0, |this| this.border_t_1())
-            .border_color(theme.border)
+            .rounded(px(12.))
             .hover(|s| s.bg(theme.hover_bg))
             .child(self.sender_avatar(&message.from, px(24.), theme))
             .child(
@@ -343,8 +454,6 @@ impl PigeonApp {
             .pb(px(20.))
             .flex()
             .flex_col()
-            .when(ix > 0, |this| this.border_t_1())
-            .border_color(theme.border)
             .child(header)
             .child(
                 div()

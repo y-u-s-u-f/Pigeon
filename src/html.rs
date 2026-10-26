@@ -113,6 +113,67 @@ pub fn parse(html: &str) -> Document {
     }
 }
 
+/// The document's text, one block per paragraph, for search and for editing a
+/// draft as plain text.
+pub fn plain_text(doc: &Document) -> String {
+    fn push_blocks(blocks: &[Block], out: &mut String) {
+        for block in blocks {
+            match block {
+                Block::Text { text, .. } | Block::Pre(text) => push_par(&text.text, out),
+                Block::List { items, .. } => {
+                    for item in items {
+                        push_blocks(item, out);
+                    }
+                }
+                Block::Quote(blocks) => push_blocks(blocks, out),
+                Block::Table(table) => {
+                    for cell in table.rows.iter().flatten() {
+                        push_blocks(&cell.blocks, out);
+                    }
+                }
+                Block::Image { alt } => push_par(alt, out),
+                Block::Rule => {}
+            }
+        }
+    }
+    fn push_par(text: &str, out: &mut String) {
+        let text = text.trim();
+        if !text.is_empty() {
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str(text);
+        }
+    }
+    let mut out = String::new();
+    push_blocks(&doc.blocks, &mut out);
+    out
+}
+
+pub fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Plain text as HTML: blank lines separate paragraphs, single newlines break
+/// lines.
+pub fn from_plain_text(text: &str) -> String {
+    text.split("\n\n")
+        .map(|p| p.trim_matches('\n'))
+        .filter(|p| !p.trim().is_empty())
+        .map(|p| format!("<p>{}</p>", escape(p).replace('\n', "<br>")))
+        .collect()
+}
+
 /// What an element passes down to its children.
 #[derive(Clone, Debug, Default)]
 struct Ctx {

@@ -7,7 +7,11 @@ use gpui::{App, Global, Hsla, Window, WindowAppearance, hsla, rgba, transparent_
 pub struct Theme {
     pub is_dark: bool,
 
-    // Pane tints, painted over the blurred window background.
+    // Pane tints, painted over the blurred window background. Low alpha so the
+    // wallpaper shows through; the sidebar is the most see-through, the reader
+    // the most solid. GPUI adds the alphas of stacked layers (and clamps), so
+    // a light layer over a light pane turns gray rather than whiter: keep
+    // light-mode cards and fields faint.
     pub rail_bg: Hsla,
     pub sidebar_bg: Hsla,
     pub list_bg: Hsla,
@@ -28,11 +32,17 @@ pub struct Theme {
     pub selected_inactive_bg: Hsla,
     pub nav_active_bg: Hsla,
     pub card_bg: Hsla,
+    /// The message `n` / `p` moved to.
+    pub card_focused_bg: Hsla,
     pub chip_bg: Hsla,
+    pub search_bg: Hsla,
 
     pub icon: Hsla,
     pub icon_active: Hsla,
     pub accent: Hsla,
+    /// Text on an `accent` background.
+    pub accent_text: Hsla,
+    pub danger: Hsla,
     pub star: Hsla,
 
     // Floating overlays: the command palette and the shortcuts sheet.
@@ -62,27 +72,31 @@ impl Theme {
     pub fn dark() -> Self {
         Self {
             is_dark: true,
-            rail_bg: hex(0x0d0d10a6),
-            sidebar_bg: hex(0x131316b3),
-            list_bg: hex(0x17171ad9),
-            reader_bg: hex(0x1b1b1eeb),
+            rail_bg: hex(0x0c0c1073),
+            sidebar_bg: hex(0x11111566),
+            list_bg: hex(0x1414188c),
+            reader_bg: hex(0x18181ca6),
             border: hex(0xffffff14),
 
-            text: hex(0xededf0ff),
-            text_muted: hex(0xa3a3adff),
-            text_dim: hex(0x84848eff),
-            text_faint: hex(0x67676fff),
+            text: hex(0xf4f4f7ff),
+            text_muted: hex(0xb6b6bfff),
+            text_dim: hex(0x9c9ca6ff),
+            text_faint: hex(0x80808aff),
 
             hover_bg: hex(0xffffff0a),
             selected_bg: hex(0xffffff1c),
             selected_inactive_bg: hex(0xffffff0f),
             nav_active_bg: hex(0xffffff17),
-            card_bg: hex(0xffffff08),
+            card_bg: hex(0xffffff0a),
+            card_focused_bg: hex(0xffffff0d),
             chip_bg: hex(0xffffff12),
+            search_bg: hex(0xffffff14),
 
-            icon: hex(0x9a9aa4ff),
+            icon: hex(0xa8a8b2ff),
             icon_active: hex(0xf2f2f5ff),
             accent: hex(0x6e9bffff),
+            accent_text: hex(0x0b1530ff),
+            danger: hex(0xff7b72ff),
             star: hex(0xf5bf4fff),
 
             backdrop: hex(0x00000052),
@@ -102,27 +116,31 @@ impl Theme {
     pub fn light() -> Self {
         Self {
             is_dark: false,
-            rail_bg: hex(0xebebf0a6),
-            sidebar_bg: hex(0xf3f3f6b3),
-            list_bg: hex(0xfafafbdb),
-            reader_bg: hex(0xffffffee),
+            rail_bg: hex(0xf2f2f65c),
+            sidebar_bg: hex(0xf7f7fa4d),
+            list_bg: hex(0xfafafc80),
+            reader_bg: hex(0xffffff9e),
             border: hex(0x0000001a),
 
-            text: hex(0x1c1c1fff),
-            text_muted: hex(0x66666dff),
-            text_dim: hex(0x8a8a93ff),
-            text_faint: hex(0xa8a8b0ff),
+            text: hex(0x141417ff),
+            text_muted: hex(0x55555cff),
+            text_dim: hex(0x6c6c75ff),
+            text_faint: hex(0x8a8a93ff),
 
             hover_bg: hex(0x0000000a),
             selected_bg: hex(0x00000012),
             selected_inactive_bg: hex(0x0000000a),
             nav_active_bg: hex(0x00000012),
-            card_bg: hex(0xffffff99),
+            card_bg: hex(0xffffff00),
+            card_focused_bg: hex(0x00000008),
             chip_bg: hex(0x0000000d),
+            search_bg: hex(0x0000000a),
 
-            icon: hex(0x6e6e76ff),
+            icon: hex(0x5f5f67ff),
             icon_active: hex(0x1c1c1fff),
             accent: hex(0x2f6fedff),
+            accent_text: hex(0xffffffff),
+            danger: hex(0xd93a32ff),
             star: hex(0xe2a21cff),
 
             backdrop: hex(0x0000001f),

@@ -8,12 +8,19 @@
 //!   extra identifier `Reader` while the reading pane has keyboard focus.
 //! - `CommandPalette` and `ShortcutsHelp`: the overlays, siblings of
 //!   `Mailbox`, so single-letter shortcuts are off while they are open.
+//! - `Composer`: the draft in the reading pane, inside `Mailbox`; its
+//!   recipient fields add `Recipients`. `SearchBar`: the search field above the
+//!   list, inside `Mailbox`.
 //! - `Input`: gpui-component's text inputs. Single-letter shortcuts also
 //!   require `!Input`, so typing never triggers them.
 
 use gpui::{Action, App, KeyBinding, KeyContext, actions};
 
-use crate::{assets::Icon, ui::command_palette};
+use crate::{
+    assets::Icon,
+    search,
+    ui::{command_palette, composer},
+};
 
 actions!(
     pigeon,
@@ -39,6 +46,14 @@ actions!(
         Reply,
         ReplyAll,
         Forward,
+        SendMessage,
+        CloseDraft,
+        DiscardDraft,
+        ShowCcBcc,
+        Undo,
+        CloseSearch,
+        NextMessage,
+        PrevMessage,
         GoToInbox,
         GoToStarred,
         GoToSent,
@@ -58,6 +73,9 @@ pub const MAILBOX: &str = "Mailbox";
 pub const READER: &str = "Reader";
 pub const PALETTE: &str = "CommandPalette";
 pub const HELP: &str = "ShortcutsHelp";
+pub const COMPOSER: &str = "Composer";
+pub const RECIPIENTS: &str = "Recipients";
+pub const SEARCH: &str = "SearchBar";
 
 /// The keymap. Where an action has several bindings, the one added last is
 /// the one the palette shows.
@@ -66,6 +84,9 @@ pub fn bind_keys(cx: &mut App) {
     const LIST: &str = "Mailbox && !Reader && !Input";
     const READING: &str = "Mailbox && Reader && !Input";
     const PALETTE_INPUT: &str = "CommandPalette > Input";
+    const COMPOSER_INPUT: &str = "Composer > Input";
+    const RECIPIENTS_INPUT: &str = "Recipients > Input";
+    const SEARCH_INPUT: &str = "SearchBar > Input";
 
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
@@ -84,6 +105,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", ScrollReaderUp, Some(READING)),
         KeyBinding::new("escape", BackToList, Some(READING)),
         KeyBinding::new("u", BackToList, Some(READING)),
+        KeyBinding::new("n", NextMessage, Some(READING)),
+        KeyBinding::new("p", PrevMessage, Some(READING)),
         // Thread actions.
         KeyBinding::new("e", Archive, Some(MAIL)),
         KeyBinding::new("#", Delete, Some(MAIL)),
@@ -95,6 +118,34 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("a", ReplyAll, Some(MAIL)),
         KeyBinding::new("f", Forward, Some(MAIL)),
         KeyBinding::new("/", ToggleSearch, Some(MAIL)),
+        // Search. Escape in the list clears a search too.
+        KeyBinding::new("escape", CloseSearch, Some(LIST)),
+        KeyBinding::new("escape", CloseSearch, Some(SEARCH)),
+        KeyBinding::new("down", search::FocusResults, Some(SEARCH_INPUT)),
+        // Compose. Inputs take enter and escape themselves, so these also bind
+        // inside them, where they win.
+        KeyBinding::new("cmd-enter", SendMessage, Some(CONTEXT)),
+        KeyBinding::new("cmd-enter", SendMessage, Some(COMPOSER_INPUT)),
+        KeyBinding::new("cmd-shift-c", ShowCcBcc, Some(COMPOSER)),
+        KeyBinding::new("cmd-shift-d", DiscardDraft, Some(COMPOSER)),
+        KeyBinding::new("escape", CloseDraft, Some(COMPOSER)),
+        KeyBinding::new("cmd-z", Undo, Some(MAIL)),
+        KeyBinding::new("tab", composer::NextField, Some(COMPOSER)),
+        KeyBinding::new("shift-tab", composer::PrevField, Some(COMPOSER)),
+        KeyBinding::new("down", composer::SuggestNext, Some(RECIPIENTS_INPUT)),
+        KeyBinding::new("up", composer::SuggestPrev, Some(RECIPIENTS_INPUT)),
+        KeyBinding::new("ctrl-n", composer::SuggestNext, Some(RECIPIENTS_INPUT)),
+        KeyBinding::new("ctrl-p", composer::SuggestPrev, Some(RECIPIENTS_INPUT)),
+        KeyBinding::new(
+            "backspace",
+            composer::RemoveLastRecipient,
+            Some(RECIPIENTS_INPUT),
+        ),
+        KeyBinding::new(
+            "escape",
+            composer::DismissSuggestions,
+            Some(RECIPIENTS_INPUT),
+        ),
         KeyBinding::new("?", ToggleShortcutsHelp, Some(MAIL)),
         // Go to.
         KeyBinding::new("g i", GoToInbox, Some(MAIL)),
@@ -127,6 +178,22 @@ pub fn mailbox_context(reader: bool) -> KeyContext {
         context.add(READER);
     }
     context
+}
+
+/// Flattened contexts to look shortcuts up in: the list, the reader, a draft
+/// and the search field.
+pub fn lookup_contexts(reader_first: bool) -> [KeyContext; 4] {
+    let with = |extra: &str| {
+        let mut context = mailbox_context(false);
+        context.add(extra);
+        context
+    };
+    [
+        mailbox_context(reader_first),
+        mailbox_context(!reader_first),
+        with(COMPOSER),
+        with(SEARCH),
+    ]
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,6 +247,11 @@ pub const COMMANDS: &[Command] = commands! {
     Compose: "Reply", Reply, Reply;
     Compose: "Reply All", ReplyAll, ReplyAll;
     Compose: "Forward", Forward, Forward;
+    Compose: "Send", Send, SendMessage;
+    Compose: "Show Cc and Bcc", Mail, ShowCcBcc;
+    Compose: "Close Draft (Saves to Drafts)", FilePen, CloseDraft;
+    Compose: "Discard Draft", Trash, DiscardDraft;
+    Compose: "Undo Send / Discard", Undo, Undo;
     Conversation: "Archive", Archive, Archive;
     Conversation: "Delete", Trash, Delete;
     Conversation: "Star / Unstar", Star, ToggleStar;
@@ -189,9 +261,12 @@ pub const COMMANDS: &[Command] = commands! {
     Navigation: "Previous Conversation", ChevronUp, SelectPrevThread;
     Navigation: "Open Conversation", Mail, OpenThread;
     Navigation: "Back to List", Inbox, BackToList;
+    Navigation: "Next Message in Conversation", ChevronDown, NextMessage;
+    Navigation: "Previous Message in Conversation", ChevronUp, PrevMessage;
     Navigation: "Scroll Conversation Down", ChevronDown, ScrollReaderDown, help_only;
     Navigation: "Scroll Conversation Up", ChevronUp, ScrollReaderUp, help_only;
     Navigation: "Search Mail", Search, ToggleSearch;
+    Navigation: "Clear Search", X, CloseSearch;
     GoTo: "Go to Inbox", Inbox, GoToInbox;
     GoTo: "Go to Starred", Star, GoToStarred;
     GoTo: "Go to Sent", Send, GoToSent;

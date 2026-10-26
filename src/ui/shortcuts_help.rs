@@ -8,7 +8,7 @@ use gpui::{
 
 use super::{binding_caps, keycap, overlay_shadow};
 use crate::{
-    actions::{COMMANDS, Group, HELP, mailbox_context},
+    actions::{COMMANDS, Group, HELP, lookup_contexts},
     app::PigeonApp,
     theme::Theme,
 };
@@ -149,13 +149,13 @@ fn render_group(group: Group, window: &Window, theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// The action's bindings in the list and reader contexts, highest precedence
+/// The action's bindings in the list, reader, draft and search contexts, highest precedence
 /// first, without duplicates.
 fn live_bindings(action: &dyn gpui::Action, window: &Window) -> Vec<KeyBinding> {
     let mut bindings: Vec<KeyBinding> = Vec::new();
-    for reader in [false, true] {
+    for context in lookup_contexts(false) {
         for binding in window
-            .bindings_for_action_in_context(action, mailbox_context(reader))
+            .bindings_for_action_in_context(action, context)
             .into_iter()
             .rev()
         {

@@ -24,6 +24,7 @@ macro_rules! icons {
 icons! {
     Archive => "archive",
     Calendar => "calendar",
+    Check => "check",
     ChevronDown => "chevron-down",
     ChevronRight => "chevron-right",
     ChevronUp => "chevron-up",
@@ -47,6 +48,8 @@ icons! {
     Star => "star",
     StarFilled => "star-filled",
     Trash => "trash",
+    Undo => "undo",
+    X => "x",
 }
 
 pub struct Assets;

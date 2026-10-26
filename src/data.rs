@@ -38,6 +38,8 @@ pub enum Folder {
 
 #[derive(Debug, Deserialize)]
 pub struct Thread {
+    /// Stable across reordering, unlike the thread's index.
+    pub id: String,
     pub subject: String,
     pub folder: Folder,
     pub labels: Vec<String>,
@@ -45,6 +47,22 @@ pub struct Thread {
     pub unread: bool,
     /// Oldest first.
     pub messages: Vec<Message>,
+    #[serde(skip)]
+    pub search: SearchIndex,
+    /// For a draft reply: the thread it answers, by id.
+    #[serde(skip)]
+    pub reply_to: Option<String>,
+}
+
+/// Lowercased text of a thread, built once per change rather than per keystroke.
+#[derive(Debug, Default)]
+pub struct SearchIndex {
+    /// Subject, people, snippets and bodies.
+    pub all: String,
+    pub from: String,
+    /// To, cc and bcc.
+    pub to: String,
+    pub subject: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,6 +71,8 @@ pub struct Message {
     pub to: Vec<Contact>,
     #[serde(default)]
     pub cc: Vec<Contact>,
+    #[serde(default)]
+    pub bcc: Vec<Contact>,
     pub date: DateTime<FixedOffset>,
     pub snippet: String,
     pub html: String,
@@ -60,7 +80,7 @@ pub struct Message {
     pub attachments: Vec<Attachment>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Contact {
     pub name: String,
     pub email: String,
@@ -93,6 +113,9 @@ impl MailData {
             thread.messages.sort_by_key(|m| m.date);
         }
         data.threads.retain(|t| !t.messages.is_empty());
+        for thread in &mut data.threads {
+            thread.reindex();
+        }
         // Newest first; every view is a filter over this order.
         data.threads
             .sort_by_key(|t| std::cmp::Reverse(t.last_message().date));
@@ -106,6 +129,43 @@ impl MailData {
     pub fn is_me(&self, contact: &Contact) -> bool {
         contact.email.eq_ignore_ascii_case(&self.account.email)
     }
+
+    pub fn me(&self) -> Contact {
+        Contact {
+            name: self.account.name.clone(),
+            email: self.account.email.clone(),
+        }
+    }
+
+    pub fn thread_ix(&self, id: &str) -> Option<usize> {
+        self.threads.iter().position(|t| t.id == id)
+    }
+
+    /// Everyone in the mailbox but me, most frequent first, for recipient
+    /// suggestions.
+    pub fn contacts(&self) -> Vec<Contact> {
+        let mut seen: Vec<(Contact, usize)> = Vec::new();
+        let messages = self.threads.iter().flat_map(|t| &t.messages);
+        for contact in messages.flat_map(|m| [&m.from].into_iter().chain(&m.to).chain(&m.cc)) {
+            if self.is_me(contact) {
+                continue;
+            }
+            match seen
+                .iter_mut()
+                .find(|(c, _)| c.email.eq_ignore_ascii_case(&contact.email))
+            {
+                Some((known, count)) => {
+                    *count += 1;
+                    if known.name.is_empty() {
+                        known.name = contact.name.clone();
+                    }
+                }
+                None => seen.push((contact.clone(), 1)),
+            }
+        }
+        seen.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+        seen.into_iter().map(|(c, _)| c).collect()
+    }
 }
 
 impl Thread {
@@ -115,6 +175,47 @@ impl Thread {
 
     pub fn has_attachments(&self) -> bool {
         self.messages.iter().any(|m| !m.attachments.is_empty())
+    }
+
+    /// Rebuild `search`; call after changing the thread's messages.
+    pub fn reindex(&mut self) {
+        let people = |contacts: &mut dyn Iterator<Item = &Contact>| {
+            let mut out = String::new();
+            for c in contacts {
+                out.push_str(&c.name);
+                out.push(' ');
+                out.push_str(&c.email);
+                out.push('\n');
+            }
+            out.to_lowercase()
+        };
+        let from = people(&mut self.messages.iter().map(|m| &m.from));
+        let to = people(
+            &mut self
+                .messages
+                .iter()
+                .flat_map(|m| m.to.iter().chain(&m.cc).chain(&m.bcc)),
+        );
+        let subject = self.subject.to_lowercase();
+        let mut all = format!("{subject}\n{from}{to}");
+        for message in &self.messages {
+            all.push_str(&message.snippet.to_lowercase());
+            all.push('\n');
+            all.push_str(
+                &crate::html::plain_text(&crate::html::parse(&message.html)).to_lowercase(),
+            );
+            all.push('\n');
+            for attachment in &message.attachments {
+                all.push_str(&attachment.name.to_lowercase());
+                all.push('\n');
+            }
+        }
+        self.search = SearchIndex {
+            all,
+            from,
+            to,
+            subject,
+        };
     }
 
     /// Spam and trash stay out of Starred and label views, like Gmail.

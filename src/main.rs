@@ -3,6 +3,7 @@ mod app;
 mod assets;
 mod data;
 mod html;
+mod search;
 mod theme;
 mod ui;
 
