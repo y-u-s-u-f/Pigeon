@@ -125,7 +125,7 @@ struct Recipients {
 
 pub struct Composer {
     pub kind: ComposeKind,
-    /// The thread replied to or forwarded, by id.
+    /// The thread replied to, by id. Forwards start a new thread, so have none.
     pub reply_to: Option<String>,
     /// The Drafts thread this edits: replaced on save, removed on send.
     pub draft_id: Option<String>,

@@ -17,7 +17,7 @@ use gpui::{
 use crate::{
     actions::*,
     assets::Icon,
-    data::{Contact, Folder, MailData, Message, Thread, full_date},
+    data::{Contact, DraftOrigin, Folder, MailData, Message, Quote, Thread, full_date},
     html,
     search::{FocusResults, Query},
     theme::Theme,
@@ -309,22 +309,21 @@ impl PigeonApp {
         }
     }
 
+    /// The thread that takes the selection when the selected one leaves the
+    /// list: the next one, or the previous when there is none after it.
+    fn next_after_selected(&self) -> Option<usize> {
+        let row = self.selected_row()?;
+        self.neighbor_thread(row, true)
+            .or_else(|| self.neighbor_thread(row, false))
+    }
+
     /// Move the selected thread to `folder` and advance to its neighbor, like
     /// Gmail's auto-advance.
-    fn move_selected(
-        &mut self,
-        folder: impl Fn(Folder) -> Folder,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn move_selected(&mut self, folder: Folder, window: &mut Window, cx: &mut Context<Self>) {
         self.stash_composer(cx);
         let Some(ix) = self.selected else { return };
-        let next = self.selected_row().and_then(|row| {
-            self.neighbor_thread(row, true)
-                .or_else(|| self.neighbor_thread(row, false))
-        });
-        let thread = &mut self.data.threads[ix];
-        thread.folder = folder(thread.folder);
+        let next = self.next_after_selected();
+        self.data.threads[ix].folder = folder;
         self.refresh_rows(true);
         match next {
             Some(next) => self.select_thread(next, window, cx),
@@ -413,18 +412,33 @@ impl PigeonApp {
     }
 
     fn archive(&mut self, _: &Archive, window: &mut Window, cx: &mut Context<Self>) {
-        self.move_selected(
-            |f| match f {
-                Folder::Archive => Folder::Inbox,
-                _ => Folder::Archive,
-            },
-            window,
-            cx,
-        );
+        let Some(ix) = self.selected else { return };
+        if let Some(folder) = self.data.threads[ix].folder.archive_target() {
+            self.move_selected(folder, window, cx);
+        }
     }
 
     fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
-        self.move_selected(|_| Folder::Trash, window, cx);
+        let Some(ix) = self.selected else { return };
+        match self.data.threads[ix].folder {
+            Folder::Trash => {}
+            Folder::Drafts => self.discard_selected_draft(window, cx),
+            _ => self.move_selected(Folder::Trash, window, cx),
+        }
+    }
+
+    /// Delete in Drafts discards the draft, like the discard button, then
+    /// moves to the neighbor.
+    fn discard_selected_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.selected else { return };
+        let next = self
+            .next_after_selected()
+            .map(|next| self.data.threads[next].id.clone());
+        self.select_thread(ix, window, cx);
+        self.discard_draft(&DiscardDraft, window, cx);
+        if let Some(ix) = next.and_then(|id| self.data.thread_ix(&id)) {
+            self.select_thread(ix, window, cx);
+        }
     }
 
     fn toggle_star(&mut self, _: &ToggleStar, _: &mut Window, cx: &mut Context<Self>) {
@@ -476,7 +490,9 @@ impl PigeonApp {
             (_, Some(thread)) if thread.folder == Folder::Drafts => return,
             (kind, Some(thread)) => {
                 let (content, quoted) = self.reply_content(kind, thread);
-                (content, Some(thread.id.clone()), quoted)
+                // A forward starts a new thread, so it answers nothing.
+                let reply_to = (kind != ComposeKind::Forward).then(|| thread.id.clone());
+                (content, reply_to, quoted)
             }
         };
         let composer = cx.new(|cx| {
@@ -582,15 +598,16 @@ impl PigeonApp {
             subject: thread.subject.clone(),
             body: html::plain_text(&html::parse(&message.html)),
         };
-        let kind = if thread.reply_to.is_some() {
-            ComposeKind::Reply
-        } else {
-            ComposeKind::New
-        };
-        let (reply_to, draft_id) = (thread.reply_to.clone(), Some(thread.id.clone()));
+        let origin = thread.origin.as_ref();
+        let kind = origin.map_or(ComposeKind::New, |o| o.kind);
+        let reply_to = origin.and_then(|o| o.reply_to.clone());
+        let quoted = origin
+            .and_then(|o| o.quoted.as_ref())
+            .map(|q| Quoted::new(q.header.clone(), q.html.clone()));
+        let draft_id = Some(thread.id.clone());
         let book = self.contact_book.clone();
         let composer =
-            cx.new(|cx| Composer::new(kind, content, reply_to, draft_id, None, book, window, cx));
+            cx.new(|cx| Composer::new(kind, content, reply_to, draft_id, quoted, book, window, cx));
         self.set_composer(composer, cx);
     }
 
@@ -661,14 +678,23 @@ impl PigeonApp {
     fn save_draft(&mut self, composer: &Entity<Composer>, cx: &mut Context<Self>) {
         let c = composer.read(cx);
         let content = c.content(cx);
-        let message = self.message_from(&content, c.html(cx));
-        let (draft_id, reply_to) = (c.draft_id.clone(), c.reply_to.clone());
-        let id = draft_id.unwrap_or_else(|| self.new_id("draft"));
+        // The quote is kept on the origin, so the body holds only the note.
+        let message = self.message_from(&content, html::from_plain_text(&content.body));
+        let origin = DraftOrigin {
+            kind: c.kind,
+            reply_to: c.reply_to.clone(),
+            quoted: c.quoted.as_ref().map(|q| Quote {
+                header: q.header.clone(),
+                html: q.html.clone(),
+            }),
+        };
+        let id = c.draft_id.clone().unwrap_or_else(|| self.new_id("draft"));
         self.update_threads(|data| match data.thread_ix(&id) {
             Some(ix) => {
                 let thread = &mut data.threads[ix];
                 thread.subject = content.subject.clone();
                 thread.messages = vec![message];
+                thread.origin = Some(origin);
                 thread.reindex();
             }
             None => {
@@ -681,7 +707,7 @@ impl PigeonApp {
                     unread: false,
                     messages: vec![message],
                     search: Default::default(),
-                    reply_to,
+                    origin: Some(origin),
                 };
                 thread.reindex();
                 data.threads.push(thread);
@@ -774,7 +800,7 @@ impl PigeonApp {
                         unread: false,
                         messages: vec![message],
                         search: Default::default(),
-                        reply_to: None,
+                        origin: None,
                     };
                     thread.reindex();
                     data.threads.push(thread);

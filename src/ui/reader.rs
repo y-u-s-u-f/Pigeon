@@ -135,23 +135,34 @@ impl PigeonApp {
         };
 
         let separator = || div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(theme.border);
-        let archived = thread.folder == Folder::Archive;
 
         header
-            .child(icon_button(
-                "archive",
-                Icon::Archive,
-                if archived { "Move to Inbox" } else { "Archive" },
-                Box::new(Archive),
-                theme,
-            ))
-            .child(icon_button(
-                "delete",
-                Icon::Trash,
-                "Delete",
-                Box::new(Delete),
-                theme,
-            ))
+            .when_some(thread.folder.archive_target(), |this, target| {
+                this.child(icon_button(
+                    "archive",
+                    Icon::Archive,
+                    if target == Folder::Inbox {
+                        "Move to Inbox"
+                    } else {
+                        "Archive"
+                    },
+                    Box::new(Archive),
+                    theme,
+                ))
+            })
+            .when(thread.folder != Folder::Trash, |this| {
+                this.child(icon_button(
+                    "delete",
+                    Icon::Trash,
+                    if thread.folder == Folder::Drafts {
+                        "Discard draft"
+                    } else {
+                        "Delete"
+                    },
+                    Box::new(Delete),
+                    theme,
+                ))
+            })
             .child(icon_button(
                 "mark-unread",
                 Icon::MailUnread,
@@ -377,8 +388,6 @@ impl PigeonApp {
                 .gap(px(8.))
                 .rounded(px(8.))
                 .bg(theme.chip_bg)
-                .border_1()
-                .border_color(theme.border)
                 .child(icon(Icon::File, px(15.), theme.icon))
                 .child(
                     div()

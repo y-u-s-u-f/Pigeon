@@ -4,6 +4,8 @@ use chrono::{DateTime, Datelike, FixedOffset, Local};
 use gpui::{Hsla, Rgba};
 use serde::{Deserialize, Deserializer};
 
+use crate::app::ComposeKind;
+
 #[derive(Debug, Deserialize)]
 pub struct MailData {
     pub account: Account,
@@ -36,6 +38,18 @@ pub enum Folder {
     Trash,
 }
 
+impl Folder {
+    /// Where archive moves a thread in this folder, or `None` when archive
+    /// does nothing there.
+    pub fn archive_target(self) -> Option<Folder> {
+        match self {
+            Folder::Inbox => Some(Folder::Archive),
+            Folder::Archive | Folder::Spam | Folder::Trash => Some(Folder::Inbox),
+            Folder::Sent | Folder::Drafts => None,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Thread {
     /// Stable across reordering, unlike the thread's index.
@@ -49,9 +63,26 @@ pub struct Thread {
     pub messages: Vec<Message>,
     #[serde(skip)]
     pub search: SearchIndex,
-    /// For a draft reply: the thread it answers, by id.
+    /// For a draft: how it was started, so reopening restores it.
     #[serde(skip)]
+    pub origin: Option<DraftOrigin>,
+}
+
+/// How a draft was started. Kept apart from its body, which holds only what
+/// the user wrote.
+#[derive(Clone, Debug)]
+pub struct DraftOrigin {
+    pub kind: ComposeKind,
+    /// The thread a reply answers, by id.
     pub reply_to: Option<String>,
+    pub quoted: Option<Quote>,
+}
+
+/// A forwarded message: its header lines and HTML body.
+#[derive(Clone, Debug)]
+pub struct Quote {
+    pub header: Vec<(&'static str, String)>,
+    pub html: String,
 }
 
 /// Lowercased text of a thread, built once per change rather than per keystroke.
@@ -278,5 +309,20 @@ pub fn file_size(bytes: u64) -> String {
         format!("{:.0} KB", b / KB)
     } else {
         format!("{:.1} MB", b / (KB * KB))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn archive_target_per_folder() {
+        assert_eq!(Folder::Inbox.archive_target(), Some(Folder::Archive));
+        assert_eq!(Folder::Archive.archive_target(), Some(Folder::Inbox));
+        assert_eq!(Folder::Spam.archive_target(), Some(Folder::Inbox));
+        assert_eq!(Folder::Trash.archive_target(), Some(Folder::Inbox));
+        assert_eq!(Folder::Sent.archive_target(), None);
+        assert_eq!(Folder::Drafts.archive_target(), None);
     }
 }

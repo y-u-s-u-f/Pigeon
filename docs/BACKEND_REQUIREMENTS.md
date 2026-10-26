@@ -109,14 +109,14 @@ Feature IDs use these area codes: ACC, FOL, LST, RDR, ACT, CMP, DRF, UND, SRC, C
 ### FOL-7 Report spam and mark as not spam
 
 - **Feature:** UI not built yet. Spam is only reachable by navigating to it. Nothing moves a thread to or from Spam.
-- **Today:** Not implemented. `move_selected()` in `src/app.rs` moves threads only between Archive, Inbox and Trash (via Archive and Delete). Archiving a Spam thread moves it to Archive.
+- **Today:** Not implemented as a button or a shortcut. Archive (`e`) in Spam moves the thread to Inbox, which is the "not spam" move. Delete moves a Spam thread to Trash. Nothing moves a thread into Spam.
 - **Backend needs:** A "report spam" and a "not spam" action. Gmail: `messages.modify` with `SPAM` added or removed. IMAP: move to the Junk folder.
 - **Notes:** Mapping Gmail's spam label to the Spam folder is done at sync time (FOL-1).
 
 ### FOL-8 Empty Trash and permanent delete
 
 - **Feature:** UI not built yet. Delete moves threads to Trash. Nothing removes them for good, and Trash has no bulk action.
-- **Today:** Not implemented. `delete()` in `src/app.rs` only sets `folder = Trash`.
+- **Today:** Not implemented. `delete()` in `src/app.rs` moves threads to Trash and never removes them. Trash has no action, so Delete does nothing there.
 - **Backend needs:** Permanent delete and empty Trash. Gmail: `threads.delete` or `threads.trash`, and the 30-day auto-purge. IMAP: `EXPUNGE` after `\Deleted`.
 - **Notes:** Permanent delete is not reversible. It needs a confirmation step in the UI.
 
@@ -249,16 +249,16 @@ Each of these acts on the selected thread only. Each one currently changes only 
 ### ACT-1 Archive and move to Inbox
 
 - **Feature:** Shortcut `e`. Toolbar button "Archive" (its tooltip changes to "Move to Inbox" for archived threads). Palette "Archive". Moves the selected thread to Archive, or back to Inbox if it is already in Archive. The selection moves to the next thread, or the previous one if there is none after it.
-- **Today:** In memory. `archive()` and `move_selected()` in `src/app.rs`. The folder mapping is in the closure in `archive()`: Archive becomes Inbox, and any other folder becomes Archive.
-- **Backend needs:** Move the thread to Archive. Gmail: `threads.modify` with `removeLabelIds: ["INBOX"]`. IMAP: `UID MOVE` to the Archive folder. Moving back: `UID MOVE` to INBOX.
-- **Notes:** Archive also applies to threads in Sent, Drafts, Spam and Trash, which is probably not intended. A Drafts thread that is archived stops being a draft on the server. Decide which folders allow it. Rollback is needed if the server rejects the change (STA-2).
+- **Today:** In memory. `archive()` and `move_selected()` in `src/app.rs`. The target comes from `Folder::archive_target()` in `src/data.rs`: Inbox goes to Archive; Archive, Spam and Trash go to Inbox; Sent and Drafts do nothing. The toolbar hides the Archive button in Sent and Drafts. The rule follows each thread's own folder, so it also applies in Starred and label views.
+- **Backend needs:** Move the thread to Archive. Gmail: `threads.modify` with `removeLabelIds: ["INBOX"]`. IMAP: `UID MOVE` to the Archive folder. Moving back: `UID MOVE` to INBOX. Spam to Inbox is the "not spam" action (FOL-7), and Trash to Inbox is a restore.
+- **Notes:** Rollback is needed if the server rejects the change (STA-2).
 
 ### ACT-2 Delete
 
 - **Feature:** Shortcut `#`. Toolbar button "Delete". Palette "Delete". Moves the thread to Trash, then selects the next thread.
-- **Today:** In memory. `delete()` in `src/app.rs` sets `folder = Trash` for any folder.
-- **Backend needs:** Move to Trash. Gmail: `threads.trash`. IMAP: `UID MOVE` to the Trash folder.
-- **Notes:** Delete in Trash does nothing today. The backend should decide whether it means a permanent delete (see FOL-8). Undo is not available (UND-3).
+- **Today:** In memory. `delete()` in `src/app.rs`. Delete moves a thread to Trash from every folder except Trash and Drafts. In Trash it does nothing. In Drafts it discards the draft through the same path as the Discard button (DRF-4), with its Undo toast, then moves to the neighbor.
+- **Backend needs:** Move to Trash. Gmail: `threads.trash`. IMAP: `UID MOVE` to the Trash folder. Discarding a draft is DRF-4.
+- **Notes:** Delete in Trash does nothing for now. The backend should decide whether it means a permanent delete (see FOL-8). The toolbar hides the Delete button in Trash. Undo for a thread move is not available (UND-3).
 
 ### ACT-3 Star and unstar
 
@@ -304,7 +304,7 @@ Drafts are described in section 7. Undo of a send is described in section 8.
 ### CMP-2 Reply
 
 - **Feature:** Shortcut `r`. Toolbar button "Reply". Palette "Reply". Opens a draft under the conversation. Subject is "Re: " plus the thread subject, unless it already starts with "re:".
-- **Today:** Recipients are derived from the thread's last message in `reply_content()` in `src/app.rs`. If the last message is from the user, the reply goes to its recipients. Otherwise it goes to its sender. The reply is marked with `reply_to`.
+- **Today:** Recipients are derived from the thread's last message in `reply_content()` in `src/app.rs`. If the last message is from the user, the reply goes to its recipients. Otherwise it goes to its sender. The reply is marked with `reply_to`, and the sent reply is appended to that thread.
 - **Backend needs:** Send with threading headers (`In-Reply-To`, `References`), so the reply joins the conversation on other clients. See DAT-4.
 - **Notes:** Reply uses only the last message's sender. It ignores earlier participants.
 
@@ -318,9 +318,9 @@ Drafts are described in section 7. Undo of a send is described in section 8.
 ### CMP-4 Forward
 
 - **Feature:** Shortcut `f`. Toolbar button "Forward". Palette "Forward". Subject "Fwd: " plus the thread subject, unless it already starts with "fwd:" or "fw:". The original message is quoted under the note area, with From, Date, Subject and To lines.
-- **Today:** `reply_content()` and `Quoted::new()` in `src/ui/composer.rs`. The forwarded thread's ID is stored in `reply_to`, so sending a forward appends it to the original thread (see CMP-11).
+- **Today:** `reply_content()` and `Quoted::new()` in `src/ui/composer.rs`. A forward has no `reply_to`, so the draft opens alone in the reading pane, and sending it creates a new thread in Sent with the "Fwd:" subject and the quoted original in the body (see CMP-11).
 - **Backend needs:** A forward must be a new message with its own headers, not a reply to the original (no `In-Reply-To`). Include the original's attachments (ATT-7).
-- **Notes:** See CMP-11. A forward is currently sent as a reply in the same thread.
+- **Notes:** The backend must not thread a forward with the original. Gmail: the new message gets no `threadId`. IMAP: no `In-Reply-To` or `References` from the original.
 
 ### CMP-5 Recipient fields
 
@@ -362,14 +362,14 @@ Drafts are described in section 7. Undo of a send is described in section 8.
 - **Feature:** Forwarded messages appear under the note area in a block with a "Forwarded message" label and From, Date, Subject and To lines, then the original body.
 - **Today:** `Quoted` in `src/ui/composer.rs` (display) and `html()` (saved HTML wrapped in `<blockquote>`).
 - **Backend needs:** The quoted original must be sent as HTML (or as attached message if the client chooses). The format must match what other clients expect.
-- **Notes:** When a forward draft is reopened, the quote is lost (see DRF-3).
+- **Notes:** The quote is kept on the draft (`DraftOrigin::quoted` in `src/data.rs`), so a reopened forward draft shows the same quote block (see DRF-3).
 
 ### CMP-11 Reply appends to the thread
 
-- **Feature:** A sent reply appears under the original conversation, not as a new thread. A sent forward is also appended to the original thread (see CMP-4).
-- **Today:** `send_message()` in `src/app.rs` pushes the message into the thread found by `reply_to`. If that thread no longer exists, a new thread is made in Sent.
+- **Feature:** A sent reply appears under the original conversation, not as a new thread. A sent forward starts a new thread in Sent (see CMP-4).
+- **Today:** `send_message()` in `src/app.rs` pushes a reply into the thread found by `reply_to`. If that thread no longer exists, a new thread is made in Sent. A forward has no `reply_to`, so it always makes a new thread in Sent.
 - **Backend needs:** Thread linking by server thread ID and headers. Gmail: `threadId` on the sent message. IMAP: `In-Reply-To` and `References`.
-- **Notes:** Forward should not share the original thread. See CMP-4.
+- **Notes:** A forward does not share the original thread. See CMP-4.
 
 ### CMP-12 Send failure feedback
 
@@ -406,9 +406,9 @@ Drafts are described in section 7. Undo of a send is described in section 8.
 ### DRF-3 Open and edit a draft
 
 - **Feature:** Selecting a Drafts thread opens it in the composer, with the title "Draft". Edits follow DRF-1.
-- **Today:** `open_draft()` in `src/app.rs` rebuilds the composer from the stored message. The body is taken from the draft's HTML as plain text (`html::plain_text`).
+- **Today:** `open_draft()` in `src/app.rs` rebuilds the composer from the stored message. The body is taken from the draft's HTML as plain text (`html::plain_text`). The draft's kind, reply target and forwarded quote are kept in `DraftOrigin` on the thread (`src/data.rs`), so reopening restores the same kind and quote block. A forward draft reopens as a forward, and sending it creates a new thread (CMP-4).
 - **Backend needs:** Fetch the draft's full content, including attachments and headers, when it is opened.
-- **Notes:** **Known gap:** a forward draft is reopened as a plain draft, and its quoted block is folded into the body as text. Its "Forward" kind is lost. Attachments on drafts are not kept, because `message_from()` always sets none. Rich HTML is lost on reopening. Fix this with real draft storage, not by parsing back.
+- **Notes:** Attachments on drafts are not kept, because `message_from()` always sets none. Rich HTML is lost on reopening. The forwarded quote is not in the draft's body, so draft search does not match text that only appears in the quote. The backend's draft storage should keep the quote as a separate part, as the app does now.
 
 ### DRF-4 Discard a draft
 
@@ -571,9 +571,9 @@ Search is in memory. Each thread gets a `SearchIndex` from `Thread::reindex()` i
 ### ATT-4 Open and download an attachment
 
 - **Feature:** The attachment chip is not clickable. Nothing opens or saves the file, although the chip looks like a button.
-- **Today:** Display only. No handler is attached in `render_message()`.
+- **Today:** Display only. No handler is attached in `render_message()`. The chip is a plain tag, with no hover style, border or pointer cursor.
 - **Backend needs:** Download the bytes on demand (Gmail: `messages.attachments.get`, IMAP: `BODY[part]`). Cache them locally. Then open with the system viewer or save with a file dialog. Show progress for large files.
-- **Notes:** The chip should not look clickable until this exists. Until then it should be treated as display only.
+- **Notes:** The chip should not look clickable until this exists. Until then it is display only.
 
 ### ATT-5 Attachment icon in the list
 
@@ -783,7 +783,7 @@ These are the states the UI must show once the backend exists. None exists today
 ### DAT-4 Threading headers
 
 - **Feature:** Replies are placed in the right conversation on the local side only (CMP-11). Headers are not kept.
-- **Today:** Not stored. `Message` has no `Message-ID`, `In-Reply-To`, `References` or `Reply-To` field. Threads are linked only by the `reply_to` thread ID on drafts, which is not sent.
+- **Today:** Not stored. `Message` has no `Message-ID`, `In-Reply-To`, `References` or `Reply-To` field. Replies are linked only by the `reply_to` thread ID held in memory, which is not sent.
 - **Backend needs:** Store `Message-ID`, `In-Reply-To`, `References` and `Reply-To` for every message. Use them to build threads and to set headers on sent replies (CMP-2, CMP-3). Use `Message-ID` to deduplicate the sent copy (CMP-13).
 - **Notes:** Without these, replies from Pigeon will not thread correctly in other clients.
 
