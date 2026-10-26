@@ -4880,6 +4880,278 @@
           "attachments": []
         }
       ]
+    },
+    {
+      "id": "t-0125",
+      "subject": "Invitation: Spring principal roles: catch-up @ Tue Oct 27, 11:20am",
+      "folder": "inbox",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0166",
+          "from": {
+            "name": "Kevin Ortiz",
+            "email": "kevin.ortiz@talentbridge.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T10:40:00-04:00",
+          "snippet": "Kevin Ortiz invited you to Spring principal roles: catch-up When: Tue Oct 27, 11:20 – 11:40 AM (ET) Where: Video call, h",
+          "html": "<p><b>Kevin Ortiz</b> invited you to <b>Spring principal roles: catch-up</b></p><p>When: Tue Oct 27, 11:20 – 11:40 AM (ET)</p><p>Where: Video call, https://meet.example.com/kortiz-20min</p><p>Organizer: Kevin Ortiz (TalentBridge)</p><p>Guests: Alex Rivera, Kevin Ortiz</p><p>Short one, as promised. Principal-level roles are opening up for spring at a couple of places. I'd like to hear what you're looking for before I send anything specific.</p><p>— Kevin</p>",
+          "attachments": [],
+          "invite": {
+            "event_id": "e-0145",
+            "method": "request"
+          }
+        }
+      ]
+    },
+    {
+      "id": "t-0126",
+      "subject": "Invitation: Auth refresh rollout check-in @ Wed Oct 28, 9:30am",
+      "folder": "inbox",
+      "labels": [
+        "work"
+      ],
+      "starred": true,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0167",
+          "from": {
+            "name": "Hannah Brooks",
+            "email": "hbrooks@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-26T07:30:00-04:00",
+          "snippet": "Hannah Brooks invited you to Auth refresh rollout check-in When: Wed Oct 28, 9:30 – 10:00 AM (ET) Where: Video call, htt",
+          "html": "<p><b>Hannah Brooks</b> invited you to <b>Auth refresh rollout check-in</b></p><p>When: Wed Oct 28, 9:30 – 10:00 AM (ET)</p><p>Where: Video call, https://meet.example.com/auth-rollout</p><p>Organizer: Hannah Brooks</p><p>Guests: Alex Rivera, Hannah Brooks</p><p>The single-flight flag is on for 10% of beta. I want to check the invalid_grant rate before we ramp it. Bring the trace if anything looks off.</p>",
+          "attachments": [],
+          "invite": {
+            "event_id": "e-0146",
+            "method": "request"
+          }
+        }
+      ]
+    },
+    {
+      "id": "t-0127",
+      "subject": "Invitation: Frontend headcount model review @ Thu Oct 29, 10:30am",
+      "folder": "inbox",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0168",
+          "from": {
+            "name": "Tom Keller",
+            "email": "tom.keller@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T10:20:00-04:00",
+          "snippet": "Tom Keller invited you to Frontend headcount model review When: Thu Oct 29, 10:30 – 11:30 AM (ET) Where: Video call, htt",
+          "html": "<p><b>Tom Keller</b> invited you to <b>Frontend headcount model review</b></p><p>When: Thu Oct 29, 10:30 – 11:30 AM (ET)</p><p>Where: Video call, https://meet.example.com/tk-headcount-review</p><p>Organizer: Tom Keller</p><p>Guests: Alex Rivera, Tom Keller</p><p>Walk the model with the second senior and the May mid hire. Mainly want your read on the sync-engine dependency.</p>",
+          "attachments": [],
+          "invite": {
+            "event_id": "e-0147",
+            "method": "request"
+          }
+        }
+      ]
+    },
+    {
+      "id": "t-0128",
+      "subject": "Invitation: Coffee: brand system questions @ Fri Oct 30, 10:00am",
+      "folder": "inbox",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0169",
+          "from": {
+            "name": "Lena Park",
+            "email": "lena@parkstudio.co"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T08:50:00-04:00",
+          "snippet": "Lena Park invited you to Coffee: brand system questions When: Fri Oct 30, 10:00 – 10:45 AM (ET) Where: Blue Bottle, Vale",
+          "html": "<p><b>Lena Park</b> invited you to <b>Coffee: brand system questions</b></p><p>When: Fri Oct 30, 10:00 – 10:45 AM (ET)</p><p>Where: Blue Bottle, Valencia St</p><p>Organizer: Lena Park</p><p>Guests: Alex Rivera, Lena Park</p><p>I'd rather talk the brand system through than email it. Bring the wordmark drafts if you have them.</p>",
+          "attachments": [],
+          "invite": {
+            "event_id": "e-0148",
+            "method": "request"
+          }
+        }
+      ]
+    },
+    {
+      "id": "t-0129",
+      "subject": "Invitation: Q1 roadmap pre-read walkthrough @ Mon Nov 9, 10:30am",
+      "folder": "inbox",
+      "labels": [
+        "work"
+      ],
+      "starred": false,
+      "unread": true,
+      "messages": [
+        {
+          "id": "m-0170",
+          "from": {
+            "name": "Sarah Chen",
+            "email": "sarah.chen@acme.io"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T09:30:00-04:00",
+          "snippet": "Sarah Chen invited you to Q1 roadmap pre-read walkthrough When: Mon Nov 9, 10:30 – 11:00 AM (ET) Where: Video call, http",
+          "html": "<p><b>Sarah Chen</b> invited you to <b>Q1 roadmap pre-read walkthrough</b></p><p>When: Mon Nov 9, 10:30 – 11:00 AM (ET)</p><p>Where: Video call, https://meet.example.com/q1-preread</p><p>Organizer: Sarah Chen</p><p>Guests: Alex Rivera, Sarah Chen</p><p>Back from OOO on Monday. Can we walk the roadmap draft before we sit down with Tom on headcount?</p><p>Thanks,<br>Sarah</p>",
+          "attachments": [],
+          "invite": {
+            "event_id": "e-0149",
+            "method": "request"
+          }
+        }
+      ]
+    },
+    {
+      "id": "t-0130",
+      "subject": "Invitation: Padel Monday, post-Lisbon @ Mon Nov 9, 7:00pm",
+      "folder": "inbox",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0171",
+          "from": {
+            "name": "Mateo Ruiz",
+            "email": "mateo@ruizpadel.es"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-26T07:05:00-04:00",
+          "snippet": "Mateo Ruiz invited you to Padel Monday, post-Lisbon When: Mon Nov 9, 7:00 – 8:30 PM (ET) Where: Club Padel Mission, Cour",
+          "html": "<p><b>Mateo Ruiz</b> invited you to <b>Padel Monday, post-Lisbon</b></p><p>When: Mon Nov 9, 7:00 – 8:30 PM (ET)</p><p>Where: Club Padel Mission, Court 2</p><p>Organizer: Mateo Ruiz</p><p>Guests: Alex Rivera, Mateo Ruiz</p><p>Welcome back! Ana says the new bat is yours for the night, so no excuses this time.</p>",
+          "attachments": [],
+          "invite": {
+            "event_id": "e-0150",
+            "method": "request"
+          }
+        }
+      ]
+    },
+    {
+      "id": "t-0131",
+      "subject": "Invitation: Sync conflict copy review @ Wed Oct 28, 11:00am",
+      "folder": "inbox",
+      "labels": [
+        "side-projects"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0172",
+          "from": {
+            "name": "Priya Nair",
+            "email": "priya.nair@brightpath.dev"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-25T08:40:00-04:00",
+          "snippet": "Priya Nair invited you to Sync conflict copy review When: Wed Oct 28, 11:00 – 11:30 AM (ET) Where: Video call, https://m",
+          "html": "<p><b>Priya Nair</b> invited you to <b>Sync conflict copy review</b></p><p>When: Wed Oct 28, 11:00 – 11:30 AM (ET)</p><p>Where: Video call, https://meet.example.com/priya-conflict-copy</p><p>Organizer: Priya Nair</p><p>Guests: Alex Rivera, Priya Nair</p><p>Two versions of the conflict message are in the doc, plus the \"we never read your email\" line. I need a yes or no on each before the Thursday review.</p>",
+          "attachments": [],
+          "invite": {
+            "event_id": "e-0151",
+            "method": "request"
+          }
+        }
+      ]
+    },
+    {
+      "id": "t-0132",
+      "subject": "Cancelled: Dinner at Nopa with Daniel (Mon Nov 2)",
+      "folder": "inbox",
+      "labels": [
+        "personal"
+      ],
+      "starred": false,
+      "unread": false,
+      "messages": [
+        {
+          "id": "m-0173",
+          "from": {
+            "name": "Daniel Rivera",
+            "email": "daniel.r@example.com"
+          },
+          "to": [
+            {
+              "name": "Alex Rivera",
+              "email": "alex.rivera@example.com"
+            }
+          ],
+          "cc": [],
+          "date": "2026-10-26T07:15:00-04:00",
+          "snippet": "Daniel Rivera cancelled Dinner at Nopa with Daniel When: Mon Nov 2, 6:00 – 7:30 PM (ET) Where: Nopa Organizer: Daniel Rivera Sorry",
+          "html": "<p><b>Daniel Rivera</b> cancelled <b>Dinner at Nopa with Daniel</b></p><p>When: Mon Nov 2, 6:00 – 7:30 PM (ET)</p><p>Where: Nopa</p><p>Organizer: Daniel Rivera</p><p>Sorry, brother. Something came up on the 2nd and I can't make it. Rain check after Lisbon, and I'll bring the good wine then.</p>",
+          "attachments": [],
+          "invite": {
+            "event_id": "e-0079",
+            "method": "cancel"
+          }
+        }
+      ]
     }
   ]
 }

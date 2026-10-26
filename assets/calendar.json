@@ -1,0 +1,3924 @@
+{
+  "account": {
+    "name": "Alex Rivera",
+    "email": "alex.rivera@example.com"
+  },
+  "calendars": [
+    {
+      "id": "work",
+      "name": "Work",
+      "color": "#5b8def",
+      "visible": true
+    },
+    {
+      "id": "personal",
+      "name": "Personal",
+      "color": "#3fb984",
+      "visible": true
+    },
+    {
+      "id": "family",
+      "name": "Family",
+      "color": "#f08a5d",
+      "visible": true
+    },
+    {
+      "id": "side-projects",
+      "name": "Side Projects",
+      "color": "#2bb3c0",
+      "visible": true
+    },
+    {
+      "id": "fitness",
+      "name": "Fitness",
+      "color": "#e0716b",
+      "visible": true
+    },
+    {
+      "id": "travel",
+      "name": "Travel",
+      "color": "#9b6bd6",
+      "visible": true
+    },
+    {
+      "id": "holidays",
+      "name": "Holidays",
+      "color": "#d4a017",
+      "visible": true
+    },
+    {
+      "id": "birthdays",
+      "name": "Birthdays",
+      "color": "#e66fa8",
+      "visible": true
+    }
+  ],
+  "events": [
+    {
+      "id": "e-0001",
+      "calendar": "fitness",
+      "title": "Gym: upper body",
+      "start": "2026-09-28T06:30:00-04:00",
+      "end": "2026-09-28T07:30:00-04:00",
+      "all_day": false,
+      "location": "Mission Gym",
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": "weekly",
+      "reminder_minutes": 30,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0002",
+      "calendar": "work",
+      "title": "Daily standup",
+      "start": "2026-09-28T09:30:00-04:00",
+      "end": "2026-09-28T09:45:00-04:00",
+      "all_day": false,
+      "location": "Zoom",
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": "weekdays",
+      "reminder_minutes": 5,
+      "video_link": "https://meet.example.com/dsk-standup",
+      "busy": true
+    },
+    {
+      "id": "e-0003",
+      "calendar": "side-projects",
+      "title": "Pigeon 2.4 kickoff",
+      "start": "2026-09-28T14:00:00-04:00",
+      "end": "2026-09-28T15:00:00-04:00",
+      "all_day": false,
+      "location": "Discord #pigeon-dev",
+      "description": "Scope for 2.4:\n- sync protocol v3 (Rahul reviewing)\n- search crash on empty query (#42)\n- onboarding copy rewrite",
+      "attendees": [
+        {
+          "name": "Rahul Mehta",
+          "email": "rahul@mehta.dev",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0004",
+      "calendar": "fitness",
+      "title": "Gym: legs",
+      "start": "2026-09-30T06:30:00-04:00",
+      "end": "2026-09-30T07:30:00-04:00",
+      "all_day": false,
+      "location": "Mission Gym",
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": "weekly",
+      "reminder_minutes": 30,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0005",
+      "calendar": "work",
+      "title": "Q3 close review",
+      "start": "2026-09-30T10:00:00-04:00",
+      "end": "2026-09-30T11:30:00-04:00",
+      "all_day": false,
+      "location": "Conference room 4B",
+      "description": "Walk through Q3 spend vs plan. Bring the September offsite receipts.",
+      "attendees": [
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        },
+        {
+          "name": "Sarah Chen",
+          "email": "sarah.chen@acme.io",
+          "status": "tentative"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0006",
+      "calendar": "work",
+      "title": "1:1 with Tom Keller",
+      "start": "2026-10-01T15:00:00-04:00",
+      "end": "2026-10-01T15:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": "weekly",
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/tk-1on1-yf",
+      "busy": true
+    },
+    {
+      "id": "e-0007",
+      "calendar": "personal",
+      "title": "Padel with Mateo",
+      "start": "2026-10-01T19:00:00-04:00",
+      "end": "2026-10-01T20:30:00-04:00",
+      "all_day": false,
+      "location": "Club Padel Mission",
+      "description": "Court 3. Ana is bringing water this time, apparently.",
+      "attendees": [
+        {
+          "name": "Mateo Ruiz",
+          "email": "mateo@ruizpadel.es",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Mateo Ruiz",
+        "email": "mateo@ruizpadel.es"
+      },
+      "recurrence": "biweekly",
+      "reminder_minutes": 60,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0008",
+      "calendar": "side-projects",
+      "title": "Sync protocol v3 review",
+      "start": "2026-10-02T13:00:00-04:00",
+      "end": "2026-10-02T14:00:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Section 4: folder moves get their own tombstone, labels stay last-writer-wins.\nQuestions:\n1. What happens to a thread trashed offline on two devices?\n2. Do we ship the conflict UI in 2.4 or 2.5?",
+      "attendees": [
+        {
+          "name": "Rahul Mehta",
+          "email": "rahul@mehta.dev",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/pg-sync-v3",
+      "busy": true
+    },
+    {
+      "id": "e-0009",
+      "calendar": "work",
+      "title": "Friday demo",
+      "start": "2026-10-02T16:00:00-04:00",
+      "end": "2026-10-02T16:30:00-04:00",
+      "all_day": false,
+      "location": "Zoom",
+      "description": null,
+      "attendees": [
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": "weekly",
+      "reminder_minutes": 5,
+      "video_link": "https://meet.example.com/fri-demo",
+      "busy": true
+    },
+    {
+      "id": "e-0010",
+      "calendar": "side-projects",
+      "title": "Pigeon build and triage",
+      "start": "2026-10-03T10:00:00-04:00",
+      "end": "2026-10-03T12:00:00-04:00",
+      "all_day": false,
+      "location": "Home office",
+      "description": "Triage the GitHub inbox, cut the 2.4 beta build, check crash reports.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": "weekly",
+      "reminder_minutes": 5,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0011",
+      "calendar": "family",
+      "title": "Dinner at Mom's",
+      "start": "2026-10-04T19:00:00-04:00",
+      "end": "2026-10-04T21:30:00-04:00",
+      "all_day": false,
+      "location": "Mom's place, Ortega St",
+      "description": "Bring the good bread. Dad is trying a new lamb recipe.",
+      "attendees": [
+        {
+          "name": "Maria Rivera",
+          "email": "maria.rivera58@example.com",
+          "status": "accepted"
+        },
+        {
+          "name": "Sofia Rivera",
+          "email": "sofia.r@example.com",
+          "status": "tentative"
+        }
+      ],
+      "organizer": {
+        "name": "Maria Rivera",
+        "email": "maria.rivera58@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0012",
+      "calendar": "personal",
+      "title": "Weekly review",
+      "start": "2026-10-04T20:00:00-04:00",
+      "end": "2026-10-04T20:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "What went well, what dragged, one thing for next week.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": "weekly",
+      "reminder_minutes": 5,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0013",
+      "calendar": "personal",
+      "title": "Annual physical: Dr. Roberts",
+      "start": "2026-10-06T08:30:00-04:00",
+      "end": "2026-10-06T09:30:00-04:00",
+      "all_day": false,
+      "location": "Dr. Roberts, 1400 Post St",
+      "description": "Fasting bloodwork is already done. Bring the list of refills.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 60,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0014",
+      "calendar": "work",
+      "title": "Q4 planning kickoff",
+      "start": "2026-10-06T10:00:00-04:00",
+      "end": "2026-10-06T11:00:00-04:00",
+      "all_day": false,
+      "location": "Zoom",
+      "description": "Agenda:\n- Roadmap themes\n- Hiring assumptions (2 senior, 1 mid)\n- Dependencies on the sync engine",
+      "attendees": [
+        {
+          "name": "Sarah Chen",
+          "email": "sarah.chen@acme.io",
+          "status": "accepted"
+        },
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        },
+        {
+          "name": "Hannah Brooks",
+          "email": "hbrooks@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Sarah Chen",
+        "email": "sarah.chen@acme.io"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/q4-kickoff",
+      "busy": true
+    },
+    {
+      "id": "e-0015",
+      "calendar": "work",
+      "title": "Interview: frontend candidate #7",
+      "start": "2026-10-07T11:00:00-04:00",
+      "end": "2026-10-07T12:00:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Scorecard: React, state design, debugging.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/int-fe-7",
+      "busy": true
+    },
+    {
+      "id": "e-0016",
+      "calendar": "work",
+      "title": "Hiring panel debrief",
+      "start": "2026-10-07T16:00:00-04:00",
+      "end": "2026-10-07T16:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Hannah Brooks",
+          "email": "hbrooks@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Hannah Brooks",
+        "email": "hbrooks@acme.io"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0017",
+      "calendar": "work",
+      "title": "Interview: backend candidate (Priyanka)",
+      "start": "2026-10-08T10:00:00-04:00",
+      "end": "2026-10-08T11:00:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "System design round, 45 min plus Q&A.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/int-be-8",
+      "busy": true
+    },
+    {
+      "id": "e-0018",
+      "calendar": "side-projects",
+      "title": "Bug bash: onboarding",
+      "start": "2026-10-08T14:00:00-04:00",
+      "end": "2026-10-08T15:00:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Five people from the beta list. Record screens, label each drop-off.",
+      "attendees": [
+        {
+          "name": "Priya Nair",
+          "email": "priya.nair@brightpath.dev",
+          "status": "accepted"
+        },
+        {
+          "name": "Dana Lee",
+          "email": "dana@lee-design.co",
+          "status": "declined"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0019",
+      "calendar": "side-projects",
+      "title": "Design review: onboarding flow",
+      "start": "2026-10-09T10:00:00-04:00",
+      "end": "2026-10-09T11:00:00-04:00",
+      "all_day": false,
+      "location": "Figma room",
+      "description": "Looking at the three onboarding variants. Dana brings the mark in both colorways.",
+      "attendees": [
+        {
+          "name": "Dana Lee",
+          "email": "dana@lee-design.co",
+          "status": "accepted"
+        },
+        {
+          "name": "Priya Nair",
+          "email": "priya.nair@brightpath.dev",
+          "status": "tentative"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0020",
+      "calendar": "holidays",
+      "title": "Indigenous Peoples' Day",
+      "start": "2026-10-12T00:00:00-04:00",
+      "end": "2026-10-13T00:00:00-04:00",
+      "all_day": true,
+      "location": null,
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": null,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0021",
+      "calendar": "work",
+      "title": "Pairing: merge conflicts in sync",
+      "start": "2026-10-12T14:00:00-04:00",
+      "end": "2026-10-12T15:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Hannah Brooks",
+          "email": "hbrooks@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/pair-sync",
+      "busy": true
+    },
+    {
+      "id": "e-0022",
+      "calendar": "side-projects",
+      "title": "Sync engine spike",
+      "start": "2026-10-13T09:00:00-04:00",
+      "end": "2026-10-13T12:00:00-04:00",
+      "all_day": false,
+      "location": "Home office",
+      "description": "Prototype the tombstone table in SQLite and measure write amplification on 10k threads.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0023",
+      "calendar": "fitness",
+      "title": "Morning run: Lands End loop",
+      "start": "2026-10-14T06:15:00-04:00",
+      "end": "2026-10-14T07:00:00-04:00",
+      "all_day": false,
+      "location": "Lands End trailhead",
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 5,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0024",
+      "calendar": "work",
+      "title": "Frontend hiring sync",
+      "start": "2026-10-14T13:00:00-04:00",
+      "end": "2026-10-14T13:45:00-04:00",
+      "all_day": false,
+      "location": "Zoom",
+      "description": null,
+      "attendees": [
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Tom Keller",
+        "email": "tom.keller@acme.io"
+      },
+      "recurrence": "biweekly",
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/fe-hiring",
+      "busy": true
+    },
+    {
+      "id": "e-0025",
+      "calendar": "work",
+      "title": "Pigeon Q3 metrics review",
+      "start": "2026-10-15T17:00:00-04:00",
+      "end": "2026-10-15T18:00:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Sarah Chen",
+          "email": "sarah.chen@acme.io",
+          "status": "tentative"
+        },
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Tom Keller",
+        "email": "tom.keller@acme.io"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/q3-metrics",
+      "busy": true
+    },
+    {
+      "id": "e-0026",
+      "calendar": "work",
+      "title": "Code review block",
+      "start": "2026-10-16T09:00:00-04:00",
+      "end": "2026-10-16T10:00:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Open PRs: #318 retry, #331 label merge, #340 keychain mutex.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0027",
+      "calendar": "work",
+      "title": "Team retro",
+      "start": "2026-10-16T15:00:00-04:00",
+      "end": "2026-10-16T16:00:00-04:00",
+      "all_day": false,
+      "location": "Conference room 2A",
+      "description": "Start / stop / continue. Two items from the auth incident.",
+      "attendees": [
+        {
+          "name": "Hannah Brooks",
+          "email": "hbrooks@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0028",
+      "calendar": "personal",
+      "title": "Late movie with Daniel",
+      "start": "2026-10-16T21:00:00-04:00",
+      "end": "2026-10-16T23:30:00-04:00",
+      "all_day": false,
+      "location": "Alamo Drafthouse Presidio",
+      "description": null,
+      "attendees": [
+        {
+          "name": "Daniel Rivera",
+          "email": "daniel.r@example.com",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Daniel Rivera",
+        "email": "daniel.r@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0029",
+      "calendar": "family",
+      "title": "Call Sofia",
+      "start": "2026-10-18T19:00:00-04:00",
+      "end": "2026-10-18T19:30:00-04:00",
+      "all_day": false,
+      "location": "Phone",
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0030",
+      "calendar": "work",
+      "title": "Staff meeting",
+      "start": "2026-10-19T14:00:00-04:00",
+      "end": "2026-10-19T15:00:00-04:00",
+      "all_day": false,
+      "location": "Conference room 2A",
+      "description": "Monthly staff. Attendance expected. Jobs and reorg notes go in the doc.",
+      "attendees": [],
+      "organizer": {
+        "name": "Tom Keller",
+        "email": "tom.keller@acme.io"
+      },
+      "recurrence": "monthly",
+      "reminder_minutes": 15,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0031",
+      "calendar": "work",
+      "title": "Sprint planning",
+      "start": "2026-10-20T10:00:00-04:00",
+      "end": "2026-10-20T11:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Pull the sync tickets and the beta crash fix. Estimate the auth refresh rewrite.",
+      "attendees": [
+        {
+          "name": "Hannah Brooks",
+          "email": "hbrooks@acme.io",
+          "status": "accepted"
+        },
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0032",
+      "calendar": "personal",
+      "title": "Haircut",
+      "start": "2026-10-22T12:15:00-04:00",
+      "end": "2026-10-22T13:00:00-04:00",
+      "all_day": false,
+      "location": "Mission Barber",
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 30,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0033",
+      "calendar": "personal",
+      "title": "Dinner with Daniel",
+      "start": "2026-10-22T19:00:00-04:00",
+      "end": "2026-10-22T21:00:00-04:00",
+      "all_day": false,
+      "location": "Nopa",
+      "description": null,
+      "attendees": [
+        {
+          "name": "Daniel Rivera",
+          "email": "daniel.r@example.com",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Daniel Rivera",
+        "email": "daniel.r@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0034",
+      "calendar": "work",
+      "title": "Security: rotate staging DB creds (SEC-4421)",
+      "start": "2026-10-23T09:00:00-04:00",
+      "end": "2026-10-23T09:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Tom flagged shared creds in the team vault. Rotate, then confirm in the ticket.",
+      "attendees": [
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Tom Keller",
+        "email": "tom.keller@acme.io"
+      },
+      "recurrence": null,
+      "reminder_minutes": 15,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0035",
+      "calendar": "side-projects",
+      "title": "Stripe Connect question call",
+      "start": "2026-10-23T11:00:00-04:00",
+      "end": "2026-10-23T11:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Checkout vs Connect for the Pro plan. Connect only needed for third-party payouts.",
+      "attendees": [
+        {
+          "name": "Rahul Mehta",
+          "email": "rahul@mehta.dev",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0036",
+      "calendar": "work",
+      "title": "Hiring plan numbers call",
+      "start": "2026-10-23T15:00:00-04:00",
+      "end": "2026-10-23T16:00:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Sarah and Tom on the frontend headcount model. Confirm mid hire timing.",
+      "attendees": [
+        {
+          "name": "Sarah Chen",
+          "email": "sarah.chen@acme.io",
+          "status": "accepted"
+        },
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Sarah Chen",
+        "email": "sarah.chen@acme.io"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/hiring-numbers",
+      "busy": true
+    },
+    {
+      "id": "e-0037",
+      "calendar": "family",
+      "title": "Family dinner at the Rivera house",
+      "start": "2026-10-23T18:30:00-04:00",
+      "end": "2026-10-23T21:00:00-04:00",
+      "all_day": false,
+      "location": "Rivera house",
+      "description": "Mom's photos from the dinner. Lanterns one goes on the wall.",
+      "attendees": [
+        {
+          "name": "Maria Rivera",
+          "email": "maria.rivera58@example.com",
+          "status": "accepted"
+        },
+        {
+          "name": "Sofia Rivera",
+          "email": "sofia.r@example.com",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Maria Rivera",
+        "email": "maria.rivera58@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0038",
+      "calendar": "personal",
+      "title": "Expense report approval (Concur)",
+      "start": "2026-10-24T15:00:00-04:00",
+      "end": "2026-10-24T15:15:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Sept client offsite, $742.31. Approve once the flights match the receipts.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 5,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0039",
+      "calendar": "side-projects",
+      "title": "Mount Tam hike with Daniel",
+      "start": "2026-10-25T08:00:00-04:00",
+      "end": "2026-10-25T12:30:00-04:00",
+      "all_day": false,
+      "location": "Presidio lot",
+      "description": "Leaving from the Presidio lot at 8.",
+      "attendees": [
+        {
+          "name": "Daniel Rivera",
+          "email": "daniel.r@example.com",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Daniel Rivera",
+        "email": "daniel.r@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0040",
+      "calendar": "work",
+      "title": "Auth refresh bug war room",
+      "start": "2026-10-25T09:00:00-04:00",
+      "end": "2026-10-25T10:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Two refreshes fire on wake-from-sleep and the second invalidates the first.\nPlan:\n- single-flight guard around refreshToken()\n- mutex in keychain layer\n- ship behind a flag",
+      "attendees": [
+        {
+          "name": "Hannah Brooks",
+          "email": "hbrooks@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/auth-warroom",
+      "busy": true
+    },
+    {
+      "id": "e-0041",
+      "calendar": "personal",
+      "title": "Atorvastatin refill pickup window",
+      "start": "2026-10-26T00:00:00-04:00",
+      "end": "2026-11-01T00:00:00-04:00",
+      "all_day": true,
+      "location": "Maple Street Pharmacy",
+      "description": "Refill #448213. Pick up before 10/31.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": null,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0042",
+      "calendar": "work",
+      "title": "Q4 planning review",
+      "start": "2026-10-26T10:00:00-04:00",
+      "end": "2026-10-26T11:00:00-04:00",
+      "all_day": false,
+      "location": "Zoom",
+      "description": "Agenda:\n- Roadmap section comments (due Fri)\n- Hiring plan: two seniors, mid hire moved to May\n- Finance board deck numbers",
+      "attendees": [
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        },
+        {
+          "name": "Hannah Brooks",
+          "email": "hbrooks@acme.io",
+          "status": "tentative"
+        }
+      ],
+      "organizer": {
+        "name": "Sarah Chen",
+        "email": "sarah.chen@acme.io"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/abc-defg-hij",
+      "busy": true
+    },
+    {
+      "id": "e-0043",
+      "calendar": "work",
+      "title": "Interview: senior frontend (Jordan L.)",
+      "start": "2026-10-26T10:30:00-04:00",
+      "end": "2026-10-26T11:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Take-home review first, then system design. Scorecard in Greenhouse.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/int-jl-26",
+      "busy": true
+    },
+    {
+      "id": "e-0044",
+      "calendar": "personal",
+      "title": "Lunch with Dana (logo files)",
+      "start": "2026-10-26T12:30:00-04:00",
+      "end": "2026-10-26T13:30:00-04:00",
+      "all_day": false,
+      "location": "Fog City Cafe",
+      "description": null,
+      "attendees": [
+        {
+          "name": "Dana Lee",
+          "email": "dana@lee-design.co",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0045",
+      "calendar": "side-projects",
+      "title": "Pigeon logo review",
+      "start": "2026-10-26T15:00:00-04:00",
+      "end": "2026-10-26T15:45:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Three colorways plus the app icon at 16px in the dock. Dana sends the wordmark next.",
+      "attendees": [
+        {
+          "name": "Dana Lee",
+          "email": "dana@lee-design.co",
+          "status": "accepted"
+        },
+        {
+          "name": "Rahul Mehta",
+          "email": "rahul@mehta.dev",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/logo-review",
+      "busy": true
+    },
+    {
+      "id": "e-0046",
+      "calendar": "personal",
+      "title": "Call Greg Dunn about lease",
+      "start": "2026-10-26T16:30:00-04:00",
+      "end": "2026-10-26T16:45:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Ask about the 3% increase and the November 15 deadline.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 5,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0047",
+      "calendar": "fitness",
+      "title": "Bouldering at Mission Cliffs",
+      "start": "2026-10-26T18:30:00-04:00",
+      "end": "2026-10-26T20:00:00-04:00",
+      "all_day": false,
+      "location": "Mission Cliffs",
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0048",
+      "calendar": "work",
+      "title": "Release window: 2.4 hotfix",
+      "start": "2026-10-26T22:30:00-04:00",
+      "end": "2026-10-26T23:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Deploy the search fix once the staging migration is clean. Watch the crash dashboard for 30 min after.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 30,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0049",
+      "calendar": "work",
+      "title": "Headcount numbers to finance",
+      "start": "2026-10-27T09:00:00-04:00",
+      "end": "2026-10-27T09:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Finance needs the total for the board deck. Confirm second senior is a yes.",
+      "attendees": [
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0050",
+      "calendar": "work",
+      "title": "Sprint review",
+      "start": "2026-10-27T10:00:00-04:00",
+      "end": "2026-10-27T11:00:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Hannah Brooks",
+          "email": "hbrooks@acme.io",
+          "status": "tentative"
+        },
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0051",
+      "calendar": "work",
+      "title": "1:1 with Hannah Brooks",
+      "start": "2026-10-27T11:00:00-04:00",
+      "end": "2026-10-27T11:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Hannah Brooks",
+          "email": "hbrooks@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": "weekly",
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/hb-1on1",
+      "busy": true
+    },
+    {
+      "id": "e-0052",
+      "calendar": "work",
+      "title": "Focus: sync engine",
+      "start": "2026-10-27T13:00:00-04:00",
+      "end": "2026-10-27T17:00:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Do not book over this. Target: flushQueue retry and the label merge tests.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0053",
+      "calendar": "side-projects",
+      "title": "Design sync with Dana",
+      "start": "2026-10-27T15:00:00-04:00",
+      "end": "2026-10-27T15:45:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Dana Lee",
+          "email": "dana@lee-design.co",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0054",
+      "calendar": "work",
+      "title": "Interview: backend candidate (Sam)",
+      "start": "2026-10-27T16:00:00-04:00",
+      "end": "2026-10-27T17:00:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Live coding on the sync queue. Scorecard after.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/int-be-sam",
+      "busy": true
+    },
+    {
+      "id": "e-0055",
+      "calendar": "fitness",
+      "title": "Yoga",
+      "start": "2026-10-27T19:00:00-04:00",
+      "end": "2026-10-27T20:00:00-04:00",
+      "all_day": false,
+      "location": "Yoga Mission",
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": "weekly",
+      "reminder_minutes": 30,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0056",
+      "calendar": "work",
+      "title": "Lunch with Priya",
+      "start": "2026-10-28T12:00:00-04:00",
+      "end": "2026-10-28T13:00:00-04:00",
+      "all_day": false,
+      "location": "Bi-Rite Creamery",
+      "description": "Priya's onboarding notes. She wants the copy to say what we don't access.",
+      "attendees": [
+        {
+          "name": "Priya Nair",
+          "email": "priya.nair@brightpath.dev",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0057",
+      "calendar": "work",
+      "title": "Lunch with Tom",
+      "start": "2026-10-28T12:30:00-04:00",
+      "end": "2026-10-28T13:30:00-04:00",
+      "all_day": false,
+      "location": "Tacolicious",
+      "description": null,
+      "attendees": [
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0058",
+      "calendar": "work",
+      "title": "Pairing: sync engine with Hannah",
+      "start": "2026-10-28T14:00:00-04:00",
+      "end": "2026-10-28T16:00:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Hannah Brooks",
+          "email": "hbrooks@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/pair-sync-2",
+      "busy": true
+    },
+    {
+      "id": "e-0059",
+      "calendar": "side-projects",
+      "title": "Launch copy review with Priya",
+      "start": "2026-10-28T16:00:00-04:00",
+      "end": "2026-10-28T16:45:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Read the onboarding copy out loud. Cut any sentence that says we never read emails when it isn't literally true.",
+      "attendees": [
+        {
+          "name": "Priya Nair",
+          "email": "priya.nair@brightpath.dev",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/launch-copy",
+      "busy": true
+    },
+    {
+      "id": "e-0060",
+      "calendar": "work",
+      "title": "Stripe account verification: upload ID",
+      "start": "2026-10-28T16:00:00-04:00",
+      "end": "2026-10-28T16:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Upload the government ID and confirm the business address. Deadline is Oct 31 or payouts hold.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 30,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0061",
+      "calendar": "work",
+      "title": "Investor update draft",
+      "start": "2026-10-28T17:00:00-04:00",
+      "end": "2026-10-28T18:00:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Pigeon numbers for the October note. Keep it under 300 words.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0062",
+      "calendar": "family",
+      "title": "Call Mom",
+      "start": "2026-10-28T19:00:00-04:00",
+      "end": "2026-10-28T19:20:00-04:00",
+      "all_day": false,
+      "location": "Phone",
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": "weekly",
+      "reminder_minutes": 5,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0063",
+      "calendar": "side-projects",
+      "title": "Onboarding round 2 with Priya",
+      "start": "2026-10-29T10:00:00-04:00",
+      "end": "2026-10-29T11:00:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Five new participants. Script: connect mailbox step, then the what-we-don't-access line.",
+      "attendees": [
+        {
+          "name": "Priya Nair",
+          "email": "priya.nair@brightpath.dev",
+          "status": "accepted"
+        },
+        {
+          "name": "Dana Lee",
+          "email": "dana@lee-design.co",
+          "status": "tentative"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/onboarding-r2",
+      "busy": true
+    },
+    {
+      "id": "e-0064",
+      "calendar": "side-projects",
+      "title": "Beta crash triage: SyncEngine.flushQueue",
+      "start": "2026-10-29T11:30:00-04:00",
+      "end": "2026-10-29T12:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Three crash reports on 2.4.0 (318). Stack points at flushQueue and MessageStore.commit.",
+      "attendees": [
+        {
+          "name": "Rahul Mehta",
+          "email": "rahul@mehta.dev",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 5,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0065",
+      "calendar": "work",
+      "title": "Review PR #318: retry with jitter",
+      "start": "2026-10-29T14:00:00-04:00",
+      "end": "2026-10-29T14:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Check the timeout math in dispatch.ts. Tom asked for eyes on it.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0066",
+      "calendar": "side-projects",
+      "title": "Vendor call: Stripe Connect",
+      "start": "2026-10-29T15:00:00-04:00",
+      "end": "2026-10-29T15:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Decide whether Pro checkout needs Connect before the November launch.",
+      "attendees": [
+        {
+          "name": "Rahul Mehta",
+          "email": "rahul@mehta.dev",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0067",
+      "calendar": "side-projects",
+      "title": "Late design doc: sync v3 final",
+      "start": "2026-10-29T22:00:00-04:00",
+      "end": "2026-10-29T23:00:00-04:00",
+      "all_day": false,
+      "location": "Home office",
+      "description": "Finish section 4 and the diagrams, then send to Rahul for the beta channel.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 5,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0068",
+      "calendar": "work",
+      "title": "Q4 planning doc: roadmap comments due",
+      "start": "2026-10-30T00:00:00-04:00",
+      "end": "2026-10-31T00:00:00-04:00",
+      "all_day": true,
+      "location": null,
+      "description": "Leave comments on the roadmap section of the shared Q4 doc.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": null,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0069",
+      "calendar": "personal",
+      "title": "Dental cleaning: Alvarez Family Dentistry",
+      "start": "2026-10-30T09:30:00-04:00",
+      "end": "2026-10-30T10:15:00-04:00",
+      "all_day": false,
+      "location": "2100 Fillmore St",
+      "description": "Six-month cleaning. Arrive 10 minutes early. Reschedule by replying to the office or calling (415) 555-0142.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 60,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0070",
+      "calendar": "side-projects",
+      "title": "2.4 demo prep",
+      "start": "2026-10-30T11:00:00-04:00",
+      "end": "2026-10-30T12:00:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Rahul Mehta",
+          "email": "rahul@mehta.dev",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/demo-prep",
+      "busy": true
+    },
+    {
+      "id": "e-0071",
+      "calendar": "holidays",
+      "title": "Halloween",
+      "start": "2026-10-31T00:00:00-04:00",
+      "end": "2026-11-01T00:00:00-04:00",
+      "all_day": true,
+      "location": null,
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": null,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0072",
+      "calendar": "family",
+      "title": "Halloween at Sofia's",
+      "start": "2026-10-31T15:00:00-04:00",
+      "end": "2026-10-31T17:00:00-04:00",
+      "all_day": false,
+      "location": "Sofia's place, Noe Valley",
+      "description": "Jonah wants to be a rocket. Bring candy for the neighbors.",
+      "attendees": [
+        {
+          "name": "Sofia Rivera",
+          "email": "sofia.r@example.com",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Sofia Rivera",
+        "email": "sofia.r@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0073",
+      "calendar": "family",
+      "title": "Dinner at the Whitakers",
+      "start": "2026-10-31T18:30:00-04:00",
+      "end": "2026-10-31T20:00:00-04:00",
+      "all_day": false,
+      "location": "Whitaker house, Ortega St",
+      "description": "Casual dinner. Bring lemon bars and Mimi if she's around. Kids are upstairs.",
+      "attendees": [
+        {
+          "name": "Jess Whitaker",
+          "email": "jess@whitakerfamily.net",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Jess Whitaker",
+        "email": "jess@whitakerfamily.net"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0074",
+      "calendar": "personal",
+      "title": "Tandoor Palace with the old crew",
+      "start": "2026-10-31T20:00:00-04:00",
+      "end": "2026-10-31T23:00:00-04:00",
+      "all_day": false,
+      "location": "Tandoor Palace, Valencia St",
+      "description": "Starts at 8. No need to dress up.",
+      "attendees": [
+        {
+          "name": "Daniel Rivera",
+          "email": "daniel.r@example.com",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Daniel Rivera",
+        "email": "daniel.r@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0075",
+      "calendar": "side-projects",
+      "title": "Beta reply batch",
+      "start": "2026-11-01T11:00:00-05:00",
+      "end": "2026-11-01T11:30:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "Answer the 12 beta emails from the crash report thread.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 5,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0076",
+      "calendar": "family",
+      "title": "Sunday lunch at Mom and Dad's",
+      "start": "2026-11-01T13:00:00-05:00",
+      "end": "2026-11-01T16:30:00-05:00",
+      "all_day": false,
+      "location": "Mom and Dad's, Sunset",
+      "description": "Dad is grilling. Mom is making the lamb. Alex is bringing bread from the bakery on Clement.\nSofia asked if she can bring Jonah.",
+      "attendees": [
+        {
+          "name": "Maria Rivera",
+          "email": "maria.rivera58@example.com",
+          "status": "accepted"
+        },
+        {
+          "name": "Sofia Rivera",
+          "email": "sofia.r@example.com",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Maria Rivera",
+        "email": "maria.rivera58@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 60,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0077",
+      "calendar": "personal",
+      "title": "Vote by mail: drop off ballot",
+      "start": "2026-11-02T10:00:00-05:00",
+      "end": "2026-11-02T10:20:00-05:00",
+      "all_day": false,
+      "location": "Mission Library, ballot box",
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 60,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0078",
+      "calendar": "work",
+      "title": "Headcount model handoff with Tom",
+      "start": "2026-11-02T15:00:00-05:00",
+      "end": "2026-11-02T15:30:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "Walk Tom through the mid hire timing and the April sync-engine dependency.",
+      "attendees": [
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/tk-headcount",
+      "busy": true
+    },
+    {
+      "id": "e-0079",
+      "calendar": "personal",
+      "title": "Dinner at Nopa with Daniel",
+      "start": "2026-11-02T18:00:00-05:00",
+      "end": "2026-11-02T19:30:00-05:00",
+      "all_day": false,
+      "location": "Nopa",
+      "description": "CANCELLED by Daniel Rivera (email t-0132, Oct 26). Original note: Last dinner before Lisbon. He's bringing the good wine.",
+      "attendees": [
+        {
+          "name": "Daniel Rivera",
+          "email": "daniel.r@example.com",
+          "status": "accepted"
+        },
+        {
+          "name": "Alex Rivera",
+          "email": "alex.rivera@example.com",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Daniel Rivera",
+        "email": "daniel.r@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0080",
+      "calendar": "travel",
+      "title": "Flight SFO to LIS (Skyline Air SK 880)",
+      "start": "2026-11-02T22:40:00-05:00",
+      "end": "2026-11-03T08:05:00-05:00",
+      "all_day": false,
+      "location": "SFO Terminal 2 to LIS",
+      "description": "Seat 14A. Online check-in opens 24 hours before departure. Carry-on only.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 120,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0081",
+      "calendar": "holidays",
+      "title": "Election Day",
+      "start": "2026-11-03T00:00:00-05:00",
+      "end": "2026-11-04T00:00:00-05:00",
+      "all_day": true,
+      "location": null,
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": null,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0082",
+      "calendar": "travel",
+      "title": "Lisbon trip",
+      "start": "2026-11-03T00:00:00-05:00",
+      "end": "2026-11-09T00:00:00-05:00",
+      "all_day": true,
+      "location": "Lisbon, Portugal",
+      "description": "Plan from the draft to Ben:\n- Nov 3: arrive, Alfama dinner\n- Nov 4: Sintra day trip\n- Nov 5: Pasteis and Miradouro walk\n- Nov 6-7: free, Belem\n- Nov 8: fly home",
+      "attendees": [
+        {
+          "name": "Ben Carter",
+          "email": "ben.carter@gmail.com",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Ben Carter",
+        "email": "ben.carter@gmail.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": null,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0083",
+      "calendar": "travel",
+      "title": "Dinner in Alfama with Ben",
+      "start": "2026-11-03T20:00:00-05:00",
+      "end": "2026-11-03T22:00:00-05:00",
+      "all_day": false,
+      "location": "Tiny place near Alfama",
+      "description": null,
+      "attendees": [
+        {
+          "name": "Ben Carter",
+          "email": "ben.carter@gmail.com",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 30,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0084",
+      "calendar": "travel",
+      "title": "Sintra day trip",
+      "start": "2026-11-04T00:00:00-05:00",
+      "end": "2026-11-05T00:00:00-05:00",
+      "all_day": true,
+      "location": "Sintra",
+      "description": "Train from Rossio at 9. Book the Pena palace entry for 10:30 ahead of time.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": null,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0085",
+      "calendar": "travel",
+      "title": "Pasteis and Miradouro walk with Ben",
+      "start": "2026-11-05T00:00:00-05:00",
+      "end": "2026-11-06T00:00:00-05:00",
+      "all_day": true,
+      "location": null,
+      "description": "The usual ridiculous pastries.",
+      "attendees": [
+        {
+          "name": "Ben Carter",
+          "email": "ben.carter@gmail.com",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Ben Carter",
+        "email": "ben.carter@gmail.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": null,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0086",
+      "calendar": "travel",
+      "title": "Flight LIS to SFO (Skyline Air SK 881)",
+      "start": "2026-11-08T06:00:00-05:00",
+      "end": "2026-11-08T16:45:00-05:00",
+      "all_day": false,
+      "location": "LIS to SFO",
+      "description": "Seat 14A. Leave for the airport by 4am.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 120,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0087",
+      "calendar": "work",
+      "title": "Q1 headcount alignment",
+      "start": "2026-11-09T10:00:00-05:00",
+      "end": "2026-11-09T11:00:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "Sarah has the Q1 roadmap draft. Tom updates the model. Alex confirms the mid hire.",
+      "attendees": [
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        },
+        {
+          "name": "Sarah Chen",
+          "email": "sarah.chen@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Sarah Chen",
+        "email": "sarah.chen@acme.io"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/q1-headcount",
+      "busy": true
+    },
+    {
+      "id": "e-0088",
+      "calendar": "work",
+      "title": "Expense report: September offsite",
+      "start": "2026-11-09T11:30:00-05:00",
+      "end": "2026-11-09T12:00:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "Close out the Concur report. Attach the Delta receipts.",
+      "attendees": [
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0089",
+      "calendar": "work",
+      "title": "Email catch-up after travel",
+      "start": "2026-11-09T15:00:00-05:00",
+      "end": "2026-11-09T16:30:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "Clear the Work label. Reply to Sarah on the board deck numbers.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0090",
+      "calendar": "personal",
+      "title": "Dr. Roberts: LDL follow-up",
+      "start": "2026-11-10T09:00:00-05:00",
+      "end": "2026-11-10T09:30:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "Follow-up on the lipid panel. Bring the current atorvastatin bottle.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 15,
+      "video_link": "https://meet.example.com/roberts-f1",
+      "busy": true
+    },
+    {
+      "id": "e-0091",
+      "calendar": "work",
+      "title": "Interview: SRE role",
+      "start": "2026-11-10T10:00:00-05:00",
+      "end": "2026-11-10T11:00:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "Incident response round.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/int-sre-1",
+      "busy": true
+    },
+    {
+      "id": "e-0092",
+      "calendar": "side-projects",
+      "title": "Crash postmortem: flushQueue",
+      "start": "2026-11-10T14:00:00-05:00",
+      "end": "2026-11-10T15:00:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "Root cause, fix, and whether the 2.4.1 build gets an expedited release.",
+      "attendees": [
+        {
+          "name": "Rahul Mehta",
+          "email": "rahul@mehta.dev",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0093",
+      "calendar": "work",
+      "title": "Sync engine design review",
+      "start": "2026-11-10T15:30:00-05:00",
+      "end": "2026-11-10T17:00:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "Agenda:\n1. Folder move tombstones\n2. Label merge rules\n3. Offline trash behavior\n4. Test matrix",
+      "attendees": [
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        },
+        {
+          "name": "Hannah Brooks",
+          "email": "hbrooks@acme.io",
+          "status": "tentative"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/sync-design",
+      "busy": true
+    },
+    {
+      "id": "e-0094",
+      "calendar": "work",
+      "title": "Stripe Connect follow-up with Rahul",
+      "start": "2026-11-10T16:00:00-05:00",
+      "end": "2026-11-10T16:30:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Rahul Mehta",
+          "email": "rahul@mehta.dev",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/connect-follow",
+      "busy": true
+    },
+    {
+      "id": "e-0095",
+      "calendar": "side-projects",
+      "title": "Late call: Rahul, LWW vs tombstones",
+      "start": "2026-11-10T21:30:00-05:00",
+      "end": "2026-11-10T22:30:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "Settle whether the trash bug is fixed by tombstones alone.",
+      "attendees": [
+        {
+          "name": "Rahul Mehta",
+          "email": "rahul@mehta.dev",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/rahul-late",
+      "busy": true
+    },
+    {
+      "id": "e-0096",
+      "calendar": "holidays",
+      "title": "Veterans Day",
+      "start": "2026-11-11T00:00:00-05:00",
+      "end": "2026-11-12T00:00:00-05:00",
+      "all_day": true,
+      "location": null,
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": null,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0097",
+      "calendar": "personal",
+      "title": "Dinner with Mimi at Zuni",
+      "start": "2026-11-11T19:00:00-05:00",
+      "end": "2026-11-11T21:30:00-05:00",
+      "all_day": false,
+      "location": "Zuni Cafe",
+      "description": "Reservation under Rivera, party of 2.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 60,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0098",
+      "calendar": "work",
+      "title": "Interview: SRE role (round 2)",
+      "start": "2026-11-12T10:00:00-05:00",
+      "end": "2026-11-12T11:00:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "Pairing on a rate limiter.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/int-sre-2",
+      "busy": true
+    },
+    {
+      "id": "e-0099",
+      "calendar": "side-projects",
+      "title": "Launch poster brief with Dana",
+      "start": "2026-11-12T11:30:00-05:00",
+      "end": "2026-11-12T12:00:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "Small poster for the Product Hunt page. Keep the palette matching the app icon.",
+      "attendees": [
+        {
+          "name": "Dana Lee",
+          "email": "dana@lee-design.co",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/poster-brief",
+      "busy": true
+    },
+    {
+      "id": "e-0100",
+      "calendar": "work",
+      "title": "Lunch with Hannah",
+      "start": "2026-11-12T12:00:00-05:00",
+      "end": "2026-11-12T13:00:00-05:00",
+      "all_day": false,
+      "location": "Sushi Ran",
+      "description": null,
+      "attendees": [
+        {
+          "name": "Hannah Brooks",
+          "email": "hbrooks@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0101",
+      "calendar": "personal",
+      "title": "Call Greg Dunn: lease decision",
+      "start": "2026-11-13T10:00:00-05:00",
+      "end": "2026-11-13T10:30:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "Tell him yes or no to the renewal at $3,450/month before Nov 15.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 15,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0102",
+      "calendar": "work",
+      "title": "Lunch with Marcus Reyes (Northwind)",
+      "start": "2026-11-13T12:00:00-05:00",
+      "end": "2026-11-13T12:45:00-05:00",
+      "all_day": false,
+      "location": "Farmhouse Kitchen",
+      "description": "Invoice #2291 ($6,400). Confirm the ACH landed and the PO number is current.",
+      "attendees": [
+        {
+          "name": "Marcus Reyes",
+          "email": "marcus@northwindlabs.com",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Marcus Reyes",
+        "email": "marcus@northwindlabs.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0103",
+      "calendar": "side-projects",
+      "title": "Product Hunt launch schedule",
+      "start": "2026-11-13T14:00:00-05:00",
+      "end": "2026-11-13T14:30:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "Pick the day. Check the poster delivery date with Dana.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0104",
+      "calendar": "family",
+      "title": "Jonah's soccer game",
+      "start": "2026-11-14T09:00:00-05:00",
+      "end": "2026-11-14T10:00:00-05:00",
+      "all_day": false,
+      "location": "Golden Gate Park, Field 4",
+      "description": null,
+      "attendees": [
+        {
+          "name": "Sofia Rivera",
+          "email": "sofia.r@example.com",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Sofia Rivera",
+        "email": "sofia.r@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0105",
+      "calendar": "personal",
+      "title": "Ceramics class",
+      "start": "2026-11-14T15:00:00-05:00",
+      "end": "2026-11-14T17:00:00-05:00",
+      "all_day": false,
+      "location": "Clay Studio, Valencia",
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 30,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0106",
+      "calendar": "personal",
+      "title": "Lease renewal decision deadline",
+      "start": "2026-11-15T00:00:00-05:00",
+      "end": "2026-11-16T00:00:00-05:00",
+      "all_day": true,
+      "location": null,
+      "description": "Greg Dunn needs an answer on the renewal at 1205 Oak St. Lease is attached in email.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 720,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0107",
+      "calendar": "personal",
+      "title": "Mount Tam hike with Daniel",
+      "start": "2026-11-15T08:00:00-05:00",
+      "end": "2026-11-15T12:00:00-05:00",
+      "all_day": false,
+      "location": "Presidio lot",
+      "description": null,
+      "attendees": [
+        {
+          "name": "Daniel Rivera",
+          "email": "daniel.r@example.com",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Daniel Rivera",
+        "email": "daniel.r@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0108",
+      "calendar": "work",
+      "title": "Staff engineer interview panel",
+      "start": "2026-11-16T13:00:00-05:00",
+      "end": "2026-11-16T14:00:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "Architecture round with Hannah.",
+      "attendees": [
+        {
+          "name": "Hannah Brooks",
+          "email": "hbrooks@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/staff-panel",
+      "busy": true
+    },
+    {
+      "id": "e-0109",
+      "calendar": "side-projects",
+      "title": "1:1 with Priya",
+      "start": "2026-11-16T14:00:00-05:00",
+      "end": "2026-11-16T14:30:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Priya Nair",
+          "email": "priya.nair@brightpath.dev",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/priya-1on1",
+      "busy": true
+    },
+    {
+      "id": "e-0110",
+      "calendar": "work",
+      "title": "Hiring plan final sign-off",
+      "start": "2026-11-16T15:00:00-05:00",
+      "end": "2026-11-16T15:30:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Sarah Chen",
+          "email": "sarah.chen@acme.io",
+          "status": "accepted"
+        },
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Sarah Chen",
+        "email": "sarah.chen@acme.io"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/hiring-signoff",
+      "busy": true
+    },
+    {
+      "id": "e-0111",
+      "calendar": "side-projects",
+      "title": "Pigeon public beta launch",
+      "start": "2026-11-17T00:00:00-05:00",
+      "end": "2026-11-18T00:00:00-05:00",
+      "all_day": true,
+      "location": null,
+      "description": "Ship the 2.4.1 beta to the public channel. Post on Product Hunt at 12:01 PT.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": null,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0112",
+      "calendar": "work",
+      "title": "Q1 roadmap kickoff",
+      "start": "2026-11-17T10:00:00-05:00",
+      "end": "2026-11-17T11:00:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Sarah Chen",
+          "email": "sarah.chen@acme.io",
+          "status": "accepted"
+        },
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        },
+        {
+          "name": "Hannah Brooks",
+          "email": "hbrooks@acme.io",
+          "status": "tentative"
+        }
+      ],
+      "organizer": {
+        "name": "Sarah Chen",
+        "email": "sarah.chen@acme.io"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/q1-roadmap",
+      "busy": true
+    },
+    {
+      "id": "e-0113",
+      "calendar": "side-projects",
+      "title": "Product Hunt launch thread",
+      "start": "2026-11-17T12:00:00-05:00",
+      "end": "2026-11-17T13:00:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "Respond to comments live. Scripts for the top three questions are in the doc.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0114",
+      "calendar": "birthdays",
+      "title": "Sofia's birthday",
+      "start": "2026-11-18T00:00:00-05:00",
+      "end": "2026-11-19T00:00:00-05:00",
+      "all_day": true,
+      "location": null,
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": "yearly",
+      "reminder_minutes": null,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0115",
+      "calendar": "work",
+      "title": "Interview: design systems lead",
+      "start": "2026-11-18T11:00:00-05:00",
+      "end": "2026-11-18T12:00:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "Portfolio walk then a short task.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/int-ds",
+      "busy": true
+    },
+    {
+      "id": "e-0116",
+      "calendar": "family",
+      "title": "Sofia's birthday dinner",
+      "start": "2026-11-18T19:00:00-05:00",
+      "end": "2026-11-18T21:30:00-05:00",
+      "all_day": false,
+      "location": "Nopa",
+      "description": null,
+      "attendees": [
+        {
+          "name": "Maria Rivera",
+          "email": "maria.rivera58@example.com",
+          "status": "accepted"
+        },
+        {
+          "name": "Sofia Rivera",
+          "email": "sofia.r@example.com",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Maria Rivera",
+        "email": "maria.rivera58@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0117",
+      "calendar": "fitness",
+      "title": "Long run: Dolores Park loop",
+      "start": "2026-11-19T07:00:00-05:00",
+      "end": "2026-11-19T08:00:00-05:00",
+      "all_day": false,
+      "location": "Dolores Park",
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 5,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0118",
+      "calendar": "work",
+      "title": "Late deploy freeze check",
+      "start": "2026-11-19T23:00:00-05:00",
+      "end": "2026-11-19T23:30:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "Confirm no migrations queued before the weekend freeze.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 5,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0119",
+      "calendar": "work",
+      "title": "Team lunch: food truck",
+      "start": "2026-11-20T12:00:00-05:00",
+      "end": "2026-11-20T13:30:00-05:00",
+      "all_day": false,
+      "location": "Dolores Park, Fort Mason lot",
+      "description": "Team lunch before the freeze. Dana and Priya are invited too.",
+      "attendees": [
+        {
+          "name": "Hannah Brooks",
+          "email": "hbrooks@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Hannah Brooks",
+        "email": "hbrooks@acme.io"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0120",
+      "calendar": "personal",
+      "title": "Padel Saturday with Mateo and Ana",
+      "start": "2026-11-21T10:00:00-05:00",
+      "end": "2026-11-21T11:30:00-05:00",
+      "all_day": false,
+      "location": "Club Padel Mission",
+      "description": null,
+      "attendees": [
+        {
+          "name": "Mateo Ruiz",
+          "email": "mateo@ruizpadel.es",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Mateo Ruiz",
+        "email": "mateo@ruizpadel.es"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0121",
+      "calendar": "work",
+      "title": "Offer call: frontend principal",
+      "start": "2026-11-23T11:00:00-05:00",
+      "end": "2026-11-23T11:30:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Sarah Chen",
+          "email": "sarah.chen@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/offer-call",
+      "busy": true
+    },
+    {
+      "id": "e-0122",
+      "calendar": "work",
+      "title": "Hannah standup catch-up",
+      "start": "2026-11-23T13:00:00-05:00",
+      "end": "2026-11-23T13:30:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Hannah Brooks",
+          "email": "hbrooks@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/hb-catchup",
+      "busy": true
+    },
+    {
+      "id": "e-0123",
+      "calendar": "work",
+      "title": "Q1 offsite venues",
+      "start": "2026-11-23T15:00:00-05:00",
+      "end": "2026-11-23T15:30:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "Compare the Sausalito house and the Napa lodge.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0124",
+      "calendar": "travel",
+      "title": "Book Local-First Summit flights",
+      "start": "2026-11-24T11:00:00-05:00",
+      "end": "2026-11-24T11:20:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 5,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0125",
+      "calendar": "holidays",
+      "title": "Thanksgiving",
+      "start": "2026-11-26T00:00:00-05:00",
+      "end": "2026-11-27T00:00:00-05:00",
+      "all_day": true,
+      "location": null,
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": null,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0126",
+      "calendar": "family",
+      "title": "Thanksgiving at Mom's",
+      "start": "2026-11-26T12:00:00-05:00",
+      "end": "2026-11-26T18:00:00-05:00",
+      "all_day": false,
+      "location": "Mom and Dad's, Sunset",
+      "description": "Turkey and the lamb. Sofia brings the pie.",
+      "attendees": [
+        {
+          "name": "Maria Rivera",
+          "email": "maria.rivera58@example.com",
+          "status": "accepted"
+        },
+        {
+          "name": "Sofia Rivera",
+          "email": "sofia.r@example.com",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Maria Rivera",
+        "email": "maria.rivera58@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0127",
+      "calendar": "side-projects",
+      "title": "Pigeon 2.4.1 beta retro",
+      "start": "2026-11-28T10:00:00-05:00",
+      "end": "2026-11-28T11:00:00-05:00",
+      "all_day": false,
+      "location": "Home office",
+      "description": "What the crash reports taught us. Two action items per person.",
+      "attendees": [
+        {
+          "name": "Rahul Mehta",
+          "email": "rahul@mehta.dev",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0128",
+      "calendar": "work",
+      "title": "Q4 wrap and year-end planning",
+      "start": "2026-11-30T10:00:00-05:00",
+      "end": "2026-11-30T11:30:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Sarah Chen",
+          "email": "sarah.chen@acme.io",
+          "status": "accepted"
+        },
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Sarah Chen",
+        "email": "sarah.chen@acme.io"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/q4-wrap",
+      "busy": true
+    },
+    {
+      "id": "e-0129",
+      "calendar": "work",
+      "title": "Board deck review",
+      "start": "2026-12-01T13:00:00-05:00",
+      "end": "2026-12-01T14:00:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Sarah Chen",
+          "email": "sarah.chen@acme.io",
+          "status": "tentative"
+        },
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/board-deck",
+      "busy": true
+    },
+    {
+      "id": "e-0130",
+      "calendar": "birthdays",
+      "title": "Ben Carter's birthday",
+      "start": "2026-12-02T00:00:00-05:00",
+      "end": "2026-12-03T00:00:00-05:00",
+      "all_day": true,
+      "location": null,
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": "yearly",
+      "reminder_minutes": null,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0131",
+      "calendar": "work",
+      "title": "AWS invoice review",
+      "start": "2026-12-03T14:00:00-05:00",
+      "end": "2026-12-03T14:30:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "September invoice came in at $781.40. Check EC2 and RDS.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0132",
+      "calendar": "birthdays",
+      "title": "Maria's birthday",
+      "start": "2026-12-06T00:00:00-05:00",
+      "end": "2026-12-07T00:00:00-05:00",
+      "all_day": true,
+      "location": null,
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": "yearly",
+      "reminder_minutes": null,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0133",
+      "calendar": "family",
+      "title": "Dinner with Mom for her birthday",
+      "start": "2026-12-06T18:00:00-05:00",
+      "end": "2026-12-06T21:00:00-05:00",
+      "all_day": false,
+      "location": "Mom and Dad's, Sunset",
+      "description": null,
+      "attendees": [
+        {
+          "name": "Maria Rivera",
+          "email": "maria.rivera58@example.com",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Maria Rivera",
+        "email": "maria.rivera58@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0134",
+      "calendar": "travel",
+      "title": "Local-First Summit (San Francisco)",
+      "start": "2026-12-09T00:00:00-05:00",
+      "end": "2026-12-12T00:00:00-05:00",
+      "all_day": true,
+      "location": "Fort Mason Center",
+      "description": "Three-day conference on sync engines and offline-first apps. Badge pickup Wednesday.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": null,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0135",
+      "calendar": "work",
+      "title": "Talk: sync protocol v3 at Local-First Summit",
+      "start": "2026-12-10T14:00:00-05:00",
+      "end": "2026-12-10T14:30:00-05:00",
+      "all_day": false,
+      "location": "Fort Mason, Hall B",
+      "description": "Slides in the shared drive. Keep it to 25 min, leave 5 for questions.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0136",
+      "calendar": "birthdays",
+      "title": "Daniel's birthday",
+      "start": "2026-12-12T00:00:00-05:00",
+      "end": "2026-12-13T00:00:00-05:00",
+      "all_day": true,
+      "location": null,
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": "yearly",
+      "reminder_minutes": null,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0137",
+      "calendar": "work",
+      "title": "Q1 hiring kickoff",
+      "start": "2026-12-14T09:30:00-05:00",
+      "end": "2026-12-14T10:30:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/q1-hiring",
+      "busy": true
+    },
+    {
+      "id": "e-0138",
+      "calendar": "work",
+      "title": "Team holiday party",
+      "start": "2026-12-18T17:00:00-05:00",
+      "end": "2026-12-18T20:00:00-05:00",
+      "all_day": false,
+      "location": "Fort Mason",
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 60,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0139",
+      "calendar": "holidays",
+      "title": "Christmas Eve",
+      "start": "2026-12-24T00:00:00-05:00",
+      "end": "2026-12-25T00:00:00-05:00",
+      "all_day": true,
+      "location": null,
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": null,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0140",
+      "calendar": "family",
+      "title": "Christmas Eve at the Whitakers",
+      "start": "2026-12-24T18:00:00-05:00",
+      "end": "2026-12-24T21:30:00-05:00",
+      "all_day": false,
+      "location": "Whitaker house, Ortega St",
+      "description": null,
+      "attendees": [
+        {
+          "name": "Jess Whitaker",
+          "email": "jess@whitakerfamily.net",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Jess Whitaker",
+        "email": "jess@whitakerfamily.net"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0141",
+      "calendar": "holidays",
+      "title": "Christmas Day",
+      "start": "2026-12-25T00:00:00-05:00",
+      "end": "2026-12-26T00:00:00-05:00",
+      "all_day": true,
+      "location": null,
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": null,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0142",
+      "calendar": "work",
+      "title": "Quarterly retro",
+      "start": "2026-12-29T14:00:00-05:00",
+      "end": "2026-12-29T15:00:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Sarah Chen",
+          "email": "sarah.chen@acme.io",
+          "status": "accepted"
+        },
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        },
+        {
+          "name": "Hannah Brooks",
+          "email": "hbrooks@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Sarah Chen",
+        "email": "sarah.chen@acme.io"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0143",
+      "calendar": "holidays",
+      "title": "New Year's Eve",
+      "start": "2026-12-31T00:00:00-05:00",
+      "end": "2027-01-01T00:00:00-05:00",
+      "all_day": true,
+      "location": null,
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": null,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0144",
+      "calendar": "personal",
+      "title": "New Year's Eve with the old crew",
+      "start": "2026-12-31T22:00:00-05:00",
+      "end": "2027-01-01T00:30:00-05:00",
+      "all_day": false,
+      "location": "Tandoor Palace, Valencia St",
+      "description": null,
+      "attendees": [
+        {
+          "name": "Daniel Rivera",
+          "email": "daniel.r@example.com",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Daniel Rivera",
+        "email": "daniel.r@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0145",
+      "calendar": "work",
+      "title": "Spring principal roles: catch-up",
+      "start": "2026-10-27T11:20:00-04:00",
+      "end": "2026-10-27T11:40:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Principal-level roles for spring. No pitch, just a catch-up.",
+      "attendees": [
+        {
+          "name": "Alex Rivera",
+          "email": "alex.rivera@example.com",
+          "status": "needs_action"
+        }
+      ],
+      "organizer": {
+        "name": "Kevin Ortiz",
+        "email": "kevin.ortiz@talentbridge.io"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/kortiz-20min",
+      "busy": true
+    },
+    {
+      "id": "e-0146",
+      "calendar": "work",
+      "title": "Auth refresh rollout check-in",
+      "start": "2026-10-28T09:30:00-04:00",
+      "end": "2026-10-28T10:00:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Single-flight flag is on for 10% of beta. Check the invalid_grant rate before we ramp.",
+      "attendees": [
+        {
+          "name": "Alex Rivera",
+          "email": "alex.rivera@example.com",
+          "status": "needs_action"
+        }
+      ],
+      "organizer": {
+        "name": "Hannah Brooks",
+        "email": "hbrooks@acme.io"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/auth-rollout",
+      "busy": true
+    },
+    {
+      "id": "e-0147",
+      "calendar": "work",
+      "title": "Frontend headcount model review",
+      "start": "2026-10-29T10:30:00-04:00",
+      "end": "2026-10-29T11:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Walk the model with the second senior and the May mid hire. Main question: the sync-engine dependency.",
+      "attendees": [
+        {
+          "name": "Alex Rivera",
+          "email": "alex.rivera@example.com",
+          "status": "needs_action"
+        }
+      ],
+      "organizer": {
+        "name": "Tom Keller",
+        "email": "tom.keller@acme.io"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/tk-headcount-review",
+      "busy": true
+    },
+    {
+      "id": "e-0148",
+      "calendar": "personal",
+      "title": "Coffee: brand system questions",
+      "start": "2026-10-30T10:00:00-04:00",
+      "end": "2026-10-30T10:45:00-04:00",
+      "all_day": false,
+      "location": "Blue Bottle, Valencia St",
+      "description": "Wordmark drafts if you have them.",
+      "attendees": [
+        {
+          "name": "Alex Rivera",
+          "email": "alex.rivera@example.com",
+          "status": "needs_action"
+        }
+      ],
+      "organizer": {
+        "name": "Lena Park",
+        "email": "lena@parkstudio.co"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0149",
+      "calendar": "work",
+      "title": "Q1 roadmap pre-read walkthrough",
+      "start": "2026-11-09T10:30:00-05:00",
+      "end": "2026-11-09T11:00:00-05:00",
+      "all_day": false,
+      "location": null,
+      "description": "Walk the roadmap draft before we sit down with Tom on headcount.",
+      "attendees": [
+        {
+          "name": "Alex Rivera",
+          "email": "alex.rivera@example.com",
+          "status": "needs_action"
+        }
+      ],
+      "organizer": {
+        "name": "Sarah Chen",
+        "email": "sarah.chen@acme.io"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/q1-preread",
+      "busy": true
+    },
+    {
+      "id": "e-0150",
+      "calendar": "personal",
+      "title": "Padel Monday, post-Lisbon",
+      "start": "2026-11-09T19:00:00-05:00",
+      "end": "2026-11-09T20:30:00-05:00",
+      "all_day": false,
+      "location": "Club Padel Mission",
+      "description": "Court 2. Welcome back from Lisbon. Ana says the bat is yours.",
+      "attendees": [
+        {
+          "name": "Alex Rivera",
+          "email": "alex.rivera@example.com",
+          "status": "needs_action"
+        }
+      ],
+      "organizer": {
+        "name": "Mateo Ruiz",
+        "email": "mateo@ruizpadel.es"
+      },
+      "recurrence": null,
+      "reminder_minutes": 60,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0151",
+      "calendar": "side-projects",
+      "title": "Sync conflict copy review",
+      "start": "2026-10-28T11:00:00-04:00",
+      "end": "2026-10-28T11:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Two versions of the conflict message plus the 'we never read your email' line. Need a yes or no on each.",
+      "attendees": [
+        {
+          "name": "Alex Rivera",
+          "email": "alex.rivera@example.com",
+          "status": "needs_action"
+        }
+      ],
+      "organizer": {
+        "name": "Priya Nair",
+        "email": "priya.nair@brightpath.dev"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/priya-conflict-copy",
+      "busy": true
+    },
+    {
+      "id": "e-0152",
+      "calendar": "work",
+      "title": "Hiring scorecard sync",
+      "start": "2026-10-19T10:00:00-04:00",
+      "end": "2026-10-19T10:15:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 5,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0153",
+      "calendar": "side-projects",
+      "title": "Pigeon 2.4 beta prep",
+      "start": "2026-10-19T10:00:00-04:00",
+      "end": "2026-10-19T11:00:00-04:00",
+      "all_day": false,
+      "location": "Home office",
+      "description": "Cut the build and check the crash dashboard before the 2.4.1 notes.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 5,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0154",
+      "calendar": "work",
+      "title": "Quick sync: auth refresh fix",
+      "start": "2026-10-20T10:30:00-04:00",
+      "end": "2026-10-20T11:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Walk through the single-flight guard diff.",
+      "attendees": [
+        {
+          "name": "Hannah Brooks",
+          "email": "hbrooks@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/auth-quick-sync",
+      "busy": true
+    },
+    {
+      "id": "e-0155",
+      "calendar": "personal",
+      "title": "Lunch with Lena",
+      "start": "2026-10-22T12:45:00-04:00",
+      "end": "2026-10-22T13:30:00-04:00",
+      "all_day": false,
+      "location": "Mission Pie",
+      "description": null,
+      "attendees": [
+        {
+          "name": "Lena Park",
+          "email": "lena@parkstudio.co",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0156",
+      "calendar": "work",
+      "title": "Interview: frontend candidate #8",
+      "start": "2026-10-23T15:30:00-04:00",
+      "end": "2026-10-23T16:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Scorecard: React, state design, debugging.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/int-fe-8",
+      "busy": true
+    },
+    {
+      "id": "e-0157",
+      "calendar": "side-projects",
+      "title": "Dana: colorway call",
+      "start": "2026-10-23T11:30:00-04:00",
+      "end": "2026-10-23T11:45:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Dana Lee",
+          "email": "dana@lee-design.co",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 5,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0158",
+      "calendar": "personal",
+      "title": "Brunch with Daniel",
+      "start": "2026-10-24T10:00:00-04:00",
+      "end": "2026-10-24T11:30:00-04:00",
+      "all_day": false,
+      "location": "Zazie, Cole St",
+      "description": null,
+      "attendees": [
+        {
+          "name": "Daniel Rivera",
+          "email": "daniel.r@example.com",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Daniel Rivera",
+        "email": "daniel.r@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0159",
+      "calendar": "fitness",
+      "title": "Morning run: Golden Gate loop",
+      "start": "2026-10-24T10:30:00-04:00",
+      "end": "2026-10-24T11:30:00-04:00",
+      "all_day": false,
+      "location": "Golden Gate Park",
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 5,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0160",
+      "calendar": "family",
+      "title": "Call Sofia about Sunday",
+      "start": "2026-10-25T09:15:00-04:00",
+      "end": "2026-10-25T09:30:00-04:00",
+      "all_day": false,
+      "location": "Phone",
+      "description": null,
+      "attendees": [
+        {
+          "name": "Sofia Rivera",
+          "email": "sofia.r@example.com",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 5,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0161",
+      "calendar": "side-projects",
+      "title": "Pairing: label merge with Rahul",
+      "start": "2026-10-26T14:30:00-04:00",
+      "end": "2026-10-26T15:30:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Rahul Mehta",
+          "email": "rahul@mehta.dev",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/label-merge-pair",
+      "busy": true
+    },
+    {
+      "id": "e-0162",
+      "calendar": "work",
+      "title": "Inbox zero block",
+      "start": "2026-10-26T16:00:00-04:00",
+      "end": "2026-10-26T17:00:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Clear the Work label and the GitHub review requests.",
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 5,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0163",
+      "calendar": "work",
+      "title": "Roadmap comments walk-through",
+      "start": "2026-10-27T10:30:00-04:00",
+      "end": "2026-10-27T11:15:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "Sarah is out this week, so Tom takes the roadmap comments.",
+      "attendees": [
+        {
+          "name": "Tom Keller",
+          "email": "tom.keller@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/tk-roadmap",
+      "busy": true
+    },
+    {
+      "id": "e-0164",
+      "calendar": "side-projects",
+      "title": "Bug bash debrief",
+      "start": "2026-10-28T16:10:00-04:00",
+      "end": "2026-10-28T16:40:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [
+        {
+          "name": "Priya Nair",
+          "email": "priya.nair@brightpath.dev",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0165",
+      "calendar": "work",
+      "title": "Keychain mutex PR walkthrough",
+      "start": "2026-10-29T11:15:00-04:00",
+      "end": "2026-10-29T12:00:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": "PR #340. Mutex lives in the keychain layer, not the HTTP layer.",
+      "attendees": [
+        {
+          "name": "Hannah Brooks",
+          "email": "hbrooks@acme.io",
+          "status": "accepted"
+        }
+      ],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 10,
+      "video_link": "https://meet.example.com/keychain-pr",
+      "busy": true
+    },
+    {
+      "id": "e-0166",
+      "calendar": "side-projects",
+      "title": "2.4 release notes sign-off",
+      "start": "2026-10-30T12:00:00-04:00",
+      "end": "2026-10-30T12:15:00-04:00",
+      "all_day": false,
+      "location": null,
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 5,
+      "video_link": null,
+      "busy": true
+    },
+    {
+      "id": "e-0167",
+      "calendar": "fitness",
+      "title": "Long run: Presidio",
+      "start": "2026-11-01T10:30:00-05:00",
+      "end": "2026-11-01T11:30:00-05:00",
+      "all_day": false,
+      "location": "Presidio Promenade",
+      "description": null,
+      "attendees": [],
+      "organizer": {
+        "name": "Alex Rivera",
+        "email": "alex.rivera@example.com"
+      },
+      "recurrence": null,
+      "reminder_minutes": 5,
+      "video_link": null,
+      "busy": true
+    }
+  ]
+}
