@@ -12,7 +12,6 @@ use gpui::{
     prelude::FluentBuilder as _,
     px, relative,
 };
-use nucleo_matcher::{Config, Matcher};
 
 use super::{CalendarView, Menu, today};
 use crate::{
@@ -30,11 +29,16 @@ use crate::{
     ui::{
         HEADER_HEIGHT, avatar,
         composer::{RemoveLastRecipient, SuggestNext, SuggestPrev, parse_address},
-        icon, icon_button, keycap, overlay_shadow, window_drag_area,
+        icon, icon_button, keycap, popover_shadow, window_drag_area,
     },
 };
 
-actions!(event_panel, [NextField, PrevField, StepUp, StepDown]);
+actions!(
+    event_panel,
+    [
+        NextField, PrevField, StepUp, StepDown, Activate, MenuNext, MenuPrev
+    ]
+);
 
 pub const PANEL_WIDTH: f32 = 372.;
 /// Slots in the time pickers.
@@ -69,15 +73,19 @@ fn reminder_label(minutes: Option<u32>) -> String {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Field {
+    /// The calendar picker in the header.
+    Calendar,
     Title,
     StartDate,
     StartTime,
     EndTime,
     EndDate,
+    AllDay,
     Location,
     Video,
     Guests,
     Notes,
+    Reminder,
 }
 
 impl Field {
@@ -104,6 +112,12 @@ pub struct EventPanel {
     video: Entity<InputState>,
     guests: Entity<InputState>,
     notes: Entity<TextareaState>,
+    calendar_focus: FocusHandle,
+    all_day_focus: FocusHandle,
+    reminder_focus: FocusHandle,
+    /// The row of the open calendar or reminder menu that up, down and
+    /// enter work on.
+    menu_highlight: usize,
     /// The date or time field showing its picker.
     picker: Option<Field>,
     /// The month the date picker shows.
@@ -115,7 +129,6 @@ pub struct EventPanel {
     /// The user moved through the suggestions, so enter takes one even over
     /// a typed address.
     navigated: bool,
-    matcher: Matcher,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -180,13 +193,16 @@ impl EventPanel {
             video,
             guests,
             notes,
+            calendar_focus: cx.focus_handle(),
+            all_day_focus: cx.focus_handle(),
+            reminder_focus: cx.focus_handle(),
+            menu_highlight: 0,
             picker: None,
             picker_month: month_start(occurrence.date()),
             picker_scroll: ScrollHandle::new(),
             suggestions: Vec::new(),
             highlighted: 0,
             navigated: false,
-            matcher: Matcher::new(Config::DEFAULT),
             _subscriptions: subscriptions,
         };
         panel.sync_times(event, window, cx);
@@ -203,38 +219,48 @@ impl EventPanel {
             Field::Location => &self.location,
             Field::Video => &self.video,
             Field::Guests => &self.guests,
-            Field::Notes => return None,
+            Field::Notes | Field::Calendar | Field::AllDay | Field::Reminder => return None,
         })
     }
 
     fn focus_handle_of(&self, field: Field, cx: &gpui::App) -> FocusHandle {
-        match self.input(field) {
-            Some(input) => input.focus_handle(cx),
-            None => self.notes.focus_handle(cx),
+        match field {
+            Field::Calendar => self.calendar_focus.clone(),
+            Field::AllDay => self.all_day_focus.clone(),
+            Field::Reminder => self.reminder_focus.clone(),
+            Field::Notes => self.notes.focus_handle(cx),
+            _ => self.input(field).expect("text fields").focus_handle(cx),
         }
     }
 
+    /// The fields in tab order: as they read, top to bottom.
     fn fields(all_day: bool) -> &'static [Field] {
         if all_day {
             &[
+                Field::Calendar,
                 Field::Title,
                 Field::StartDate,
                 Field::EndDate,
+                Field::AllDay,
                 Field::Location,
                 Field::Video,
                 Field::Guests,
                 Field::Notes,
+                Field::Reminder,
             ]
         } else {
             &[
+                Field::Calendar,
                 Field::Title,
                 Field::StartDate,
                 Field::StartTime,
                 Field::EndTime,
+                Field::AllDay,
                 Field::Location,
                 Field::Video,
                 Field::Guests,
                 Field::Notes,
+                Field::Reminder,
             ]
         }
     }
@@ -515,13 +541,124 @@ impl CalendarView {
             .focused_field(window, cx)
             .and_then(|f| fields.iter().position(|&x| x == f));
         let next = match (current, forward) {
-            (None, _) => 0,
+            (None, _) => fields.iter().position(|&f| f == Field::Title).unwrap_or(0),
             (Some(i), true) => (i + 1).min(fields.len() - 1),
             (Some(i), false) => i.saturating_sub(1),
         };
         let handle = panel.focus_handle_of(fields[next], cx);
+        self.menu = None;
         window.focus(&handle, cx);
         cx.notify();
+    }
+
+    /// The control (calendar, all-day, reminder) with focus, if any.
+    fn focused_control(&self, window: &Window, cx: &gpui::App) -> Option<Field> {
+        let panel = self.panel.as_ref()?;
+        [Field::Calendar, Field::AllDay, Field::Reminder]
+            .into_iter()
+            .find(|&f| panel.is_focused(f, window, cx))
+    }
+
+    fn control_menu(field: Field) -> Option<Menu> {
+        match field {
+            Field::Calendar => Some(Menu::EventCalendar),
+            Field::Reminder => Some(Menu::Reminder),
+            _ => None,
+        }
+    }
+
+    /// Open a control's menu with its current choice highlighted.
+    fn open_control_menu(&mut self, menu: Menu, cx: &mut Context<Self>) {
+        let Some((_, event)) = self.panel_event() else {
+            return;
+        };
+        let current = match menu {
+            Menu::EventCalendar => self.data.calendar_ix(&event.calendar).unwrap_or(0),
+            _ => REMINDERS
+                .iter()
+                .position(|&m| m == event.reminder_minutes)
+                .unwrap_or(0),
+        };
+        if let Some(panel) = &mut self.panel {
+            panel.menu_highlight = current;
+        }
+        self.menu = Some(menu);
+        cx.notify();
+    }
+
+    /// Choose row `ix` of the open calendar or reminder menu.
+    fn choose_menu_row(&mut self, menu: Menu, ix: usize, cx: &mut Context<Self>) {
+        match menu {
+            Menu::EventCalendar => {
+                if let Some(id) = self.data.calendars.get(ix).map(|c| c.id.clone()) {
+                    self.edit_event(cx, |e| e.calendar = id);
+                }
+            }
+            Menu::Reminder => {
+                if let Some(&minutes) = REMINDERS.get(ix) {
+                    self.edit_event(cx, |e| e.reminder_minutes = minutes);
+                }
+            }
+            Menu::Calendars => {}
+        }
+        self.menu = None;
+        cx.notify();
+    }
+
+    fn click_control_menu(&mut self, menu: Menu, cx: &mut Context<Self>) {
+        if self.menu == Some(menu) {
+            self.menu = None;
+            cx.notify();
+        } else {
+            self.open_control_menu(menu, cx);
+        }
+    }
+
+    /// Enter or space on a control: flip all-day, or open its menu, or take
+    /// the highlighted row of the open one.
+    fn activate(&mut self, _: &Activate, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(field) = self.focused_control(window, cx) else {
+            return cx.propagate();
+        };
+        match Self::control_menu(field) {
+            None => self.toggle_all_day(window, cx),
+            Some(menu) if self.menu == Some(menu) => {
+                let ix = self.panel.as_ref().map_or(0, |p| p.menu_highlight);
+                self.choose_menu_row(menu, ix, cx);
+            }
+            Some(menu) => self.open_control_menu(menu, cx),
+        }
+    }
+
+    /// Up and down on a control with a menu: move through it, opening it
+    /// first if it's closed.
+    fn menu_step(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(menu) = self
+            .focused_control(window, cx)
+            .and_then(Self::control_menu)
+        else {
+            return cx.propagate();
+        };
+        if self.menu != Some(menu) {
+            return self.open_control_menu(menu, cx);
+        }
+        let count = match menu {
+            Menu::EventCalendar => self.data.calendars.len(),
+            _ => REMINDERS.len(),
+        } as isize;
+        if let Some(panel) = &mut self.panel {
+            panel.menu_highlight =
+                (panel.menu_highlight as isize + delta).rem_euclid(count) as usize;
+        }
+        cx.notify();
+    }
+
+    fn menu_next(&mut self, _: &MenuNext, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu_step(1, window, cx);
+    }
+
+    fn menu_prev(&mut self, _: &MenuPrev, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu_step(-1, window, cx);
     }
 
     /// Tab out of the guest field takes the guest typed there first.
@@ -638,11 +775,7 @@ impl CalendarView {
         taken.push(event.organizer.email.to_lowercase());
         let book = self.book.clone();
         let panel = self.panel.as_mut().unwrap();
-        panel.suggestions = book.suggest(
-            &query,
-            |c| taken.contains(&c.email.to_lowercase()),
-            &mut panel.matcher,
-        );
+        panel.suggestions = book.suggest(&query, |c| taken.contains(&c.email.to_lowercase()));
         panel.highlighted = 0;
         panel.navigated = false;
         cx.notify();
@@ -894,6 +1027,9 @@ impl CalendarView {
             .on_action(cx.listener(Self::suggest_next))
             .on_action(cx.listener(Self::suggest_prev))
             .on_action(cx.listener(Self::remove_last_guest))
+            .on_action(cx.listener(Self::activate))
+            .on_action(cx.listener(Self::menu_next))
+            .on_action(cx.listener(Self::menu_prev))
             .relative()
             .w(px(PANEL_WIDTH))
             .h_full()
@@ -931,6 +1067,7 @@ impl CalendarView {
     ) -> AnyElement {
         let open = self.menu == Some(Menu::EventCalendar);
         let color = self.data.color_of(event);
+        let highlight = self.panel.as_ref().map_or(0, |p| p.menu_highlight);
         let menu = open.then(|| {
             let rows = self
                 .data
@@ -938,26 +1075,23 @@ impl CalendarView {
                 .iter()
                 .enumerate()
                 .map(|(ix, calendar)| {
-                    let id = calendar.id.clone();
                     let current = calendar.id == event.calendar;
-                    menu_row(("calendar-choice", ix), theme)
+                    menu_row(("calendar-choice", ix), ix == highlight, theme)
                         .child(div().size(px(10.)).rounded_full().bg(calendar.color))
                         .child(div().flex_1().child(calendar.name.clone()))
                         .when(current, |d| {
                             d.child(icon(Icon::Check, px(14.), theme.accent))
                         })
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            let id = id.clone();
-                            this.edit_event(cx, |e| e.calendar = id);
-                            this.menu = None;
+                            this.choose_menu_row(Menu::EventCalendar, ix, cx)
                         }))
                 });
             dropdown(px(34.), px(210.), theme).children(rows)
         });
+        let focus = self.panel.as_ref().map(|p| p.calendar_focus.clone());
         div()
             .child(
-                div()
-                    .id("event-calendar")
+                control(div().id("event-calendar"), focus, theme)
                     .h(px(28.))
                     .pl(px(8.))
                     .pr(px(6.))
@@ -974,9 +1108,9 @@ impl CalendarView {
                     .child(self.calendar_name(event))
                     .child(icon(Icon::ChevronDown, px(13.), theme.text_faint))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(
-                        cx.listener(|this, _, _, cx| this.toggle_menu(Menu::EventCalendar, cx)),
-                    ),
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.click_control_menu(Menu::EventCalendar, cx)
+                    })),
             )
             .when(open, |d| d.child(self.menu_backdrop(window, cx)))
             .children(menu.map(|m| {
@@ -1038,22 +1172,25 @@ impl CalendarView {
                 )
         };
         let all_day = event.all_day;
-        let toggle = div()
-            .id("all-day")
-            .mt(px(6.))
-            .px(px(8.))
-            .h(px(26.))
-            .w_auto()
-            .flex()
-            .items_center()
-            .gap(px(9.))
-            .rounded(px(7.))
-            .text_size(px(12.5))
-            .text_color(theme.text_muted)
-            .hover(|s| s.bg(theme.hover_bg))
-            .child(switch(all_day, theme))
-            .child("All day")
-            .on_click(cx.listener(|this, _, window, cx| this.toggle_all_day(window, cx)));
+        let toggle = control(
+            div().id("all-day"),
+            Some(panel.all_day_focus.clone()),
+            theme,
+        )
+        .mt(px(6.))
+        .px(px(8.))
+        .h(px(26.))
+        .w_auto()
+        .flex()
+        .items_center()
+        .gap(px(9.))
+        .rounded(px(7.))
+        .text_size(px(12.5))
+        .text_color(theme.text_muted)
+        .hover(|s| s.bg(theme.hover_bg))
+        .child(switch(all_day, theme))
+        .child("All day")
+        .on_click(cx.listener(|this, _, window, cx| this.toggle_all_day(window, cx)));
         section(
             Icon::Clock,
             theme,
@@ -1204,7 +1341,7 @@ impl CalendarView {
             .bg(theme.overlay_bg)
             .border_1()
             .border_color(theme.overlay_border)
-            .shadow(overlay_shadow(theme))
+            .shadow(popover_shadow(theme))
             .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
             .child(
                 div()
@@ -1299,7 +1436,7 @@ impl CalendarView {
             .bg(theme.overlay_bg)
             .border_1()
             .border_color(theme.overlay_border)
-            .shadow(overlay_shadow(theme))
+            .shadow(popover_shadow(theme))
             .overflow_hidden()
             .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
             .child(
@@ -1584,7 +1721,7 @@ impl CalendarView {
                     .bg(theme.overlay_bg)
                     .border_1()
                     .border_color(theme.overlay_border)
-                    .shadow(overlay_shadow(theme))
+                    .shadow(popover_shadow(theme))
                     .children(rows),
             )
         });
@@ -1629,16 +1766,16 @@ impl CalendarView {
     ) -> AnyElement {
         let open = self.menu == Some(Menu::Reminder);
         let current = event.reminder_minutes;
+        let highlight = self.panel.as_ref().map_or(0, |p| p.menu_highlight);
         let menu = open.then(|| {
             let rows = REMINDERS.iter().enumerate().map(|(ix, &minutes)| {
-                menu_row(("reminder", ix), theme)
+                menu_row(("reminder", ix), ix == highlight, theme)
                     .child(div().flex_1().child(reminder_label(minutes)))
                     .when(minutes == current, |d| {
                         d.child(icon(Icon::Check, px(14.), theme.accent))
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.edit_event(cx, |e| e.reminder_minutes = minutes);
-                        this.menu = None;
+                        this.choose_menu_row(Menu::Reminder, ix, cx)
                     }))
             });
             deferred(
@@ -1655,22 +1792,25 @@ impl CalendarView {
             div()
                 .flex()
                 .child(
-                    div()
-                        .id("reminder")
-                        .h(px(28.))
-                        .px(px(8.))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .rounded(px(7.))
-                        .text_size(px(13.))
-                        .when(open, |d| d.bg(theme.selected_bg))
-                        .hover(|s| s.bg(theme.hover_bg))
-                        .child(reminder_label(current))
-                        .child(icon(Icon::ChevronDown, px(13.), theme.text_faint))
-                        .on_click(
-                            cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Reminder, cx)),
-                        ),
+                    control(
+                        div().id("reminder"),
+                        self.panel.as_ref().map(|p| p.reminder_focus.clone()),
+                        theme,
+                    )
+                    .h(px(28.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .rounded(px(7.))
+                    .text_size(px(13.))
+                    .when(open, |d| d.bg(theme.selected_bg))
+                    .hover(|s| s.bg(theme.hover_bg))
+                    .child(reminder_label(current))
+                    .child(icon(Icon::ChevronDown, px(13.), theme.text_faint))
+                    .on_click(
+                        cx.listener(|this, _, _, cx| this.click_control_menu(Menu::Reminder, cx)),
+                    ),
                 )
                 .when(open, |d| d.child(self.menu_backdrop(window, cx)))
                 .children(menu),
@@ -1806,10 +1946,14 @@ fn dropdown(top: gpui::Pixels, width: gpui::Pixels, theme: &Theme) -> gpui::Stat
         .bg(theme.overlay_bg)
         .border_1()
         .border_color(theme.overlay_border)
-        .shadow(overlay_shadow(theme))
+        .shadow(popover_shadow(theme))
 }
 
-fn menu_row(id: (&'static str, usize), theme: &Theme) -> gpui::Stateful<gpui::Div> {
+fn menu_row(
+    id: (&'static str, usize),
+    highlighted: bool,
+    theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .h(px(30.))
@@ -1819,7 +1963,23 @@ fn menu_row(id: (&'static str, usize), theme: &Theme) -> gpui::Stateful<gpui::Di
         .gap(px(10.))
         .rounded(px(7.))
         .text_size(px(13.))
+        .when(highlighted, |d| d.bg(theme.selected_bg))
         .hover(|s| s.bg(theme.hover_bg))
+}
+
+/// A button of the panel that takes focus: tab reaches it, enter and space
+/// work it (see `activate`), and a ring shows it has focus from the keys.
+fn control(
+    el: gpui::Stateful<gpui::Div>,
+    focus: Option<FocusHandle>,
+    theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
+    let ring = theme.accent.alpha(0.7);
+    el.key_context(PANEL_CONTROL)
+        .border_1()
+        .border_color(gpui::transparent_black())
+        .when_some(focus, |d, focus| d.track_focus(&focus))
+        .focus_visible(move |s| s.border_color(ring))
 }
 
 fn switch(on: bool, theme: &Theme) -> impl IntoElement {

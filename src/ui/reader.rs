@@ -140,7 +140,11 @@ impl PigeonApp {
             .when_some(thread.folder.archive_target(), |this, target| {
                 this.child(icon_button(
                     "archive",
-                    Icon::Archive,
+                    if target == Folder::Inbox {
+                        Icon::Inbox
+                    } else {
+                        Icon::Archive
+                    },
                     if target == Folder::Inbox {
                         "Move to Inbox"
                     } else {
@@ -469,6 +473,12 @@ impl PigeonApp {
                     .id(("message-body", ix))
                     .mt(px(14.))
                     .pl(px(46.))
+                    .children(
+                        message
+                            .invite
+                            .as_ref()
+                            .map(|invite| self.render_invite(invite, theme, cx)),
+                    )
                     .child(render_body(&body, theme)),
             )
             .when(!message.attachments.is_empty(), |this| {

@@ -11,7 +11,8 @@
 //! - `Calendar`: the calendar pane, in place of `Mailbox` while the calendar
 //!   is showing. Its event panel adds `EventPanel`, and the panel's date and
 //!   time fields `DateField` and `TimeField`, and its guest field `Guests`,
-//!   around their inputs.
+//!   around their inputs. Its buttons that take focus (calendar, all day,
+//!   reminder) are `PanelControl`.
 //! - `Composer`: the draft in the reading pane, inside `Mailbox`; its
 //!   recipient fields add `Recipients`. `SearchBar`: the search field above the
 //!   list, inside `Mailbox`.
@@ -81,6 +82,11 @@ actions!(
         SelectPrevEvent,
         CloseEvent,
         ToggleCalendarsMenu,
+        AcceptInvite,
+        MaybeInvite,
+        DeclineInvite,
+        OpenInviteInCalendar,
+        RemoveCancelledEvent,
     ]
 );
 
@@ -100,6 +106,7 @@ pub const EVENT_PANEL: &str = "EventPanel";
 pub const DATE_FIELD: &str = "DateField";
 pub const TIME_FIELD: &str = "TimeField";
 pub const GUESTS: &str = "Guests";
+pub const PANEL_CONTROL: &str = "PanelControl";
 
 /// The keymap. Where an action has several bindings, the one added last is
 /// the one the palette shows.
@@ -148,6 +155,12 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("a", ReplyAll, Some(MAIL)),
         KeyBinding::new("f", Forward, Some(MAIL)),
         KeyBinding::new("/", ToggleSearch, Some(MAIL)),
+        // Answering the invite in the selected conversation.
+        KeyBinding::new("shift-y", AcceptInvite, Some(MAIL)),
+        KeyBinding::new("shift-m", MaybeInvite, Some(MAIL)),
+        KeyBinding::new("shift-n", DeclineInvite, Some(MAIL)),
+        KeyBinding::new("shift-c", OpenInviteInCalendar, Some(MAIL)),
+        KeyBinding::new("shift-x", RemoveCancelledEvent, Some(MAIL)),
         // Search. Escape in the list clears a search too.
         KeyBinding::new("escape", CloseSearch, Some(LIST)),
         KeyBinding::new("escape", CloseSearch, Some(SEARCH)),
@@ -215,6 +228,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", event_panel::StepUp, Some(DATE_INPUT)),
         KeyBinding::new("down", event_panel::StepDown, Some(TIME_INPUT)),
         KeyBinding::new("up", event_panel::StepUp, Some(TIME_INPUT)),
+        KeyBinding::new("enter", event_panel::Activate, Some(PANEL_CONTROL)),
+        KeyBinding::new("space", event_panel::Activate, Some(PANEL_CONTROL)),
+        KeyBinding::new("down", event_panel::MenuNext, Some(PANEL_CONTROL)),
+        KeyBinding::new("up", event_panel::MenuPrev, Some(PANEL_CONTROL)),
         KeyBinding::new("down", composer::SuggestNext, Some(GUESTS_INPUT)),
         KeyBinding::new("up", composer::SuggestPrev, Some(GUESTS_INPUT)),
         KeyBinding::new(
@@ -283,6 +300,7 @@ pub enum Scope {
 pub enum Group {
     Navigation,
     Conversation,
+    Invite,
     Compose,
     GoTo,
     App,
@@ -296,6 +314,7 @@ impl Group {
         match self {
             Group::Navigation => "Navigation",
             Group::Conversation => "Conversation",
+            Group::Invite => "Invitations",
             Group::Compose => "Compose",
             Group::GoTo => "Go to",
             Group::App => "Application",
@@ -356,6 +375,11 @@ pub const COMMANDS: &[Command] = commands! {
     Conversation: "Star / Unstar", Star, ToggleStar;
     Conversation: "Mark as Unread", MailUnread, MarkUnread;
     Conversation: "Mark as Read", MailOpen, MarkRead;
+    Invite: "Accept Invitation (Yes)", Check, AcceptInvite;
+    Invite: "Maybe to Invitation", Help, MaybeInvite;
+    Invite: "Decline Invitation (No)", X, DeclineInvite;
+    Invite: "Open Invitation in Calendar", Calendar, OpenInviteInCalendar;
+    Invite: "Remove Cancelled Event from Calendar", Trash, RemoveCancelledEvent;
     Navigation: "Next Conversation", ChevronDown, SelectNextThread;
     Navigation: "Previous Conversation", ChevronUp, SelectPrevThread;
     Navigation: "Open Conversation", Mail, OpenThread;

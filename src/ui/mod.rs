@@ -4,6 +4,7 @@ pub mod calendar;
 pub mod command_palette;
 pub mod composer;
 pub mod html_view;
+pub mod invite;
 pub mod rail;
 pub mod reader;
 pub mod shortcuts_help;
@@ -239,6 +240,27 @@ pub fn binding_caps(binding: &KeyBinding, theme: &Theme) -> Div {
         );
     }
     row
+}
+
+/// The shadow under popovers and dropdowns: a tight one that lifts the
+/// edge off whatever is under it, and a soft one around.
+pub fn popover_shadow(theme: &Theme) -> Vec<gpui::BoxShadow> {
+    vec![
+        gpui::BoxShadow {
+            color: theme.overlay_shadow.alpha(theme.overlay_shadow.a * 0.6),
+            offset: gpui::point(px(0.), px(2.)),
+            blur_radius: px(6.),
+            spread_radius: px(0.),
+            inset: false,
+        },
+        gpui::BoxShadow {
+            color: theme.overlay_shadow,
+            offset: gpui::point(px(0.), px(12.)),
+            blur_radius: px(32.),
+            spread_radius: px(-4.),
+            inset: false,
+        },
+    ]
 }
 
 /// The shadow under floating panels.

@@ -525,14 +525,14 @@ Search is in memory. Each thread gets a `SearchIndex` from `Thread::reindex()` i
 
 ### CON-1 Recipient suggestions
 
-- **Feature:** Typing in a recipient field shows up to six suggestions. Matching is fuzzy on the name and address. Already-added recipients are excluded. Up and down arrows, `Ctrl-n` and `Ctrl-p` move through them. Enter or a click picks one. Escape closes the list.
-- **Today:** Placeholder data. `ContactBook::new(data.contacts())` in `PigeonApp::new()` in `src/app.rs`. `MailData::contacts()` in `src/data.rs` collects every sender and recipient in the JSON, except the user, sorted by how often they appear. The book is built once at startup.
+- **Feature:** Typing in a recipient field, or in an event's "Add guests" field, shows up to six suggestions. Names and addresses that start with the query come first, then those with a word that starts with it ("ch" finds Sarah Chen), then, for queries of three letters or more, those that contain it. Only when nothing matches is the query matched fuzzily. Automated senders (no-reply, notification, newsletter, alerts, receipts and similar addresses) and spam senders are never suggested. Already-added recipients are excluded. Up and down arrows, `Ctrl-n` and `Ctrl-p` move through them. Enter or a click picks one. Escape closes the list.
+- **Today:** Placeholder data. `ContactBook::new(data.contacts())` in `PigeonApp::new()` in `src/app.rs`. `MailData::contacts()` in `src/data.rs` collects every sender and recipient in the JSON outside Spam, except the user, sorted by how often they appear. `ContactBook::suggest()` and `is_automated()` in `src/ui/composer.rs` rank and filter; the composer and the event panel both call `suggest()`. The book is built once at startup.
 - **Backend needs:** A contacts source. Gmail: People API (contacts and "other contacts"). CardDAV, or addresses taken from sent and received mail. The list must update when the user sends to a new address (today it does not, until restart).
-- **Notes:** The book is `Rc<ContactBook>` and shared with every composer. Changes must reach open composers.
+- **Notes:** The book is `Rc<ContactBook>` and shared with every composer and the calendar. Changes must reach open composers. "Automated" is guessed from the address's local part; a real contacts source can say which addresses the user has written to, which is a better signal.
 
 ### CON-2 Typed name and address resolution
 
-- **Feature:** A typed address is used as it is. A typed name followed by a comma or semicolon takes the best fuzzy match from the book. After a comma, a name with no match is dropped silently. On Enter, the highlighted suggestion is used when the text has no `@` or the user has moved through the list. Otherwise the typed address is used, or the field shows "“…” isn't an email address".
+- **Feature:** A typed address is used as it is. A typed name followed by a comma or semicolon takes the best match from the book (`ContactBook::best()`, ranked as in CON-1). After a comma, a name with no match is dropped silently. On Enter, the highlighted suggestion is used when the text has no `@` or the user has moved through the list. Otherwise the typed address is used, or the field shows "“…” isn't an email address".
 - **Today:** `resolve()` and `commit()` in `src/ui/composer.rs`. Names come from message headers in the JSON only.
 - **Backend needs:** Lookup of a name in contacts (CON-1). Keep "dropped silently" out of the final behaviour: a name with no match should show an error or leave the text in the field.
 - **Notes:** Address validation is local only (see CMP-5).
@@ -704,14 +704,14 @@ The calendar shares the window with mail. Its state lives in `CalendarView` (`sr
 
 ### CAL-8 Date, time and all-day editing
 
-- **Feature:** Start and end date and time fields with a date picker and a time picker. Typed dates and times are parsed ("tomorrow", "Oct 27", "10/27", "3pm", "15:30", "noon"). Up and down change the field by a day or 15 minutes. The all-day switch turns an event into whole days and back.
+- **Feature:** Start and end date and time fields with a date picker and a time picker. Typed dates and times are parsed ("tomorrow", "Oct 27", "10/27", "3pm", "15:30", "noon"). Up and down change the field by a day or 15 minutes. The all-day switch turns an event into whole days and back. Tab reaches every field and control of the panel in reading order (calendar picker, title, dates and times, all-day switch, location, link, guests, notes, reminder); enter or space work the switch and open the pickers, whose rows up, down and enter choose.
 - **Today:** In memory. `commit_field()`, `step_field()`, `set_date()`, `set_time()`, `toggle_all_day()` in `event_panel.rs`. Parsing is in `time::parse_date()` and `time::parse_time()`.
 - **Backend needs:** Same update as CAL-7. All-day events use `date` values with an exclusive end date; timed events use `dateTime` with a time zone (CAL-12).
 - **Notes:** Changing the start keeps the duration. An end time at or before the start moves to the next day. Ends are at least 15 minutes after the start.
 
 ### CAL-9 Create an event
 
-- **Feature:** `c` or the header's "+" creates an event at the next half hour today (or on the selected day), opens it and focuses the title.
+- **Feature:** `c` or the header's "+" creates an event at the next half hour today (or on the selected day), opens it and focuses the title. Dragging on empty space in the Day or Week grid, or double-clicking it, also creates one (CAL-21).
 - **Today:** In memory. `new_event()` and `CalendarView::create_event(start, end, all_day, ..)` in `mod.rs`. New events go to the first visible calendar, with a 10-minute reminder, busy, and the user as organizer.
 - **Backend needs:** An event insert. Return the server ID and replace the local one (CAL-11). If the user leaves the title empty and closes the panel, decide whether to keep the event or drop it.
 - **Notes:** A default calendar setting is not built.
@@ -746,10 +746,10 @@ The calendar shares the window with mail. Its state lives in `CalendarView` (`sr
 
 ### CAL-14 My RSVP
 
-- **Feature:** For events someone else organizes, the panel shows "Going? Yes / Maybe / No". Invites the user has not answered are drawn outlined; declined ones are struck through.
+- **Feature:** For events someone else organizes, the panel shows "Going? Yes / Maybe / No", and so does the invite card in the mail reader (CAL-20). Invites the user has not answered are drawn outlined; declined ones are struck through.
 - **Today:** In memory. `CalendarView::set_rsvp()` in `mod.rs` sets the user's attendee status. `Event::my_status()` and `Look` in `week_view.rs` pick the style.
-- **Backend needs:** Write the user's response to the server (Google attendee `responseStatus`, or an iMIP `REPLY`) so the organizer gets it.
-- **Notes:** Answering for one occurrence of a series is not supported (CAL-6).
+- **Backend needs:** Write the user's response to the server (Google attendee `responseStatus`, or an iMIP `REPLY`) so the organizer gets it. The same write serves the panel and the invite card.
+- **Notes:** Changing an answer sends a new reply each time; consider sending once the user stops changing it. Answering for one occurrence of a series is not supported (CAL-6).
 
 ### CAL-15 Reminders
 
@@ -788,17 +788,17 @@ The calendar shares the window with mail. Its state lives in `CalendarView` (`sr
 
 ### CAL-20 Invite emails linked to events
 
-- **Feature:** UI not built yet. Invitation emails in `assets/mailbox.json` carry an `event_id` that points at the event, meant for an invite card (with Yes / Maybe / No) in the reader.
-- **Today:** Not implemented. `event_id` is not read by `src/data.rs`.
-- **Backend needs:** Parse `text/calendar` parts (iMIP `REQUEST`, `CANCEL`, `REPLY`) and match them to events by `UID`. Answering from the card uses CAL-14.
-- **Notes:** `CalendarView::event()`, `open_event()` and `set_rsvp()` are the hooks the card can call.
+- **Feature:** An invitation email shows an invite card above its body: title, date and time, repeat rule, location, video link with Join, organizer and head count, in the calendar's colour. A small timeline shows the user's other events that day around the invite's time, and names the busy events it overlaps ("Conflicts with …"). Yes / Maybe / No answer it (`shift-y`, `shift-m`, `shift-n`) and show the current answer. "Open in Calendar" (`shift-c`) switches to the calendar on the event's day with it open. A cancellation shows a muted card with "Remove from calendar" (`shift-x`), which deletes the event with an Undo toast. All are in the palette and the `?` sheet.
+- **Today:** Placeholder JSON. `Message::invite` (`Invite { event_id, method }`, `method` is `request` or `cancel`) in `src/data.rs`. The card and its actions are in `src/ui/invite.rs`; it reads `CalendarView::data` and answers through `CalendarView::set_rsvp()`, so answers given in the card show in the grid and the panel, and the other way round.
+- **Backend needs:** Parse `text/calendar` parts (iMIP `REQUEST`, `CANCEL`, `REPLY`) and match them to events by `UID`. An invite for an event not yet in the calendar should add it (as "needs action") when the mail arrives. Answering from the card sends the reply as in CAL-14. "Remove from calendar" deletes the user's copy only; it must not send a cancellation to anyone.
+- **Notes:** The card shows the event's next occurrence from today. An invite whose event was deleted shows "This event is no longer in your calendar". Conflicts count only busy events the user hasn't declined; free/busy of other calendars (shared, delegated) is not considered.
 
 ### CAL-21 Drag to create, move and resize
 
-- **Feature:** UI not built yet. Events cannot be dragged.
-- **Today:** Not implemented. `CalendarView::create_event()` and `retime_occurrence()` are the hooks a drag gesture can call.
-- **Backend needs:** Same as CAL-9 and CAL-7.
-- **Notes:** Dragging one occurrence of a series needs the CAL-6 choice.
+- **Feature:** In the Day and Week grids: drag on empty space to create an event (a live preview follows the mouse, snapped to 15 minutes; on release the event opens with its title focused); double-click empty space for a 30-minute event; drag an event to move it in time and across days; drag its bottom edge to resize it (at least 15 minutes). A press that moves less than 4 pixels is a click and opens the event. Escape cancels a drag.
+- **Today:** In memory. `src/ui/calendar/drag.rs` (`GridDrag`, `press_grid()`, `press_occurrence()`, `drag_to()`, `finish_drag()`) calls `CalendarView::create_event()` and `retime_occurrence()`. The all-day lane and the Month view can't be dragged.
+- **Backend needs:** Same as CAL-9 and CAL-7: one write on release, not one per mouse move. Moving an event with guests should ask whether to send them an update.
+- **Notes:** Moving one occurrence of a series moves the whole series today (CAL-6); it needs the "this event / all events" choice. A failed write must put the event back where it was (STA-2).
 
 ### CAL-22 Organizer and read-only permissions
 
@@ -1103,8 +1103,8 @@ Backend status is "Not started" for every item, because no backend code exists. 
 | CAL-17 Video links | Calendar | Placeholder JSON, in memory | Not started |
 | CAL-18 Today and the now-line | Calendar | Works locally | Not started |
 | CAL-19 Event search in the palette | Calendar | In memory | Not started |
-| CAL-20 Invite emails linked to events | Calendar | UI not built yet | Not started |
-| CAL-21 Drag to create, move and resize | Calendar | UI not built yet | Not started |
+| CAL-20 Invite emails linked to events | Calendar | Placeholder JSON, in memory | Not started |
+| CAL-21 Drag to create, move and resize | Calendar | In memory | Not started |
 | CAL-22 Organizer and read-only permissions | Calendar | No checks | Not started |
 | CAL-23 Persisted calendar UI state | Calendar | UI not built yet | Not started |
 | NTF-1 New mail notifications | Notifications & background | UI not built yet | Not started |

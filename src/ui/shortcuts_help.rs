@@ -16,7 +16,12 @@ use crate::{
 /// Groups per column, for Mail and for Calendar.
 const MAIL_COLUMNS: [&[Group]; 2] = [
     &[Group::Navigation, Group::GoTo],
-    &[Group::Conversation, Group::Compose, Group::App],
+    &[
+        Group::Conversation,
+        Group::Invite,
+        Group::Compose,
+        Group::App,
+    ],
 ];
 const CALENDAR_COLUMNS: [&[Group]; 2] = [
     &[Group::CalendarNavigation, Group::CalendarView],

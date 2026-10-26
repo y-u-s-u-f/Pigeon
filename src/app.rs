@@ -120,7 +120,7 @@ pub struct PigeonApp {
     /// escape returns to the list.
     pub reader_focused: bool,
     /// Focus of the panes; see `actions.rs` for the key contexts.
-    focus_handle: FocusHandle,
+    pub(crate) focus_handle: FocusHandle,
     palette: Option<(Entity<CommandPalette>, Subscription)>,
     pub help_open: bool,
     pub help_focus: FocusHandle,
@@ -704,6 +704,7 @@ impl PigeonApp {
             snippet,
             html,
             attachments: Vec::new(),
+            invite: None,
         }
     }
 
@@ -921,6 +922,11 @@ impl PigeonApp {
             UndoAction::DeleteEvent { event, index } => {
                 self.calendar
                     .update(cx, |c, cx| c.restore_event(*event, index, window, cx));
+                // Undone from an invite card: focus stays with the mail.
+                if self.mode == Mode::Mail {
+                    window.focus(&self.focus_handle, cx);
+                }
+                cx.notify();
                 return;
             }
             UndoAction::Send {
@@ -1459,6 +1465,11 @@ impl Render for PigeonApp {
             .on_action(cx.listener(Self::prev_message))
             .on_action(cx.listener(Self::go_to_mail))
             .on_action(cx.listener(Self::go_to_calendar))
+            .on_action(cx.listener(Self::accept_invite))
+            .on_action(cx.listener(Self::maybe_invite))
+            .on_action(cx.listener(Self::decline_invite))
+            .on_action(cx.listener(Self::open_invite_in_calendar))
+            .on_action(cx.listener(Self::remove_cancelled_event))
             .on_drag_move(cx.listener(Self::resize_pane))
             .relative()
             .size_full()

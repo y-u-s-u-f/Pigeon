@@ -14,7 +14,7 @@ use crate::{
     app::RAIL_WIDTH,
     assets::Icon,
     theme::Theme,
-    ui::{HEADER_HEIGHT, icon, icon_button, overlay_shadow, window_drag_area},
+    ui::{HEADER_HEIGHT, icon, icon_button, popover_shadow, window_drag_area},
 };
 
 /// Where the traffic lights end, measured from the window's left edge.
@@ -316,7 +316,7 @@ impl CalendarView {
                         .bg(theme.overlay_bg)
                         .border_1()
                         .border_color(theme.overlay_border)
-                        .shadow(overlay_shadow(theme))
+                        .shadow(popover_shadow(theme))
                         .child(
                             div()
                                 .px(px(10.))

@@ -79,6 +79,8 @@ pub struct Theme {
     pub cal_now: Hsla,
     /// Text on a selected (solid) event.
     pub cal_selected_text: Hsla,
+    /// The edge between an event and one drawn over it.
+    pub cal_ring: Hsla,
 }
 
 impl Global for Theme {}
@@ -139,6 +141,7 @@ impl Theme {
             cal_today_bg: hex(0x6e9bff0a),
             cal_now: hex(0xff5f57ff),
             cal_selected_text: hex(0xffffffff),
+            cal_ring: hex(0x1a1a1eff),
         }
     }
 
@@ -193,6 +196,7 @@ impl Theme {
             cal_today_bg: hex(0x2f6fed08),
             cal_now: hex(0xe5483bff),
             cal_selected_text: hex(0xffffffff),
+            cal_ring: hex(0xffffffff),
         }
     }
 

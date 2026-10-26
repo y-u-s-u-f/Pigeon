@@ -2,51 +2,57 @@
 //! lanes when they span days.
 
 /// An event's place among the events it overlaps: column `col` of `cols`,
-/// widened over `span` columns when the ones to its right are free.
+/// widened over `span` columns when the ones to its right are free, and
+/// indented by `depth` steps over the earlier events it's drawn on top of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Placement {
     pub col: usize,
     pub span: usize,
     pub cols: usize,
+    pub depth: usize,
 }
 
-/// Column packing for one day of the time grid, like Google Calendar's:
-/// events that overlap, directly or through others, form a cluster that
-/// shares the day's width; each takes the first column free at its start.
+/// Layout for one day of the time grid, like Google Calendar's. Events
+/// that start within `gap` of each other would hide each other's titles,
+/// so they sit side by side in columns. An event that starts later than
+/// that cascades: it's drawn on top of the earlier ones, indented, keeping
+/// most of the width, while their titles stay visible above it.
+///
 /// `spans` are `(start, end)` in any unit, end exclusive; the result is in
-/// the same order.
-pub fn pack_columns(spans: &[(i64, i64)]) -> Vec<Placement> {
+/// the same order. Events that overlap, directly or through others, form a
+/// cluster that shares one column count.
+pub fn pack_columns(spans: &[(i64, i64)], gap: i64) -> Vec<Placement> {
     let mut order: Vec<usize> = (0..spans.len()).collect();
     order.sort_by_key(|&i| (spans[i].0, std::cmp::Reverse(spans[i].1)));
+
+    let overlaps = |a: usize, b: usize| spans[a].0 < spans[b].1 && spans[b].0 < spans[a].1;
+    let conflicts = |a: usize, b: usize| overlaps(a, b) && (spans[a].0 - spans[b].0).abs() < gap;
 
     let mut placements = vec![
         Placement {
             col: 0,
             span: 1,
             cols: 1,
+            depth: 0,
         };
         spans.len()
     ];
     let mut cluster: Vec<usize> = Vec::new();
-    // The end of the last event in each column of the cluster.
-    let mut column_ends: Vec<i64> = Vec::new();
     let mut cluster_end = i64::MIN;
 
     for i in order {
         let (start, end) = spans[i];
         if start >= cluster_end && !cluster.is_empty() {
-            finish(spans, &mut placements, &mut cluster, &mut column_ends);
+            finish(&mut placements, &mut cluster, &conflicts, &overlaps);
         }
-        let col = match column_ends.iter().position(|&e| e <= start) {
-            Some(col) => {
-                column_ends[col] = end;
-                col
-            }
-            None => {
-                column_ends.push(end);
-                column_ends.len() - 1
-            }
-        };
+        // The first column without an event this one conflicts with.
+        let col = (0..)
+            .find(|&c| {
+                !cluster
+                    .iter()
+                    .any(|&j| placements[j].col == c && conflicts(i, j))
+            })
+            .expect("some column is free");
         placements[i].col = col;
         cluster.push(i);
         cluster_end = if cluster.len() == 1 {
@@ -56,36 +62,46 @@ pub fn pack_columns(spans: &[(i64, i64)]) -> Vec<Placement> {
         };
     }
     if !cluster.is_empty() {
-        finish(spans, &mut placements, &mut cluster, &mut column_ends);
+        finish(&mut placements, &mut cluster, &conflicts, &overlaps);
     }
     placements
 }
 
-/// Give a finished cluster its column count, and widen each of its events
-/// over the free columns to its right.
+/// Give a finished cluster (in start order) its column count, widen each
+/// event over the columns to its right that hold nothing it conflicts
+/// with, and count the earlier events it's drawn over.
 fn finish(
-    spans: &[(i64, i64)],
     placements: &mut [Placement],
     cluster: &mut Vec<usize>,
-    column_ends: &mut Vec<i64>,
+    conflicts: &impl Fn(usize, usize) -> bool,
+    overlaps: &impl Fn(usize, usize) -> bool,
 ) {
-    let cols = column_ends.len();
+    let cols = cluster
+        .iter()
+        .map(|&i| placements[i].col + 1)
+        .max()
+        .unwrap_or(1);
     for &i in cluster.iter() {
         placements[i].cols = cols;
-    }
-    for &i in cluster.iter() {
-        let (start, end) = spans[i];
         let col = placements[i].col;
         let blocked = |c: usize| {
             cluster
                 .iter()
-                .any(|&j| placements[j].col == c && spans[j].0 < end && spans[j].1 > start)
+                .any(|&j| placements[j].col == c && conflicts(i, j))
         };
-        let free = (col + 1..cols).take_while(|&c| !blocked(c)).count();
-        placements[i].span = 1 + free;
+        placements[i].span = 1 + (col + 1..cols).take_while(|&c| !blocked(c)).count();
+    }
+    for (n, &i) in cluster.iter().enumerate() {
+        let (col, span) = (placements[i].col, placements[i].span);
+        placements[i].depth = cluster[..n]
+            .iter()
+            .filter(|&&j| {
+                let p = placements[j];
+                overlaps(i, j) && !conflicts(i, j) && p.col < col + span && col < p.col + p.span
+            })
+            .count();
     }
     cluster.clear();
-    column_ends.clear();
 }
 
 /// Lanes for bars across days (all-day and multi-day events): each takes the
@@ -116,60 +132,75 @@ pub fn pack_lanes(spans: &[(i64, i64)]) -> Vec<usize> {
 mod tests {
     use super::*;
 
-    fn p(col: usize, span: usize, cols: usize) -> Placement {
-        Placement { col, span, cols }
+    fn p(col: usize, span: usize, cols: usize, depth: usize) -> Placement {
+        Placement {
+            col,
+            span,
+            cols,
+            depth,
+        }
     }
+
+    const GAP: i64 = 30;
 
     #[test]
     fn separate_events_take_the_full_width() {
         assert_eq!(
-            pack_columns(&[(0, 60), (60, 120), (200, 230)]),
-            vec![p(0, 1, 1), p(0, 1, 1), p(0, 1, 1)]
+            pack_columns(&[(0, 60), (60, 120), (200, 230)], GAP),
+            vec![p(0, 1, 1, 0), p(0, 1, 1, 0), p(0, 1, 1, 0)]
         );
     }
 
     #[test]
-    fn overlapping_events_sit_side_by_side() {
+    fn events_starting_together_sit_side_by_side() {
         assert_eq!(
-            pack_columns(&[(0, 60), (30, 90)]),
-            vec![p(0, 1, 2), p(1, 1, 2)]
+            pack_columns(&[(0, 60), (15, 90)], GAP),
+            vec![p(0, 1, 2, 0), p(1, 1, 2, 0)]
         );
         // Three at once.
         assert_eq!(
-            pack_columns(&[(0, 60), (0, 60), (0, 60)]),
-            vec![p(0, 1, 3), p(1, 1, 3), p(2, 1, 3)]
+            pack_columns(&[(0, 60), (0, 60), (0, 60)], GAP),
+            vec![p(0, 1, 3, 0), p(1, 1, 3, 0), p(2, 1, 3, 0)]
         );
     }
 
     #[test]
-    fn columns_are_reused_within_a_cluster() {
-        // A long event with two short ones beside it, one after the other.
+    fn later_events_cascade_over_earlier_ones() {
+        // B starts well after A: full width, one step in, over A.
         assert_eq!(
-            pack_columns(&[(0, 120), (0, 60), (60, 120)]),
-            vec![p(0, 1, 2), p(1, 1, 2), p(1, 1, 2)]
+            pack_columns(&[(0, 120), (30, 90)], GAP),
+            vec![p(0, 1, 1, 0), p(0, 1, 1, 1)]
+        );
+        // A chain: each over all the ones before it.
+        assert_eq!(
+            pack_columns(&[(0, 180), (30, 150), (60, 120)], GAP),
+            vec![p(0, 1, 1, 0), p(0, 1, 1, 1), p(0, 1, 1, 2)]
+        );
+    }
+
+    #[test]
+    fn cascades_cover_side_by_side_events() {
+        // Three at 9, and one at 9:30 over all three, at full width.
+        assert_eq!(
+            pack_columns(&[(0, 60), (0, 60), (0, 60), (30, 60)], GAP),
+            vec![p(0, 1, 3, 0), p(1, 1, 3, 0), p(2, 1, 3, 0), p(0, 3, 3, 3)]
         );
     }
 
     #[test]
     fn events_widen_into_free_columns() {
-        // A and B overlap, B and C overlap: one cluster of two columns, with
-        // C reusing A's column once A has ended.
+        // A and B start together; C, after A, widens over B's column.
         assert_eq!(
-            pack_columns(&[(0, 60), (30, 120), (90, 150)]),
-            vec![p(0, 1, 2), p(1, 1, 2), p(0, 1, 2)]
-        );
-        // G takes E's column once E ends, and widens over F's, free by then.
-        assert_eq!(
-            pack_columns(&[(0, 200), (0, 50), (0, 50), (60, 100)]),
-            vec![p(0, 1, 3), p(1, 1, 3), p(2, 1, 3), p(1, 2, 3)]
+            pack_columns(&[(0, 200), (0, 50), (60, 100)], GAP),
+            vec![p(0, 1, 2, 0), p(1, 1, 2, 0), p(0, 2, 2, 1)]
         );
     }
 
     #[test]
     fn input_order_does_not_matter() {
         assert_eq!(
-            pack_columns(&[(30, 90), (0, 60)]),
-            vec![p(1, 1, 2), p(0, 1, 2)]
+            pack_columns(&[(10, 90), (0, 60)], GAP),
+            vec![p(1, 1, 2, 0), p(0, 1, 2, 0)]
         );
     }
 

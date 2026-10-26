@@ -2,27 +2,29 @@
 //! docked on the right. `CalendarView` owns the calendar's state and handles
 //! its actions; the files beside this one render it.
 //!
-//! Seams for what comes next (mouse drag, the invite card in the reader):
+//! What the mouse drags in the grid (`drag.rs`) and the invite card in the
+//! reader go through:
 //! - `create_event` makes an event over a time range and opens it.
 //! - `retime_occurrence` moves or resizes one occurrence (its whole series;
 //!   pass the series' `start` as the occurrence to set the series itself).
 //! - `set_rsvp` answers an invite for the user.
 
+pub mod drag;
 pub mod event_panel;
 pub mod header;
 pub mod month_view;
 pub mod week_view;
 
-use std::{rc::Rc, time::Duration as StdDuration};
+use std::{cell::Cell, rc::Rc, time::Duration as StdDuration};
 
 use chrono::{Duration, Local, NaiveDate, NaiveDateTime};
 use gpui::{
-    AnyElement, Context, EventEmitter, FocusHandle, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Render, ScrollHandle, SharedString, Styled, Task, Window, anchored, deferred,
-    div, point, prelude::FluentBuilder as _, px,
+    AnyElement, Bounds, Context, EventEmitter, FocusHandle, InteractiveElement, IntoElement,
+    MouseButton, ParentElement, Pixels, Render, ScrollHandle, SharedString, Styled, Task, Window,
+    anchored, deferred, div, point, prelude::FluentBuilder as _, px,
 };
 
-use self::event_panel::EventPanel;
+use self::{drag::GridDrag, event_panel::EventPanel};
 use crate::{
     actions::*,
     calendar::{
@@ -78,6 +80,11 @@ pub struct CalendarView {
     pub menu: Option<Menu>,
     pub focus_handle: FocusHandle,
     pub grid_scroll: ScrollHandle,
+    /// The mouse drag in the time grid, if one is on.
+    pub drag: Option<GridDrag>,
+    /// Where the day columns of the time grid were last painted, in the
+    /// window, scrolled with them: maps the mouse to a day and a time.
+    grid_bounds: Rc<Cell<Bounds<Pixels>>>,
     book: Rc<ContactBook>,
     next_id: usize,
     /// Repaints every half minute so the current-time line moves.
@@ -91,6 +98,19 @@ impl EventEmitter<CalendarEvent> for CalendarView {}
 pub fn occurrence_key(occurrence: &Occurrence, part: i64) -> u64 {
     let minutes = occurrence.start.and_utc().timestamp() / 60;
     ((occurrence.event as u64) << 40) ^ ((minutes as u64) << 8) ^ (part as u64 & 0xff)
+}
+
+/// The start of an event's next occurrence from today, or of its last one.
+pub fn next_start(event: &Event) -> NaiveDateTime {
+    let today = time::midnight(today());
+    occurrences(
+        std::slice::from_ref(event),
+        |_| true,
+        today,
+        today + Duration::days(400),
+    )
+    .first()
+    .map_or(event.start, |o| o.start)
 }
 
 pub fn today() -> NaiveDate {
@@ -122,6 +142,8 @@ impl CalendarView {
             menu: None,
             focus_handle: cx.focus_handle(),
             grid_scroll: ScrollHandle::new(),
+            drag: None,
+            grid_bounds: Rc::default(),
             book,
             next_id: 0,
             _tick: tick,
@@ -211,6 +233,7 @@ impl CalendarView {
     }
 
     pub fn set_view(&mut self, view: ViewKind, cx: &mut Context<Self>) {
+        self.drag = None;
         if self.view != view {
             let from_month = self.view == ViewKind::Month;
             self.view = view;
@@ -228,6 +251,7 @@ impl CalendarView {
     }
 
     fn step(&mut self, forward: bool, cx: &mut Context<Self>) {
+        self.drag = None;
         let sign = if forward { 1 } else { -1 };
         self.anchor = match self.view {
             ViewKind::Day => self.anchor + Duration::days(sign),
@@ -508,14 +532,7 @@ impl CalendarView {
             return;
         };
         let id = event.id.clone();
-        let today = time::midnight(today());
-        let ahead = occurrences(
-            std::slice::from_ref(event),
-            |_| true,
-            today,
-            today + Duration::days(400),
-        );
-        let start = ahead.first().map_or(event.start, |o| o.start);
+        let start = next_start(event);
         if let Some(calendar) = self
             .data
             .calendar_ix(&event.calendar)
@@ -632,6 +649,9 @@ impl CalendarView {
     /// Escape: the innermost open thing closes: a dropdown or picker, then
     /// the panel, then the selection.
     fn close_event(&mut self, _: &CloseEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.cancel_drag(cx) {
+            return;
+        }
         if self.menu.take().is_some() || self.dismiss_panel_popup(cx) {
             cx.notify();
         } else if self.panel.is_some() {
@@ -707,11 +727,8 @@ impl CalendarView {
     fn render_body(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let occurrences = self.visible_occurrences();
         match self.view {
-            ViewKind::Day => self.render_time_grid(vec![self.anchor], &occurrences, window, cx),
-            ViewKind::Week => {
-                let start = week_start(self.anchor);
-                let days = (0..7).map(|i| start + Duration::days(i)).collect();
-                self.render_time_grid(days, &occurrences, window, cx)
+            ViewKind::Day | ViewKind::Week => {
+                self.render_time_grid(self.grid_days(), &occurrences, window, cx)
             }
             ViewKind::Month => self.render_month(&occurrences, window, cx),
         }
@@ -765,5 +782,8 @@ impl Render for CalendarView {
                     ),
             )
             .when_some(panel, |this, panel| this.child(panel))
+            .when(self.drag.is_some(), |this| {
+                this.child(self.render_drag_layer(window, cx))
+            })
     }
 }

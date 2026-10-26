@@ -109,6 +109,26 @@ pub struct Message {
     pub html: String,
     #[serde(default)]
     pub attachments: Vec<Attachment>,
+    /// A calendar invitation (or its cancellation) this message carries.
+    #[serde(default)]
+    pub invite: Option<Invite>,
+}
+
+/// An invitation email's link to its event in the calendar.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Invite {
+    /// `Event::id`.
+    pub event_id: String,
+    pub method: InviteMethod,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InviteMethod {
+    /// Asks the user to come.
+    Request,
+    /// The organizer called it off.
+    Cancel,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -172,11 +192,16 @@ impl MailData {
         self.threads.iter().position(|t| t.id == id)
     }
 
-    /// Everyone in the mailbox but me, most frequent first, for recipient
-    /// suggestions.
+    /// Everyone in the mailbox but me and spam senders, most frequent
+    /// first, for recipient suggestions.
     pub fn contacts(&self) -> Vec<Contact> {
         let mut seen: Vec<(Contact, usize)> = Vec::new();
-        let messages = self.threads.iter().flat_map(|t| &t.messages);
+        // Spam senders aren't people to write to.
+        let messages = self
+            .threads
+            .iter()
+            .filter(|t| t.folder != Folder::Spam)
+            .flat_map(|t| &t.messages);
         for contact in messages.flat_map(|m| [&m.from].into_iter().chain(&m.to).chain(&m.cc)) {
             if self.is_me(contact) {
                 continue;
