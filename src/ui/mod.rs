@@ -1,5 +1,6 @@
 //! Panes and the small building blocks they share.
 
+pub mod calendar;
 pub mod command_palette;
 pub mod composer;
 pub mod html_view;
@@ -193,6 +194,7 @@ fn keystroke_caps(keystroke: &Keystroke) -> Vec<SharedString> {
         "space" => "Space".into(),
         "tab" => "Tab".into(),
         "backspace" => "⌫".into(),
+        "delete" => "⌦".into(),
         key => key.to_uppercase().into(),
     });
     caps

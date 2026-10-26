@@ -1,6 +1,7 @@
 mod actions;
 mod app;
 mod assets;
+mod calendar;
 mod data;
 mod html;
 mod search;
@@ -12,10 +13,11 @@ use gpui::{
     WindowBounds, WindowOptions, point, px, size,
 };
 
-use crate::{actions::Quit, app::PigeonApp, data::MailData, theme::Theme};
+use crate::{actions::Quit, app::PigeonApp, calendar::CalendarData, data::MailData, theme::Theme};
 
 fn main() {
     let data = MailData::load().expect("bundled mailbox.json should parse");
+    let calendar = CalendarData::load().expect("bundled calendar.json should parse");
 
     gpui::application()
         .with_assets(assets::Assets)
@@ -50,7 +52,7 @@ fn main() {
 
             gpui::open_window(options, cx, |window, cx| {
                 Theme::sync(window, cx);
-                cx.new(|cx| PigeonApp::new(data, window, cx))
+                cx.new(|cx| PigeonApp::new(data, calendar, window, cx))
             })
             .expect("failed to open the main window");
             cx.activate(true);

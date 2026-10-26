@@ -8,6 +8,10 @@
 //!   extra identifier `Reader` while the reading pane has keyboard focus.
 //! - `CommandPalette` and `ShortcutsHelp`: the overlays, siblings of
 //!   `Mailbox`, so single-letter shortcuts are off while they are open.
+//! - `Calendar`: the calendar pane, in place of `Mailbox` while the calendar
+//!   is showing. Its event panel adds `EventPanel`, and the panel's date and
+//!   time fields `DateField` and `TimeField`, and its guest field `Guests`,
+//!   around their inputs.
 //! - `Composer`: the draft in the reading pane, inside `Mailbox`; its
 //!   recipient fields add `Recipients`. `SearchBar`: the search field above the
 //!   list, inside `Mailbox`.
@@ -19,7 +23,7 @@ use gpui::{Action, App, KeyBinding, KeyContext, actions};
 use crate::{
     assets::Icon,
     search,
-    ui::{command_palette, composer},
+    ui::{calendar::event_panel, command_palette, composer},
 };
 
 actions!(
@@ -62,6 +66,21 @@ actions!(
         GoToSpam,
         GoToTrash,
         GoToLabel,
+        GoToMail,
+        GoToCalendar,
+        ShowDayView,
+        ShowWeekView,
+        ShowMonthView,
+        GoToToday,
+        NextPeriod,
+        PrevPeriod,
+        NewEvent,
+        OpenEvent,
+        DeleteEvent,
+        SelectNextEvent,
+        SelectPrevEvent,
+        CloseEvent,
+        ToggleCalendarsMenu,
     ]
 );
 
@@ -76,6 +95,11 @@ pub const HELP: &str = "ShortcutsHelp";
 pub const COMPOSER: &str = "Composer";
 pub const RECIPIENTS: &str = "Recipients";
 pub const SEARCH: &str = "SearchBar";
+pub const CALENDAR: &str = "Calendar";
+pub const EVENT_PANEL: &str = "EventPanel";
+pub const DATE_FIELD: &str = "DateField";
+pub const TIME_FIELD: &str = "TimeField";
+pub const GUESTS: &str = "Guests";
 
 /// The keymap. Where an action has several bindings, the one added last is
 /// the one the palette shows.
@@ -87,12 +111,18 @@ pub fn bind_keys(cx: &mut App) {
     const COMPOSER_INPUT: &str = "Composer > Input";
     const RECIPIENTS_INPUT: &str = "Recipients > Input";
     const SEARCH_INPUT: &str = "SearchBar > Input";
+    const CAL: &str = "Calendar && !Input";
+    const DATE_INPUT: &str = "DateField > Input";
+    const TIME_INPUT: &str = "TimeField > Input";
+    const GUESTS_INPUT: &str = "Guests > Input";
 
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-shift-p", ToggleCommandPalette, Some(CONTEXT)),
         KeyBinding::new("cmd-k", ToggleCommandPalette, Some(CONTEXT)),
         KeyBinding::new("cmd-\\", ToggleSidebar, Some(CONTEXT)),
+        KeyBinding::new("cmd-1", GoToMail, Some(CONTEXT)),
+        KeyBinding::new("cmd-2", GoToCalendar, Some(CONTEXT)),
         // Moving through the list.
         KeyBinding::new("down", SelectNextThread, Some(LIST)),
         KeyBinding::new("up", SelectPrevThread, Some(LIST)),
@@ -155,6 +185,43 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("g a", GoToArchive, Some(MAIL)),
         KeyBinding::new("g !", GoToSpam, Some(MAIL)),
         KeyBinding::new("g l", GoToLabel, Some(MAIL)),
+        // Calendar, like Google Calendar.
+        KeyBinding::new("d", ShowDayView, Some(CAL)),
+        KeyBinding::new("w", ShowWeekView, Some(CAL)),
+        KeyBinding::new("m", ShowMonthView, Some(CAL)),
+        KeyBinding::new("t", GoToToday, Some(CAL)),
+        KeyBinding::new("n", NextPeriod, Some(CAL)),
+        KeyBinding::new("j", NextPeriod, Some(CAL)),
+        KeyBinding::new("p", PrevPeriod, Some(CAL)),
+        KeyBinding::new("k", PrevPeriod, Some(CAL)),
+        KeyBinding::new("c", NewEvent, Some(CAL)),
+        KeyBinding::new("enter", OpenEvent, Some(CAL)),
+        KeyBinding::new("e", OpenEvent, Some(CAL)),
+        KeyBinding::new("delete", DeleteEvent, Some(CAL)),
+        KeyBinding::new("backspace", DeleteEvent, Some(CAL)),
+        KeyBinding::new("tab", SelectNextEvent, Some(CAL)),
+        KeyBinding::new("right", SelectNextEvent, Some(CAL)),
+        KeyBinding::new("down", SelectNextEvent, Some(CAL)),
+        KeyBinding::new("shift-tab", SelectPrevEvent, Some(CAL)),
+        KeyBinding::new("left", SelectPrevEvent, Some(CAL)),
+        KeyBinding::new("up", SelectPrevEvent, Some(CAL)),
+        // Inputs pass escape on, so this closes the panel from them too.
+        KeyBinding::new("escape", CloseEvent, Some(CALENDAR)),
+        KeyBinding::new("cmd-z", Undo, Some(CAL)),
+        KeyBinding::new("?", ToggleShortcutsHelp, Some(CAL)),
+        KeyBinding::new("tab", event_panel::NextField, Some(EVENT_PANEL)),
+        KeyBinding::new("shift-tab", event_panel::PrevField, Some(EVENT_PANEL)),
+        KeyBinding::new("down", event_panel::StepDown, Some(DATE_INPUT)),
+        KeyBinding::new("up", event_panel::StepUp, Some(DATE_INPUT)),
+        KeyBinding::new("down", event_panel::StepDown, Some(TIME_INPUT)),
+        KeyBinding::new("up", event_panel::StepUp, Some(TIME_INPUT)),
+        KeyBinding::new("down", composer::SuggestNext, Some(GUESTS_INPUT)),
+        KeyBinding::new("up", composer::SuggestPrev, Some(GUESTS_INPUT)),
+        KeyBinding::new(
+            "backspace",
+            composer::RemoveLastRecipient,
+            Some(GUESTS_INPUT),
+        ),
         // Overlays.
         KeyBinding::new("escape", ToggleShortcutsHelp, Some(HELP)),
         KeyBinding::new("?", ToggleShortcutsHelp, Some(HELP)),
@@ -180,20 +247,36 @@ pub fn mailbox_context(reader: bool) -> KeyContext {
     context
 }
 
-/// Flattened contexts to look shortcuts up in: the list, the reader, a draft
-/// and the search field.
-pub fn lookup_contexts(reader_first: bool) -> [KeyContext; 4] {
-    let with = |extra: &str| {
-        let mut context = mailbox_context(false);
+/// Flattened contexts to look shortcuts up in. Mail: the list, the reader, a
+/// draft and the search field. Calendar: the grid and the event panel.
+pub fn lookup_contexts(scope: Scope, reader_first: bool) -> Vec<KeyContext> {
+    let with = |mut context: KeyContext, extra: &str| {
         context.add(extra);
         context
     };
-    [
-        mailbox_context(reader_first),
-        mailbox_context(!reader_first),
-        with(COMPOSER),
-        with(SEARCH),
-    ]
+    match scope {
+        Scope::Calendar => {
+            let mut calendar = KeyContext::default();
+            calendar.add(CONTEXT);
+            calendar.add(CALENDAR);
+            vec![calendar.clone(), with(calendar, EVENT_PANEL)]
+        }
+        Scope::Mail | Scope::Global => vec![
+            mailbox_context(reader_first),
+            mailbox_context(!reader_first),
+            with(mailbox_context(false), COMPOSER),
+            with(mailbox_context(false), SEARCH),
+        ],
+    }
+}
+
+/// Which app a command belongs to. The palette and the shortcuts sheet show
+/// the current app's commands and the global ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    Mail,
+    Calendar,
+    Global,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -203,6 +286,9 @@ pub enum Group {
     Compose,
     GoTo,
     App,
+    CalendarNavigation,
+    CalendarView,
+    CalendarEvents,
 }
 
 impl Group {
@@ -213,6 +299,19 @@ impl Group {
             Group::Compose => "Compose",
             Group::GoTo => "Go to",
             Group::App => "Application",
+            Group::CalendarNavigation => "Navigation",
+            Group::CalendarView => "View",
+            Group::CalendarEvents => "Events",
+        }
+    }
+
+    pub fn scope(self) -> Scope {
+        match self {
+            Group::App => Scope::Global,
+            Group::CalendarNavigation | Group::CalendarView | Group::CalendarEvents => {
+                Scope::Calendar
+            }
+            _ => Scope::Mail,
         }
     }
 }
@@ -275,9 +374,25 @@ pub const COMMANDS: &[Command] = commands! {
     GoTo: "Go to Spam", OctagonAlert, GoToSpam;
     GoTo: "Go to Trash", Trash, GoToTrash;
     GoTo: "Go to Label…", ChevronRight, GoToLabel;
+    Navigation: "Toggle Sidebar", PanelLeft, ToggleSidebar;
+    Navigation: "Show / Hide Archived in Inbox", Archive, ToggleArchivedSection;
+    CalendarEvents: "New Event", Plus, NewEvent;
+    CalendarEvents: "Open Event", Calendar, OpenEvent;
+    CalendarEvents: "Delete Event", Trash, DeleteEvent;
+    CalendarEvents: "Close Event", X, CloseEvent;
+    CalendarEvents: "Undo Delete", Undo, Undo;
+    CalendarNavigation: "Today", Calendar, GoToToday;
+    CalendarNavigation: "Next Day / Week / Month", ChevronRight, NextPeriod;
+    CalendarNavigation: "Previous Day / Week / Month", ChevronLeft, PrevPeriod;
+    CalendarNavigation: "Next Event", ChevronDown, SelectNextEvent;
+    CalendarNavigation: "Previous Event", ChevronUp, SelectPrevEvent;
+    CalendarView: "Day View", Calendar, ShowDayView;
+    CalendarView: "Week View", Calendar, ShowWeekView;
+    CalendarView: "Month View", Calendar, ShowMonthView;
+    CalendarView: "Show / Hide Calendars…", Layers, ToggleCalendarsMenu;
+    App: "Go to Mail", Mail, GoToMail;
+    App: "Go to Calendar", Calendar, GoToCalendar;
     App: "Command Palette", Command, ToggleCommandPalette, help_only;
     App: "Keyboard Shortcuts", Keyboard, ToggleShortcutsHelp;
-    App: "Toggle Sidebar", PanelLeft, ToggleSidebar;
-    App: "Show / Hide Archived in Inbox", Archive, ToggleArchivedSection;
     App: "Quit Pigeon", Command, Quit;
 };

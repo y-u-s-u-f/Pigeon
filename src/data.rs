@@ -125,7 +125,7 @@ pub struct Attachment {
     pub mime: String,
 }
 
-fn hex_color<'de, D: Deserializer<'de>>(d: D) -> Result<Hsla, D::Error> {
+pub(crate) fn hex_color<'de, D: Deserializer<'de>>(d: D) -> Result<Hsla, D::Error> {
     let s = String::deserialize(d)?;
     let v = u32::from_str_radix(s.trim_start_matches('#'), 16).map_err(serde::de::Error::custom)?;
     Ok(Rgba {

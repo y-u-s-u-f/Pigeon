@@ -8,15 +8,19 @@ use gpui::{
 
 use super::{binding_caps, keycap, overlay_shadow};
 use crate::{
-    actions::{COMMANDS, Group, HELP, lookup_contexts},
-    app::PigeonApp,
+    actions::{COMMANDS, Group, HELP, Scope, lookup_contexts},
+    app::{Mode, PigeonApp},
     theme::Theme,
 };
 
-/// Groups per column.
-const COLUMNS: [&[Group]; 2] = [
+/// Groups per column, for Mail and for Calendar.
+const MAIL_COLUMNS: [&[Group]; 2] = [
     &[Group::Navigation, Group::GoTo],
     &[Group::Conversation, Group::Compose, Group::App],
+];
+const CALENDAR_COLUMNS: [&[Group]; 2] = [
+    &[Group::CalendarNavigation, Group::CalendarView],
+    &[Group::CalendarEvents, Group::App],
 ];
 
 impl PigeonApp {
@@ -26,7 +30,11 @@ impl PigeonApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
-        let columns = COLUMNS.map(|groups| {
+        let (columns, scope) = match self.mode {
+            Mode::Mail => (MAIL_COLUMNS, Scope::Mail),
+            Mode::Calendar => (CALENDAR_COLUMNS, Scope::Calendar),
+        };
+        let columns = columns.map(|groups| {
             div()
                 .flex_1()
                 .min_w_0()
@@ -36,7 +44,7 @@ impl PigeonApp {
                 .children(
                     groups
                         .iter()
-                        .map(|&group| render_group(group, window, &theme)),
+                        .map(|&group| render_group(group, scope, window, &theme)),
                 )
         });
 
@@ -99,12 +107,12 @@ impl PigeonApp {
     }
 }
 
-fn render_group(group: Group, window: &Window, theme: &Theme) -> AnyElement {
+fn render_group(group: Group, scope: Scope, window: &Window, theme: &Theme) -> AnyElement {
     let rows = COMMANDS
         .iter()
         .filter(|c| c.group == group)
         .filter_map(|command| {
-            let bindings = live_bindings(&*(command.action)(), window);
+            let bindings = live_bindings(&*(command.action)(), scope, window);
             (!bindings.is_empty()).then(|| {
                 div()
                     .h(px(30.))
@@ -149,11 +157,11 @@ fn render_group(group: Group, window: &Window, theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// The action's bindings in the list, reader, draft and search contexts, highest precedence
-/// first, without duplicates.
-fn live_bindings(action: &dyn gpui::Action, window: &Window) -> Vec<KeyBinding> {
+/// The action's bindings in the scope's contexts (see `lookup_contexts`),
+/// highest precedence first, without duplicates.
+fn live_bindings(action: &dyn gpui::Action, scope: Scope, window: &Window) -> Vec<KeyBinding> {
     let mut bindings: Vec<KeyBinding> = Vec::new();
-    for context in lookup_contexts(false) {
+    for context in lookup_contexts(scope, false) {
         for binding in window
             .bindings_for_action_in_context(action, context)
             .into_iter()

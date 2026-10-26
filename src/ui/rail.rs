@@ -1,15 +1,27 @@
-//! The activity rail on the far left: Mail, plus Calendar as a placeholder.
+//! The activity rail on the far left: Mail and Calendar.
 
 use gpui::{
-    InteractiveElement, IntoElement, MouseButton, ParentElement, Styled, div,
+    Action, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    StatefulInteractiveElement as _, Styled, component::tooltip::Tooltip, div,
     prelude::FluentBuilder as _, px,
 };
 
 use super::{HEADER_HEIGHT, icon, window_drag_area};
-use crate::{app::RAIL_WIDTH, assets::Icon, theme::Theme};
+use crate::{
+    actions::{GoToCalendar, GoToMail},
+    app::{Mode, RAIL_WIDTH},
+    assets::Icon,
+    theme::Theme,
+};
 
-pub fn render(theme: &Theme) -> impl IntoElement {
-    let item = |id: &'static str, glyph: Icon, active: bool| {
+pub fn render(mode: Mode, theme: &Theme) -> impl IntoElement {
+    let item = |id: &'static str,
+                glyph: Icon,
+                item_mode: Mode,
+                tooltip: &'static str,
+                action: Box<dyn Action>| {
+        let active = mode == item_mode;
+        let tooltip_action = action.boxed_clone();
         div()
             .id(id)
             .size(px(36.))
@@ -18,6 +30,12 @@ pub fn render(theme: &Theme) -> impl IntoElement {
             .justify_center()
             .rounded(px(9.))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
+            .tooltip(move |window, cx| {
+                Tooltip::new(tooltip)
+                    .action(tooltip_action.as_ref(), None)
+                    .build(window, cx)
+            })
             .map(|this| {
                 if active {
                     this.bg(theme.nav_active_bg)
@@ -51,6 +69,18 @@ pub fn render(theme: &Theme) -> impl IntoElement {
             .border_r_1()
             .border_color(theme.border),
     )
-    .child(item("rail-mail", Icon::Mail, true))
-    .child(item("rail-calendar", Icon::Calendar, false))
+    .child(item(
+        "rail-mail",
+        Icon::Mail,
+        Mode::Mail,
+        "Mail",
+        Box::new(GoToMail),
+    ))
+    .child(item(
+        "rail-calendar",
+        Icon::Calendar,
+        Mode::Calendar,
+        "Calendar",
+        Box::new(GoToCalendar),
+    ))
 }

@@ -5,8 +5,9 @@ This file lists every front-end feature that needs backend support. It describes
 ## Current state
 
 - All mail data comes from `assets/mailbox.json`. It is loaded once at startup by `MailData::load()` in `src/data.rs`, called from `main()` in `src/main.rs`.
+- All calendar data comes from `assets/calendar.json`. It is loaded once at startup by `CalendarData::load()` in `src/calendar/mod.rs`, also called from `main()`.
 - There is no network, sync, sending or storage code in `src/`.
-- Every change (archive, delete, star, read state, send, draft save, discard) is applied in memory to `PigeonApp::data` in `src/app.rs`.
+- Every mail change (archive, delete, star, read state, send, draft save, discard) is applied in memory to `PigeonApp::data` in `src/app.rs`. Every calendar change (create, edit, delete, RSVP, show or hide a calendar) is applied in memory to `CalendarView::data` in `src/ui/calendar/mod.rs`.
 - Nothing is saved. Quitting (`Quit`, `cmd-q`) discards all changes, including drafts and sent messages.
 - There is one account. It comes from the `account` object in the JSON.
 
@@ -629,8 +630,8 @@ Search is in memory. Each thread gets a `SearchIndex` from `Thread::reindex()` i
 
 - **Feature:** `cmd-k` or `cmd-shift-p` opens the palette. It lists every command in `COMMANDS` (`src/actions.rs`), each with its shortcut when there is one. Commands run the same action handlers as the keyboard and toolbar. The palette does not run its own logic.
 - **Today:** Works in memory. `open_palette()` and `palette_items()` in `src/app.rs`. `on_palette_event()` dispatches the action.
-- **Backend needs:** Each command inherits the backend need of its action. The commands that need backend work are: Archive (ACT-1), Delete (ACT-2), Star (ACT-3), Mark as Unread and Read (ACT-4, ACT-5), Compose, Reply, Reply All, Forward (CMP-1 to CMP-4), Send (CMP-8), Close Draft (DRF-1), Discard Draft (DRF-4), Undo Send / Discard (UND-1, UND-2). Navigation and app commands need no backend.
-- **Notes:** The palette also shows "Undo Send / Discard" even when there is nothing to undo. It does nothing then.
+- **Backend needs:** Each command inherits the backend need of its action. The commands that need backend work are: Archive (ACT-1), Delete (ACT-2), Star (ACT-3), Mark as Unread and Read (ACT-4, ACT-5), Compose, Reply, Reply All, Forward (CMP-1 to CMP-4), Send (CMP-8), Close Draft (DRF-1), Discard Draft (DRF-4), Undo Send / Discard (UND-1, UND-2), New Event (CAL-9), Delete Event (CAL-10). Navigation, view and app commands need no backend.
+- **Notes:** The palette also shows "Undo Send / Discard" even when there is nothing to undo. It does nothing then. Commands are scoped: each `Group` in `src/actions.rs` has a `scope()` (Mail, Calendar or Global), and the palette and the `?` sheet only list the current mode's commands plus the global ones.
 
 ### PAL-2 Thread search in the palette
 
@@ -648,21 +649,170 @@ Search is in memory. Each thread gets a `SearchIndex` from `Thread::reindex()` i
 
 ---
 
-## 14. Calendar placeholder (CAL)
+## 14. Calendar (CAL)
 
-### CAL-1 Calendar button in the rail
+The calendar shares the window with mail. Its state lives in `CalendarView` (`src/ui/calendar/mod.rs`), an entity owned by `PigeonApp`. The model and the pure logic are in `src/calendar/` (`mod.rs`, `time.rs`, `recurrence.rs`, `layout.rs`).
 
-- **Feature:** The far-left rail has a calendar icon under the mail icon. Clicking it does nothing. The mail icon is always the active one.
-- **Today:** Stub. `render()` in `src/ui/rail.rs` builds the item with no click handler. Only `on_mouse_down` is set, to stop the window drag.
-- **Backend needs:** None for the stub. Remove or hide the button until CAL-2 exists, or the user will see a dead control.
-- **Notes:** The rail comment says Calendar is a placeholder.
+### CAL-1 Switch between Mail and Calendar
 
-### CAL-2 Calendar view
+- **Feature:** The rail's Mail and Calendar icons, `cmd-1` and `cmd-2`, and the palette's "Go to Mail" and "Go to Calendar" switch modes. Mail state (folder, selection, open thread, composer) is kept across switches.
+- **Today:** Works locally. `PigeonApp::set_mode()` in `src/app.rs` sets `mode` and moves focus. The rail reads the mode in `src/ui/rail.rs`.
+- **Backend needs:** None. Account linking (ACC-3) must ask for calendar access as well as mail.
+- **Notes:** An account without calendar access needs an empty state in the calendar. That is not built.
 
-- **Feature:** UI not built yet. There is no calendar view, no agenda and no event creation.
-- **Today:** Not implemented.
-- **Backend needs:** Google Calendar API (events list, create, update, delete, free/busy) or CalDAV. Account linking (ACC-3) must include calendar scope. Time zones and recurring events need care.
-- **Notes:** Out of scope unless the product needs it. It is listed because the rail implies it.
+### CAL-2 Calendar list, colours and visibility
+
+- **Feature:** The header's calendars button opens a menu that shows and hides each calendar. The palette lists "Show Calendar: X" and "Hide Calendar: X". Events take their calendar's colour.
+- **Today:** Placeholder JSON (`calendars` in `assets/calendar.json`), in memory. `CalendarView::toggle_calendar()`. `render_calendars_button()` in `src/ui/calendar/header.rs`.
+- **Backend needs:** The account's calendar list (Google `calendarList`, or CalDAV collections) with name, colour and the user's "shown" setting. Save visibility changes to the server or locally (CAL-23).
+- **Notes:** Shared and subscribed calendars (holidays, birthdays, a colleague's) are often read-only (CAL-22).
+
+### CAL-3 Load events for the visible range
+
+- **Feature:** Each view shows the events in its range: one day, a Monday-first week, or the month grid in whole weeks.
+- **Today:** All events are in memory. `CalendarView::visible_range()` and `visible_occurrences()` filter them on every render.
+- **Backend needs:** A range query (`timeMin` and `timeMax`) with a local cache, so going to the next or previous period is instant. Incremental sync (sync tokens or CalDAV `sync-collection`) to pick up changes made elsewhere.
+- **Notes:** Prefetch the ranges on either side of the visible one. Recurring events must be returned once as a series, not as copies (CAL-5).
+
+### CAL-4 Day, week and month views and navigation
+
+- **Feature:** Day, Week (the default) and Month views. `d`, `w`, `m` switch views. `t` goes to today. `j`/`n` and `k`/`p` go to the next or previous period. Clicking a day number in Month opens that day. The time grid scrolls to about 8am on open.
+- **Today:** Works locally. `set_view()`, `open_day()`, `step()` in `src/ui/calendar/mod.rs`. Drawing is in `week_view.rs` (time grid, all-day lane, overlap columns from `layout::pack_columns()`) and `month_view.rs` (pills, multi-day bars from `layout::pack_lanes()`, "+N more").
+- **Backend needs:** None beyond CAL-3.
+- **Notes:** The week start (Monday) is fixed in `time::week_start()`. A user setting would need to be stored (CAL-23).
+
+### CAL-5 Recurring events
+
+- **Feature:** Repeating events show on every matching day. The panel shows the rule ("Every week").
+- **Today:** Placeholder JSON. `recurrence` is one keyword (`daily`, `weekdays`, `weekly`, `biweekly`, `monthly`, `yearly`) with no end date, count or exceptions. `recurrence::occurrences()` expands only the visible range.
+- **Backend needs:** Full RRULE support (`INTERVAL`, `BYDAY`, `UNTIL`, `COUNT`), `EXDATE`, and changed single occurrences (`RECURRENCE-ID`). Either expand on the server (Google `singleEvents=true`) and keep the series ID, or expand locally from the RRULE.
+- **Notes:** The UI has no way to set or change a rule. New events never repeat.
+
+### CAL-6 Edits apply to the whole series
+
+- **Feature:** Changing or deleting one occurrence of a repeating event changes or deletes every occurrence.
+- **Today:** In memory. Every edit writes to the one `Event` (`edit_event()` in `event_panel.rs`, `retime_occurrence()` and `delete_event()` in `mod.rs`). Retiming one occurrence shifts the series by the same amount.
+- **Backend needs:** A "This event / This and following / All events" choice, and the matching server writes: an exception for one occurrence, a split series for "following", a series update for "all".
+- **Notes:** UI not built yet for the choice. This is the biggest gap in calendar editing.
+
+### CAL-7 Edit an event in the panel
+
+- **Feature:** Clicking an event, or `e`/`enter` on the selected one, opens the right-side panel. Title, calendar, location, video link, guests, notes, reminder and busy/free can be edited in place. Esc closes it.
+- **Today:** In memory. `open_event()`, `close_panel()` in `mod.rs`. Fields are owned by `EventPanel` in `event_panel.rs`. Text fields apply on every change (`on_field_event()`).
+- **Backend needs:** An event update (Google `events.patch`, or a CalDAV `PUT` with `If-Match`). Batch the writes: save when the panel closes or after a short pause, not on every keystroke.
+- **Notes:** The panel applies changes with no Save button, so the backend must handle failed writes without losing the user's text (STA-2). Conflicts with edits made elsewhere need an ETag check.
+
+### CAL-8 Date, time and all-day editing
+
+- **Feature:** Start and end date and time fields with a date picker and a time picker. Typed dates and times are parsed ("tomorrow", "Oct 27", "10/27", "3pm", "15:30", "noon"). Up and down change the field by a day or 15 minutes. The all-day switch turns an event into whole days and back.
+- **Today:** In memory. `commit_field()`, `step_field()`, `set_date()`, `set_time()`, `toggle_all_day()` in `event_panel.rs`. Parsing is in `time::parse_date()` and `time::parse_time()`.
+- **Backend needs:** Same update as CAL-7. All-day events use `date` values with an exclusive end date; timed events use `dateTime` with a time zone (CAL-12).
+- **Notes:** Changing the start keeps the duration. An end time at or before the start moves to the next day. Ends are at least 15 minutes after the start.
+
+### CAL-9 Create an event
+
+- **Feature:** `c` or the header's "+" creates an event at the next half hour today (or on the selected day), opens it and focuses the title.
+- **Today:** In memory. `new_event()` and `CalendarView::create_event(start, end, all_day, ..)` in `mod.rs`. New events go to the first visible calendar, with a 10-minute reminder, busy, and the user as organizer.
+- **Backend needs:** An event insert. Return the server ID and replace the local one (CAL-11). If the user leaves the title empty and closes the panel, decide whether to keep the event or drop it.
+- **Notes:** A default calendar setting is not built.
+
+### CAL-10 Delete an event and undo
+
+- **Feature:** `delete`/`backspace` or the panel's Delete button removes the event and shows a toast with Undo.
+- **Today:** In memory. `delete_event()` emits `CalendarEvent::Deleted`; `PigeonApp` shows the toast with `UndoAction::DeleteEvent`, and Undo calls `restore_event()`.
+- **Backend needs:** A delete that waits until the toast is gone, or a delete plus re-create on undo. If there are guests, the server should send them a cancellation; the user may want to be asked first.
+- **Notes:** Deleting an event someone else organizes should mean "decline and hide", not delete (CAL-22).
+
+### CAL-11 IDs for new events
+
+- **Feature:** Not visible. New events get IDs like `e-local-1`.
+- **Today:** `CalendarView::new_id()` uses a counter that starts at 0 on each launch.
+- **Backend needs:** Same as DAT-5: server IDs, or a local UUID until the first save. The iCalendar `UID` should be stable so invite emails can find the event (CAL-20).
+- **Notes:** None.
+
+### CAL-12 Time zones
+
+- **Feature:** Times are shown as written in the data.
+- **Today:** Wall-clock times. `wall_time()` in `src/calendar/mod.rs` drops the JSON's UTC offset (`naive_local()`), and the model uses `NaiveDateTime`. The placeholder data uses Eastern offsets for San Francisco places, so converting to the Mac's zone would move every event.
+- **Backend needs:** Store each event's time zone, convert to the user's zone for display, and write times back with a zone. All-day events have no zone. Recurrences must expand in the event's own zone so they stay put across daylight-saving changes.
+- **Notes:** The UI has no zone picker and no "shown in another zone" hint. Both are needed for travel.
+
+### CAL-13 Guests and invitations
+
+- **Feature:** The panel lists guests with RSVP icons and a summary ("3 yes, 1 awaiting"). Typing in "Add guests" suggests contacts. `enter` adds the guest; `backspace` on an empty field removes the last one.
+- **Today:** In memory. `render_guests()`, `update_guest_suggestions()`, `add_guest()`, `remove_guest()` in `event_panel.rs`. Suggestions come from `ContactBook::suggest()` in `src/ui/composer.rs` (CON-1).
+- **Backend needs:** Save the attendee list, and send invites and updates to guests (Google `sendUpdates`, or iMIP emails for CalDAV). Free/busy lookup for guests would help scheduling.
+- **Notes:** Adding a guest sends nothing today. The user is not asked "send updates to guests?".
+
+### CAL-14 My RSVP
+
+- **Feature:** For events someone else organizes, the panel shows "Going? Yes / Maybe / No". Invites the user has not answered are drawn outlined; declined ones are struck through.
+- **Today:** In memory. `CalendarView::set_rsvp()` in `mod.rs` sets the user's attendee status. `Event::my_status()` and `Look` in `week_view.rs` pick the style.
+- **Backend needs:** Write the user's response to the server (Google attendee `responseStatus`, or an iMIP `REPLY`) so the organizer gets it.
+- **Notes:** Answering for one occurrence of a series is not supported (CAL-6).
+
+### CAL-15 Reminders
+
+- **Feature:** The panel picks a reminder (none, at start, 5, 10, 15, 30 minutes, 1 hour, 1 day before).
+- **Today:** In memory. `reminder_minutes` on `Event`. Nothing fires.
+- **Backend needs:** Save the reminder. Schedule macOS notifications for upcoming reminders, including after a restart and while the window is closed (NTF-3).
+- **Notes:** Servers allow several reminders per event; the UI has one.
+
+### CAL-16 Busy and free
+
+- **Feature:** The panel's Busy/Free choice. The grid draws busy and free events the same way.
+- **Today:** In memory. `busy` on `Event`.
+- **Backend needs:** Save it (Google `transparency`, iCalendar `TRANSP`). It affects what others see in free/busy lookups.
+- **Notes:** None.
+
+### CAL-17 Video links
+
+- **Feature:** The panel shows and edits a video link, with a Join button that opens it in the browser.
+- **Today:** Placeholder JSON (`video_link`), in memory. Opened through `cx.open_url()`.
+- **Backend needs:** Read conference data (Google `conferenceData`, or a URL in the location or description). Creating a Meet link for a new event needs the conference API.
+- **Notes:** None.
+
+### CAL-18 Today and the now-line
+
+- **Feature:** Today is highlighted and a red line marks the current time in Day and Week.
+- **Today:** Works locally from the system clock: `today()` and `now()` in `src/ui/calendar/mod.rs`. Past events are faded.
+- **Backend needs:** None.
+- **Notes:** The line only moves when the view re-renders. A timer to redraw it each minute is not built.
+
+### CAL-19 Event search in the palette
+
+- **Feature:** In Calendar mode, typing in the palette finds events by title. Choosing one jumps to its next occurrence and opens it.
+- **Today:** In memory, over every loaded event. `palette_items()` in `src/app.rs` adds `PaletteCommand::Event` items (search-only). `CalendarView::reveal_event()` jumps to it.
+- **Backend needs:** An event search query (Google `events.list` with `q`) with a result cap, as for PAL-2.
+- **Notes:** Location, guests and notes are not searched.
+
+### CAL-20 Invite emails linked to events
+
+- **Feature:** UI not built yet. Invitation emails in `assets/mailbox.json` carry an `event_id` that points at the event, meant for an invite card (with Yes / Maybe / No) in the reader.
+- **Today:** Not implemented. `event_id` is not read by `src/data.rs`.
+- **Backend needs:** Parse `text/calendar` parts (iMIP `REQUEST`, `CANCEL`, `REPLY`) and match them to events by `UID`. Answering from the card uses CAL-14.
+- **Notes:** `CalendarView::event()`, `open_event()` and `set_rsvp()` are the hooks the card can call.
+
+### CAL-21 Drag to create, move and resize
+
+- **Feature:** UI not built yet. Events cannot be dragged.
+- **Today:** Not implemented. `CalendarView::create_event()` and `retime_occurrence()` are the hooks a drag gesture can call.
+- **Backend needs:** Same as CAL-9 and CAL-7.
+- **Notes:** Dragging one occurrence of a series needs the CAL-6 choice.
+
+### CAL-22 Organizer and read-only permissions
+
+- **Feature:** Every event can be edited, including those organized by others and those on shared calendars.
+- **Today:** No checks. Edits apply in memory to any event.
+- **Backend needs:** The user's access role per calendar (Google `accessRole`) and whether guests may modify the event. The panel must turn read-only where the server would refuse the change.
+- **Notes:** Guests may usually change only their own RSVP, reminder and (on their copy) busy/free.
+
+### CAL-23 Persisted calendar UI state
+
+- **Feature:** UI not built yet. The view (Day, Week, Month), the shown date and calendar visibility reset on launch.
+- **Today:** In memory only, in `CalendarView` (`view`, `date`) and `Calendar::visible`. All reset in `CalendarView::new()`.
+- **Backend needs:** Save these with the other UI state (PER-3). Visibility may belong on the server (CAL-2).
+- **Notes:** None.
 
 ---
 
@@ -809,7 +959,8 @@ These are real features that do not depend on the backend. They are listed so th
 
 - Pane resizing for sidebar and list (`PaneResize`, `resize_pane()` in `src/app.rs`).
 - Sidebar show and hide (`cmd-\`, `toggle_sidebar()`).
-- Keyboard shortcuts sheet (`?`), built from the live keymap in `src/ui/shortcuts_help.rs`.
+- Keyboard shortcuts sheet (`?`), built from the live keymap in `src/ui/shortcuts_help.rs`. Like the palette, it shows only the current mode's commands plus the global ones.
+- Calendar views, navigation and keyboard selection (`d`/`w`/`m`, `t`, `j`/`k`, arrows, `tab`), see CAL-4.
 - Light and dark theme that follows the system (`Theme::sync()` in `src/theme.rs`).
 - Keyboard focus between list, reader, composer and search.
 - Window title bar and drag area (`window_drag_area()` in `src/ui/mod.rs`).
@@ -840,7 +991,7 @@ These are gaps the backend will need to support once the UI is built. Each one h
 - **Auto-saving drafts while typing**: see DRF-5.
 - **Failure feedback for send**: see CMP-12.
 - **Contact management**: see CON-3.
-- **Calendar**: see CAL-2.
+- **Calendar**: series edits (CAL-6), invite cards in mail (CAL-20), drag to create and move (CAL-21), permissions (CAL-22).
 
 Signatures and a settings screen are not built and are not listed as features here, because nothing in the UI refers to them.
 
@@ -933,8 +1084,29 @@ Backend status is "Not started" for every item, because no backend code exists. 
 | PAL-1 Command list | Command palette | In memory | Not started |
 | PAL-2 Thread search in palette | Command palette | In memory | Not started |
 | PAL-3 Label jumps | Command palette | Placeholder JSON | Not started |
-| CAL-1 Calendar button in the rail | Calendar placeholder | Stub, no-op | Not started |
-| CAL-2 Calendar view | Calendar placeholder | UI not built yet | Not started |
+| CAL-1 Switch between Mail and Calendar | Calendar | Works locally | Not started |
+| CAL-2 Calendar list, colours and visibility | Calendar | Placeholder JSON, in memory | Not started |
+| CAL-3 Load events for the visible range | Calendar | In memory, all loaded | Not started |
+| CAL-4 Day, week and month views | Calendar | Works locally | Not started |
+| CAL-5 Recurring events | Calendar | Placeholder JSON (simple rules) | Not started |
+| CAL-6 Edits apply to the whole series | Calendar | In memory | Not started |
+| CAL-7 Edit an event in the panel | Calendar | In memory | Not started |
+| CAL-8 Date, time and all-day editing | Calendar | In memory | Not started |
+| CAL-9 Create an event | Calendar | In memory | Not started |
+| CAL-10 Delete an event and undo | Calendar | In memory | Not started |
+| CAL-11 IDs for new events | Calendar | Local counter | Not started |
+| CAL-12 Time zones | Calendar | Wall-clock, offsets dropped | Not started |
+| CAL-13 Guests and invitations | Calendar | In memory, nothing sent | Not started |
+| CAL-14 My RSVP | Calendar | In memory | Not started |
+| CAL-15 Reminders | Calendar | In memory, nothing fires | Not started |
+| CAL-16 Busy and free | Calendar | In memory | Not started |
+| CAL-17 Video links | Calendar | Placeholder JSON, in memory | Not started |
+| CAL-18 Today and the now-line | Calendar | Works locally | Not started |
+| CAL-19 Event search in the palette | Calendar | In memory | Not started |
+| CAL-20 Invite emails linked to events | Calendar | UI not built yet | Not started |
+| CAL-21 Drag to create, move and resize | Calendar | UI not built yet | Not started |
+| CAL-22 Organizer and read-only permissions | Calendar | No checks | Not started |
+| CAL-23 Persisted calendar UI state | Calendar | UI not built yet | Not started |
 | NTF-1 New mail notifications | Notifications & background | UI not built yet | Not started |
 | NTF-2 Unread badge | Notifications & background | UI not built yet | Not started |
 | NTF-3 Background sync when closed | Notifications & background | UI not built yet | Not started |

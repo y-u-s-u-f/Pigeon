@@ -1,0 +1,1940 @@
+//! The event panel, docked on the right. Every field edits the event in
+//! place: text as you type, dates and times when committed (enter, leaving
+//! the field, a pick from its picker, or up and down).
+
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime};
+use gpui::{
+    AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable as _, FontWeight, Hsla,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled, Subscription, Window, actions, anchored,
+    component::input::{Input, InputEvent, InputState, Textarea, TextareaState},
+    deferred, div, linear_color_stop, linear_gradient,
+    prelude::FluentBuilder as _,
+    px, relative,
+};
+use nucleo_matcher::{Config, Matcher};
+
+use super::{CalendarView, Menu, today};
+use crate::{
+    actions::*,
+    assets::Icon,
+    calendar::{
+        Attendee, Event, RsvpStatus,
+        time::{
+            self, add_months, date_label, duration_label, month_start, parse_date, parse_time,
+            time_label, week_start,
+        },
+    },
+    data::Contact,
+    theme::Theme,
+    ui::{
+        HEADER_HEIGHT, avatar,
+        composer::{RemoveLastRecipient, SuggestNext, SuggestPrev, parse_address},
+        icon, icon_button, keycap, overlay_shadow, window_drag_area,
+    },
+};
+
+actions!(event_panel, [NextField, PrevField, StepUp, StepDown]);
+
+pub const PANEL_WIDTH: f32 = 372.;
+/// Slots in the time pickers.
+const SLOT_MINUTES: i64 = 15;
+
+const REMINDERS: [Option<u32>; 8] = [
+    None,
+    Some(0),
+    Some(5),
+    Some(10),
+    Some(15),
+    Some(30),
+    Some(60),
+    Some(24 * 60),
+];
+
+fn reminder_label(minutes: Option<u32>) -> String {
+    match minutes {
+        None => "No reminder".into(),
+        Some(0) => "At start time".into(),
+        Some(m) if m % (24 * 60) == 0 => match m / (24 * 60) {
+            1 => "1 day before".into(),
+            d => format!("{d} days before"),
+        },
+        Some(m) if m % 60 == 0 => match m / 60 {
+            1 => "1 hour before".into(),
+            h => format!("{h} hours before"),
+        },
+        Some(m) => format!("{m} minutes before"),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Field {
+    Title,
+    StartDate,
+    StartTime,
+    EndTime,
+    EndDate,
+    Location,
+    Video,
+    Guests,
+    Notes,
+}
+
+impl Field {
+    fn is_date(self) -> bool {
+        matches!(self, Field::StartDate | Field::EndDate)
+    }
+
+    fn is_time(self) -> bool {
+        matches!(self, Field::StartTime | Field::EndTime)
+    }
+}
+
+pub struct EventPanel {
+    pub event_id: String,
+    /// The start of the occurrence shown. Edits apply to its whole series,
+    /// moved by as much as this occurrence moves.
+    pub occurrence: NaiveDateTime,
+    pub title: Entity<InputState>,
+    start_date: Entity<InputState>,
+    end_date: Entity<InputState>,
+    start_time: Entity<InputState>,
+    end_time: Entity<InputState>,
+    location: Entity<InputState>,
+    video: Entity<InputState>,
+    guests: Entity<InputState>,
+    notes: Entity<TextareaState>,
+    /// The date or time field showing its picker.
+    picker: Option<Field>,
+    /// The month the date picker shows.
+    picker_month: NaiveDate,
+    picker_scroll: ScrollHandle,
+    /// Indices into the contact book, best first.
+    suggestions: Vec<usize>,
+    highlighted: usize,
+    /// The user moved through the suggestions, so enter takes one even over
+    /// a typed address.
+    navigated: bool,
+    matcher: Matcher,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl EventPanel {
+    pub fn new(
+        event: &Event,
+        occurrence: NaiveDateTime,
+        window: &mut Window,
+        cx: &mut Context<CalendarView>,
+    ) -> Self {
+        let mut subscriptions = Vec::new();
+        let mut input = |field: Field, placeholder: &'static str, value: String| {
+            let input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(placeholder)
+                    .default_value(value)
+            });
+            subscriptions.push(cx.subscribe_in(
+                &input,
+                window,
+                move |this: &mut CalendarView, _, event, window, cx| {
+                    this.on_field_event(field, event, window, cx)
+                },
+            ));
+            input
+        };
+        let title = input(Field::Title, "Add title", event.title.clone());
+        let start_date = input(Field::StartDate, "Date", String::new());
+        let end_date = input(Field::EndDate, "Date", String::new());
+        let start_time = input(Field::StartTime, "Start", String::new());
+        let end_time = input(Field::EndTime, "End", String::new());
+        let location = input(Field::Location, "Add location", event.location.clone());
+        let video = input(
+            Field::Video,
+            "Add video call link",
+            event.video_link.clone(),
+        );
+        let guests = input(Field::Guests, "Add guests", String::new());
+        let notes = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(3, 24)
+                .placeholder("Add description")
+                .default_value(event.description.clone())
+        });
+        subscriptions.push(cx.subscribe_in(
+            &notes,
+            window,
+            |this: &mut CalendarView, _, event, window, cx| {
+                this.on_field_event(Field::Notes, event, window, cx)
+            },
+        ));
+
+        let mut panel = Self {
+            event_id: event.id.clone(),
+            occurrence,
+            title,
+            start_date,
+            end_date,
+            start_time,
+            end_time,
+            location,
+            video,
+            guests,
+            notes,
+            picker: None,
+            picker_month: month_start(occurrence.date()),
+            picker_scroll: ScrollHandle::new(),
+            suggestions: Vec::new(),
+            highlighted: 0,
+            navigated: false,
+            matcher: Matcher::new(Config::DEFAULT),
+            _subscriptions: subscriptions,
+        };
+        panel.sync_times(event, window, cx);
+        panel
+    }
+
+    fn input(&self, field: Field) -> Option<&Entity<InputState>> {
+        Some(match field {
+            Field::Title => &self.title,
+            Field::StartDate => &self.start_date,
+            Field::EndDate => &self.end_date,
+            Field::StartTime => &self.start_time,
+            Field::EndTime => &self.end_time,
+            Field::Location => &self.location,
+            Field::Video => &self.video,
+            Field::Guests => &self.guests,
+            Field::Notes => return None,
+        })
+    }
+
+    fn focus_handle_of(&self, field: Field, cx: &gpui::App) -> FocusHandle {
+        match self.input(field) {
+            Some(input) => input.focus_handle(cx),
+            None => self.notes.focus_handle(cx),
+        }
+    }
+
+    fn fields(all_day: bool) -> &'static [Field] {
+        if all_day {
+            &[
+                Field::Title,
+                Field::StartDate,
+                Field::EndDate,
+                Field::Location,
+                Field::Video,
+                Field::Guests,
+                Field::Notes,
+            ]
+        } else {
+            &[
+                Field::Title,
+                Field::StartDate,
+                Field::StartTime,
+                Field::EndTime,
+                Field::Location,
+                Field::Video,
+                Field::Guests,
+                Field::Notes,
+            ]
+        }
+    }
+
+    fn focused_field(&self, window: &Window, cx: &gpui::App) -> Option<Field> {
+        Self::fields(false)
+            .iter()
+            .copied()
+            .chain([Field::EndDate])
+            .find(|&f| self.focus_handle_of(f, cx).is_focused(window))
+    }
+
+    fn is_focused(&self, field: Field, window: &Window, cx: &gpui::App) -> bool {
+        self.focus_handle_of(field, cx).is_focused(window)
+    }
+
+    /// The occurrence's start and end.
+    fn times(&self, event: &Event) -> (NaiveDateTime, NaiveDateTime) {
+        (self.occurrence, self.occurrence + event.duration())
+    }
+
+    /// Write the occurrence's dates and times into their fields.
+    fn sync_times(&mut self, event: &Event, window: &mut Window, cx: &mut Context<CalendarView>) {
+        let (start, end) = self.times(event);
+        let today = today();
+        let last_day = if event.all_day {
+            (end - Duration::days(1)).date().max(start.date())
+        } else {
+            end.date()
+        };
+        let values = [
+            (&self.start_date, date_label(start.date(), today)),
+            (&self.end_date, date_label(last_day, today)),
+            (&self.start_time, time_label(start.time())),
+            (&self.end_time, time_label(end.time())),
+        ];
+        for (input, value) in values {
+            if input.read(cx).value() != value {
+                input.update(cx, |input, cx| input.set_value(value, window, cx));
+            }
+        }
+    }
+}
+
+impl CalendarView {
+    fn panel_event(&self) -> Option<(&EventPanel, &Event)> {
+        let panel = self.panel.as_ref()?;
+        Some((panel, self.event(&panel.event_id)?))
+    }
+
+    pub(crate) fn sync_panel_times(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(event) = self
+            .panel
+            .as_ref()
+            .and_then(|p| self.event(&p.event_id))
+            .cloned()
+        else {
+            return;
+        };
+        if let Some(panel) = &mut self.panel {
+            panel.sync_times(&event, window, cx);
+        }
+    }
+
+    /// Apply whatever is typed in the focused date or time field, before the
+    /// panel closes or shows another event.
+    pub(crate) fn commit_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focused = self
+            .panel
+            .as_ref()
+            .and_then(|p| p.focused_field(window, cx));
+        if let Some(field) = focused.filter(|f| f.is_date() || f.is_time()) {
+            self.commit_field(field, window, cx);
+        }
+    }
+
+    /// Escape closes an open picker or the guest suggestions first.
+    pub(crate) fn dismiss_panel_popup(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(panel) = &mut self.panel else {
+            return false;
+        };
+        if panel.picker.take().is_some() {
+            cx.notify();
+            return true;
+        }
+        if !panel.suggestions.is_empty() {
+            panel.suggestions.clear();
+            cx.notify();
+            return true;
+        }
+        false
+    }
+
+    fn edit_event(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Event)) {
+        let Some(id) = self.panel.as_ref().map(|p| p.event_id.clone()) else {
+            return;
+        };
+        if let Some(event) = self.event_mut(&id) {
+            f(event);
+            cx.notify();
+        }
+    }
+
+    fn on_field_event(
+        &mut self,
+        field: Field,
+        event: &InputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(panel) = &self.panel else { return };
+        match event {
+            InputEvent::Change => {
+                let value = |input: &Entity<InputState>| input.read(cx).value().to_string();
+                match field {
+                    Field::Title => {
+                        let title = value(&panel.title);
+                        self.edit_event(cx, |e| e.title = title);
+                    }
+                    Field::Location => {
+                        let location = value(&panel.location);
+                        self.edit_event(cx, |e| e.location = location);
+                    }
+                    Field::Video => {
+                        let video = value(&panel.video).trim().to_string();
+                        self.edit_event(cx, |e| e.video_link = video);
+                    }
+                    Field::Notes => {
+                        let notes = panel.notes.read(cx).value().to_string();
+                        self.edit_event(cx, |e| e.description = notes);
+                    }
+                    Field::Guests => self.update_guest_suggestions(cx),
+                    _ => {}
+                }
+            }
+            InputEvent::Focus if field.is_date() || field.is_time() => {
+                let Some((panel, event)) = self.panel_event() else {
+                    return;
+                };
+                let (start, end) = panel.times(event);
+                let shown = if field == Field::EndDate {
+                    end - Duration::days(1)
+                } else {
+                    start
+                };
+                if let Some(panel) = &mut self.panel {
+                    panel.picker = Some(field);
+                    panel.picker_month = month_start(shown.date());
+                }
+                self.scroll_time_picker();
+                cx.notify();
+            }
+            InputEvent::Blur => {
+                if field.is_date() || field.is_time() {
+                    self.commit_field(field, window, cx);
+                }
+                if let Some(panel) = &mut self.panel {
+                    if panel.picker == Some(field) {
+                        panel.picker = None;
+                    }
+                    if field == Field::Guests {
+                        panel.suggestions.clear();
+                    }
+                }
+                cx.notify();
+            }
+            InputEvent::PressEnter {
+                secondary: false, ..
+            } => match field {
+                Field::Guests => self.commit_guest(window, cx),
+                f if f.is_date() || f.is_time() => {
+                    self.commit_field(f, window, cx);
+                    self.move_field(true, window, cx);
+                }
+                Field::Notes => {}
+                // Done with the title, location or link: back to the grid.
+                _ => window.focus(&self.focus_handle, cx),
+            },
+            _ => {}
+        }
+    }
+
+    /// Apply a date or time typed into `field`; what doesn't parse is put
+    /// back as it was.
+    fn commit_field(&mut self, field: Field, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((panel, event)) = self.panel_event() else {
+            return;
+        };
+        let Some(input) = panel.input(field) else {
+            return;
+        };
+        let text = input.read(cx).value().to_string();
+        let (start, end) = panel.times(event);
+        let all_day = event.all_day;
+        let duration = event.duration();
+        let id = event.id.clone();
+        let today = today();
+
+        let change = match field {
+            Field::StartDate => parse_date(&text, today).map(|date| {
+                let start = date.and_time(start.time());
+                (start, start + duration)
+            }),
+            Field::EndDate => parse_date(&text, today).map(|date| {
+                let end = time::midnight(date + Duration::days(1));
+                (start, end.max(start + Duration::days(1)))
+            }),
+            Field::StartTime if !all_day => parse_time(&text).map(|t| {
+                let start = start.date().and_time(t);
+                (start, start + duration)
+            }),
+            Field::EndTime if !all_day => parse_time(&text).map(|t| {
+                let mut end = start.date().and_time(t);
+                if end <= start {
+                    end += Duration::days(1);
+                }
+                (start, end)
+            }),
+            _ => None,
+        };
+        match change {
+            Some((new_start, new_end)) if (new_start, new_end) != (start, end) => {
+                self.retime_occurrence(&id, start, new_start, new_end, window, cx)
+            }
+            _ => self.sync_panel_times(window, cx),
+        }
+    }
+
+    /// Up and down in a date field move a day; in a time field, a slot.
+    fn step_field(&mut self, delta: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((panel, event)) = self.panel_event() else {
+            return;
+        };
+        let Some(field) = panel.focused_field(window, cx) else {
+            return cx.propagate();
+        };
+        let (start, end) = panel.times(event);
+        let id = event.id.clone();
+        let day = Duration::days(delta);
+        let slot = Duration::minutes(SLOT_MINUTES * delta);
+        let (new_start, new_end) = match field {
+            Field::StartDate => (start + day, end + day),
+            Field::EndDate => (start, (end + day).max(start + Duration::days(1))),
+            Field::StartTime => (start + slot, end + slot),
+            Field::EndTime => (
+                start,
+                (end + slot).max(start + Duration::minutes(SLOT_MINUTES)),
+            ),
+            _ => return cx.propagate(),
+        };
+        self.retime_occurrence(&id, start, new_start, new_end, window, cx);
+        if let Some(panel) = &mut self.panel {
+            panel.picker_month = month_start(
+                match field {
+                    Field::EndDate => new_end - Duration::days(1),
+                    _ => new_start,
+                }
+                .date(),
+            );
+        }
+        self.scroll_time_picker();
+    }
+
+    fn step_up(&mut self, _: &StepUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.step_field(-1, window, cx);
+    }
+
+    fn step_down(&mut self, _: &StepDown, window: &mut Window, cx: &mut Context<Self>) {
+        self.step_field(1, window, cx);
+    }
+
+    fn move_field(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((panel, event)) = self.panel_event() else {
+            return;
+        };
+        let fields = EventPanel::fields(event.all_day);
+        let current = panel
+            .focused_field(window, cx)
+            .and_then(|f| fields.iter().position(|&x| x == f));
+        let next = match (current, forward) {
+            (None, _) => 0,
+            (Some(i), true) => (i + 1).min(fields.len() - 1),
+            (Some(i), false) => i.saturating_sub(1),
+        };
+        let handle = panel.focus_handle_of(fields[next], cx);
+        window.focus(&handle, cx);
+        cx.notify();
+    }
+
+    /// Tab out of the guest field takes the guest typed there first.
+    fn next_field(&mut self, _: &NextField, window: &mut Window, cx: &mut Context<Self>) {
+        let typing_guest = self.panel.as_ref().is_some_and(|p| {
+            p.is_focused(Field::Guests, window, cx) && !p.guests.read(cx).value().trim().is_empty()
+        });
+        if typing_guest {
+            self.commit_guest(window, cx);
+        } else {
+            self.move_field(true, window, cx);
+        }
+    }
+
+    fn prev_field(&mut self, _: &PrevField, window: &mut Window, cx: &mut Context<Self>) {
+        self.move_field(false, window, cx);
+    }
+
+    /// The time picker keeps its chosen slot in view.
+    fn scroll_time_picker(&self) {
+        let Some((panel, event)) = self.panel_event() else {
+            return;
+        };
+        let (start, end) = panel.times(event);
+        let ix = match panel.picker {
+            Some(Field::StartTime) => time::minutes_into(start.date(), start) / SLOT_MINUTES,
+            Some(Field::EndTime) => (end - start).num_minutes() / SLOT_MINUTES - 1,
+            _ => return,
+        };
+        // Centered in the picker, which is 240 tall with 30 tall rows.
+        let y = (ix.max(0) as f32 * 30. + 4. + 15. - 120.).max(0.);
+        panel.picker_scroll.set_offset(gpui::point(px(0.), px(-y)));
+    }
+
+    fn set_date(
+        &mut self,
+        field: Field,
+        date: NaiveDate,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((panel, event)) = self.panel_event() else {
+            return;
+        };
+        let (start, end) = panel.times(event);
+        let id = event.id.clone();
+        let (new_start, new_end) = if field == Field::EndDate {
+            let end = time::midnight(date + Duration::days(1));
+            (start, end.max(start + Duration::days(1)))
+        } else {
+            let shift = date - start.date();
+            (start + shift, end + shift)
+        };
+        self.retime_occurrence(&id, start, new_start, new_end, window, cx);
+        window.focus(&self.focus_handle, cx);
+    }
+
+    fn set_time(
+        &mut self,
+        field: Field,
+        value: NaiveDateTime,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((panel, event)) = self.panel_event() else {
+            return;
+        };
+        let (start, end) = panel.times(event);
+        let id = event.id.clone();
+        let (new_start, new_end) = if field == Field::EndTime {
+            (start, value)
+        } else {
+            (value, value + (end - start))
+        };
+        self.retime_occurrence(&id, start, new_start, new_end, window, cx);
+        window.focus(&self.focus_handle, cx);
+    }
+
+    fn toggle_all_day(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((panel, event)) = self.panel_event() else {
+            return;
+        };
+        let (start, end) = panel.times(event);
+        let id = event.id.clone();
+        let all_day = !event.all_day;
+        let (new_start, new_end) = if all_day {
+            let last = (end - Duration::minutes(1)).date().max(start.date());
+            (
+                time::midnight(start.date()),
+                time::midnight(last + Duration::days(1)),
+            )
+        } else {
+            let start = time::at(start.date(), 9, 0);
+            (start, start + Duration::hours(1))
+        };
+        if let Some(event) = self.event_mut(&id) {
+            event.all_day = all_day;
+        }
+        self.retime_occurrence(&id, start, new_start, new_end, window, cx);
+    }
+
+    // Guests.
+
+    fn update_guest_suggestions(&mut self, cx: &mut Context<Self>) {
+        let Some((panel, event)) = self.panel_event() else {
+            return;
+        };
+        let query = panel.guests.read(cx).value().to_string();
+        let mut taken: Vec<String> = event
+            .attendees
+            .iter()
+            .map(|a| a.email.to_lowercase())
+            .collect();
+        taken.push(event.organizer.email.to_lowercase());
+        let book = self.book.clone();
+        let panel = self.panel.as_mut().unwrap();
+        panel.suggestions = book.suggest(
+            &query,
+            |c| taken.contains(&c.email.to_lowercase()),
+            &mut panel.matcher,
+        );
+        panel.highlighted = 0;
+        panel.navigated = false;
+        cx.notify();
+    }
+
+    fn add_guest(&mut self, contact: Contact, window: &mut Window, cx: &mut Context<Self>) {
+        self.edit_event(cx, |e| {
+            if !e
+                .attendees
+                .iter()
+                .any(|a| a.email.eq_ignore_ascii_case(&contact.email))
+            {
+                e.attendees.push(Attendee {
+                    name: contact.name,
+                    email: contact.email,
+                    status: RsvpStatus::NeedsAction,
+                });
+            }
+        });
+        if let Some(panel) = &self.panel {
+            let guests = panel.guests.clone();
+            guests.update(cx, |input, cx| input.set_value("", window, cx));
+        }
+        self.update_guest_suggestions(cx);
+    }
+
+    /// Enter in the guest field: the highlighted suggestion, or the address
+    /// as typed. A typed address wins unless the user picked a suggestion.
+    fn commit_guest(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(panel) = &self.panel else { return };
+        let text = panel.guests.read(cx).value().trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let contact = match panel.suggestions.get(panel.highlighted) {
+            Some(&ix) if panel.navigated || !text.contains('@') => {
+                Some(self.book.contact(ix).clone())
+            }
+            _ => self
+                .book
+                .find(&text)
+                .cloned()
+                .or_else(|| parse_address(&text)),
+        };
+        if let Some(contact) = contact {
+            self.add_guest(contact, window, cx);
+        }
+    }
+
+    fn remove_guest(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.edit_event(cx, |e| {
+            if ix < e.attendees.len() {
+                e.attendees.remove(ix);
+            }
+        });
+    }
+
+    fn suggest(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let Some(panel) = &mut self.panel else {
+            return cx.propagate();
+        };
+        let count = panel.suggestions.len();
+        if count == 0 {
+            return cx.propagate();
+        }
+        panel.highlighted =
+            (panel.highlighted as isize + delta).rem_euclid(count as isize) as usize;
+        panel.navigated = true;
+        cx.notify();
+    }
+
+    fn suggest_next(&mut self, _: &SuggestNext, _: &mut Window, cx: &mut Context<Self>) {
+        self.suggest(1, cx);
+    }
+
+    fn suggest_prev(&mut self, _: &SuggestPrev, _: &mut Window, cx: &mut Context<Self>) {
+        self.suggest(-1, cx);
+    }
+
+    fn remove_last_guest(
+        &mut self,
+        _: &RemoveLastRecipient,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let empty = self
+            .panel
+            .as_ref()
+            .is_some_and(|p| p.guests.read(cx).value().is_empty());
+        let count = self.panel_event().map_or(0, |(_, e)| e.attendees.len());
+        if empty && count > 0 {
+            self.remove_guest(count - 1, cx);
+        } else {
+            cx.propagate();
+        }
+    }
+
+    // Rendering.
+
+    pub(crate) fn render_panel(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        let Some((panel, event)) = self.panel_event() else {
+            return div().into_any_element();
+        };
+        let color = self.data.color_of(event);
+        let accent = theme.event_accent(color, false);
+
+        let header = window_drag_area(div().id("event-panel-header"))
+            .h(HEADER_HEIGHT)
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .pl(px(16.))
+            .pr(px(10.))
+            .child(self.render_calendar_picker(event, &theme, window, cx))
+            .child(div().flex_1())
+            .child(icon_button(
+                "event-delete",
+                Icon::Trash,
+                "Delete event",
+                Box::new(DeleteEvent),
+                &theme,
+            ))
+            .child(icon_button(
+                "event-close",
+                Icon::X,
+                "Close",
+                Box::new(CloseEvent),
+                &theme,
+            ));
+
+        let title = div()
+            .px(px(20.))
+            .pt(px(4.))
+            .pb(px(14.))
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .mt(px(5.))
+                            .w(px(4.))
+                            .h(px(24.))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(accent),
+                    )
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            Input::new(&panel.title)
+                                .appearance(false)
+                                .px(px(0.))
+                                .h(px(32.))
+                                .text_size(px(19.))
+                                .font_weight(FontWeight::SEMIBOLD),
+                        ),
+                    ),
+            )
+            .children(event.recurrence.map(|recurrence| {
+                div()
+                    .pl(px(16.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .text_size(px(12.))
+                    .text_color(theme.text_muted)
+                    .child(icon(Icon::Repeat, px(13.), theme.text_faint))
+                    .child(recurrence.label())
+                    .child(
+                        div()
+                            .text_color(theme.text_faint)
+                            .child("· edits change every one"),
+                    )
+            }));
+
+        let body = div()
+            .id("event-panel-body")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .pb(px(24.))
+            .child(title)
+            .child(divider(&theme))
+            .child(self.render_when(panel, event, &theme, window, cx))
+            .child(divider(&theme))
+            .child(self.render_place(panel, event, &theme, window, cx))
+            .child(divider(&theme))
+            .child(self.render_guests(panel, event, &theme, window, cx))
+            .child(divider(&theme))
+            .child(section(
+                Icon::Text,
+                &theme,
+                field_box(panel.is_focused(Field::Notes, window, cx), &theme)
+                    .h_auto()
+                    .min_h(px(30.))
+                    .py(px(5.))
+                    .px(px(0.))
+                    .child(
+                        div()
+                            .w_full()
+                            .text_size(px(13.))
+                            .line_height(relative(1.5))
+                            .mx(px(-2.))
+                            .child(
+                                Textarea::new(&panel.notes)
+                                    .appearance(false)
+                                    .text_size(px(13.)),
+                            ),
+                    ),
+            ))
+            .child(divider(&theme))
+            .child(self.render_options(event, &theme, window, cx))
+            .child(
+                div().px(px(20.)).pt(px(18.)).child(
+                    div()
+                        .id("event-delete-button")
+                        .h(px(32.))
+                        .px(px(10.))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .rounded(px(8.))
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.danger)
+                        .hover(|s| s.bg(theme.danger.alpha(0.1)))
+                        .child(icon(Icon::Trash, px(15.), theme.danger))
+                        .child("Delete event")
+                        .child(div().flex_1())
+                        .child(keycap("⌫", &theme))
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(DeleteEvent), cx)
+                        }),
+                ),
+            );
+
+        div()
+            .key_context(EVENT_PANEL)
+            .on_action(cx.listener(Self::next_field))
+            .on_action(cx.listener(Self::prev_field))
+            .on_action(cx.listener(Self::step_up))
+            .on_action(cx.listener(Self::step_down))
+            .on_action(cx.listener(Self::suggest_next))
+            .on_action(cx.listener(Self::suggest_prev))
+            .on_action(cx.listener(Self::remove_last_guest))
+            .relative()
+            .w(px(PANEL_WIDTH))
+            .h_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .bg(theme.cal_panel_bg)
+            .border_l_1()
+            .border_color(theme.border)
+            // A wash of the calendar's color at the top.
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(150.))
+                    .bg(linear_gradient(
+                        180.,
+                        linear_color_stop(color.alpha(if theme.is_dark { 0.16 } else { 0.11 }), 0.),
+                        linear_color_stop(color.alpha(0.), 1.),
+                    )),
+            )
+            .child(header)
+            .child(body)
+            .into_any_element()
+    }
+
+    fn render_calendar_picker(
+        &self,
+        event: &Event,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = self.menu == Some(Menu::EventCalendar);
+        let color = self.data.color_of(event);
+        let menu = open.then(|| {
+            let rows = self
+                .data
+                .calendars
+                .iter()
+                .enumerate()
+                .map(|(ix, calendar)| {
+                    let id = calendar.id.clone();
+                    let current = calendar.id == event.calendar;
+                    menu_row(("calendar-choice", ix), theme)
+                        .child(div().size(px(10.)).rounded_full().bg(calendar.color))
+                        .child(div().flex_1().child(calendar.name.clone()))
+                        .when(current, |d| {
+                            d.child(icon(Icon::Check, px(14.), theme.accent))
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let id = id.clone();
+                            this.edit_event(cx, |e| e.calendar = id);
+                            this.menu = None;
+                        }))
+                });
+            dropdown(px(34.), px(210.), theme).children(rows)
+        });
+        div()
+            .child(
+                div()
+                    .id("event-calendar")
+                    .h(px(28.))
+                    .pl(px(8.))
+                    .pr(px(6.))
+                    .flex()
+                    .items_center()
+                    .gap(px(7.))
+                    .rounded(px(7.))
+                    .text_size(px(12.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_muted)
+                    .when(open, |d| d.bg(theme.selected_bg))
+                    .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
+                    .child(div().size(px(10.)).rounded_full().bg(color))
+                    .child(self.calendar_name(event))
+                    .child(icon(Icon::ChevronDown, px(13.), theme.text_faint))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(
+                        cx.listener(|this, _, _, cx| this.toggle_menu(Menu::EventCalendar, cx)),
+                    ),
+            )
+            .when(open, |d| d.child(self.menu_backdrop(window, cx)))
+            .children(menu.map(|m| {
+                deferred(anchored().snap_to_window_with_margin(px(8.)).child(m)).with_priority(2)
+            }))
+            .into_any_element()
+    }
+
+    fn render_when(
+        &self,
+        panel: &EventPanel,
+        event: &Event,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (start, end) = panel.times(event);
+        let field = |f: Field, width: Option<f32>, cx: &mut Context<Self>| {
+            self.render_date_time_field(panel, event, f, width, theme, window, cx)
+        };
+        let dash = || div().flex_none().text_color(theme.text_faint).child("–");
+        let rows = if event.all_day {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .child(field(Field::StartDate, None, cx))
+                .child(dash())
+                .child(field(Field::EndDate, None, cx))
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(field(Field::StartDate, None, cx))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(field(Field::StartTime, Some(92.), cx))
+                        .child(dash())
+                        .child(field(Field::EndTime, Some(92.), cx))
+                        .child(
+                            div()
+                                .ml(px(6.))
+                                .text_size(px(12.))
+                                .text_color(theme.text_faint)
+                                .child(
+                                    if end.date() != start.date()
+                                        && end != time::midnight(start.date() + Duration::days(1))
+                                    {
+                                        format!("{} · next day", duration_label(end - start))
+                                    } else {
+                                        duration_label(end - start)
+                                    },
+                                ),
+                        ),
+                )
+        };
+        let all_day = event.all_day;
+        let toggle = div()
+            .id("all-day")
+            .mt(px(6.))
+            .px(px(8.))
+            .h(px(26.))
+            .w_auto()
+            .flex()
+            .items_center()
+            .gap(px(9.))
+            .rounded(px(7.))
+            .text_size(px(12.5))
+            .text_color(theme.text_muted)
+            .hover(|s| s.bg(theme.hover_bg))
+            .child(switch(all_day, theme))
+            .child("All day")
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_all_day(window, cx)));
+        section(
+            Icon::Clock,
+            theme,
+            div()
+                .flex()
+                .flex_col()
+                .child(rows)
+                .child(div().flex().child(toggle)),
+        )
+        .into_any_element()
+    }
+
+    /// A date or time field, with its picker under it while focused.
+    #[allow(clippy::too_many_arguments)]
+    fn render_date_time_field(
+        &self,
+        panel: &EventPanel,
+        event: &Event,
+        field: Field,
+        width: Option<f32>,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let input = panel.input(field).expect("date and time fields are inputs");
+        let focused = panel.is_focused(field, window, cx);
+        let picker = (focused && panel.picker == Some(field)).then(|| {
+            let content = if field.is_date() {
+                self.render_date_picker(panel, event, field, theme, cx)
+            } else {
+                self.render_time_picker(panel, event, field, theme, cx)
+            };
+            below(content)
+        });
+        div()
+            .key_context(if field.is_date() {
+                DATE_FIELD
+            } else {
+                TIME_FIELD
+            })
+            .flex()
+            .flex_col()
+            .map(|d| match width {
+                Some(w) => d.w(px(w)).flex_none(),
+                None => d.flex_1().min_w_0(),
+            })
+            .child(
+                field_box(focused, theme).child(
+                    Input::new(input)
+                        .appearance(false)
+                        .px(px(0.))
+                        .h(px(28.))
+                        .text_size(px(13.5))
+                        .font_weight(FontWeight::MEDIUM),
+                ),
+            )
+            .children(picker)
+            .into_any_element()
+    }
+
+    fn render_date_picker(
+        &self,
+        panel: &EventPanel,
+        event: &Event,
+        field: Field,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (start, end) = panel.times(event);
+        let chosen = if field == Field::EndDate {
+            (end - Duration::days(1)).date()
+        } else {
+            start.date()
+        };
+        let month = panel.picker_month;
+        let grid_start = week_start(month);
+        let today = today();
+        let nav = |id: &'static str, glyph: Icon, months: i32| {
+            div()
+                .id(id)
+                .size(px(26.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.))
+                .hover(|s| s.bg(theme.hover_bg))
+                .child(icon(glyph, px(14.), theme.icon))
+                .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(panel) = &mut this.panel {
+                        panel.picker_month = add_months(panel.picker_month, months);
+                        cx.notify();
+                    }
+                }))
+        };
+        let weekdays = ["M", "T", "W", "T", "F", "S", "S"].map(|d| {
+            div()
+                .w(px(32.))
+                .flex()
+                .justify_center()
+                .text_size(px(10.5))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text_faint)
+                .child(d)
+        });
+        let weeks = (0..6).map(|w| {
+            div().flex().children((0..7).map(|d| {
+                let date = grid_start + Duration::days(w * 7 + d);
+                let is_chosen = date == chosen;
+                let in_month = date.month() == month.month();
+                div()
+                    .id(("picker-day", date.num_days_from_ce() as usize))
+                    .size(px(32.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .text_size(px(12.5))
+                    .map(|d| {
+                        if is_chosen {
+                            d.bg(theme.accent)
+                                .text_color(theme.accent_text)
+                                .font_weight(FontWeight::SEMIBOLD)
+                        } else {
+                            d.text_color(if date == today {
+                                theme.accent
+                            } else if in_month {
+                                theme.text
+                            } else {
+                                theme.text_faint
+                            })
+                            .when(date == today, |d| d.font_weight(FontWeight::SEMIBOLD))
+                            .hover(|s| s.bg(theme.hover_bg))
+                        }
+                    })
+                    .child(date.day().to_string())
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.set_date(field, date, window, cx)
+                    }))
+            }))
+        });
+        div()
+            .occlude()
+            .mt(px(4.))
+            .p(px(10.))
+            .rounded(px(12.))
+            .bg(theme.overlay_bg)
+            .border_1()
+            .border_color(theme.overlay_border)
+            .shadow(overlay_shadow(theme))
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+            .child(
+                div()
+                    .pb(px(6.))
+                    .pl(px(6.))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(month.format("%B %Y").to_string()),
+                    )
+                    .child(nav("picker-prev", Icon::ChevronLeft, -1))
+                    .child(nav("picker-next", Icon::ChevronRight, 1)),
+            )
+            .child(div().flex().pb(px(2.)).children(weekdays))
+            .children(weeks)
+            .into_any_element()
+    }
+
+    fn render_time_picker(
+        &self,
+        panel: &EventPanel,
+        event: &Event,
+        field: Field,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (start, end) = panel.times(event);
+        // Start: every slot of the day. End: every slot after the start, up
+        // to a day later, each with how long that makes the event.
+        let slots: Vec<(NaiveDateTime, Option<String>)> = if field == Field::StartTime {
+            (0..24 * 60 / SLOT_MINUTES)
+                .map(|i| {
+                    (
+                        time::midnight(start.date()) + Duration::minutes(i * SLOT_MINUTES),
+                        None,
+                    )
+                })
+                .collect()
+        } else {
+            (1..=24 * 60 / SLOT_MINUTES)
+                .map(|i| {
+                    let length = Duration::minutes(i * SLOT_MINUTES);
+                    (start + length, Some(duration_label(length)))
+                })
+                .collect()
+        };
+        let current = if field == Field::StartTime {
+            start
+        } else {
+            end
+        };
+        let rows = slots.into_iter().enumerate().map(|(ix, (value, length))| {
+            let chosen = value == current;
+            div()
+                .id(("time-slot", ix))
+                .h(px(30.))
+                .flex_none()
+                .px(px(10.))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .rounded(px(6.))
+                .text_size(px(13.))
+                .map(|d| {
+                    if chosen {
+                        d.bg(theme.selected_bg).font_weight(FontWeight::SEMIBOLD)
+                    } else {
+                        d.hover(|s| s.bg(theme.hover_bg))
+                    }
+                })
+                .child(time_label(value.time()))
+                .children(length.map(|l| {
+                    div()
+                        .text_size(px(12.))
+                        .text_color(theme.text_faint)
+                        .child(l)
+                }))
+                .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.set_time(field, value, window, cx)),
+                )
+        });
+        div()
+            .occlude()
+            .mt(px(4.))
+            .w(px(if field == Field::EndTime { 190. } else { 140. }))
+            .rounded(px(10.))
+            .bg(theme.overlay_bg)
+            .border_1()
+            .border_color(theme.overlay_border)
+            .shadow(overlay_shadow(theme))
+            .overflow_hidden()
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+            .child(
+                div()
+                    .id("time-picker")
+                    .h(px(240.))
+                    .p(px(4.))
+                    .overflow_y_scroll()
+                    .track_scroll(&panel.picker_scroll)
+                    .flex()
+                    .flex_col()
+                    .children(rows),
+            )
+            .into_any_element()
+    }
+
+    fn render_place(
+        &self,
+        panel: &EventPanel,
+        event: &Event,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let link = event.video_link.clone();
+        div()
+            .flex()
+            .flex_col()
+            .child(section(
+                Icon::MapPin,
+                theme,
+                field_box(panel.is_focused(Field::Location, window, cx), theme)
+                    .text_size(px(13.))
+                    .child(field_input(&panel.location)),
+            ))
+            .child(
+                section(
+                    Icon::Video,
+                    theme,
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(
+                            field_box(panel.is_focused(Field::Video, window, cx), theme)
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(px(13.))
+                                .child(field_input(&panel.video)),
+                        )
+                        .when(!link.is_empty(), |d| {
+                            d.child(
+                                div()
+                                    .id("join-call")
+                                    .flex_none()
+                                    .h(px(28.))
+                                    .px(px(12.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .rounded(px(7.))
+                                    .bg(theme.accent)
+                                    .text_color(theme.accent_text)
+                                    .text_size(px(12.5))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .hover(|s| s.opacity(0.9))
+                                    .child(icon(Icon::Video, px(14.), theme.accent_text))
+                                    .child("Join")
+                                    .on_click(move |_, _, cx| cx.open_url(&link)),
+                            )
+                        }),
+                )
+                .pt(px(0.)),
+            )
+            .into_any_element()
+    }
+
+    fn render_guests(
+        &self,
+        panel: &EventPanel,
+        event: &Event,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let me = self.me();
+        let is_me = |email: &str| email.eq_ignore_ascii_case(me);
+        let organizer_attends = event
+            .attendees
+            .iter()
+            .any(|a| a.email.eq_ignore_ascii_case(&event.organizer.email));
+
+        let person = |id: (&'static str, usize),
+                      contact: &Contact,
+                      status: Option<RsvpStatus>,
+                      role: Option<&'static str>,
+                      removable: Option<usize>,
+                      cx: &mut Context<Self>| {
+            let name: SharedString = if is_me(&contact.email) {
+                "You".into()
+            } else {
+                contact.display_name().to_string().into()
+            };
+            let detail = role
+                .map(|r| r.to_string())
+                .or_else(|| status.map(|s| status_text(s).to_string()))
+                .unwrap_or_default();
+            div()
+                .id(id)
+                .group("guest")
+                .h(px(40.))
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .rounded(px(8.))
+                .hover(|s| s.bg(theme.hover_bg))
+                .child(
+                    div()
+                        .relative()
+                        .flex_none()
+                        .child(avatar(
+                            contact.initials(),
+                            theme.avatar_color(&contact.email),
+                            px(28.),
+                            theme,
+                        ))
+                        .children(status.map(|s| status_badge(s, theme))),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .truncate()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(name),
+                        )
+                        .child(
+                            div()
+                                .truncate()
+                                .text_size(px(11.5))
+                                .text_color(theme.text_faint)
+                                .child(detail),
+                        ),
+                )
+                .children(removable.map(|ix| {
+                    div()
+                        .id(("guest-remove", ix))
+                        .size(px(22.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .opacity(0.)
+                        .group_hover("guest", |s| s.opacity(1.))
+                        .hover(|s| s.bg(theme.selected_bg))
+                        .child(icon(Icon::X, px(12.), theme.text_faint))
+                        .on_click(cx.listener(move |this, _, _, cx| this.remove_guest(ix, cx)))
+                }))
+        };
+
+        let mut rows: Vec<AnyElement> = Vec::new();
+        if !event.attendees.is_empty() && !organizer_attends {
+            rows.push(
+                person(
+                    ("organizer", 0),
+                    &event.organizer,
+                    None,
+                    Some("Organizer"),
+                    None,
+                    cx,
+                )
+                .into_any_element(),
+            );
+        }
+        for (ix, attendee) in event.attendees.iter().enumerate() {
+            let organizer = attendee.email.eq_ignore_ascii_case(&event.organizer.email);
+            rows.push(
+                person(
+                    ("guest", ix),
+                    &attendee.contact(),
+                    Some(attendee.status),
+                    organizer.then_some("Organizer"),
+                    (!is_me(&attendee.email)).then_some(ix),
+                    cx,
+                )
+                .into_any_element(),
+            );
+        }
+
+        let count = event.attendees.len();
+        let yes = event
+            .attendees
+            .iter()
+            .filter(|a| a.status == RsvpStatus::Accepted)
+            .count();
+        let awaiting = event
+            .attendees
+            .iter()
+            .filter(|a| a.status == RsvpStatus::NeedsAction)
+            .count();
+        let summary = (count > 0).then(|| {
+            let mut parts = vec![format!(
+                "{count} guest{}",
+                if count == 1 { "" } else { "s" }
+            )];
+            if yes > 0 {
+                parts.push(format!("{yes} yes"));
+            }
+            if awaiting > 0 {
+                parts.push(format!("{awaiting} awaiting"));
+            }
+            div()
+                .px(px(8.))
+                .pb(px(2.))
+                .text_size(px(12.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text_muted)
+                .child(parts.join(" · "))
+        });
+
+        let focused = panel.is_focused(Field::Guests, window, cx);
+        let suggestions = (focused && !panel.suggestions.is_empty()).then(|| {
+            let rows = panel.suggestions.iter().enumerate().map(|(row, &ix)| {
+                let contact = self.book.contact(ix);
+                div()
+                    .id(("guest-suggestion", row))
+                    .h(px(40.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .rounded(px(7.))
+                    .when(row == panel.highlighted, |d| d.bg(theme.selected_bg))
+                    .hover(|d| d.bg(theme.hover_bg))
+                    .child(avatar(
+                        contact.initials(),
+                        theme.avatar_color(&contact.email),
+                        px(26.),
+                        theme,
+                    ))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(contact.display_name().to_string()),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(11.5))
+                                    .text_color(theme.text_muted)
+                                    .child(contact.email.clone()),
+                            ),
+                    )
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let contact = this.book.contact(ix).clone();
+                        this.add_guest(contact, window, cx);
+                    }))
+            });
+            below(
+                div()
+                    .occlude()
+                    .mt(px(4.))
+                    .w(px(300.))
+                    .p(px(4.))
+                    .flex()
+                    .flex_col()
+                    .rounded(px(10.))
+                    .bg(theme.overlay_bg)
+                    .border_1()
+                    .border_color(theme.overlay_border)
+                    .shadow(overlay_shadow(theme))
+                    .children(rows),
+            )
+        });
+
+        section(
+            Icon::Users,
+            theme,
+            div()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .mx(px(-8.))
+                        .flex()
+                        .flex_col()
+                        .children(summary)
+                        .children(rows),
+                )
+                .child(
+                    div()
+                        .key_context(GUESTS)
+                        .flex()
+                        .flex_col()
+                        .child(
+                            field_box(focused, theme)
+                                .text_size(px(13.))
+                                .child(field_input(&panel.guests)),
+                        )
+                        .children(suggestions),
+                ),
+        )
+        .into_any_element()
+    }
+
+    /// Reminder, busy or free, and the user's answer to an invite.
+    fn render_options(
+        &self,
+        event: &Event,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = self.menu == Some(Menu::Reminder);
+        let current = event.reminder_minutes;
+        let menu = open.then(|| {
+            let rows = REMINDERS.iter().enumerate().map(|(ix, &minutes)| {
+                menu_row(("reminder", ix), theme)
+                    .child(div().flex_1().child(reminder_label(minutes)))
+                    .when(minutes == current, |d| {
+                        d.child(icon(Icon::Check, px(14.), theme.accent))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.edit_event(cx, |e| e.reminder_minutes = minutes);
+                        this.menu = None;
+                    }))
+            });
+            deferred(
+                anchored()
+                    .snap_to_window_with_margin(px(8.))
+                    .child(dropdown(px(32.), px(200.), theme).children(rows)),
+            )
+            .with_priority(2)
+        });
+
+        let reminder = section(
+            Icon::Bell,
+            theme,
+            div()
+                .flex()
+                .child(
+                    div()
+                        .id("reminder")
+                        .h(px(28.))
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .rounded(px(7.))
+                        .text_size(px(13.))
+                        .when(open, |d| d.bg(theme.selected_bg))
+                        .hover(|s| s.bg(theme.hover_bg))
+                        .child(reminder_label(current))
+                        .child(icon(Icon::ChevronDown, px(13.), theme.text_faint))
+                        .on_click(
+                            cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Reminder, cx)),
+                        ),
+                )
+                .when(open, |d| d.child(self.menu_backdrop(window, cx)))
+                .children(menu),
+        );
+
+        let busy = event.busy;
+        let availability = section(
+            Icon::Briefcase,
+            theme,
+            div().flex().child(segmented(
+                [("Busy", busy), ("Free", !busy)],
+                "busy",
+                theme,
+                cx,
+                |this, ix, cx| this.edit_event(cx, |e| e.busy = ix == 0),
+            )),
+        );
+
+        let rsvp = event.my_status(self.me()).map(|status| {
+            let id = event.id.clone();
+            section(
+                Icon::Check,
+                theme,
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(theme.text_muted)
+                            .child("Going?"),
+                    )
+                    .child(segmented(
+                        [
+                            ("Yes", status == RsvpStatus::Accepted),
+                            ("Maybe", status == RsvpStatus::Tentative),
+                            ("No", status == RsvpStatus::Declined),
+                        ],
+                        "rsvp",
+                        theme,
+                        cx,
+                        move |this, ix, cx| {
+                            let status = [
+                                RsvpStatus::Accepted,
+                                RsvpStatus::Tentative,
+                                RsvpStatus::Declined,
+                            ][ix];
+                            this.set_rsvp(&id, status, cx)
+                        },
+                    )),
+            )
+        });
+
+        div()
+            .flex()
+            .flex_col()
+            .children(rsvp)
+            .child(reminder)
+            .child(availability.pt(px(0.)))
+            .into_any_element()
+    }
+}
+
+/// A row of the panel: an icon in the gutter, then its content.
+fn section(glyph: Icon, theme: &Theme, content: impl IntoElement) -> gpui::Div {
+    div()
+        .px(px(20.))
+        .py(px(8.))
+        .flex()
+        .gap(px(10.))
+        .child(
+            div()
+                .w(px(18.))
+                .h(px(30.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon(glyph, px(16.), theme.text_faint)),
+        )
+        .child(div().flex_1().min_w_0().flex().flex_col().child(content))
+}
+
+fn field_input(input: &Entity<InputState>) -> Input {
+    Input::new(input)
+        .appearance(false)
+        .px(px(0.))
+        .text_size(px(13.))
+}
+
+fn divider(theme: &Theme) -> impl IntoElement {
+    div().mx(px(20.)).my(px(6.)).h(px(1.)).bg(theme.border)
+}
+
+/// The box around an editable field: plain text until hovered or focused.
+fn field_box(focused: bool, theme: &Theme) -> gpui::Div {
+    div()
+        .h(px(30.))
+        .px(px(8.))
+        .flex()
+        .items_center()
+        .rounded(px(7.))
+        .border_1()
+        .map(|d| {
+            if focused {
+                d.bg(theme.search_bg).border_color(theme.accent.alpha(0.55))
+            } else {
+                d.border_color(gpui::transparent_black())
+                    .hover(|s| s.bg(theme.hover_bg))
+            }
+        })
+}
+
+/// A popup under the element before it: a zero-height anchor in the flow,
+/// so the popup starts where the next sibling would.
+fn below(content: impl IntoElement) -> impl IntoElement {
+    div().w_full().h(px(0.)).child(
+        deferred(anchored().snap_to_window_with_margin(px(8.)).child(content)).with_priority(2),
+    )
+}
+
+fn dropdown(top: gpui::Pixels, width: gpui::Pixels, theme: &Theme) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id("dropdown")
+        .occlude()
+        .mt(top)
+        .w(width)
+        .p(px(4.))
+        .flex()
+        .flex_col()
+        .rounded(px(10.))
+        .bg(theme.overlay_bg)
+        .border_1()
+        .border_color(theme.overlay_border)
+        .shadow(overlay_shadow(theme))
+}
+
+fn menu_row(id: (&'static str, usize), theme: &Theme) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .h(px(30.))
+        .px(px(10.))
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .rounded(px(7.))
+        .text_size(px(13.))
+        .hover(|s| s.bg(theme.hover_bg))
+}
+
+fn switch(on: bool, theme: &Theme) -> impl IntoElement {
+    div()
+        .w(px(28.))
+        .h(px(16.))
+        .flex_none()
+        .p(px(2.))
+        .flex()
+        .rounded_full()
+        .bg(if on { theme.accent } else { theme.selected_bg })
+        .when(on, |d| d.justify_end())
+        .child(
+            div()
+                .size(px(12.))
+                .rounded_full()
+                .bg(gpui::white())
+                .shadow(vec![gpui::BoxShadow {
+                    color: gpui::black().alpha(0.25),
+                    offset: gpui::point(px(0.), px(1.)),
+                    blur_radius: px(2.),
+                    spread_radius: px(0.),
+                    inset: false,
+                }]),
+        )
+}
+
+/// A small segmented control; `on_pick` gets the index clicked.
+fn segmented<const N: usize>(
+    options: [(&'static str, bool); N],
+    id: &'static str,
+    theme: &Theme,
+    cx: &mut Context<CalendarView>,
+    on_pick: impl Fn(&mut CalendarView, usize, &mut Context<CalendarView>) + Clone + 'static,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .p(px(2.))
+        .gap(px(2.))
+        .rounded(px(8.))
+        .bg(theme.chip_bg)
+        .children(
+            options
+                .into_iter()
+                .enumerate()
+                .map(|(ix, (label, active))| {
+                    let on_pick = on_pick.clone();
+                    div()
+                        .id((id, ix))
+                        .h(px(24.))
+                        .px(px(12.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(6.))
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .map(|d| {
+                            if active {
+                                d.bg(theme.overlay_bg).text_color(theme.text).shadow(vec![
+                                    gpui::BoxShadow {
+                                        color: theme.overlay_shadow.alpha(0.18),
+                                        offset: gpui::point(px(0.), px(1.)),
+                                        blur_radius: px(2.),
+                                        spread_radius: px(0.),
+                                        inset: false,
+                                    },
+                                ])
+                            } else {
+                                d.text_color(theme.text_muted)
+                                    .hover(|s| s.text_color(theme.text))
+                            }
+                        })
+                        .child(label)
+                        .on_click(cx.listener(move |this, _, _, cx| on_pick(this, ix, cx)))
+                }),
+        )
+}
+
+fn status_text(status: RsvpStatus) -> &'static str {
+    match status {
+        RsvpStatus::Accepted => "Going",
+        RsvpStatus::Tentative => "Maybe",
+        RsvpStatus::Declined => "Not going",
+        RsvpStatus::NeedsAction => "Awaiting reply",
+    }
+}
+
+fn status_color(status: RsvpStatus, theme: &Theme) -> Hsla {
+    match status {
+        RsvpStatus::Accepted => theme.success,
+        RsvpStatus::Tentative => theme.star,
+        RsvpStatus::Declined => theme.danger,
+        RsvpStatus::NeedsAction => theme.text_faint,
+    }
+}
+
+/// The answer, as a small badge on the guest's avatar.
+fn status_badge(status: RsvpStatus, theme: &Theme) -> impl IntoElement {
+    let glyph = match status {
+        RsvpStatus::Accepted => Icon::Check,
+        RsvpStatus::Tentative => Icon::Help,
+        RsvpStatus::Declined => Icon::X,
+        RsvpStatus::NeedsAction => Icon::Minus,
+    };
+    div()
+        .absolute()
+        .right(px(-3.))
+        .bottom(px(-3.))
+        .size(px(15.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .bg(status_color(status, theme))
+        .border_2()
+        .border_color(theme.overlay_bg)
+        .child(icon(glyph, px(9.), theme.cal_selected_text))
+}

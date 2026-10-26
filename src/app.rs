@@ -17,12 +17,14 @@ use gpui::{
 use crate::{
     actions::*,
     assets::Icon,
+    calendar::{CalendarData, Event},
     data::{Contact, DraftOrigin, Folder, MailData, Message, Quote, Thread, full_date},
     html,
     search::{FocusResults, Query},
     theme::Theme,
     ui::{
         self, PaneResize,
+        calendar::{CalendarEvent, CalendarView},
         command_palette::{CommandPalette, Leading, PaletteCommand, PaletteEvent, PaletteItem},
         composer::{Composer, ComposerEvent, ContactBook, DraftContent, Quoted},
     },
@@ -34,6 +36,13 @@ const TOAST_DURATION: Duration = Duration::from_secs(5);
 pub const RAIL_WIDTH: Pixels = px(52.);
 const SIDEBAR_WIDTH: (Pixels, Pixels) = (px(180.), px(360.));
 const LIST_WIDTH: (Pixels, Pixels) = (px(300.), px(640.));
+
+/// Which app fills the window, beside the rail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Mail,
+    Calendar,
+}
 
 /// What the sidebar has selected; the thread list shows its threads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,9 +91,15 @@ pub enum UndoAction {
         removed_draft: Option<Thread>,
         composer: Entity<Composer>,
     },
+    /// Put a deleted calendar event back.
+    DeleteEvent { event: Box<Event>, index: usize },
 }
 
 pub struct PigeonApp {
+    pub mode: Mode,
+    /// The calendar keeps its own state, so switching to Mail and back
+    /// loses nothing on either side.
+    pub calendar: Entity<CalendarView>,
     pub data: MailData,
     pub nav: Nav,
     pub rows: Vec<Row>,
@@ -122,7 +137,12 @@ pub struct PigeonApp {
 }
 
 impl PigeonApp {
-    pub fn new(data: MailData, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        data: MailData,
+        calendar: CalendarData,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
         let appearance = cx.observe_window_appearance(window, |_, window, cx| {
@@ -132,8 +152,21 @@ impl PigeonApp {
         let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search mail"));
         let search_events = cx.subscribe_in(&search_input, window, Self::on_search_event);
         let contact_book = Rc::new(ContactBook::new(data.contacts()));
+        let calendar = cx.new(|cx| CalendarView::new(calendar, contact_book.clone(), cx));
+        let calendar_events = cx.subscribe(&calendar, |this, _, event, cx| match event {
+            CalendarEvent::Deleted { event, index } => {
+                let message = format!("Deleted “{}”", event.display_title());
+                let undo = UndoAction::DeleteEvent {
+                    event: Box::new(event.clone()),
+                    index: *index,
+                };
+                this.show_toast(message, Some(undo), cx);
+            }
+        });
 
         let mut this = Self {
+            mode: Mode::Mail,
+            calendar,
             data,
             nav: Nav::Folder(Folder::Inbox),
             rows: Vec::new(),
@@ -159,7 +192,7 @@ impl PigeonApp {
             focused_message: None,
             toast: None,
             next_id: 0,
-            _subscriptions: vec![appearance, search_events],
+            _subscriptions: vec![appearance, search_events, calendar_events],
         };
         this.refresh_rows(false);
         this
@@ -885,6 +918,11 @@ impl PigeonApp {
             return;
         };
         let (composer, removed_draft) = match undo {
+            UndoAction::DeleteEvent { event, index } => {
+                self.calendar
+                    .update(cx, |c, cx| c.restore_event(*event, index, window, cx));
+                return;
+            }
             UndoAction::Send {
                 thread_id,
                 appended,
@@ -1001,6 +1039,41 @@ impl PigeonApp {
         context
     }
 
+    // Switching between Mail and Calendar.
+
+    pub fn set_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode != mode {
+            self.mode = mode;
+            self.palette = None;
+            self.help_open = false;
+            window.focus(&self.pane_focus(cx), cx);
+        }
+        cx.notify();
+    }
+
+    /// The focus of the panes of the current app.
+    fn pane_focus(&self, cx: &gpui::App) -> FocusHandle {
+        match self.mode {
+            Mode::Mail => self.focus_handle.clone(),
+            Mode::Calendar => self.calendar.read(cx).focus_handle.clone(),
+        }
+    }
+
+    fn go_to_mail(&mut self, _: &GoToMail, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_mode(Mode::Mail, window, cx);
+    }
+
+    fn go_to_calendar(&mut self, _: &GoToCalendar, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_mode(Mode::Calendar, window, cx);
+    }
+
+    fn scope(&self) -> Scope {
+        match self.mode {
+            Mode::Mail => Scope::Mail,
+            Mode::Calendar => Scope::Calendar,
+        }
+    }
+
     // Go to.
 
     fn go_to_inbox(&mut self, _: &GoToInbox, _: &mut Window, cx: &mut Context<Self>) {
@@ -1063,17 +1136,22 @@ impl PigeonApp {
 
     fn open_palette(&mut self, query: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.help_open = false;
-        let items = self.palette_items(window);
-        let palette = cx.new(|cx| CommandPalette::new(items, query, window, cx));
+        let items = self.palette_items(window, cx);
+        let noun = match self.mode {
+            Mode::Mail => "mail",
+            Mode::Calendar => "events",
+        };
+        let palette = cx.new(|cx| CommandPalette::new(items, query, noun, window, cx));
         let events = cx.subscribe_in(&palette, window, Self::on_palette_event);
         window.focus(&palette.focus_handle(cx), cx);
         self.palette = Some((palette, events));
         cx.notify();
     }
 
-    fn palette_items(&self, window: &Window) -> Vec<PaletteItem> {
+    fn palette_items(&self, window: &Window, cx: &gpui::App) -> Vec<PaletteItem> {
+        let scope = self.scope();
         let binding = |action: &dyn gpui::Action| {
-            lookup_contexts(self.reader_focused)
+            lookup_contexts(scope, self.reader_focused)
                 .into_iter()
                 .find_map(|context| {
                     window.highest_precedence_binding_for_action_in_context(action, context)
@@ -1081,7 +1159,9 @@ impl PigeonApp {
         };
         let commands = COMMANDS
             .iter()
-            .filter(|c| !c.help_only)
+            .filter(|c| {
+                !c.help_only && (c.group.scope() == Scope::Global || c.group.scope() == scope)
+            })
             .map(|c| PaletteItem {
                 command: PaletteCommand::Action(c.action),
                 title: c.name.into(),
@@ -1090,6 +1170,45 @@ impl PigeonApp {
                 binding: binding(&*(c.action)()),
                 search_only: false,
             });
+        if self.mode == Mode::Calendar {
+            let calendar = self.calendar.read(cx);
+            let calendars = calendar
+                .data
+                .calendars
+                .iter()
+                .enumerate()
+                .map(|(ix, c)| PaletteItem {
+                    command: PaletteCommand::ToggleCalendar(ix),
+                    title: format!(
+                        "{} Calendar: {}",
+                        if c.visible { "Hide" } else { "Show" },
+                        c.name
+                    )
+                    .into(),
+                    subtitle: None,
+                    leading: Leading::Dot(c.color),
+                    binding: None,
+                    search_only: false,
+                });
+            let events = calendar.data.events.iter().enumerate().map(|(ix, event)| {
+                let when = crate::calendar::time::date_label(
+                    event.start.date(),
+                    crate::ui::calendar::today(),
+                );
+                PaletteItem {
+                    command: PaletteCommand::Event(ix),
+                    title: event.display_title().to_string().into(),
+                    subtitle: Some(match event.recurrence {
+                        Some(r) => r.label().into(),
+                        None => when.into(),
+                    }),
+                    leading: Leading::Dot(calendar.data.color_of(event)),
+                    binding: None,
+                    search_only: true,
+                }
+            });
+            return commands.chain(calendars).chain(events).collect();
+        }
         let labels = self
             .data
             .labels
@@ -1140,6 +1259,12 @@ impl PigeonApp {
             PaletteCommand::Action(action) => window.dispatch_action(action(), cx),
             PaletteCommand::Nav(nav) => self.set_nav(nav, cx),
             PaletteCommand::Thread(ix) => self.reveal_thread(ix, window, cx),
+            PaletteCommand::ToggleCalendar(ix) => {
+                self.calendar.update(cx, |c, cx| c.toggle_calendar(ix, cx))
+            }
+            PaletteCommand::Event(ix) => self
+                .calendar
+                .update(cx, |c, cx| c.reveal_event(ix, window, cx)),
         }
     }
 
@@ -1162,7 +1287,7 @@ impl PigeonApp {
     fn close_overlays(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.palette = None;
         self.help_open = false;
-        window.focus(&self.focus_handle, cx);
+        window.focus(&self.pane_focus(cx), cx);
         cx.notify();
     }
 
@@ -1288,7 +1413,7 @@ impl Render for PigeonApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Whatever had focus went away (a closed draft, say): back to the panes.
         if window.focused(cx).is_none() {
-            window.focus(&self.focus_handle, cx);
+            window.focus(&self.pane_focus(cx), cx);
         }
         let theme = Theme::of(cx).clone();
         // Handlers sit on the root, so actions reach them from the overlays too.
@@ -1332,54 +1457,68 @@ impl Render for PigeonApp {
             .on_action(cx.listener(Self::focus_results))
             .on_action(cx.listener(Self::next_message))
             .on_action(cx.listener(Self::prev_message))
+            .on_action(cx.listener(Self::go_to_mail))
+            .on_action(cx.listener(Self::go_to_calendar))
             .on_drag_move(cx.listener(Self::resize_pane))
             .relative()
             .size_full()
             .overflow_hidden()
             .text_color(theme.text)
-            .child(
-                div()
-                    .key_context(self.mailbox_key_context())
-                    .track_focus(&self.focus_handle)
-                    .size_full()
-                    .flex()
-                    .flex_row()
-                    .child(ui::rail::render(&theme))
-                    .when(self.sidebar_open, |this| {
-                        this.child(self.render_sidebar(window, cx))
-                    })
-                    .child(
-                        div()
-                            .h_full()
-                            .flex_none()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, window, cx| {
-                                    this.reader_focused = false;
-                                    if !this.search_input.focus_handle(cx).is_focused(window) {
-                                        window.focus(&this.focus_handle, cx);
-                                    }
-                                    cx.notify();
-                                }),
-                            )
-                            .child(self.render_thread_list(window, cx)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(360.))
-                            .h_full()
-                            .flex()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.reader_focused = this.selected.is_some();
-                                    cx.notify();
-                                }),
-                            )
-                            .child(self.render_reader(window, cx)),
-                    ),
-            )
+            .when(self.mode == Mode::Calendar, |this| {
+                this.child(
+                    div()
+                        .size_full()
+                        .flex()
+                        .flex_row()
+                        .child(ui::rail::render(self.mode, &theme))
+                        .child(self.calendar.clone()),
+                )
+            })
+            .when(self.mode == Mode::Mail, |this| {
+                this.child(
+                    div()
+                        .key_context(self.mailbox_key_context())
+                        .track_focus(&self.focus_handle)
+                        .size_full()
+                        .flex()
+                        .flex_row()
+                        .child(ui::rail::render(self.mode, &theme))
+                        .when(self.sidebar_open, |this| {
+                            this.child(self.render_sidebar(window, cx))
+                        })
+                        .child(
+                            div()
+                                .h_full()
+                                .flex_none()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, window, cx| {
+                                        this.reader_focused = false;
+                                        if !this.search_input.focus_handle(cx).is_focused(window) {
+                                            window.focus(&this.focus_handle, cx);
+                                        }
+                                        cx.notify();
+                                    }),
+                                )
+                                .child(self.render_thread_list(window, cx)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(360.))
+                                .h_full()
+                                .flex()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.reader_focused = this.selected.is_some();
+                                        cx.notify();
+                                    }),
+                                )
+                                .child(self.render_reader(window, cx)),
+                        ),
+                )
+            })
             .children(self.render_toast(cx))
             .children(self.render_overlay(window, cx))
     }

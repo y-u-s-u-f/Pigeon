@@ -43,6 +43,8 @@ pub struct Theme {
     /// Text on an `accent` background.
     pub accent_text: Hsla,
     pub danger: Hsla,
+    /// An accepted invite.
+    pub success: Hsla,
     pub star: Hsla,
 
     // Floating overlays: the command palette and the shortcuts sheet.
@@ -60,6 +62,23 @@ pub struct Theme {
     /// Avatar backgrounds, picked by hashing the contact's email.
     pub avatar_palette: [Hsla; 8],
     pub avatar_text: Hsla,
+
+    // Calendar. Event colors derive from their calendar's color; see
+    // `event_fill` and friends.
+    pub cal_bg: Hsla,
+    /// The event panel docked on the right.
+    pub cal_panel_bg: Hsla,
+    /// Hour lines and day dividers.
+    pub cal_line: Hsla,
+    /// Half-hour lines.
+    pub cal_line_faint: Hsla,
+    pub cal_weekend_bg: Hsla,
+    /// Today's column in the week view and its cell in the month view.
+    pub cal_today_bg: Hsla,
+    /// The current-time line.
+    pub cal_now: Hsla,
+    /// Text on a selected (solid) event.
+    pub cal_selected_text: Hsla,
 }
 
 impl Global for Theme {}
@@ -97,6 +116,7 @@ impl Theme {
             accent: hex(0x6e9bffff),
             accent_text: hex(0x0b1530ff),
             danger: hex(0xff7b72ff),
+            success: hex(0x4fd07fff),
             star: hex(0xf5bf4fff),
 
             backdrop: hex(0x00000052),
@@ -110,6 +130,15 @@ impl Theme {
 
             avatar_palette: Self::avatar_palette(0.42),
             avatar_text: hex(0xffffffff),
+
+            cal_bg: hex(0x18181ca6),
+            cal_panel_bg: hex(0x1c1c20c4),
+            cal_line: hex(0xffffff12),
+            cal_line_faint: hex(0xffffff08),
+            cal_weekend_bg: hex(0x00000010),
+            cal_today_bg: hex(0x6e9bff0a),
+            cal_now: hex(0xff5f57ff),
+            cal_selected_text: hex(0xffffffff),
         }
     }
 
@@ -141,6 +170,7 @@ impl Theme {
             accent: hex(0x2f6fedff),
             accent_text: hex(0xffffffff),
             danger: hex(0xd93a32ff),
+            success: hex(0x1e9a52ff),
             star: hex(0xe2a21cff),
 
             backdrop: hex(0x0000001f),
@@ -154,6 +184,15 @@ impl Theme {
 
             avatar_palette: Self::avatar_palette(0.5),
             avatar_text: hex(0xffffffff),
+
+            cal_bg: hex(0xffffff9e),
+            cal_panel_bg: hex(0xfbfbfdd9),
+            cal_line: hex(0x00000014),
+            cal_line_faint: hex(0x0000000a),
+            cal_weekend_bg: hex(0x00000007),
+            cal_today_bg: hex(0x2f6fed08),
+            cal_now: hex(0xe5483bff),
+            cal_selected_text: hex(0xffffffff),
         }
     }
 
@@ -185,6 +224,58 @@ impl Theme {
             (color.l - 0.12).max(0.25)
         };
         hsla(color.h, color.s, l, 1.0)
+    }
+
+    /// Background of an event block or bar. Mostly opaque, so events stay
+    /// crisp over the glass; past events fade back.
+    pub fn event_fill(&self, color: Hsla, past: bool) -> Hsla {
+        let fill = if self.is_dark {
+            hsla(color.h, color.s * 0.5, 0.25, 0.9)
+        } else {
+            hsla(color.h, (color.s * 0.85).min(0.9), 0.93, 0.96)
+        };
+        if past {
+            fill.alpha(fill.a * 0.55)
+        } else {
+            fill
+        }
+    }
+
+    pub fn event_fill_hover(&self, color: Hsla) -> Hsla {
+        if self.is_dark {
+            hsla(color.h, color.s * 0.5, 0.29, 0.95)
+        } else {
+            hsla(color.h, (color.s * 0.85).min(0.9), 0.895, 1.)
+        }
+    }
+
+    /// Text on an event's fill, and of timed events in the month view.
+    pub fn event_text(&self, color: Hsla, past: bool) -> Hsla {
+        let text = if self.is_dark {
+            hsla(color.h, color.s * 0.75, 0.86, 1.)
+        } else {
+            hsla(color.h, color.s.min(0.75), 0.27, 1.)
+        };
+        if past { text.alpha(0.6) } else { text }
+    }
+
+    /// The stripe on an event's leading edge, and its dot.
+    pub fn event_accent(&self, color: Hsla, past: bool) -> Hsla {
+        let accent = if self.is_dark {
+            hsla(color.h, color.s, (color.l + 0.06).min(0.7), 1.)
+        } else {
+            hsla(color.h, color.s, color.l.min(0.55), 1.)
+        };
+        if past { accent.alpha(0.55) } else { accent }
+    }
+
+    /// A selected event: solid in its color.
+    pub fn event_selected_fill(&self, color: Hsla) -> Hsla {
+        if self.is_dark {
+            hsla(color.h, color.s * 0.8, 0.48, 1.)
+        } else {
+            hsla(color.h, color.s, color.l.min(0.52), 1.)
+        }
     }
 
     pub fn avatar_color(&self, seed: &str) -> Hsla {

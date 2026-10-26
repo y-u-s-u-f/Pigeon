@@ -61,6 +61,48 @@ impl ContactBook {
             haystacks,
         }
     }
+
+    pub fn contact(&self, ix: usize) -> &Contact {
+        &self.contacts[ix]
+    }
+
+    pub fn find(&self, email: &str) -> Option<&Contact> {
+        self.contacts
+            .iter()
+            .find(|c| c.email.eq_ignore_ascii_case(email))
+    }
+
+    /// The best matches for `query` that aren't `taken`, best first; ties
+    /// keep the book's order, most frequent first.
+    pub fn suggest(
+        &self,
+        query: &str,
+        taken: impl Fn(&Contact) -> bool,
+        matcher: &mut Matcher,
+    ) -> Vec<usize> {
+        let pattern = Pattern::new(
+            query.trim(),
+            CaseMatching::Ignore,
+            Normalization::Smart,
+            AtomKind::Fuzzy,
+        );
+        let mut scored = Vec::new();
+        if !pattern.atoms.is_empty() {
+            for (ix, haystack) in self.haystacks.iter().enumerate() {
+                if let Some(score) = pattern.score(haystack.slice(..), matcher)
+                    && !taken(&self.contacts[ix])
+                {
+                    scored.push((score, ix));
+                }
+            }
+        }
+        scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+        scored
+            .into_iter()
+            .take(MAX_SUGGESTIONS)
+            .map(|(_, ix)| ix)
+            .collect()
+    }
 }
 
 /// What a draft says, read out of the fields.
@@ -392,36 +434,16 @@ impl Composer {
 
     fn update_suggestions(&mut self, ix: usize, cx: &mut Context<Self>) {
         let query = self.recipients[ix].input.read(cx).value();
-        let pattern = Pattern::new(
-            query.trim(),
-            CaseMatching::Ignore,
-            Normalization::Smart,
-            AtomKind::Fuzzy,
-        );
+        let recipients = &self.recipients;
         let taken = |c: &Contact| {
-            self.recipients
+            recipients
                 .iter()
                 .flat_map(|r| &r.chips)
                 .any(|chip| chip.email.eq_ignore_ascii_case(&c.email))
         };
-        let mut scored = Vec::new();
-        if !pattern.atoms.is_empty() {
-            for (contact_ix, haystack) in self.book.haystacks.iter().enumerate() {
-                if let Some(score) = pattern.score(haystack.slice(..), &mut self.matcher)
-                    && !taken(&self.book.contacts[contact_ix])
-                {
-                    scored.push((score, contact_ix));
-                }
-            }
-        }
-        // Stable, so ties keep the book's order: most frequent first.
-        scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+        let suggestions = self.book.suggest(&query, taken, &mut self.matcher);
         let field = &mut self.recipients[ix];
-        field.suggestions = scored
-            .into_iter()
-            .take(MAX_SUGGESTIONS)
-            .map(|(_, ix)| ix)
-            .collect();
+        field.suggestions = suggestions;
         field.highlighted = 0;
         field.navigated = false;
         cx.notify();
@@ -980,7 +1002,7 @@ fn recipient_field(ix: usize) -> Field {
 }
 
 /// "Name <a@b.c>" or a bare address.
-fn parse_address(text: &str) -> Option<Contact> {
+pub fn parse_address(text: &str) -> Option<Contact> {
     let text = text.trim();
     let (name, email) = match text.rsplit_once('<') {
         Some((name, rest)) => (name.trim().trim_matches('"'), rest.trim_end_matches('>')),

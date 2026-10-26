@@ -33,6 +33,10 @@ pub enum PaletteCommand {
     Nav(Nav),
     /// Index into `MailData::threads`.
     Thread(usize),
+    /// Index into `CalendarData::calendars`.
+    ToggleCalendar(usize),
+    /// Index into `CalendarData::events`.
+    Event(usize),
 }
 
 pub enum Leading {
@@ -76,6 +80,8 @@ pub struct CommandPalette {
     selected: usize,
     scroll: UniformListScrollHandle,
     matcher: Matcher,
+    /// What thread or event results are called: "mail", "events".
+    results_noun: &'static str,
     _input_events: Subscription,
 }
 
@@ -91,12 +97,13 @@ impl CommandPalette {
     pub fn new(
         items: Vec<PaletteItem>,
         query: &str,
+        results_noun: &'static str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let input = cx.new(|cx| {
-            let mut state =
-                InputState::new(window, cx).placeholder("Type a command or search mail…");
+            let mut state = InputState::new(window, cx)
+                .placeholder(format!("Type a command or search {results_noun}…"));
             // Unlike `default_value`, leaves the cursor after the text.
             state.insert(query.to_string(), window, cx);
             state
@@ -129,6 +136,7 @@ impl CommandPalette {
             selected: 0,
             scroll: UniformListScrollHandle::new(),
             matcher: Matcher::new(Config::DEFAULT),
+            results_noun,
             _input_events: input_events,
         };
         this.update_matches(cx);
@@ -343,7 +351,7 @@ impl Render for CommandPalette {
                 .justify_center()
                 .text_size(px(13.))
                 .text_color(theme.text_faint)
-                .child("No matching commands or mail")
+                .child(format!("No matching commands or {}", self.results_noun))
                 .into_any_element()
         } else {
             let row_theme = theme.clone();
