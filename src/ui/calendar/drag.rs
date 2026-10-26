@@ -16,7 +16,7 @@ use gpui::{
     deferred, div, point, prelude::FluentBuilder as _, px,
 };
 
-use super::{CalendarView, HOUR_HEIGHT, Selection, ViewKind};
+use super::{CalendarView, HOUR_HEIGHT, PromptKind, Selection, SeriesPrompt, ViewKind};
 use crate::ui::style::*;
 use crate::{
     calendar::{
@@ -24,12 +24,20 @@ use crate::{
         time::{self, time_range_label},
     },
     theme::Theme,
+    ui::popover_shadow,
 };
+
+const LABEL_HEIGHT: f32 = 20.;
 
 pub const SNAP_MINUTES: i64 = 15;
 /// How far the mouse moves before a press becomes a drag.
 const THRESHOLD: f32 = 4.;
 const DAY_MINUTES: i64 = 24 * 60;
+/// How close to the grid's top or bottom a drag starts scrolling it.
+const AUTOSCROLL_EDGE: f32 = 48.;
+/// Pixels scrolled per tick per pixel into the edge.
+const AUTOSCROLL_SPEED: f32 = 0.35;
+const AUTOSCROLL_TICK: std::time::Duration = std::time::Duration::from_millis(16);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DragKind {
@@ -51,6 +59,8 @@ pub struct GridDrag {
     pub kind: DragKind,
     /// Where the press was, in the window.
     origin: Point<Pixels>,
+    /// Where the mouse is now, for scrolling while it rests near an edge.
+    pointer: Point<Pixels>,
     /// Moved past the threshold; until then it's a click.
     pub active: bool,
     /// The times it would set, snapped.
@@ -109,11 +119,59 @@ impl CalendarView {
         self.drag = Some(GridDrag {
             kind,
             origin,
+            pointer: origin,
             active: false,
             start,
             end,
         });
+        self.prompt = None;
+        self._autoscroll = Some(cx.spawn(async |this, cx| {
+            loop {
+                cx.background_executor().timer(AUTOSCROLL_TICK).await;
+                match this.update(cx, |this, cx| this.autoscroll(cx)) {
+                    Ok(true) => {}
+                    _ => break,
+                }
+            }
+        }));
         cx.notify();
+    }
+
+    /// While a drag rests near the top or bottom of the grid, scroll it,
+    /// faster the closer to the edge. False once the drag is over.
+    fn autoscroll(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(drag) = &self.drag else {
+            return false;
+        };
+        if !drag.active {
+            return true;
+        }
+        let pointer = drag.pointer;
+        let viewport = self.grid_scroll.bounds();
+        let y = f32::from(pointer.y);
+        let top = f32::from(viewport.origin.y);
+        let bottom = top + f32::from(viewport.size.height);
+        let speed = if y < top + AUTOSCROLL_EDGE {
+            -(top + AUTOSCROLL_EDGE - y).min(AUTOSCROLL_EDGE)
+        } else if y > bottom - AUTOSCROLL_EDGE {
+            (y - (bottom - AUTOSCROLL_EDGE)).min(AUTOSCROLL_EDGE)
+        } else {
+            return true;
+        } * AUTOSCROLL_SPEED;
+        let offset = self.grid_scroll.offset();
+        let max = f32::from(self.grid_scroll.max_offset().y);
+        let new_y = (f32::from(offset.y) - speed).clamp(-max, 0.);
+        let delta = new_y - f32::from(offset.y);
+        if delta != 0. {
+            self.grid_scroll.set_offset(point(offset.x, px(new_y)));
+            // The grid moves with the scroll before it next paints.
+            let mut bounds = self.grid_bounds.get();
+            bounds.origin.y += px(delta);
+            self.grid_bounds.set(bounds);
+            self.update_drag(pointer, cx);
+            cx.notify();
+        }
+        true
     }
 
     /// A press on empty grid space.
@@ -174,13 +232,20 @@ impl CalendarView {
         if event.pressed_button != Some(MouseButton::Left) {
             return self.finish_drag(window, cx);
         }
-        let Some(drag) = &self.drag else { return };
+        let Some(drag) = &mut self.drag else { return };
+        drag.pointer = event.position;
         let moved = event.position - drag.origin;
         let distance = f32::from(moved.x).hypot(f32::from(moved.y));
         if !drag.active && distance < THRESHOLD {
             return;
         }
-        let Some((day, minutes)) = self.grid_time(event.position) else {
+        self.update_drag(event.position, cx);
+    }
+
+    /// The times the drag would set with the mouse at `position`.
+    fn update_drag(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(drag) = &self.drag else { return };
+        let Some((day, minutes)) = self.grid_time(position) else {
             return;
         };
         let snap = Duration::minutes(SNAP_MINUTES);
@@ -233,7 +298,20 @@ impl CalendarView {
                     return;
                 };
                 let id = event.id.clone();
-                if (drag.start, drag.end) != (occurrence.start, occurrence.end) {
+                let moved = (drag.start, drag.end) != (occurrence.start, occurrence.end);
+                if moved && event.is_series() {
+                    // Asked first; drawn at the new times meanwhile.
+                    self.prompt = Some(SeriesPrompt {
+                        event_id: id,
+                        occurrence: occurrence.start,
+                        kind: PromptKind::Move {
+                            start: drag.start,
+                            end: drag.end,
+                        },
+                    });
+                    return;
+                }
+                if moved {
                     self.retime_occurrence(&id, occurrence.start, drag.start, drag.end, window, cx);
                 }
                 // The panel, when open, follows the selection.
@@ -257,11 +335,30 @@ impl CalendarView {
         cancelled
     }
 
-    /// Whether `occurrence` is being moved or resized, so its block fades.
+    /// Whether `occurrence` is being moved or resized, or waits to be, so
+    /// its block fades.
     pub(crate) fn is_dragged(&self, occurrence: &Occurrence) -> bool {
         self.drag
             .as_ref()
             .is_some_and(|d| d.active && d.occurrence().as_ref() == Some(occurrence))
+            || self.prompt.as_ref().is_some_and(|p| {
+                matches!(p.kind, PromptKind::Move { .. })
+                    && p.occurrence == occurrence.start
+                    && self.data.events[occurrence.event].id == p.event_id
+            })
+    }
+
+    /// What the grid previews: the drag under way, or a move waiting for
+    /// "This event" or "All events". Its times, and the event it moves.
+    fn ghost(&self) -> Option<(NaiveDateTime, NaiveDateTime, Option<usize>)> {
+        if let Some(drag) = self.drag.as_ref().filter(|d| d.active) {
+            return Some((drag.start, drag.end, drag.occurrence().map(|o| o.event)));
+        }
+        let prompt = self.prompt.as_ref()?;
+        let PromptKind::Move { start, end } = prompt.kind else {
+            return None;
+        };
+        Some((start, end, self.data.event_ix(&prompt.event_id)))
     }
 
     /// The layer over the window that takes the mouse during a drag.
@@ -295,58 +392,93 @@ impl CalendarView {
     /// The preview of a drag on `date`'s column: the event at its new
     /// times, or the one being made.
     pub(crate) fn render_drag_ghost(&self, date: NaiveDate, theme: &Theme) -> Option<AnyElement> {
-        let drag = self.drag.as_ref().filter(|d| d.active)?;
-        let top = time::minutes_into(date, drag.start).max(0);
-        let bottom = time::minutes_into(date, drag.end).min(DAY_MINUTES);
+        let (start, end, event) = self.ghost()?;
+        let top = time::minutes_into(date, start).max(0);
+        let bottom = time::minutes_into(date, end).min(DAY_MINUTES);
         if bottom <= top {
             return None;
         }
-        let (title, color) = match drag.occurrence() {
-            Some(occurrence) => {
-                let event = self.data.events.get(occurrence.event)?;
+        let (title, color) = match event {
+            Some(ix) => {
+                let event = self.data.events.get(ix)?;
                 (event.display_title().to_string(), self.data.color_of(event))
             }
             None => ("New event".to_string(), theme.accent),
         };
+        let top_px = top as f32 / 60. * HOUR_HEIGHT + 1.;
         let height = ((bottom - top) as f32 / 60. * HOUR_HEIGHT - 2.).max(18.);
         let compact = height < 34.;
         let text = theme.cal_selected_text;
-        let time = time_range_label(drag.start.time(), drag.end.time());
+        let time = time_range_label(start.time(), end.time());
+        // The times, floating above the block (below it at the top of the
+        // day), so the snap reads at a glance.
+        let label = (date == start.date() || top == 0).then(|| {
+            let above = top_px >= LABEL_HEIGHT + 4.;
+            div()
+                .absolute()
+                .left(px(2.))
+                .map(|d| {
+                    if above {
+                        d.top(px(top_px - LABEL_HEIGHT - 4.))
+                    } else {
+                        d.top(px(top_px + height + 4.))
+                    }
+                })
+                .h(px(LABEL_HEIGHT))
+                .px(SPACE_SM)
+                .flex()
+                .items_center()
+                .rounded(RADIUS_SM)
+                .bg(theme.text)
+                .text_color(theme.overlay_bg.alpha(1.))
+                .text_size(TEXT_XS)
+                .font_weight(FontWeight::SEMIBOLD)
+                .whitespace_nowrap()
+                .shadow(popover_shadow(theme))
+                .child(time.clone())
+        });
         Some(
             div()
                 .absolute()
-                .top(px(top as f32 / 60. * HOUR_HEIGHT + 1.))
-                .left(px(2.))
-                .right(px(6.))
-                .h(px(height))
-                .px(SPACE_SM)
-                .py(px(if compact { 0. } else { 4. }))
-                .flex()
-                .when(compact, |d| d.items_center().gap(SPACE_SM))
-                .when(!compact, |d| d.flex_col())
-                .overflow_hidden()
-                .rounded(RADIUS_SM)
-                .bg(theme.event_selected_fill(color))
-                .border_1()
-                .border_color(text.alpha(0.5))
-                .shadow(vec![gpui::BoxShadow {
-                    color: theme.overlay_shadow.alpha(0.45),
-                    offset: point(px(0.), px(6.)),
-                    blur_radius: px(16.),
-                    spread_radius: px(-2.),
-                    inset: false,
-                }])
-                .text_size(TEXT_SM)
-                .line_height(gpui::relative(1.25))
-                .text_color(text)
+                .top_0()
+                .left_0()
+                .right_0()
                 .child(
                     div()
-                        .min_w_0()
-                        .truncate()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(title),
+                        .absolute()
+                        .top(px(top_px))
+                        .left(px(2.))
+                        .right(px(6.))
+                        .h(px(height))
+                        .px(SPACE_SM)
+                        .py(px(if compact { 0. } else { 4. }))
+                        .flex()
+                        .when(compact, |d| d.items_center().gap(SPACE_SM))
+                        .when(!compact, |d| d.flex_col())
+                        .overflow_hidden()
+                        .rounded(RADIUS_SM)
+                        .bg(theme.event_selected_fill(color))
+                        .border_1()
+                        .border_color(text.alpha(0.5))
+                        .shadow(vec![gpui::BoxShadow {
+                            color: theme.overlay_shadow.alpha(0.45),
+                            offset: point(px(0.), px(6.)),
+                            blur_radius: px(16.),
+                            spread_radius: px(-2.),
+                            inset: false,
+                        }])
+                        .text_size(TEXT_SM)
+                        .line_height(gpui::relative(1.25))
+                        .text_color(text)
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(title),
+                        ),
                 )
-                .child(div().flex_none().text_color(text.alpha(0.85)).child(time))
+                .children(label)
                 .into_any_element(),
         )
     }

@@ -7,10 +7,14 @@
 use std::{cell::RefCell, rc::Rc};
 
 use gpui::{
-    AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable as _, FontWeight,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, Render, SharedString,
-    StatefulInteractiveElement as _, Styled, Subscription, Window, actions, anchored,
-    component::input::{Input, InputEvent, InputState, Textarea, TextareaState},
+    AppContext as _, Context, Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable as _,
+    FontWeight, InteractiveElement, IntoElement, MouseButton, ParentElement, PathPromptOptions,
+    Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled, Subscription,
+    Window, actions, anchored,
+    component::{
+        input::{Input, InputEvent, InputState, Textarea, TextareaState},
+        scroll::ScrollableElement as _,
+    },
     deferred, div,
     prelude::FluentBuilder as _,
     px, relative,
@@ -20,13 +24,13 @@ use nucleo_matcher::{
     pattern::{AtomKind, CaseMatching, Normalization, Pattern},
 };
 
-use super::{avatar, html_view, icon, keycap};
+use super::{attachment_icon, avatar, html_view, icon, keycap};
 use crate::ui::style::*;
 use crate::{
     actions::{COMPOSER, DiscardDraft, RECIPIENTS, SendMessage, ShowCcBcc},
     app::ComposeKind,
     assets::Icon,
-    data::Contact,
+    data::{Attachment, Contact, file_size},
     html::{self, Document},
     theme::Theme,
 };
@@ -221,6 +225,9 @@ pub struct DraftContent {
     pub bcc: Vec<Contact>,
     pub subject: String,
     pub body: String,
+    /// Files attached, as name, size and type; the files themselves aren't
+    /// read (see BACKEND_REQUIREMENTS ATT-5).
+    pub attachments: Vec<Attachment>,
 }
 
 impl DraftContent {
@@ -280,11 +287,17 @@ pub struct Composer {
     /// The Drafts thread this edits: replaced on save, removed on send.
     pub draft_id: Option<String>,
     pub quoted: Option<Quoted>,
+    /// Under the conversation it answers, rather than alone in the pane.
+    pub inline: bool,
     recipients: [Recipients; 3],
     show_cc_bcc: bool,
     subject: Entity<InputState>,
     body: Entity<TextareaState>,
-    error: Option<SharedString>,
+    attachments: Vec<Attachment>,
+    /// The problem, and the field it's shown under.
+    error: Option<(Field, SharedString)>,
+    /// Scrolls the fields of a draft alone in the pane, above its send row.
+    scroll: ScrollHandle,
     initial: DraftContent,
     book: Rc<ContactBook>,
     _subscriptions: Vec<Subscription>,
@@ -300,11 +313,12 @@ impl Composer {
         reply_to: Option<String>,
         draft_id: Option<String>,
         quoted: Option<Quoted>,
+        inline: bool,
         book: Rc<ContactBook>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let standalone = reply_to.is_none() || draft_id.is_some();
+        let standalone = !inline;
         let mut subscriptions = Vec::new();
         let recipients = [
             (Field::To, &content.to),
@@ -350,10 +364,14 @@ impl Composer {
                 })
                 .default_value(content.body.clone())
         });
-        subscriptions.push(cx.subscribe(&body, |_, body, event, cx| {
+        subscriptions.push(cx.subscribe(&body, |this: &mut Self, body, event, cx| {
             if let InputEvent::Change = event {
                 let body = body.read(cx);
                 let at_end = body.cursor() >= body.text().len();
+                // A growing draft alone in the pane keeps its end in view.
+                if at_end && !this.inline && this.quoted.is_none() {
+                    this.scroll.scroll_to_bottom();
+                }
                 cx.emit(ComposerEvent::Edited { at_end });
             }
         }));
@@ -363,11 +381,14 @@ impl Composer {
             reply_to,
             draft_id,
             quoted,
+            inline,
             show_cc_bcc: !content.cc.is_empty() || !content.bcc.is_empty(),
             recipients,
             subject,
             body,
+            attachments: content.attachments.clone(),
             error: None,
+            scroll: ScrollHandle::new(),
             initial: content,
             book,
             _subscriptions: subscriptions,
@@ -376,8 +397,7 @@ impl Composer {
 
     /// Whether the subject is a field of its own; replies keep the thread's.
     fn edits_subject(&self) -> bool {
-        self.kind != ComposeKind::Reply && self.kind != ComposeKind::ReplyAll
-            || self.draft_id.is_some()
+        self.kind != ComposeKind::Reply && self.kind != ComposeKind::ReplyAll || !self.inline
     }
 
     /// The fields in tab order.
@@ -442,21 +462,56 @@ impl Composer {
         self.focus_field(Field::Cc, window, cx);
     }
 
+    /// Show `error` under the To field.
     pub fn set_error(&mut self, error: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.error = Some(error.into());
+        self.error = Some((Field::To, error.into()));
         cx.notify();
     }
 
-    /// What the draft says now. Addresses still being typed count as
-    /// recipients.
+    /// Before sending: every recipient must be an address. Otherwise says
+    /// which one isn't, under its field, and puts the caret there.
+    pub fn validate(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        for (ix, field) in self.recipients.iter().enumerate() {
+            let pending = field.input.read(cx).value();
+            let bad = field
+                .chips
+                .iter()
+                .map(|c| c.email.clone())
+                .find(|email| parse_address(email).is_none())
+                .or_else(|| {
+                    pending
+                        .split([',', ';'])
+                        .map(str::trim)
+                        .find(|part| {
+                            !part.is_empty()
+                                && parse_address(part).is_none()
+                                && self.book.best(part).is_none()
+                        })
+                        .map(str::to_string)
+                });
+            if let Some(bad) = bad {
+                let field = recipient_field(ix);
+                self.error = Some((field, format!("“{bad}” isn’t an email address").into()));
+                self.focus_field(field, window, cx);
+                return false;
+            }
+        }
+        true
+    }
+
+    /// What the draft says now. Addresses and names still being typed
+    /// count as recipients, as if committed with a comma.
     pub fn content(&self, cx: &gpui::App) -> DraftContent {
         let recipients = |r: &Recipients| {
             let mut chips = r.chips.clone();
             let pending = r.input.read(cx).value();
-            for part in pending.split([',', ';']) {
-                if let Some(contact) = parse_address(part) {
-                    chips.push(contact);
-                }
+            for part in pending.split([',', ';']).map(str::trim) {
+                let contact = parse_address(part).or_else(|| {
+                    (!part.is_empty() && !part.contains('@'))
+                        .then(|| self.book.best(part).cloned())
+                        .flatten()
+                });
+                chips.extend(contact);
             }
             chips
         };
@@ -466,14 +521,24 @@ impl Composer {
             bcc: recipients(&self.recipients[2]),
             subject: self.subject.read(cx).value().trim().to_string(),
             body: self.body.read(cx).value().trim_end().to_string(),
+            attachments: self.attachments.clone(),
         }
     }
 
-    /// Nothing changed since it opened.
+    /// Nothing changed since it opened. Text still in a recipient field
+    /// counts as a change, even when it isn't an address yet.
     pub fn is_pristine(&self, cx: &gpui::App) -> bool {
+        if self
+            .recipients
+            .iter()
+            .any(|r| !r.input.read(cx).value().trim().is_empty())
+        {
+            return false;
+        }
         let now = self.content(cx);
         let emails = |c: &[Contact]| c.iter().map(|c| c.email.to_lowercase()).collect::<Vec<_>>();
-        emails(&now.to) == emails(&self.initial.to)
+        now.attachments.len() == self.initial.attachments.len()
+            && emails(&now.to) == emails(&self.initial.to)
             && emails(&now.cc) == emails(&self.initial.cc)
             && emails(&now.bcc) == emails(&self.initial.bcc)
             && now.subject == self.initial.subject.trim()
@@ -595,7 +660,13 @@ impl Composer {
                 input.update(cx, |input, cx| input.set_value("", window, cx));
                 self.update_suggestions(ix, cx);
             }
-            None => self.set_error(format!("“{}” isn’t an email address", text.trim()), cx),
+            None => {
+                self.error = Some((
+                    recipient_field(ix),
+                    format!("“{}” isn’t an email address", text.trim()).into(),
+                ));
+                cx.notify();
+            }
         }
         true
     }
@@ -720,7 +791,7 @@ impl Composer {
         let focused = field.input.focus_handle(cx).is_focused(window);
 
         let chips = field.chips.iter().enumerate().map(|(chip_ix, contact)| {
-            let invalid = !contact.email.contains('@');
+            let invalid = parse_address(&contact.email).is_none();
             div()
                 .id(("chip", ix * 1000 + chip_ix))
                 .h(px(24.))
@@ -736,7 +807,7 @@ impl Composer {
                     theme.chip_bg
                 })
                 .border_1()
-                .border_color(theme.border)
+                .border_color(if invalid { theme.danger } else { theme.border })
                 .child(avatar(
                     contact.initials(),
                     theme.avatar_color(&contact.email),
@@ -838,15 +909,29 @@ impl Composer {
             )
         });
 
-        div()
-            .key_context(RECIPIENTS)
+        let error = self
+            .error
+            .as_ref()
+            .filter(|(at, _)| *at == recipient_field(ix))
+            .map(|(_, error)| {
+                div()
+                    .pl(px(60.))
+                    .pb(SPACE_SM)
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_XS)
+                    .text_size(TEXT_SM)
+                    .text_color(theme.danger)
+                    .child(icon(Icon::OctagonAlert, px(13.), theme.danger))
+                    .child(error.clone())
+            });
+
+        let row = div()
             .min_h(px(40.))
             .py(SPACE_SM)
             .flex()
             .items_start()
             .gap(SPACE_SM)
-            .border_b_1()
-            .border_color(theme.border)
             .child(field_label(label, theme))
             .child(
                 div()
@@ -889,14 +974,121 @@ impl Composer {
                         .child("Cc Bcc")
                         .on_click(|_, window, cx| window.dispatch_action(Box::new(ShowCcBcc), cx)),
                 )
-            })
+            });
+        div()
+            .key_context(RECIPIENTS)
+            .flex()
+            .flex_col()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(row)
+            .children(error)
+    }
+
+    // Attachments.
+
+    fn attach_paths(&mut self, paths: &[std::path::PathBuf], cx: &mut Context<Self>) {
+        for path in paths {
+            let Ok(meta) = std::fs::metadata(path) else {
+                continue;
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            self.attachments
+                .push(Attachment::from_file(name, meta.len()));
+        }
+        cx.notify();
+    }
+
+    /// The native open panel; the files picked are attached.
+    fn pick_files(&mut self, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Attach".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = paths.await {
+                this.update(cx, |this, cx| this.attach_paths(&paths, cx))
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
+    fn render_attachments(
+        &self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
+        if self.attachments.is_empty() {
+            return None;
+        }
+        let chips = self.attachments.iter().enumerate().map(|(ix, attachment)| {
+            div()
+                .id(("attachment", ix))
+                .h(px(32.))
+                .pl(SPACE_SM)
+                .pr(SPACE_XS)
+                .flex()
+                .items_center()
+                .gap(SPACE_SM)
+                .rounded(RADIUS_MD)
+                .bg(theme.chip_bg)
+                .child(attachment_icon(attachment, theme))
+                .child(
+                    div()
+                        .max_w(px(220.))
+                        .truncate()
+                        .text_size(TEXT_SM)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(attachment.name.clone()),
+                )
+                .child(
+                    div()
+                        .text_size(TEXT_SM)
+                        .text_color(theme.text_faint)
+                        .child(file_size(attachment.size_bytes)),
+                )
+                .child(
+                    div()
+                        .id(("attachment-remove", ix))
+                        .role(gpui::Role::Button)
+                        .aria_label(format!("Remove {}", attachment.name))
+                        .size(px(22.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(RADIUS_SM)
+                        .hover(|s| s.bg(theme.hover_bg))
+                        .child(icon(Icon::X, px(12.), theme.text_faint))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.attachments.remove(ix);
+                            cx.notify();
+                        })),
+                )
+        });
+        Some(
+            div()
+                .mt(SPACE_MD)
+                .flex()
+                .flex_wrap()
+                .gap(SPACE_SM)
+                .children(chips),
+        )
     }
 }
 
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
-        let standalone = self.reply_to.is_none() || self.draft_id.is_some();
+        let standalone = !self.inline;
 
         let title = match (self.kind, self.draft_id.is_some()) {
             (_, true) => "Draft",
@@ -950,13 +1142,14 @@ impl Render for Composer {
         };
 
         let footer = div()
-            .mt(SPACE_LG)
             .flex()
             .items_center()
             .gap(SPACE_MD)
             .child(
                 div()
                     .id("send")
+                    .role(gpui::Role::Button)
+                    .aria_label("Send")
                     .h(px(32.))
                     .pl(SPACE_MD)
                     .pr(SPACE_LG)
@@ -985,12 +1178,25 @@ impl Render for Composer {
                     .child(hint(&["Esc"], "Save draft")),
             )
             .child(div().flex_1())
-            .children(self.error.clone().map(|error| {
-                div()
-                    .text_size(TEXT_SM)
-                    .text_color(theme.danger)
-                    .child(error)
-            }))
+            .child(
+                super::style::focusable_control(div().id("attach"), &theme)
+                    .role(gpui::Role::Button)
+                    .aria_label("Attach files")
+                    .size(px(30.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(RADIUS_MD)
+                    .hover(|s| s.bg(theme.hover_bg))
+                    .active(|s| s.bg(theme.selected_bg))
+                    .child(icon(Icon::Paperclip, px(16.), theme.icon))
+                    .tooltip(|window, cx| {
+                        gpui::component::tooltip::Tooltip::new("Attach files (or drop them here)")
+                            .build(window, cx)
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| this.pick_files(cx))),
+            )
             // Alone in the pane, the toolbar above has these.
             .when(!standalone, |this| {
                 this.child(super::icon_button(
@@ -1002,17 +1208,9 @@ impl Render for Composer {
                 ))
             });
 
-        div()
-            .key_context(COMPOSER)
-            .on_action(cx.listener(Self::next_field))
-            .on_action(cx.listener(Self::prev_field))
-            .on_action(cx.listener(Self::suggest_next))
-            .on_action(cx.listener(Self::suggest_prev))
-            .on_action(cx.listener(Self::remove_last_recipient))
-            .on_action(cx.listener(Self::dismiss_suggestions))
+        let fields = div()
             .flex()
             .flex_col()
-            .text_size(TEXT_BASE)
             .when(!standalone, |this| {
                 this.child(
                     div()
@@ -1069,8 +1267,71 @@ impl Render for Composer {
                     .line_height(relative(1.55))
                     .child(Textarea::new(&self.body).appearance(false)),
             )
-            .children(quoted)
-            .child(footer)
+            .children(self.render_attachments(&theme, cx))
+            .children(quoted);
+
+        let drop_tint = theme.accent.alpha(0.06);
+        let drop_ring = theme.accent;
+        div()
+            .id("composer")
+            .key_context(COMPOSER)
+            .on_action(cx.listener(Self::next_field))
+            .on_action(cx.listener(Self::prev_field))
+            .on_action(cx.listener(Self::suggest_next))
+            .on_action(cx.listener(Self::suggest_prev))
+            .on_action(cx.listener(Self::remove_last_recipient))
+            .on_action(cx.listener(Self::dismiss_suggestions))
+            // Files dropped anywhere on the draft are attached.
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                this.attach_paths(paths.paths(), cx)
+            }))
+            .drag_over::<ExternalPaths>(move |style, _, _, _| {
+                style.bg(drop_tint).border_color(drop_ring)
+            })
+            .rounded(RADIUS_LG)
+            .border_1()
+            .border_color(gpui::transparent_black())
+            .text_size(TEXT_BASE)
+            .map(|this| {
+                if standalone {
+                    // The send row stays at the bottom of the pane while the
+                    // fields scroll above it.
+                    this.size_full()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .relative()
+                                .flex_1()
+                                .min_h_0()
+                                .child(
+                                    div()
+                                        .id("compose-scroll")
+                                        .size_full()
+                                        .overflow_y_scroll()
+                                        .track_scroll(&self.scroll)
+                                        .px(SPACE_XL)
+                                        .pt(SPACE_2XS)
+                                        .pb(SPACE_LG)
+                                        .child(fields),
+                                )
+                                .vertical_scrollbar(&self.scroll),
+                        )
+                        .child(
+                            footer
+                                .flex_none()
+                                .px(SPACE_XL)
+                                .py(SPACE_MD)
+                                .border_t_1()
+                                .border_color(theme.border),
+                        )
+                } else {
+                    this.flex()
+                        .flex_col()
+                        .child(fields)
+                        .child(footer.mt(SPACE_LG))
+                }
+            })
     }
 }
 

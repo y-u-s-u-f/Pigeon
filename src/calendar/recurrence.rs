@@ -41,15 +41,22 @@ pub fn occurrences(
     out
 }
 
-/// Starts of the event's occurrences overlapping `[from, to)`.
+/// Starts of the event's occurrences overlapping `[from, to)`. A series
+/// skips its exceptions and stops at its end.
 fn starts_in(event: &Event, from: NaiveDateTime, to: NaiveDateTime) -> Vec<NaiveDateTime> {
     let duration = event.duration().max(Duration::zero());
+    let Some(recurrence) = event.recurrence else {
+        let overlaps = |start: NaiveDateTime| {
+            start < to && (start + duration > from || (duration.is_zero() && start >= from))
+        };
+        return [event.start].into_iter().filter(|&s| overlaps(s)).collect();
+    };
+    let to = event.until.map_or(to, |until| to.min(until));
     // Zero-length events still show at their start.
     let overlaps = |start: NaiveDateTime| {
-        start < to && (start + duration > from || (duration.is_zero() && start >= from))
-    };
-    let Some(recurrence) = event.recurrence else {
-        return [event.start].into_iter().filter(|&s| overlaps(s)).collect();
+        start < to
+            && (start + duration > from || (duration.is_zero() && start >= from))
+            && !event.exceptions.contains(&start)
     };
     // The earliest start whose occurrence could still reach `from`.
     let earliest = from - duration;
@@ -128,7 +135,31 @@ mod tests {
             reminder_minutes: None,
             video_link: String::new(),
             busy: true,
+            exceptions: Vec::new(),
+            until: None,
+            recurring_event_id: None,
+            original_start: None,
         }
+    }
+
+    #[test]
+    fn exceptions_and_end_are_skipped() {
+        let mut e = event(at(d(2026, 10, 26), 9, 30), 15, Some(Recurrence::Weekdays));
+        e.exceptions.push(at(d(2026, 10, 28), 9, 30));
+        e.until = Some(at(d(2026, 10, 30), 9, 30));
+        assert_eq!(
+            starts(&e, d(2026, 10, 26), 7),
+            vec![
+                at(d(2026, 10, 26), 9, 30),
+                at(d(2026, 10, 27), 9, 30),
+                at(d(2026, 10, 29), 9, 30),
+            ]
+        );
+        // Monthly too.
+        let mut e = event(at(d(2026, 1, 15), 12, 0), 60, Some(Recurrence::Monthly));
+        e.exceptions.push(at(d(2026, 3, 15), 12, 0));
+        e.until = Some(at(d(2026, 6, 1), 0, 0));
+        assert_eq!(starts(&e, d(2026, 1, 1), 365).len(), 4);
     }
 
     fn starts(event: &Event, from: NaiveDate, days: i64) -> Vec<NaiveDateTime> {

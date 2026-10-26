@@ -24,7 +24,10 @@ use gpui::{Action, App, KeyBinding, KeyContext, actions};
 use crate::{
     assets::Icon,
     search,
-    ui::{calendar::event_panel, command_palette, composer},
+    ui::{
+        calendar::{self, GoToDate, NextDay, PrevDay, ToggleWeekNumbers, event_panel},
+        command_palette, composer,
+    },
 };
 
 actions!(
@@ -101,8 +104,28 @@ actions!(
         CloseWindow,
         Minimize,
         ZoomWindow,
+        // Mail: selecting several threads, moving and labelling them.
+        ToggleSelected,
+        ExtendSelectionDown,
+        ExtendSelectionUp,
+        ClearSelection,
+        MoveTo,
+        ApplyLabel,
+        ToggleDensity,
     ]
 );
+
+/// Move the selected threads to a folder; from the context menu and the
+/// toolbar's "…" menu.
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(namespace = pigeon, no_json)]
+pub struct MoveToFolder(pub crate::data::Folder);
+
+/// Add a label (by index into `MailData::labels`) to the selected threads,
+/// or remove it when they all have it.
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(namespace = pigeon, no_json)]
+pub struct ToggleLabel(pub usize);
 
 /// Key context set on the root view.
 pub const CONTEXT: &str = "Pigeon";
@@ -181,6 +204,17 @@ pub fn bind_keys(cx: &mut App) {
         // Thread actions.
         KeyBinding::new("e", Archive, Some(MAIL)),
         KeyBinding::new("#", Delete, Some(MAIL)),
+        KeyBinding::new("delete", Delete, Some(MAIL)),
+        KeyBinding::new("backspace", Delete, Some(MAIL)),
+        KeyBinding::new("v", MoveTo, Some(MAIL)),
+        KeyBinding::new("l", ApplyLabel, Some(MAIL)),
+        // Selecting several threads, like Gmail.
+        KeyBinding::new("x", ToggleSelected, Some(MAIL)),
+        KeyBinding::new("shift-down", ExtendSelectionDown, Some(LIST)),
+        KeyBinding::new("shift-up", ExtendSelectionUp, Some(LIST)),
+        KeyBinding::new("shift-j", ExtendSelectionDown, Some(MAIL)),
+        KeyBinding::new("shift-k", ExtendSelectionUp, Some(MAIL)),
+        KeyBinding::new("shift-e", ToggleArchivedSection, Some(MAIL)),
         KeyBinding::new("s", ToggleStar, Some(MAIL)),
         KeyBinding::new("shift-u", MarkUnread, Some(MAIL)),
         KeyBinding::new("shift-i", MarkRead, Some(MAIL)),
@@ -197,15 +231,21 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("shift-x", RemoveCancelledEvent, Some(MAIL)),
         // Search. Escape in the list clears a search too.
         KeyBinding::new("escape", CloseSearch, Some(LIST)),
+        // Bound after, so it wins: escape clears a selection first.
+        KeyBinding::new("escape", ClearSelection, Some(LIST)),
         KeyBinding::new("escape", CloseSearch, Some(SEARCH)),
         KeyBinding::new("down", search::FocusResults, Some(SEARCH_INPUT)),
+        // While the suggestions show, the arrows move through them.
+        KeyBinding::new("down", search::NextSuggestion, Some(SEARCH_INPUT)),
+        KeyBinding::new("up", search::PrevSuggestion, Some(SEARCH_INPUT)),
         // Compose. Inputs take enter and escape themselves, so these also bind
         // inside them, where they win.
-        KeyBinding::new("cmd-enter", SendMessage, Some(CONTEXT)),
+        KeyBinding::new("cmd-enter", SendMessage, Some(COMPOSER)),
         KeyBinding::new("cmd-enter", SendMessage, Some(COMPOSER_INPUT)),
         KeyBinding::new("cmd-shift-c", ShowCcBcc, Some(COMPOSER)),
         KeyBinding::new("cmd-shift-d", DiscardDraft, Some(COMPOSER)),
         KeyBinding::new("escape", CloseDraft, Some(COMPOSER)),
+        KeyBinding::new("z", Undo, Some(MAIL)),
         KeyBinding::new("cmd-z", Undo, Some(MAIL)),
         KeyBinding::new("tab", composer::NextField, Some(COMPOSER)),
         KeyBinding::new("shift-tab", composer::PrevField, Some(COMPOSER)),
@@ -232,26 +272,34 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("g a", GoToArchive, Some(MAIL)),
         KeyBinding::new("g !", GoToSpam, Some(MAIL)),
         KeyBinding::new("g l", GoToLabel, Some(MAIL)),
+        // Between the apps, from either one.
+        KeyBinding::new("g m", GoToMail, Some(MAIL)),
+        KeyBinding::new("g c", GoToCalendar, Some(MAIL)),
+        KeyBinding::new("g m", GoToMail, Some(CAL)),
+        KeyBinding::new("g c", GoToCalendar, Some(CAL)),
         // Calendar, like Google Calendar.
         KeyBinding::new("d", ShowDayView, Some(CAL)),
         KeyBinding::new("w", ShowWeekView, Some(CAL)),
         KeyBinding::new("m", ShowMonthView, Some(CAL)),
         KeyBinding::new("t", GoToToday, Some(CAL)),
         KeyBinding::new("n", NextPeriod, Some(CAL)),
-        KeyBinding::new("j", NextPeriod, Some(CAL)),
         KeyBinding::new("p", PrevPeriod, Some(CAL)),
-        KeyBinding::new("k", PrevPeriod, Some(CAL)),
+        KeyBinding::new("right", calendar::NextDay, Some(CAL)),
+        KeyBinding::new("left", calendar::PrevDay, Some(CAL)),
+        KeyBinding::new("cmd-shift-t", calendar::GoToDate, Some(CALENDAR)),
+        KeyBinding::new("g d", calendar::GoToDate, Some(CAL)),
         KeyBinding::new("c", NewEvent, Some(CAL)),
         KeyBinding::new("enter", OpenEvent, Some(CAL)),
         KeyBinding::new("e", OpenEvent, Some(CAL)),
         KeyBinding::new("delete", DeleteEvent, Some(CAL)),
         KeyBinding::new("backspace", DeleteEvent, Some(CAL)),
+        // Down and up go by event, like j and k in Mail; tab too.
         KeyBinding::new("tab", SelectNextEvent, Some(CAL)),
-        KeyBinding::new("right", SelectNextEvent, Some(CAL)),
         KeyBinding::new("down", SelectNextEvent, Some(CAL)),
+        KeyBinding::new("j", SelectNextEvent, Some(CAL)),
         KeyBinding::new("shift-tab", SelectPrevEvent, Some(CAL)),
-        KeyBinding::new("left", SelectPrevEvent, Some(CAL)),
         KeyBinding::new("up", SelectPrevEvent, Some(CAL)),
+        KeyBinding::new("k", SelectPrevEvent, Some(CAL)),
         // Inputs pass escape on, so this closes the panel from them too.
         KeyBinding::new("escape", CloseEvent, Some(CALENDAR)),
         KeyBinding::new("cmd-z", Undo, Some(CAL)),
@@ -334,6 +382,7 @@ pub enum Scope {
 pub enum Group {
     Navigation,
     Conversation,
+    Selection,
     Invite,
     Compose,
     GoTo,
@@ -348,6 +397,7 @@ impl Group {
         match self {
             Group::Navigation => "Navigation",
             Group::Conversation => "Conversation",
+            Group::Selection => "Selection",
             Group::Invite => "Invitations",
             Group::Compose => "Compose",
             Group::GoTo => "Go to",
@@ -377,53 +427,92 @@ pub struct Command {
     pub action: fn() -> Box<dyn Action>,
     /// Shown in the shortcuts overlay but not offered in the palette.
     pub help_only: bool,
+    /// When the palette offers it (`PigeonApp::command_available`).
+    pub when: When,
+}
+
+/// The state a command needs to do anything; the palette leaves out the
+/// ones that can't run now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum When {
+    Always,
+    /// A conversation is selected (or several are).
+    Thread,
+    /// A conversation that can be replied to is selected.
+    Replyable,
+    /// The selected conversation has more than one message.
+    Messages,
+    /// A draft is open.
+    Draft,
+    /// The toast offers an undo.
+    Undo,
+    /// The selected conversation has an invitation to answer.
+    Invite,
+    /// The selected conversation has a cancelled event to remove.
+    Cancelled,
+    /// The search bar is open.
+    Searching,
+    /// Several conversations are selected.
+    Selection,
+    /// The Inbox, with its archived section, is showing.
+    Inbox,
 }
 
 macro_rules! commands {
-    ($($group:ident: $name:literal, $icon:ident, $action:ident $(, $help_only:ident)?;)*) => {
+    ($($group:ident: $name:literal, $icon:ident, $action:ident $(, $help_only:ident)? $(if $when:ident)?;)*) => {
         &[$(Command {
             name: $name,
             group: Group::$group,
             icon: Icon::$icon,
             action: || Box::new($action),
             help_only: commands!(@help $($help_only)?),
+            when: commands!(@when $($when)?),
         }),*]
     };
     (@help) => { false };
     (@help help_only) => { true };
+    (@when) => { When::Always };
+    (@when $when:ident) => { When::$when };
 }
 
 /// Every command, in palette order.
 pub const COMMANDS: &[Command] = commands! {
     Compose: "Compose New Message", SquarePen, Compose;
-    Compose: "Reply", Reply, Reply;
-    Compose: "Reply All", ReplyAll, ReplyAll;
-    Compose: "Forward", Forward, Forward;
-    Compose: "Send", Send, SendMessage;
-    Compose: "Show Cc and Bcc", Mail, ShowCcBcc;
-    Compose: "Close Draft (Saves to Drafts)", FilePen, CloseDraft;
-    Compose: "Discard Draft", Trash, DiscardDraft;
-    Compose: "Undo Send / Discard", Undo, Undo;
-    Conversation: "Archive", Archive, Archive;
-    Conversation: "Delete", Trash, Delete;
-    Conversation: "Star / Unstar", Star, ToggleStar;
-    Conversation: "Mark as Unread", MailUnread, MarkUnread;
-    Conversation: "Mark as Read", MailOpen, MarkRead;
-    Invite: "Accept Invitation (Yes)", Check, AcceptInvite;
-    Invite: "Maybe to Invitation", Help, MaybeInvite;
-    Invite: "Decline Invitation (No)", X, DeclineInvite;
-    Invite: "Open Invitation in Calendar", Calendar, OpenInviteInCalendar;
-    Invite: "Remove Cancelled Event from Calendar", Trash, RemoveCancelledEvent;
+    Compose: "Reply", Reply, Reply if Replyable;
+    Compose: "Reply All", ReplyAll, ReplyAll if Replyable;
+    Compose: "Forward", Forward, Forward if Replyable;
+    Compose: "Send", Send, SendMessage if Draft;
+    Compose: "Show Cc and Bcc", Mail, ShowCcBcc if Draft;
+    Compose: "Close Draft (Saves to Drafts)", FilePen, CloseDraft if Draft;
+    Compose: "Discard Draft", Trash, DiscardDraft if Draft;
+    Conversation: "Undo", Undo, Undo if Undo;
+    Conversation: "Archive", Archive, Archive if Thread;
+    Conversation: "Delete", Trash, Delete if Thread;
+    Conversation: "Star / Unstar", Star, ToggleStar if Thread;
+    Conversation: "Mark as Unread", MailUnread, MarkUnread if Thread;
+    Conversation: "Mark as Read", MailOpen, MarkRead if Thread;
+    Conversation: "Move to…", FolderInput, MoveTo if Thread;
+    Conversation: "Label…", Tag, ApplyLabel if Thread;
+    Selection: "Select / Deselect Conversation", Check, ToggleSelected if Thread;
+    Selection: "Extend Selection Down", ChevronDown, ExtendSelectionDown if Thread;
+    Selection: "Extend Selection Up", ChevronUp, ExtendSelectionUp if Thread;
+    Selection: "Clear Selection", X, ClearSelection if Selection;
+    Invite: "Answer Yes", Check, AcceptInvite if Invite;
+    Invite: "Answer Maybe", Help, MaybeInvite if Invite;
+    Invite: "Answer No", X, DeclineInvite if Invite;
+    Invite: "Open Invitation in Calendar", Calendar, OpenInviteInCalendar if Invite;
+    Invite: "Remove Cancelled Event from Calendar", Trash, RemoveCancelledEvent if Cancelled;
     Navigation: "Next Conversation", ChevronDown, SelectNextThread;
     Navigation: "Previous Conversation", ChevronUp, SelectPrevThread;
     Navigation: "Open Conversation", Mail, OpenThread;
-    Navigation: "Back to List", Inbox, BackToList;
-    Navigation: "Next Message in Conversation", ChevronDown, NextMessage;
-    Navigation: "Previous Message in Conversation", ChevronUp, PrevMessage;
+    Navigation: "Back to List", Inbox, BackToList if Thread;
+    Navigation: "Next Message in Conversation", ChevronDown, NextMessage if Messages;
+    Navigation: "Previous Message in Conversation", ChevronUp, PrevMessage if Messages;
     Navigation: "Scroll Conversation Down", ChevronDown, ScrollReaderDown, help_only;
     Navigation: "Scroll Conversation Up", ChevronUp, ScrollReaderUp, help_only;
     Navigation: "Search Mail", Search, ToggleSearch;
-    Navigation: "Clear Search", X, CloseSearch;
+    Navigation: "Clear Search", X, CloseSearch if Searching;
+    Navigation: "Compact / Comfortable List", Rows, ToggleDensity;
     GoTo: "Go to Inbox", Inbox, GoToInbox;
     GoTo: "Go to Starred", Star, GoToStarred;
     GoTo: "Go to Sent", Send, GoToSent;
@@ -433,21 +522,25 @@ pub const COMMANDS: &[Command] = commands! {
     GoTo: "Go to Trash", Trash, GoToTrash;
     GoTo: "Go to Label…", ChevronRight, GoToLabel;
     Navigation: "Toggle Sidebar", PanelLeft, ToggleSidebar;
-    Navigation: "Show / Hide Archived in Inbox", Archive, ToggleArchivedSection;
+    Navigation: "Show / Hide Archived in Inbox", Archive, ToggleArchivedSection if Inbox;
     CalendarEvents: "New Event", Plus, NewEvent;
     CalendarEvents: "Open Event", Calendar, OpenEvent;
     CalendarEvents: "Delete Event", Trash, DeleteEvent;
     CalendarEvents: "Close Event", X, CloseEvent;
     CalendarEvents: "Undo Delete", Undo, Undo;
     CalendarNavigation: "Today", Calendar, GoToToday;
-    CalendarNavigation: "Next Day / Week / Month", ChevronRight, NextPeriod;
-    CalendarNavigation: "Previous Day / Week / Month", ChevronLeft, PrevPeriod;
+    CalendarNavigation: "Go to Date…", Calendar, GoToDate;
+    CalendarNavigation: "Next Day", ChevronRight, NextDay;
+    CalendarNavigation: "Previous Day", ChevronLeft, PrevDay;
     CalendarNavigation: "Next Event", ChevronDown, SelectNextEvent;
     CalendarNavigation: "Previous Event", ChevronUp, SelectPrevEvent;
+    CalendarNavigation: "Next Period (Day / Week / Month)", ChevronRight, NextPeriod;
+    CalendarNavigation: "Previous Period (Day / Week / Month)", ChevronLeft, PrevPeriod;
     CalendarView: "Day View", Calendar, ShowDayView;
     CalendarView: "Week View", Calendar, ShowWeekView;
     CalendarView: "Month View", Calendar, ShowMonthView;
     CalendarView: "Show / Hide Calendars…", Layers, ToggleCalendarsMenu;
+    CalendarView: "Show / Hide Week Numbers", Calendar, ToggleWeekNumbers;
     App: "Go to Mail", Mail, GoToMail;
     App: "Go to Calendar", Calendar, GoToCalendar;
     App: "Command Palette", Command, ToggleCommandPalette, help_only;

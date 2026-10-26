@@ -13,15 +13,14 @@ use gpui::{
 };
 
 use super::{
-    CalendarView, HOUR_HEIGHT, ViewKind, event_panel::PANEL_WIDTH, now, occurrence_key, today,
+    CalendarView, HOUR_HEIGHT, ViewKind, agenda::DAY_COLUMN_MAX, now, occurrence_key, today,
 };
 use crate::ui::style::*;
 use crate::{
-    app::RAIL_WIDTH,
     assets::Icon,
     calendar::{
         Occurrence, RsvpStatus,
-        layout::{Placement, pack_columns, pack_lanes},
+        layout::{column_box, pack_columns, pack_lanes},
         time::{self, compact_time_label, is_weekend, time_range_label},
     },
     theme::Theme,
@@ -34,16 +33,8 @@ const LANE_HEIGHT: f32 = 24.;
 /// Events shorter than this are laid out as if they were this long, since
 /// they're drawn that tall.
 const MIN_LAYOUT_MINUTES: i64 = 25;
-/// Events starting this much after another can be drawn over it: its
-/// title line stays visible above them.
-const CASCADE_GAP_MINUTES: i64 = 30;
-/// How far each cascaded event steps in from the ones it's drawn over.
-const CASCADE_INDENT: f32 = 14.;
-const MAX_CASCADE_DEPTH: usize = 4;
-
-fn indent(depth: usize) -> f32 {
-    depth.min(MAX_CASCADE_DEPTH) as f32 * CASCADE_INDENT
-}
+/// Side-by-side events narrower than this overlap a little instead.
+const MIN_COLUMN: f32 = 60.;
 
 /// How an event is drawn, from the user's answer to it.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -75,15 +66,12 @@ impl CalendarView {
         let theme = Theme::of(cx).clone();
         let today = today();
         let n = days.len();
-        // Roughly how wide a day is, to fit each event's text to its width.
-        let panel = if self.panel.is_some() && self.panel_docked(window) {
-            PANEL_WIDTH
+        // How wide a day is, to lay events out and fit their text.
+        let day_width = if self.day_side_shown(window) {
+            DAY_COLUMN_MAX
         } else {
-            0.
-        };
-        let day_width =
-            (f32::from(window.viewport_size().width) - f32::from(RAIL_WIDTH) - GUTTER - panel)
-                / n as f32;
+            (self.grid_area_width(window) - GUTTER) / n as f32
+        } - 1.;
         let first = days[0];
         let day_ix = |date: NaiveDate| (date - first).num_days();
 
@@ -118,6 +106,7 @@ impl CalendarView {
 
         let day_headers = days.iter().map(|&date| {
             let is_today = date == today;
+            let is_anchor = date == self.anchor;
             let weekend = is_weekend(date);
             div()
                 .id(("day-header", date.num_days_from_ce() as usize))
@@ -157,6 +146,8 @@ impl CalendarView {
                         .justify_center()
                         .rounded_full()
                         .text_size(TEXT_XL)
+                        .role(gpui::Role::Button)
+                        .aria_label(format!("Open {}", date.format("%A, %B %-d")))
                         .map(|d| {
                             if is_today {
                                 d.bg(theme.accent)
@@ -169,24 +160,41 @@ impl CalendarView {
                                     theme.text
                                 })
                                 .font_weight(FontWeight::MEDIUM)
-                                .when(!single, |d| d.hover(|s| s.bg(theme.hover_bg)))
+                                // The selected day, where left and right move.
+                                .when(is_anchor, |d| {
+                                    d.bg(theme.selected_bg).font_weight(FontWeight::SEMIBOLD)
+                                })
+                                .hover(|s| s.bg(theme.hover_bg))
                             }
                         })
                         .child(date.day().to_string())
-                        .when(!single, |d| {
-                            d.cursor_pointer().on_click(
-                                cx.listener(move |this, _, _, cx| this.open_day(date, cx)),
-                            )
-                        }),
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| this.open_day(date, cx))),
                 )
         });
 
-        let header = div()
-            .h(px(62.))
-            .flex_none()
-            .flex()
-            .child(gutter())
-            .children(day_headers);
+        let week_number = self.show_week_numbers.then(|| {
+            div()
+                .text_size(TEXT_XS)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text_faint)
+                .child(format!("W{}", first.iso_week().week()))
+        });
+        // The Day view's title already names the day.
+        let header = (!single).then(|| {
+            div()
+                .h(px(62.))
+                .flex_none()
+                .flex()
+                .child(
+                    gutter()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .children(week_number),
+                )
+                .children(day_headers)
+        });
 
         let all_day = div()
             .flex_none()
@@ -278,43 +286,30 @@ impl CalendarView {
                 .iter()
                 .map(|&(s, e)| (s, e.max(s + MIN_LAYOUT_MINUTES)))
                 .collect();
-            let placements = pack_columns(&layout_spans, CASCADE_GAP_MINUTES);
-            // Later starts are drawn last, on top of the ones they cascade over.
+            let placements = pack_columns(&layout_spans);
+            // Left to right, so where narrow columns overlap, each is drawn
+            // over the one to its left.
             let mut order: Vec<usize> = (0..timed.len()).collect();
-            order.sort_by_key(|&i| (minutes[i].0, placements[i].depth));
-            // Where the first event drawn over each one starts: its text
-            // stops above that.
-            let covered_at = |i: usize| {
-                let (start, end) = layout_spans[i];
-                let p = placements[i];
-                (0..timed.len())
-                    .filter(|&j| {
-                        let q = placements[j];
-                        let (s, e) = layout_spans[j];
-                        s > start
-                            && s < end
-                            && e > start
-                            && q.col < p.col + p.span
-                            && p.col < q.col + q.span
-                    })
-                    .map(|j| layout_spans[j].0)
-                    .min()
-            };
+            order.sort_by_key(|&i| (placements[i].col, minutes[i].0));
             let blocks = order
                 .into_iter()
                 .map(|i| {
                     let placement = placements[i];
-                    let (start, end) = minutes[i];
-                    let width = day_width * placement.span as f32 / placement.cols as f32
-                        - indent(placement.depth);
-                    let visible = covered_at(i).map_or(end, |at| at.min(end)) - start;
+                    let (left, width) = column_box(placement, day_width, MIN_COLUMN);
+                    let overlapped =
+                        placement.cols > 1 && day_width / (placement.cols as f32) < MIN_COLUMN;
                     let ends_here = time::minutes_into(date, timed[i].end) <= 24 * 60;
                     self.render_block(
                         *timed[i],
-                        (start, end, visible),
+                        minutes[i],
                         ends_here,
-                        placement,
-                        width,
+                        (
+                            left,
+                            width,
+                            placement.col + placement.span == placement.cols,
+                        ),
+                        overlapped,
+                        day_width,
                         &theme,
                         cx,
                     )
@@ -412,7 +407,7 @@ impl CalendarView {
             .size_full()
             .flex()
             .flex_col()
-            .child(header)
+            .children(header)
             .child(all_day)
             .child(
                 div()
@@ -433,15 +428,18 @@ impl CalendarView {
     }
 
     /// A timed event in its day's column, `start`..`end` minutes into it,
-    /// with its first `visible` minutes not covered by events drawn over it.
+    /// at `left` and `width` across a day `day_width` wide (`last`: it
+    /// reaches the day's right edge). `overlapped` blocks are drawn opaque,
+    /// since their columns overlap.
     #[allow(clippy::too_many_arguments)]
     fn render_block(
         &self,
         occurrence: Occurrence,
-        (start, end, visible): (i64, i64, i64),
+        (start, end): (i64, i64),
         ends_here: bool,
-        placement: Placement,
-        width: f32,
+        (left, width, last): (f32, f32, bool),
+        overlapped: bool,
+        day_width: f32,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -457,7 +455,7 @@ impl CalendarView {
         let narrow = width < 110.;
         let roomy = width > 260.;
         // Drawn over other events: opaque, so theirs don't show through.
-        let cascaded = placement.depth > 0;
+        let cascaded = overlapped;
 
         let (fill, text, muted) = if selected {
             let text = theme.cal_selected_text;
@@ -480,6 +478,10 @@ impl CalendarView {
         let title = event.display_title().to_string();
         let tooltip: SharedString = format!("{title}\n{time}").into();
 
+        let start_label = compact_time_label(occurrence.start.time());
+        // Roughly what a line holds at this size: about 6.5pt a character.
+        let fits_time_beside =
+            !narrow && (title.chars().count() + start_label.len() + 1) as f32 * 6.5 + 16. <= width;
         let content = if compact {
             div()
                 .flex()
@@ -496,17 +498,13 @@ impl CalendarView {
                         .when(look == Look::Declined, |d| d.line_through())
                         .child(title),
                 )
-                .when(!narrow, |d| {
-                    d.child(
-                        div()
-                            .flex_none()
-                            .text_color(muted)
-                            .child(compact_time_label(occurrence.start.time())),
-                    )
+                // The time only when the title still fits beside it: the
+                // title goes first.
+                .when(fits_time_beside, |d| {
+                    d.child(div().flex_none().text_color(muted).child(start_label))
                 })
         } else {
-            let visible_height = (visible as f32 / 60. * HOUR_HEIGHT - 2.).min(height);
-            let lines = ((visible_height - 8.) / 15.).floor().max(1.) as usize;
+            let lines = ((height - 8.) / 15.).floor().max(1.) as usize;
             let show_time = lines >= 3 || (lines == 2 && !narrow);
             // Too narrow to wrap without breaking words: one line.
             let max_lines = if width < 80. {
@@ -562,9 +560,6 @@ impl CalendarView {
                 )
         };
 
-        let col = placement.col as f32;
-        let cols = placement.cols as f32;
-        let span = placement.span as f32;
         let hover = theme.event_fill_hover(color);
         let hover = if cascaded {
             theme.overlay_bg.alpha(1.).blend(hover)
@@ -575,11 +570,11 @@ impl CalendarView {
         div()
             .absolute()
             .top(px(start as f32 / 60. * HOUR_HEIGHT + 1.))
-            .left(relative(col / cols))
-            .w(relative(span / cols))
+            .left(relative(left / day_width))
+            .w(relative(width / day_width))
             .h(px(height))
-            .pl(px(2. + indent(placement.depth)))
-            .pr(px(if col + span >= cols { 6. } else { 1. }))
+            .pl(SPACE_2XS)
+            .pr(px(if last { 6. } else { 1. }))
             .when(self.is_dragged(&occurrence), |d| d.opacity(0.35))
             .child(
                 div()

@@ -18,13 +18,15 @@ use nucleo_matcher::{
 
 use super::{binding_caps, icon, keycap, overlay_shadow};
 use crate::ui::style::*;
-use crate::{actions::PALETTE, app::Nav, assets::Icon, theme::Theme};
+use crate::{actions::PALETTE, app::Nav, assets::Icon, data::Folder, theme::Theme};
 
 actions!(command_palette, [SelectNext, SelectPrev, Confirm, Dismiss]);
 
 const WIDTH: f32 = 620.;
 const ROW_HEIGHT: f32 = 38.;
-const VISIBLE_ROWS: usize = 9;
+/// The result area is always this many rows tall, so the panel keeps its
+/// size as the results change.
+const VISIBLE_ROWS: usize = 8;
 /// Thread results are capped so a broad query stays readable.
 const MAX_THREADS: usize = 30;
 
@@ -38,6 +40,10 @@ pub enum PaletteCommand {
     ToggleCalendar(usize),
     /// Index into `CalendarData::events`.
     Event(usize),
+    /// Move the selected threads (`v`).
+    MoveTo(Folder),
+    /// Add or remove a label, by index, on the selected threads (`l`).
+    ToggleLabel(usize),
 }
 
 pub enum Leading {
@@ -81,8 +87,8 @@ pub struct CommandPalette {
     selected: usize,
     scroll: UniformListScrollHandle,
     matcher: Matcher,
-    /// What thread or event results are called: "mail", "events".
-    results_noun: &'static str,
+    /// Shown when nothing matches.
+    empty_text: SharedString,
     _input_events: Subscription,
 }
 
@@ -98,13 +104,13 @@ impl CommandPalette {
     pub fn new(
         items: Vec<PaletteItem>,
         query: &str,
-        results_noun: &'static str,
+        placeholder: SharedString,
+        empty_text: SharedString,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let input = cx.new(|cx| {
-            let mut state = InputState::new(window, cx)
-                .placeholder(format!("Type a command or search {results_noun}…"));
+            let mut state = InputState::new(window, cx).placeholder(placeholder);
             // Unlike `default_value`, leaves the cursor after the text.
             state.insert(query.to_string(), window, cx);
             state
@@ -137,7 +143,7 @@ impl CommandPalette {
             selected: 0,
             scroll: UniformListScrollHandle::new(),
             matcher: Matcher::new(Config::DEFAULT),
-            results_noun,
+            empty_text,
             _input_events: input_events,
         };
         this.update_matches(cx);
@@ -345,17 +351,17 @@ impl Render for CommandPalette {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         let rows = self.matches.len();
-        let list_height = px(ROW_HEIGHT * rows.min(VISIBLE_ROWS) as f32);
+        let list_height = px(ROW_HEIGHT * VISIBLE_ROWS as f32);
 
         let results = if rows == 0 {
             div()
-                .h(px(ROW_HEIGHT * 2.))
+                .h(list_height)
                 .flex()
                 .items_center()
                 .justify_center()
                 .text_size(TEXT_BASE)
                 .text_color(theme.text_faint)
-                .child(format!("No matching commands or {}", self.results_noun))
+                .child(self.empty_text.clone())
                 .into_any_element()
         } else {
             let row_theme = theme.clone();

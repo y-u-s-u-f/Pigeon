@@ -5,10 +5,13 @@ use chrono::{Datelike, Duration};
 use gpui::{
     Action, AnyElement, Context, FontWeight, InteractiveElement, IntoElement, MouseButton,
     ParentElement, SharedString, StatefulInteractiveElement as _, Styled, Window, anchored,
-    component::tooltip::Tooltip, deferred, div, prelude::FluentBuilder as _, px,
+    component::{input::Input, tooltip::Tooltip},
+    deferred, div,
+    prelude::FluentBuilder as _,
+    px,
 };
 
-use super::{CalendarView, Menu, ViewKind};
+use super::{CalendarView, GoToDate, Menu, ViewKind};
 use crate::ui::style::*;
 use crate::{
     actions::*,
@@ -19,13 +22,18 @@ use crate::{
 
 impl CalendarView {
     /// "October 2026", "Oct – Nov 2026", "Dec 2026 – Jan 2027", or for a day
-    /// "Monday, October 26": the bold part and the muted rest.
+    /// "Friday, October 30" (with the year when it isn't this one): the bold
+    /// part and the muted rest.
     fn title(&self) -> (String, String) {
         let (from, to) = self.visible_range();
         match self.view {
             ViewKind::Day => (
-                self.anchor.format("%B %-d").to_string(),
-                self.anchor.year().to_string(),
+                self.anchor.format("%A, %B %-d").to_string(),
+                if self.anchor.year() == super::today().year() {
+                    String::new()
+                } else {
+                    self.anchor.year().to_string()
+                },
             ),
             ViewKind::Month => (
                 self.anchor.format("%B").to_string(),
@@ -65,7 +73,10 @@ impl CalendarView {
                 let tooltip_action = action.boxed_clone();
                 div()
                     .id(id)
-                    .h(px(24.))
+                    .role(gpui::Role::Tab)
+                    .aria_label(label)
+                    .aria_selected(active)
+                    .h(HIT_TARGET)
                     .px(SPACE_MD)
                     .flex()
                     .items_center()
@@ -180,30 +191,9 @@ impl CalendarView {
             .flex()
             .items_center()
             .gap(SPACE_SM)
-            .pl(SPACE_LG)
+            .pl(SPACE_SM)
             .pr(SPACE_LG)
-            .child(
-                div()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .flex()
-                    .items_baseline()
-                    .gap(SPACE_SM)
-                    .child(
-                        div()
-                            .text_size(TEXT_XL)
-                            .font_weight(FontWeight::BOLD)
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .text_size(TEXT_XL)
-                            .font_weight(FontWeight::NORMAL)
-                            .text_color(theme.text_faint)
-                            .child(rest),
-                    ),
-            )
+            .child(self.render_title(title, rest, &theme, window, cx))
             .child(div().flex_1())
             .child(self.render_calendars_button(&theme, window, cx))
             .child(segmented)
@@ -225,6 +215,127 @@ impl CalendarView {
             ))
             .child(div().w(px(4.)))
             .child(new_button)
+            .into_any_element()
+    }
+
+    /// The period shown; a click opens the go-to-date field and month.
+    fn render_title(
+        &self,
+        title: String,
+        rest: String,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = self.menu == Some(Menu::GoToDate);
+        let typed = self.typed_date(cx);
+        let popover = open.then(|| {
+            let hint = if self.date_input.read(cx).value().trim().is_empty() {
+                None
+            } else {
+                Some(match typed {
+                    Some(date) => (date.format("%A, %B %-d, %Y").to_string(), theme.text_muted),
+                    None => ("Not a date yet".to_string(), theme.text_faint),
+                })
+            };
+            deferred(
+                anchored().snap_to_window_with_margin(px(8.)).child(enter(
+                    "go-to-date",
+                    div()
+                        .id("go-to-date")
+                        .occlude()
+                        .role(gpui::Role::Dialog)
+                        .aria_label("Go to date")
+                        .mt(px(40.))
+                        .w(px(260.))
+                        .p(SPACE_MD)
+                        .flex()
+                        .flex_col()
+                        .gap(SPACE_SM)
+                        .rounded(RADIUS_LG)
+                        .bg(theme.overlay_bg)
+                        .border_1()
+                        .border_color(theme.overlay_border)
+                        .shadow(popover_shadow(theme))
+                        .child(
+                            div()
+                                .h(px(32.))
+                                .px(SPACE_SM)
+                                .flex()
+                                .items_center()
+                                .gap(SPACE_SM)
+                                .rounded(RADIUS_MD)
+                                .bg(theme.search_bg)
+                                .border_1()
+                                .border_color(theme.accent.alpha(0.55))
+                                .child(icon(Icon::Calendar, px(14.), theme.text_faint))
+                                .child(
+                                    div().flex_1().min_w_0().child(
+                                        Input::new(&self.date_input)
+                                            .appearance(false)
+                                            .px(px(0.))
+                                            .text_size(TEXT_BASE),
+                                    ),
+                                ),
+                        )
+                        .children(hint.map(|(text, color)| {
+                            div()
+                                .px(SPACE_SM)
+                                .text_size(TEXT_SM)
+                                .text_color(color)
+                                .child(text)
+                        }))
+                        .child(self.render_mini_month("go-to-date-day", theme, cx)),
+                )),
+            )
+            .with_priority(2)
+        });
+        div()
+            .min_w_0()
+            .child(
+                div()
+                    .id("calendar-title")
+                    .role(gpui::Role::Button)
+                    .aria_label("Go to date")
+                    .min_w_0()
+                    .h(px(36.))
+                    .px(SPACE_SM)
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_SM)
+                    .rounded(RADIUS_MD)
+                    .when(open, |d| d.bg(theme.selected_bg))
+                    .hover(|s| s.bg(theme.hover_bg))
+                    .child(
+                        div()
+                            .text_size(TEXT_XL)
+                            .font_weight(FontWeight::BOLD)
+                            .child(title),
+                    )
+                    .when(!rest.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .text_size(TEXT_XL)
+                                .font_weight(FontWeight::NORMAL)
+                                .text_color(theme.text_faint)
+                                .child(rest),
+                        )
+                    })
+                    .child(icon(Icon::ChevronDown, px(14.), theme.text_faint))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.toggle_date_picker(window, cx)),
+                    )
+                    .tooltip(|window, cx| {
+                        Tooltip::new("Go to date")
+                            .action(&GoToDate, None)
+                            .build(window, cx)
+                    }),
+            )
+            .when(open, |d| d.child(self.menu_backdrop(window, cx)))
+            .children(popover)
             .into_any_element()
     }
 

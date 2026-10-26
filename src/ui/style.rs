@@ -101,3 +101,8 @@ pub fn enter<E: IntoElement + Styled + 'static>(
 pub fn pane_transition() -> gpui::base::motion::Transition {
     gpui::base::motion::Transition::new(MOTION_PANE).ease(ease_out_quint())
 }
+
+/// Digits of equal width, so counts and dates line up and don't jiggle.
+pub fn tabular_figures() -> gpui::FontFeatures {
+    gpui::FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]))
+}

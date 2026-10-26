@@ -20,7 +20,11 @@ use gpui::{
 };
 
 use self::style::*;
-use crate::{assets::Icon, data::Label, theme::Theme};
+use crate::{
+    assets::Icon,
+    data::{Attachment, FileKind, Label},
+    theme::Theme,
+};
 
 /// Height of the top bar of every pane; the traffic lights sit in it.
 pub const HEADER_HEIGHT: Pixels = px(52.);
@@ -101,6 +105,19 @@ pub fn avatar(initials: impl Into<SharedString>, color: Hsla, size: Pixels, them
         .text_size(size * 0.4)
         .font_weight(FontWeight::SEMIBOLD)
         .child(initials.into())
+}
+
+/// A file's icon, tinted by its type.
+pub fn attachment_icon(attachment: &Attachment, theme: &Theme) -> Svg {
+    let (glyph, color) = match attachment.kind() {
+        FileKind::Pdf => (Icon::FileText, theme.danger),
+        FileKind::Image => (Icon::Image, theme.avatar_palette[1]),
+        FileKind::Archive => (Icon::FileArchive, theme.star),
+        FileKind::Document => (Icon::FileText, theme.accent),
+        FileKind::Spreadsheet => (Icon::FileSpreadsheet, theme.success),
+        FileKind::Other => (Icon::File, theme.icon),
+    };
+    icon(glyph, px(16.), color)
 }
 
 pub fn label_chip(label: &Label, theme: &Theme) -> Div {

@@ -18,6 +18,14 @@ use crate::data::{Contact, hex_color};
 
 pub use recurrence::{Occurrence, occurrences};
 
+/// Which occurrences of a series a change or a delete applies to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeriesScope {
+    This,
+    Following,
+    All,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CalendarData {
     pub account: crate::data::Account,
@@ -108,6 +116,20 @@ pub struct Event {
     #[serde(deserialize_with = "or_empty")]
     pub video_link: String,
     pub busy: bool,
+    /// A series' occurrences that no longer show where the rule puts them,
+    /// by their original start: deleted, or changed on their own (an event
+    /// of their own then points back with `recurring_event_id`).
+    #[serde(default)]
+    pub exceptions: Vec<NaiveDateTime>,
+    /// A series' end: no occurrence starts at or after it.
+    #[serde(default)]
+    pub until: Option<NaiveDateTime>,
+    /// One occurrence of a series changed on its own: the series' id.
+    #[serde(default)]
+    pub recurring_event_id: Option<String>,
+    /// With `recurring_event_id`: where the rule put this occurrence.
+    #[serde(default)]
+    pub original_start: Option<NaiveDateTime>,
 }
 
 impl Event {
@@ -118,6 +140,11 @@ impl Event {
     /// Drawn as a bar across days: all-day, or timed over more than a day.
     pub fn is_spanning(&self) -> bool {
         self.all_day || self.duration() >= Duration::hours(24)
+    }
+
+    /// A repeating series (not one occurrence changed on its own).
+    pub fn is_series(&self) -> bool {
+        self.recurrence.is_some()
     }
 
     pub fn display_title(&self) -> &str {

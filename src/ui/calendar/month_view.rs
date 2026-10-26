@@ -25,6 +25,8 @@ const WEEKDAY_ROW: f32 = 30.;
 /// Space above a cell's events, for its day number.
 const DAY_NUMBER: f32 = 30.;
 const SLOT: f32 = 21.;
+/// The week number column, when shown.
+const WEEK_NUMBER: f32 = 36.;
 
 /// An event's place in one week row.
 struct Item {
@@ -66,6 +68,9 @@ impl CalendarView {
             .flex()
             .border_b_1()
             .border_color(theme.cal_line)
+            .when(self.show_week_numbers, |d| {
+                d.child(div().w(px(WEEK_NUMBER)).flex_none())
+            })
             .children((0..7).map(|i| {
                 let date = grid_start + Duration::days(i);
                 div()
@@ -194,6 +199,7 @@ impl CalendarView {
         let cells = (0..7).map(|i| {
             let date = start + Duration::days(i);
             let is_today = date == today;
+            let is_anchor = date == self.anchor;
             let in_month = date.month() == month;
             let label = if date.day() == 1 {
                 date.format("%b %-d").to_string()
@@ -237,11 +243,13 @@ impl CalendarView {
                                 } else {
                                     theme.text_faint
                                 })
-                                .font_weight(if date.day() == 1 {
+                                .font_weight(if date.day() == 1 || is_anchor {
                                     FontWeight::SEMIBOLD
                                 } else {
                                     FontWeight::MEDIUM
                                 })
+                                // The selected day, where left and right move.
+                                .when(is_anchor, |d| d.bg(theme.selected_bg))
                                 .hover(|s| s.bg(theme.hover_bg))
                             }
                         })
@@ -273,23 +281,45 @@ impl CalendarView {
                         .text_color(theme.text_muted)
                         .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
                         .cursor_pointer()
-                        .child(format!("{} more", more[d]))
+                        .child(format!("+{} more", more[d]))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_click(cx.listener(move |this, _, _, cx| this.open_day(date, cx))),
                 )
         });
 
-        div()
+        let days = div()
             .flex_1()
-            .min_h_0()
+            .min_w_0()
+            .h_full()
             .relative()
             .flex()
-            .border_b_1()
-            .border_color(theme.cal_line)
             .overflow_hidden()
             .children(cells)
             .children(pills)
-            .children(more_links)
+            .children(more_links);
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .border_b_1()
+            .border_color(theme.cal_line)
+            .when(self.show_week_numbers, |d| {
+                d.child(
+                    div()
+                        .w(px(WEEK_NUMBER))
+                        .flex_none()
+                        .pt(SPACE_SM)
+                        .flex()
+                        .justify_center()
+                        .border_r_1()
+                        .border_color(theme.cal_line)
+                        .text_size(TEXT_XS)
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_faint)
+                        .child(format!("W{}", start.iso_week().week())),
+                )
+            })
+            .child(days)
             .into_any_element()
     }
 
@@ -360,7 +390,7 @@ impl CalendarView {
                 let text = theme.cal_selected_text;
                 (text, text.alpha(0.8))
             } else if past {
-                (theme.text_faint, theme.text_faint)
+                (theme.text_muted, theme.text_muted)
             } else {
                 (theme.text, theme.text_muted)
             };

@@ -34,7 +34,7 @@ const LANE_HEIGHT: f32 = 16.;
 
 impl PigeonApp {
     /// The invite of the selected conversation: its newest one.
-    fn selected_invite(&self) -> Option<Invite> {
+    pub(crate) fn selected_invite(&self) -> Option<Invite> {
         let thread = &self.data.threads[self.selected?];
         thread.messages.iter().rev().find_map(|m| m.invite.clone())
     }
@@ -152,11 +152,11 @@ impl PigeonApp {
 
         let kicker = div()
             .flex()
-            .flex_wrap()
             .items_center()
             .gap(SPACE_SM)
             .child(
                 div()
+                    .flex_none()
                     .text_size(TEXT_XS)
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(if cancelled { theme.danger } else { color })
@@ -164,11 +164,13 @@ impl PigeonApp {
             )
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
                     .text_size(TEXT_SM)
                     .text_color(theme.text_faint)
                     .child(calendar_name),
             )
-            .child(div().flex_1())
             .when(!cancelled, |d| {
                 d.child(
                     button(
@@ -178,6 +180,7 @@ impl PigeonApp {
                         None,
                         theme,
                     )
+                    .flex_none()
                     .tooltip(|window, cx| {
                         Tooltip::new("Open in Calendar")
                             .action(&OpenInviteInCalendar, None)
@@ -355,33 +358,49 @@ impl PigeonApp {
                 Some(status) => d
                     .child(
                         div()
-                            .mr(SPACE_XS)
-                            .text_size(TEXT_BASE)
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_muted)
-                            .child("Going?"),
-                    )
-                    .children(
-                        [
-                            (RsvpStatus::Accepted, "Yes", Icon::Check, theme.success),
-                            (RsvpStatus::Tentative, "Maybe", Icon::Help, theme.star),
-                            (RsvpStatus::Declined, "No", Icon::X, theme.danger),
-                        ]
-                        .into_iter()
-                        .enumerate()
-                        .map(|(ix, (answer, label, glyph, tint))| {
-                            rsvp_button(ix, label, glyph, tint, status == answer, theme)
-                        }),
+                            .flex()
+                            .items_baseline()
+                            .gap(SPACE_SM)
+                            .child(
+                                div()
+                                    .text_size(TEXT_BASE)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Going?"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(TEXT_SM)
+                                    .text_color(match status {
+                                        RsvpStatus::NeedsAction => theme.text_muted,
+                                        RsvpStatus::Accepted => theme.success,
+                                        RsvpStatus::Tentative => theme.text_muted,
+                                        RsvpStatus::Declined => theme.danger,
+                                    })
+                                    .child(match status {
+                                        RsvpStatus::NeedsAction => "Not answered",
+                                        RsvpStatus::Accepted => "You're going",
+                                        RsvpStatus::Tentative => "You might go",
+                                        RsvpStatus::Declined => "You declined",
+                                    }),
+                            ),
                     )
                     .child(div().flex_1())
-                    .child(div().text_size(TEXT_SM).text_color(theme.text_faint).child(
-                        match status {
-                            RsvpStatus::NeedsAction => "Not answered yet",
-                            RsvpStatus::Accepted => "You're going",
-                            RsvpStatus::Tentative => "You might go",
-                            RsvpStatus::Declined => "You declined",
-                        },
-                    )),
+                    .child(
+                        div().flex().gap(SPACE_SM).children(
+                            [
+                                (RsvpStatus::Accepted, "Yes", Icon::Check, theme.success),
+                                (RsvpStatus::Tentative, "Maybe", Icon::Help, theme.star),
+                                (RsvpStatus::Declined, "No", Icon::X, theme.danger),
+                            ]
+                            .into_iter()
+                            .enumerate()
+                            .map(
+                                |(ix, (answer, label, glyph, tint))| {
+                                    rsvp_button(ix, label, glyph, tint, status == answer, theme)
+                                },
+                            ),
+                        ),
+                    ),
                 None => d.child(
                     div()
                         .text_size(TEXT_BASE)
@@ -392,8 +411,9 @@ impl PigeonApp {
         card.child(answers).into_any_element()
     }
 
-    /// The user's other timed events that day, on a strip of hours around
-    /// the invite's time, with the ones it clashes with named under it.
+    /// Whether the user is free then. When the invite clashes with other
+    /// events, a strip of the hours around it shows how, with the clashes
+    /// named under it (and each bar's name in its tooltip).
     fn render_day_timeline(
         &self,
         event: &Event,
@@ -426,18 +446,41 @@ impl PigeonApp {
             .filter(|o| o.start < end && o.end > start && data.events[o.event].busy)
             .collect();
 
-        // Two hours either side, on the hour, widened to the clashes.
+        if conflicts.is_empty() {
+            return Some(
+                div()
+                    .mt(SPACE_MD)
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_SM)
+                    .text_size(TEXT_SM)
+                    .text_color(theme.text_muted)
+                    .child(icon(Icon::Check, px(14.), theme.success))
+                    .child(if others.is_empty() {
+                        "You're free · nothing else that day".to_string()
+                    } else {
+                        format!(
+                            "You're free then · {} other event{} that day",
+                            others.len(),
+                            if others.len() == 1 { "" } else { "s" }
+                        )
+                    })
+                    .into_any_element(),
+            );
+        }
+
+        // An hour either side, on the hour, widened to the clashes.
         let from = conflicts
             .iter()
             .map(|o| minutes(o.start))
-            .fold(s - 120, i64::min)
+            .fold(s - 60, i64::min)
             .max(0)
             / 60
             * 60;
         let to = conflicts
             .iter()
             .map(|o| minutes(o.end))
-            .fold(e + 120, i64::max)
+            .fold(e + 60, i64::max)
             .min(24 * 60);
         let to = ((to + 59) / 60 * 60).min(24 * 60);
         let span = (to - from).max(60) as f32;
@@ -464,34 +507,37 @@ impl PigeonApp {
         let bars = shown
             .iter()
             .zip(&lanes)
-            .filter(|(_, l)| **l < TIMELINE_LANES)
-            .map(|(o, &lane)| {
+            .enumerate()
+            .filter(|(_, (_, l))| **l < TIMELINE_LANES)
+            .map(|(bar_ix, (o, &lane))| {
                 let other = &data.events[o.event];
                 let tint = data.color_of(other);
                 let left = x(minutes(o.start));
                 let width = x(minutes(o.end)) - left;
+                let tip: SharedString = format!(
+                    "{} · {}",
+                    other.display_title(),
+                    time_range_label(o.start.time(), o.end.time())
+                )
+                .into();
                 div()
+                    .id(("invite-bar", bar_ix))
+                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
                     .absolute()
                     .top(px(4. + lane as f32 * (LANE_HEIGHT + 3.)))
                     .left(relative(left))
                     .w(relative(width))
                     .h(px(LANE_HEIGHT))
                     .px(SPACE_2XS)
+                    // No names inside: at this size they'd be cut to a
+                    // letter or two. The tooltip and the line below name them.
                     .child(
                         div()
                             .size_full()
-                            .px(SPACE_XS)
-                            .flex()
-                            .items_center()
-                            .overflow_hidden()
                             .rounded(RADIUS_SM)
                             .bg(theme.event_fill(tint, false))
                             .border_l_2()
-                            .border_color(theme.event_accent(tint, false))
-                            .text_size(TEXT_XS)
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.event_text(tint, false))
-                            .child(div().truncate().child(other.display_title().to_string())),
+                            .border_color(theme.event_accent(tint, false)),
                     )
             });
 
@@ -507,6 +553,8 @@ impl PigeonApp {
             .border_2()
             .border_color(color);
 
+        // At most five labels, so they never run into each other.
+        let step = ((to - from) / 60 / 5 + 1).max(1);
         let hours = (from / 60..=to / 60).map(|h| {
             let label = time::compact_time_label(
                 chrono::NaiveTime::from_hms_opt((h % 24) as u32, 0, 0).expect("valid hour"),
@@ -519,7 +567,7 @@ impl PigeonApp {
                 .left(relative(left))
                 .w(px(1.))
                 .bg(theme.border)
-                .when((h - from / 60) % 2 == 0 && h * 60 < to, |d| {
+                .when((h - from / 60) % step == 0 && h * 60 < to, |d| {
                     d.child(
                         div()
                             .absolute()
@@ -533,7 +581,7 @@ impl PigeonApp {
                 })
         });
 
-        let clash = (!conflicts.is_empty()).then(|| {
+        let clash = {
             let names = conflicts
                 .iter()
                 .map(|o| {
@@ -559,26 +607,7 @@ impl PigeonApp {
                         .child(icon(Icon::OctagonAlert, px(14.), theme.danger)),
                 )
                 .child(div().min_w_0().child(format!("Conflicts with {names}")))
-        });
-        let free = (conflicts.is_empty()).then(|| {
-            div()
-                .mt(SPACE_SM)
-                .flex()
-                .items_center()
-                .gap(SPACE_SM)
-                .text_size(TEXT_SM)
-                .text_color(theme.text_muted)
-                .child(icon(Icon::Check, px(14.), theme.success))
-                .child(if others.is_empty() {
-                    "Nothing else that day".to_string()
-                } else {
-                    format!(
-                        "Free then · {} other event{} that day",
-                        others.len(),
-                        if others.len() == 1 { "" } else { "s" }
-                    )
-                })
-        });
+        };
 
         Some(
             div()
@@ -593,13 +622,34 @@ impl PigeonApp {
                         .rounded(RADIUS_SM)
                         .bg(theme.chip_bg)
                         .children(hours)
-                        .children(bars)
-                        .child(this),
+                        .child(this)
+                        .children(bars),
                 )
-                .children(clash)
-                .children(free)
+                .child(clash)
                 .into_any_element(),
         )
+    }
+}
+
+/// A line of an invitation's body that its card already shows: "When: …",
+/// "Where: …", "Organizer: …", "Guests: …", "X invited you to Y".
+pub(crate) fn is_invite_summary(block: &crate::html::Block) -> bool {
+    const PREFIXES: [&str; 6] = [
+        "When:",
+        "Where:",
+        "Organizer:",
+        "Guests:",
+        "Who:",
+        "Joining:",
+    ];
+    match block {
+        crate::html::Block::Text { text, .. } => {
+            let text = text.text.trim();
+            PREFIXES.iter().any(|p| text.starts_with(p))
+                || text.contains(" invited you to ")
+                || (text.len() < 160 && text.contains(" cancelled "))
+        }
+        _ => false,
     }
 }
 
@@ -672,9 +722,11 @@ fn rsvp_button(
         _ => || Box::new(DeclineInvite),
     };
     let tip: SharedString = label.into();
-    div()
-        .id(("invite-rsvp", ix))
-        .h(px(28.))
+    focusable_control(div().id(("invite-rsvp", ix)), theme)
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .aria_selected(chosen)
+        .h(HIT_TARGET + SPACE_XS)
         .px(SPACE_MD)
         .flex()
         .items_center()
@@ -695,7 +747,7 @@ fn rsvp_button(
                     .hover(|s| s.bg(theme.selected_bg).text_color(theme.text))
             }
         })
-        .child(icon(glyph, px(14.), if chosen { tint } else { theme.icon }))
+        .child(icon(glyph, px(15.), if chosen { tint } else { theme.icon }))
         .child(label)
         .tooltip(move |window, cx| {
             Tooltip::new(tip.clone())

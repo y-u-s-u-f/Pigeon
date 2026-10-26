@@ -95,8 +95,8 @@ Feature IDs use these area codes: ACC, FOL, LST, RDR, ACT, CMP, DRF, UND, SRC, C
 
 ### FOL-5 Apply and remove labels on a thread
 
-- **Feature:** UI not built yet. Labels appear as chips on threads, but there is no way to add or remove one.
-- **Today:** Not implemented. `Thread::labels` is never changed in code.
+- **Feature:** `l`, the palette's "Label…", Message › Label…, the toolbar's "…" menu or a row's right-click menu toggle a label on the selected thread, or on every checked thread (ACT-6). `l` opens the palette scoped to labels; applied ones say "Applied · ↵ removes it". In the list, labels show as up to three coloured dots (names in a tooltip); the reader shows them as chips.
+- **Today:** In memory. `toggle_label()` and `open_label_palette()` in `src/app/mail.rs` change `Thread::labels`. If every target already has the label it is removed, otherwise it is added to all of them. There is no undo.
 - **Backend needs:** Change labels on a thread and send the change to the server. Gmail: `threads.modify` (`addLabelIds`, `removeLabelIds`). IMAP: `UID COPY` or `UID MOVE` to a folder, or `STORE +X-GM-LABELS` on Gmail IMAP.
 - **Notes:** Use the optimistic-update-and-rollback pattern (see STA-2). Labels are per thread here. Gmail is per message in some views, so the mapping must be chosen (see DAT-2).
 
@@ -127,8 +127,8 @@ Feature IDs use these area codes: ACC, FOL, LST, RDR, ACT, CMP, DRF, UND, SRC, C
 
 ### LST-1 Thread rows
 
-- **Feature:** Each row shows: the sender's name (or "To: name" in Sent and Drafts), a message count if there is more than one, an attachment icon, a star, the date, the subject, label chips and the snippet of the last message.
-- **Today:** Placeholder JSON. `render_thread_row()` in `src/ui/thread_list.rs` builds rows from `MailData::threads`. The snippet is `Message::snippet` from the JSON. Date text comes from `list_date()` in `src/data.rs`.
+- **Feature:** Each row shows: the sender's name (or "To: name" in Sent and Drafts), a message count if there is more than one, an attachment icon, a star, the date, the subject, label dots and the snippet of the last message. A compact density (View › Compact List, or the palette) puts sender, subject and date on one line.
+- **Today:** Placeholder JSON. `render_thread_row()` in `src/ui/thread_list.rs` builds rows from `MailData::threads`. The snippet is `Message::snippet` from the JSON, cleaned by `clean_snippet()` in `src/data.rs` (a leading heading or bold first line is dropped). The density is in memory only (PER-3). Date text comes from `list_date()` in `src/data.rs`.
 - **Backend needs:** Thread list with: subject, participants, message count, last date, snippet, unread flag, starred flag, attachment flag, labels. Gmail: `threads.list` plus `threads.get` with metadata format. IMAP: thread the messages (`THREAD` or by `References`) and fetch headers.
 - **Notes:** The snippet is currently taken from the last message. The backend should send the same thing, or the row will change after sync.
 
@@ -245,7 +245,7 @@ Feature IDs use these area codes: ACC, FOL, LST, RDR, ACT, CMP, DRF, UND, SRC, C
 
 ## 5. Message and thread actions (ACT)
 
-Each of these acts on the selected thread only. Each one currently changes only `data.threads` in memory. The reader toolbar, the keyboard shortcut and the palette entry all dispatch the same action (see `src/actions.rs`).
+Each of these acts on the checked threads when any are checked (ACT-6), otherwise on the selected thread (`targets()` in `src/app/mail.rs`). Each one currently changes only `data.threads` in memory. Hovering a list row also shows Archive, Delete, Mark read/unread and Star buttons in place of its date, and right-clicking a row opens a native menu with the same actions plus Reply, Forward, Move to and Label. The reader toolbar, the keyboard shortcut and the palette entry all dispatch the same action (see `src/actions.rs`).
 
 ### ACT-1 Archive and move to Inbox
 
@@ -256,10 +256,17 @@ Each of these acts on the selected thread only. Each one currently changes only 
 
 ### ACT-2 Delete
 
-- **Feature:** Shortcut `#`. Toolbar button "Delete". Palette "Delete". Moves the thread to Trash, then selects the next thread.
+- **Feature:** Shortcut `delete`, `backspace` or `#`. Toolbar button "Delete". Palette "Delete". Moves the thread to Trash, then selects the next thread. A toast offers Undo (UND-3).
 - **Today:** In memory. `delete()` in `src/app.rs`. Delete moves a thread to Trash from every folder except Trash and Drafts. In Trash it does nothing. In Drafts it discards the draft through the same path as the Discard button (DRF-4), with its Undo toast, then moves to the neighbor.
 - **Backend needs:** Move to Trash. Gmail: `threads.trash`. IMAP: `UID MOVE` to the Trash folder. Discarding a draft is DRF-4.
-- **Notes:** Delete in Trash does nothing for now. The backend should decide whether it means a permanent delete (see FOL-8). The toolbar hides the Delete button in Trash. Undo for a thread move is not available (UND-3).
+- **Notes:** Delete in Trash does nothing for now. The backend should decide whether it means a permanent delete (see FOL-8). The toolbar hides the Delete button in Trash.
+
+### ACT-1a Move to a folder
+
+- **Feature:** `v`, the palette's "Move to…", Message › Move to…, the toolbar's "…" menu or a row's right-click menu move the selected (or checked) threads to Inbox, Archive, Spam or Trash. `v` opens the palette scoped to folders, without the current one. A toast offers Undo.
+- **Today:** In memory. `move_to()`, `move_threads()` and `open_move_palette()` in `src/app/mail.rs` set `Thread::folder`.
+- **Backend needs:** The same moves as ACT-1 and ACT-2. Moving to Spam is "report spam" (FOL-7).
+- **Notes:** Drafts are skipped when moving; Sent threads can be moved.
 
 ### ACT-3 Star and unstar
 
@@ -284,8 +291,8 @@ Each of these acts on the selected thread only. Each one currently changes only 
 
 ### ACT-6 Bulk select and bulk actions
 
-- **Feature:** UI not built yet. Only one thread can be acted on at a time. There is no multi-select, no select-all and no bulk archive or delete.
-- **Today:** Not implemented. Every action uses `PigeonApp::selected`, a single index.
+- **Feature:** `x` checks the selected thread; `shift-j`/`shift-k` (or `shift-↓`/`shift-↑`) extend the check; `cmd`-click toggles a row and `shift`-click checks a range; the checkbox in a row's inset (shown on hover) toggles it. `Esc` clears. While threads are checked the reading pane shows "N conversations selected" with their subjects and Archive, Delete, Mark as Unread/Read, Star, Move to and Label buttons, and every action (keys, palette, menus) applies to all of them. There is no select-all.
+- **Today:** In memory. `PigeonApp::checked` (thread IDs) and the selection functions in `src/app/mail.rs`; `render_selection_summary()` in `src/ui/reader.rs`. Each action loops over the targets.
 - **Backend needs:** Batch operations. Gmail: `messages.batchModify` (up to 1000 message IDs per call). IMAP: `UID` sets in one command.
 - **Notes:** With bulk actions, one failure can leave some threads changed and others not. The rollback rules (STA-2) must handle partial results.
 
@@ -353,8 +360,8 @@ Drafts are described in section 7. Undo of a send is described in section 8.
 
 ### CMP-9 Send validation
 
-- **Feature:** Sending with no recipients shows "Add at least one recipient" in the footer and keeps the draft open. Subject and body are not checked. Sending without a subject or body is allowed with no warning.
-- **Today:** `send_message()` in `src/app.rs` checks `DraftContent::has_recipients()`.
+- **Feature:** Sending with no recipients shows "Add at least one recipient" under the To field and keeps the draft open. An address that isn't valid ("zzz") shows "“zzz” isn't an email address" under its field. Text still being typed in a recipient field counts: it becomes the best-matching contact, or the address as typed. Subject and body are not checked. Sending without a subject or body is allowed with no warning.
+- **Today:** `send_message()` in `src/app.rs` calls `Composer::validate()` (`src/ui/composer.rs`) and checks `DraftContent::has_recipients()`.
 - **Backend needs:** Server rules: at least one recipient, sender address allowed, message size limit, and rejection reasons (for example, invalid recipient, over quota).
 - **Notes:** A subject warning and an "empty body" warning are not built (UI not built yet). They are not claimed as features.
 
@@ -409,7 +416,7 @@ Drafts are described in section 7. Undo of a send is described in section 8.
 - **Feature:** Selecting a Drafts thread opens it in the composer, with the title "Draft". Edits follow DRF-1.
 - **Today:** `open_draft()` in `src/app.rs` rebuilds the composer from the stored message. The body is taken from the draft's HTML as plain text (`html::plain_text`). The draft's kind, reply target and forwarded quote are kept in `DraftOrigin` on the thread (`src/data.rs`), so reopening restores the same kind and quote block. A forward draft reopens as a forward, and sending it creates a new thread (CMP-4).
 - **Backend needs:** Fetch the draft's full content, including attachments and headers, when it is opened.
-- **Notes:** Attachments on drafts are not kept, because `message_from()` always sets none. Rich HTML is lost on reopening. The forwarded quote is not in the draft's body, so draft search does not match text that only appears in the quote. The backend's draft storage should keep the quote as a separate part, as the app does now.
+- **Notes:** Replying again to a thread that has a reply draft reopens that draft instead of starting a second one (`reply_draft_of()` in `src/app.rs`); the backend must keep the draft's link to its thread. Attachments on drafts keep only their metadata (ATT-6). Rich HTML is lost on reopening. The forwarded quote is not in the draft's body, so draft search does not match text that only appears in the quote. The backend's draft storage should keep the quote as a separate part, as the app does now.
 
 ### DRF-4 Discard a draft
 
@@ -438,7 +445,7 @@ Drafts are described in section 7. Undo of a send is described in section 8.
 
 ### UND-1 Undo send
 
-- **Feature:** After Send, a toast shows "Message sent" and an Undo button (shortcut `cmd-z`, or the palette "Undo Send / Discard"). Undo takes the message back out of Sent (or removes the appended message from the reply thread), restores the draft it was sent from, and reopens the composer. The toast disappears after 5 seconds.
+- **Feature:** After Send, a toast shows "Message sent" and an Undo button (shortcut `cmd-z`, `z`, or the palette's "Undo"). Undo takes the message back out of Sent (or removes the appended message from the reply thread), restores the draft it was sent from, and reopens the composer. The toast disappears after 5 seconds.
 - **Today:** In memory. `send_message()` and `undo()` in `src/app.rs`. `UndoAction::Send` holds the thread ID, whether it was appended, the removed draft and the composer.
 - **Backend needs:** Hold the message in an outbox for the undo window before it is sent. Undo cancels it before dispatch and restores the draft on the server. After the window, the message is sent and undo is no longer available.
 - **Notes:** The 5-second window (`TOAST_DURATION`) is a UI choice. The backend's hold time must be at least as long, or the UI must not offer Undo. Once sent, undo cannot recall it (recall is not built).
@@ -452,8 +459,8 @@ Drafts are described in section 7. Undo of a send is described in section 8.
 
 ### UND-3 Undo for other actions
 
-- **Feature:** UI not built yet. Archive, Delete, Star, and Mark read or unread have no undo. Only send and discard can be undone.
-- **Today:** Not implemented. `move_selected()` and the other action handlers in `src/app.rs` do not create a toast.
+- **Feature:** Archive, Delete and Move to (one thread or many) show a toast ("Archived", "Moved 3 conversations to Trash") with Undo for 5 seconds. Undo is `z`, `cmd-z`, the toast's button or the palette's "Undo". It puts every thread back in its folder and reselects the thread that was selected. Star, Mark read or unread and labels have no undo.
+- **Today:** In memory. `move_threads()` creates `UndoAction::Move { moves, selected }` and `undo_move()` reverses it, in `src/app/mail.rs`.
 - **Backend needs:** A reversible action log: each change keeps its inverse until the undo window passes, and the server call is queued for the same delay.
 - **Notes:** Multiple undos (undo stack) are not built.
 
@@ -465,8 +472,8 @@ Search is in memory. Each thread gets a `SearchIndex` from `Thread::reindex()` i
 
 ### SRC-1 Search bar and keys
 
-- **Feature:** Shortcut `/`, or the search icon in the list header, opens a field at the top of the list. `Esc` clears the search and closes it. `Enter` or `↓` moves focus into the results.
-- **Today:** In memory. `toggle_search()`, `close_search()`, `focus_results()` in `src/app.rs`. `render_search_bar()` in `src/ui/thread_list.rs`.
+- **Feature:** Shortcut `/` or `cmd-f`, or the search icon in the list header, opens a field at the top of the list. `Esc` clears the search and closes it. `Enter` moves focus into the results. While the field is empty, a dropdown lists the operators and the last 5 searches; while a `from:` or `to:` value is typed, it lists matching contacts. `↓`/`↑` move through it and `enter` takes one. A chip in the field shows the scope ("Inbox" or "All mail") and toggles it. Under the field, the recognized operators show as chips next to the result count.
+- **Today:** In memory. `toggle_search()`, `close_search()`, `focus_results()` in `src/app.rs`; `search_suggestions()`, `remember_search()`, `toggle_search_scope()` in `src/app/mail.rs`. `render_search_bar()` and `render_search_suggestions()` in `src/ui/thread_list.rs`. Recent searches are kept in memory only (PER-3).
 - **Backend needs:** Search requests to the server, or to the local index (PER-1), with the results shown in the list. The list needs a "searching" state (STA-1).
 - **Notes:** Pure UI parts (focus, keys) need no backend.
 
@@ -550,7 +557,7 @@ Search is in memory. Each thread gets a `SearchIndex` from `Thread::reindex()` i
 
 ### ATT-1 Remote images
 
-- **Feature:** Images in email bodies show as a bordered box with the alt text (or "Image" when there is no alt text). Images are never downloaded. Tiny tracking images (width or height 2 pixels or less) are dropped.
+- **Feature:** Images in email bodies show as a bordered box with an image icon and the alt text (or "Image" when there is no alt text). Images are never downloaded: GPUI here has no HTTP client (only `NullHttpClient`), so loading them needs a new dependency or the backend. Tiny tracking images (width or height 2 pixels or less) are dropped.
 - **Today:** Placeholder. `Block::Image` in `src/html.rs` keeps only the `alt` text. The `src` attribute is ignored. `Renderer::block()` in `src/ui/html_view.rs` draws the box.
 - **Backend needs:** A proxy or a fetch on user demand that loads remote images. Gmail and most clients have a "load remote images" setting. The fetch should go through the backend, so the user's IP and open tracking are not exposed. Cache the results.
 - **Notes:** A setting to choose "always", "ask" or "never" is not built (UI not built yet). Tracking pixels are dropped by size only, which is a local rule that works today.
@@ -564,10 +571,10 @@ Search is in memory. Each thread gets a `SearchIndex` from `Thread::reindex()` i
 
 ### ATT-3 Attachment list in messages
 
-- **Feature:** Under each message body, attachments appear as chips: file icon, name and size (for example "393 KB" or "5.6 MB").
-- **Today:** Placeholder JSON. `Message::attachments` (`Attachment { name, size_bytes, mime }`) from `mailbox.json`. `render_message()` in `src/ui/reader.rs`. `file_size()` in `src/data.rs`.
+- **Feature:** Under each message body, attachments appear as chips: an icon for the file type (image, PDF/document, spreadsheet, archive, other), name and size (for example "393 KB" or "5.6 MB").
+- **Today:** Placeholder JSON. `Message::attachments` (`Attachment { name, size_bytes, mime }`) from `mailbox.json`. `render_message()` in `src/ui/reader.rs`. `file_size()` and `Attachment::kind()` (from the MIME type, then the extension) in `src/data.rs`; `attachment_icon()` in `src/ui/mod.rs`.
 - **Backend needs:** Attachment metadata per message: name, size, MIME type, and an ID to fetch it (Gmail: `attachmentId`, IMAP: the part number).
-- **Notes:** `Attachment::mime` is never read (`#[allow(dead_code)]` in `src/data.rs`). It is kept for ATT-4.
+- **Notes:** The MIME type must be real for the icon to be right; a missing one falls back to the extension.
 
 ### ATT-4 Open and download an attachment
 
@@ -585,9 +592,9 @@ Search is in memory. Each thread gets a `SearchIndex` from `Thread::reindex()` i
 
 ### ATT-6 Attach files to a new message
 
-- **Feature:** UI not built yet. The composer has no attach button and no drag-and-drop.
-- **Today:** Not implemented. `message_from()` in `src/app.rs` always sets `attachments: Vec::new()`.
-- **Backend needs:** Upload a file for a draft or a sent message. Gmail: `messages.send` with multipart (or resumable upload for large files, above about 5 MB). IMAP: MIME part in the message.
+- **Feature:** The composer's paperclip button opens a file picker (several files at once), and files dropped on the composer are attached. Each shows as a chip with its type icon, name and size, and an × to remove it. Attachments stay with the draft (DRF-1) and appear on the sent message.
+- **Today:** In memory. `attach_paths()` and the picker in `src/ui/composer.rs` build `Attachment::from_file()` (name, size and a MIME type guessed from the extension). Only the path's metadata is read; the bytes are never read or stored, so the sent copy only lists the files. `DraftContent::attachments` carries them to `message_from()` in `src/app.rs`.
+- **Backend needs:** Read the files and upload them for a draft or a sent message. Gmail: `messages.send` with multipart (or resumable upload for large files, above about 5 MB). IMAP: MIME part in the message.
 - **Notes:** Show upload progress and size limits (Gmail: 25 MB per message). Drafts need the same storage (DRF-6).
 
 ### ATT-7 Forward keeps attachments
@@ -630,8 +637,8 @@ Search is in memory. Each thread gets a `SearchIndex` from `Thread::reindex()` i
 
 - **Feature:** `cmd-k` or `cmd-shift-p` opens the palette. It lists every command in `COMMANDS` (`src/actions.rs`), each with its shortcut when there is one. Commands run the same action handlers as the keyboard and toolbar. The palette does not run its own logic.
 - **Today:** Works in memory. `open_palette()` and `palette_items()` in `src/app.rs`. `on_palette_event()` dispatches the action.
-- **Backend needs:** Each command inherits the backend need of its action. The commands that need backend work are: Archive (ACT-1), Delete (ACT-2), Star (ACT-3), Mark as Unread and Read (ACT-4, ACT-5), Compose, Reply, Reply All, Forward (CMP-1 to CMP-4), Send (CMP-8), Close Draft (DRF-1), Discard Draft (DRF-4), Undo Send / Discard (UND-1, UND-2), New Event (CAL-9), Delete Event (CAL-10). Navigation, view and app commands need no backend.
-- **Notes:** The palette also shows "Undo Send / Discard" even when there is nothing to undo. It does nothing then. Commands are scoped: each `Group` in `src/actions.rs` has a `scope()` (Mail, Calendar or Global), and the palette and the `?` sheet only list the current mode's commands plus the global ones.
+- **Backend needs:** Each command inherits the backend need of its action. The commands that need backend work are: Archive (ACT-1), Delete (ACT-2), Star (ACT-3), Mark as Unread and Read (ACT-4, ACT-5), Compose, Reply, Reply All, Forward (CMP-1 to CMP-4), Send (CMP-8), Close Draft (DRF-1), Discard Draft (DRF-4), Undo (UND-1 to UND-3), Move to (ACT-1a), Label (FOL-5), New Event (CAL-9), Delete Event (CAL-10). Navigation, view and app commands need no backend.
+- **Notes:** Commands that can't run now (Reply with no thread selected, Undo with nothing to undo, invite answers on a non-invite) are left out (`When` in `src/actions.rs`, `command_available()` in `src/app/mail.rs`). The last commands run come first while the query is empty (in memory, PER-3). `v` and `l` open the palette scoped to folders or labels (ACT-1a, FOL-5). Commands are scoped: each `Group` in `src/actions.rs` has a `scope()` (Mail, Calendar or Global), and the palette and the `?` sheet only list the current mode's commands plus the global ones.
 
 ### PAL-2 Thread search in the palette
 
@@ -676,24 +683,31 @@ The calendar shares the window with mail. Its state lives in `CalendarView` (`sr
 
 ### CAL-4 Day, week and month views and navigation
 
-- **Feature:** Day, Week (the default) and Month views. `d`, `w`, `m` switch views. `t` goes to today. `j`/`n` and `k`/`p` go to the next or previous period. Clicking a day number in Month opens that day. The time grid scrolls to about 8am on open.
-- **Today:** Works locally. `set_view()`, `open_day()`, `step()` in `src/ui/calendar/mod.rs`. Drawing is in `week_view.rs` (time grid, all-day lane, overlap columns from `layout::pack_columns()`) and `month_view.rs` (pills, multi-day bars from `layout::pack_lanes()`, "+N more").
-- **Backend needs:** None beyond CAL-3.
+- **Feature:** Day, Week (the default) and Month views. `d`, `w`, `m` switch views. `t` goes to today. `n` and `p` go to the next or previous period. `←`/`→` move the selected day (marked in the Week and Month headers), and the selection to the nearest event on it. `↓`/`↑`, `j`/`k` and `tab`/`shift-tab` go to the next or previous event in time, past the period shown. Clicking a day number opens that day. The time grid scrolls to about 8am on open. Overlapping events sit side by side in equal columns, widening into free ones; columns narrower than 60pt overlap a little instead. The Day view caps its event column at 640pt and, when there's room, shows a month to jump from and the day's events as a list beside it. Week numbers can be shown (View menu, palette).
+- **Today:** Works locally. `set_view()`, `open_day()`, `step()`, `step_day()`, `select_adjacent()` in `src/ui/calendar/mod.rs`. Drawing is in `week_view.rs` (time grid, all-day lane, columns from `layout::pack_columns()` and `layout::column_box()`), `agenda.rs` (the Day view's side area), `mini_month.rs` and `month_view.rs` (pills, multi-day bars from `layout::pack_lanes()`, "+N more").
+- **Backend needs:** None beyond CAL-3. Next and previous event look up to 62 days past the period shown, so that range must be cached or fetched.
 - **Notes:** The week start (Monday) is fixed in `time::week_start()`. A user setting would need to be stored (CAL-23).
+
+### CAL-4a Go to a date
+
+- **Feature:** Clicking the header's title, `g d`, `cmd-shift-t`, the palette's "Go to Date…" or Go › Go to Date… opens a field over a small month. The field reads typed dates ("nov 12", "next fri", "tomorrow", "in 2 weeks", "dec 2027") and shows the date it reads; enter or a click on a day goes there.
+- **Today:** Works locally. `toggle_date_picker()`, `go_to_date()` in `mod.rs`; `render_title()` in `header.rs`; parsing in `time::parse_date()`.
+- **Backend needs:** None beyond CAL-3.
+- **Notes:** Typed dates are English only.
 
 ### CAL-5 Recurring events
 
 - **Feature:** Repeating events show on every matching day. The panel shows the rule ("Every week").
-- **Today:** Placeholder JSON. `recurrence` is one keyword (`daily`, `weekdays`, `weekly`, `biweekly`, `monthly`, `yearly`) with no end date, count or exceptions. `recurrence::occurrences()` expands only the visible range.
+- **Today:** Placeholder JSON. `recurrence` is one keyword (`daily`, `weekdays`, `weekly`, `biweekly`, `monthly`, `yearly`). A series can also carry `exceptions` (original starts it skips, like `EXDATE`) and `until` (its end), both set locally by CAL-6; one occurrence changed on its own is an event of its own with `recurring_event_id` and `original_start` (like `RECURRENCE-ID`). `recurrence::occurrences()` expands only the visible range and honors exceptions and the end.
 - **Backend needs:** Full RRULE support (`INTERVAL`, `BYDAY`, `UNTIL`, `COUNT`), `EXDATE`, and changed single occurrences (`RECURRENCE-ID`). Either expand on the server (Google `singleEvents=true`) and keep the series ID, or expand locally from the RRULE.
 - **Notes:** The UI has no way to set or change a rule. New events never repeat.
 
-### CAL-6 Edits apply to the whole series
+### CAL-6 This event or all events
 
-- **Feature:** Changing or deleting one occurrence of a repeating event changes or deletes every occurrence.
-- **Today:** In memory. Every edit writes to the one `Event` (`edit_event()` in `event_panel.rs`, `retime_occurrence()` and `delete_event()` in `mod.rs`). Retiming one occurrence shifts the series by the same amount.
-- **Backend needs:** A "This event / This and following / All events" choice, and the matching server writes: an exception for one occurrence, a split series for "following", a series update for "all".
-- **Notes:** UI not built yet for the choice. This is the biggest gap in calendar editing.
+- **Feature:** Changing, dragging or deleting one occurrence of a repeating event asks which ones it's for. In the panel, the first change shows "Apply this change to: This event / All events" (the change shows on the whole series until answered; closing the panel without answering keeps it on all). Dropping a dragged occurrence asks "Move repeating event: This event / All events" over the grid, with the event drawn at its new time; enter takes "This event", escape cancels. Deleting asks "This event / This and following / All events", in the panel when it's open, over the grid otherwise. Undo restores any of them.
+- **Today:** In memory. "This event" copies the occurrence into an event of its own (`CalendarView::detach()`) and adds its original start to the series' `exceptions`; "This and following" sets the series' `until` and drops its changed occurrences from then on; "All events" changes or deletes the series and its changed occurrences. `SeriesPrompt`, `answer_prompt()`, `delete_occurrence()`, `restore()` in `mod.rs`; `choose_edit_scope()` in `event_panel.rs`.
+- **Backend needs:** The matching writes: an exception instance for one occurrence (Google: patch the instance; CalDAV: a `RECURRENCE-ID` override, or an `EXDATE` for a delete), a series split for "following" (end the series with `UNTIL`, plus a new series if the change continues), a series update for "all". Changed occurrences must keep their link to the series.
+- **Notes:** "This and following" is offered for deletes only. Edits to the series after an occurrence was changed on its own don't reach that occurrence, as in Google Calendar.
 
 ### CAL-7 Edit an event in the panel
 
@@ -713,13 +727,13 @@ The calendar shares the window with mail. Its state lives in `CalendarView` (`sr
 
 - **Feature:** `c` or the header's "+" creates an event at the next half hour today (or on the selected day), opens it and focuses the title. Dragging on empty space in the Day or Week grid, or double-clicking it, also creates one (CAL-21).
 - **Today:** In memory. `new_event()` and `CalendarView::create_event(start, end, all_day, ..)` in `mod.rs`. New events go to the first visible calendar, with a 10-minute reminder, busy, and the user as organizer.
-- **Backend needs:** An event insert. Return the server ID and replace the local one (CAL-11). If the user leaves the title empty and closes the panel, decide whether to keep the event or drop it.
+- **Backend needs:** An event insert. Return the server ID and replace the local one (CAL-11). A new event left without a title is dropped when its panel closes (escape, close, or opening another event), with no toast, so don't insert it before it has a title.
 - **Notes:** A default calendar setting is not built.
 
 ### CAL-10 Delete an event and undo
 
 - **Feature:** `delete`/`backspace` or the panel's Delete button removes the event and shows a toast with Undo.
-- **Today:** In memory. `delete_event()` emits `CalendarEvent::Deleted`; `PigeonApp` shows the toast with `UndoAction::DeleteEvent`, and Undo calls `restore_event()`.
+- **Today:** In memory. `delete_occurrence()` (and `delete_event()` for a whole event) emits `CalendarEvent::Deleted` with a `Removal`; `PigeonApp` shows the toast with `UndoAction::DeleteEvent`, and Undo calls `restore()`. Repeating events ask first (CAL-6).
 - **Backend needs:** A delete that waits until the toast is gone, or a delete plus re-create on undo. If there are guests, the server should send them a cancellation; the user may want to be asked first.
 - **Notes:** Deleting an event someone else organizes should mean "decline and hide", not delete (CAL-22).
 
@@ -739,7 +753,7 @@ The calendar shares the window with mail. Its state lives in `CalendarView` (`sr
 
 ### CAL-13 Guests and invitations
 
-- **Feature:** The panel lists guests with RSVP icons and a summary ("3 yes, 1 awaiting"). Typing in "Add guests" suggests contacts. `enter` adds the guest; `backspace` on an empty field removes the last one.
+- **Feature:** The panel lists the organizer and guests with RSVP icons and a summary counting everyone listed ("3 people · 2 yes · 1 awaiting"). Typing in "Add guests" suggests contacts. `enter` adds the guest; `backspace` on an empty field removes the last one.
 - **Today:** In memory. `render_guests()`, `update_guest_suggestions()`, `add_guest()`, `remove_guest()` in `event_panel.rs`. Suggestions come from `ContactBook::suggest()` in `src/ui/composer.rs` (CON-1).
 - **Backend needs:** Save the attendee list, and send invites and updates to guests (Google `sendUpdates`, or iMIP emails for CalDAV). Free/busy lookup for guests would help scheduling.
 - **Notes:** Adding a guest sends nothing today. The user is not asked "send updates to guests?".
@@ -795,10 +809,10 @@ The calendar shares the window with mail. Its state lives in `CalendarView` (`sr
 
 ### CAL-21 Drag to create, move and resize
 
-- **Feature:** In the Day and Week grids: drag on empty space to create an event (a live preview follows the mouse, snapped to 15 minutes; on release the event opens with its title focused); double-click empty space for a 30-minute event; drag an event to move it in time and across days; drag its bottom edge to resize it (at least 15 minutes). A press that moves less than 4 pixels is a click and opens the event. Escape cancels a drag.
+- **Feature:** In the Day and Week grids: drag on empty space to create an event (a live preview follows the mouse, snapped to 15 minutes, with its times floating above it; on release the event opens with its title focused); double-click empty space for a 30-minute event; drag an event to move it in time and across days; drag its bottom edge to resize it (at least 15 minutes). Holding the mouse near the grid's top or bottom scrolls it. A press that moves less than 4 pixels is a click and opens the event. Escape cancels a drag.
 - **Today:** In memory. `src/ui/calendar/drag.rs` (`GridDrag`, `press_grid()`, `press_occurrence()`, `drag_to()`, `finish_drag()`) calls `CalendarView::create_event()` and `retime_occurrence()`. The all-day lane and the Month view can't be dragged.
 - **Backend needs:** Same as CAL-9 and CAL-7: one write on release, not one per mouse move. Moving an event with guests should ask whether to send them an update.
-- **Notes:** Moving one occurrence of a series moves the whole series today (CAL-6); it needs the "this event / all events" choice. A failed write must put the event back where it was (STA-2).
+- **Notes:** Moving one occurrence of a series asks "This event / All events" (CAL-6). A failed write must put the event back where it was (STA-2).
 
 ### CAL-22 Organizer and read-only permissions
 
@@ -809,7 +823,7 @@ The calendar shares the window with mail. Its state lives in `CalendarView` (`sr
 
 ### CAL-23 Persisted calendar UI state
 
-- **Feature:** UI not built yet. The view (Day, Week, Month), the shown date and calendar visibility reset on launch.
+- **Feature:** UI not built yet. The view (Day, Week, Month), the shown date, week numbers and calendar visibility reset on launch.
 - **Today:** In memory only, in `CalendarView` (`view`, `date`) and `Calendar::visible`. All reset in `CalendarView::new()`.
 - **Backend needs:** Save these with the other UI state (PER-3). Visibility may belong on the server (CAL-2).
 - **Notes:** None.
@@ -901,7 +915,7 @@ These are the states the UI must show once the backend exists. None exists today
 ### PER-3 Persisted UI state
 
 - **Feature:** UI not built yet. Window and layout state is reset on each launch.
-- **Today:** In memory only, in `PigeonApp`: `nav`, `sidebar_open`, `sidebar_width`, `list_width`, `archived_expanded`, and `expanded_messages`. All reset on launch (`PigeonApp::new()`).
+- **Today:** In memory only, in `PigeonApp`: `nav`, `sidebar_open`, `sidebar_width`, `list_width`, `archived_expanded`, `expanded_messages`, the list density, recent searches and recently run palette commands. All reset on launch (`PigeonApp::new()`).
 - **Backend needs:** Save these to a local settings file. This is not server data, but it is needed to keep the same layout after restart.
 - **Notes:** `expanded_messages` is per thread. Keep it, or accept the reset.
 
@@ -981,12 +995,10 @@ These are gaps the backend will need to support once the UI is built. Each one h
 - **Creating, renaming and deleting labels**: see FOL-6.
 - **Notifications**: see NTF-1 to NTF-3.
 - **Offline cache**: see PER-1 to PER-3.
-- **Applying and removing labels from a thread**: see FOL-5.
-- **Bulk select and bulk actions**: see ACT-6.
 - **Report spam and not spam**: see FOL-7.
 - **Permanent delete and empty Trash**: see FOL-8.
-- **Undo for actions other than send and discard**: see UND-3.
-- **Attaching files to a message**: see ATT-6.
+- **Undo for star, read state and labels**: see UND-3.
+- **Uploading attached files**: see ATT-6.
 - **Forwarding attachments**: see ATT-7.
 - **Auto-saving drafts while typing**: see DRF-5.
 - **Failure feedback for send**: see CMP-12.
@@ -1012,7 +1024,7 @@ Backend status is "Not started" for every item, because no backend code exists. 
 | FOL-2 Sidebar counts | Folders & labels | Derived from loaded data | Not started |
 | FOL-3 Label list with colours | Folders & labels | Placeholder JSON | Not started |
 | FOL-4 Label views | Folders & labels | Placeholder JSON, in memory | Not started |
-| FOL-5 Apply and remove labels on a thread | Folders & labels | UI not built yet | Not started |
+| FOL-5 Apply and remove labels on a thread | Folders & labels | In memory | Not started |
 | FOL-6 Create, rename, recolour and delete labels | Folders & labels | UI not built yet | Not started |
 | FOL-7 Report spam and not spam | Folders & labels | UI not built yet | Not started |
 | FOL-8 Empty Trash and permanent delete | Folders & labels | UI not built yet | Not started |
@@ -1033,11 +1045,12 @@ Backend status is "Not started" for every item, because no backend code exists. 
 | RDR-6 Fetch a message body on demand | Reading pane | UI not built yet | Not started |
 | RDR-7 Message navigation and reader focus | Reading pane | In memory | Not started |
 | ACT-1 Archive and move to Inbox | Message actions | In memory | Not started |
+| ACT-1a Move to a folder | Message actions | In memory | Not started |
 | ACT-2 Delete | Message actions | In memory | Not started |
 | ACT-3 Star and unstar | Message actions | In memory | Not started |
 | ACT-4 Mark as unread | Message actions | In memory | Not started |
 | ACT-5 Mark as read | Message actions | In memory | Not started |
-| ACT-6 Bulk select and bulk actions | Message actions | UI not built yet | Not started |
+| ACT-6 Bulk select and bulk actions | Message actions | In memory | Not started |
 | CMP-1 New message | Compose & sending | In memory | Not started |
 | CMP-2 Reply | Compose & sending | In memory | Not started |
 | CMP-3 Reply all | Compose & sending | In memory | Not started |
@@ -1059,7 +1072,7 @@ Backend status is "Not started" for every item, because no backend code exists. 
 | DRF-6 Sync drafts with the server | Drafts | Not implemented | Not started |
 | UND-1 Undo send | Undo | In memory | Not started |
 | UND-2 Undo discard | Undo | In memory | Not started |
-| UND-3 Undo for other actions | Undo | UI not built yet | Not started |
+| UND-3 Undo for other actions | Undo | In memory (moves only) | Not started |
 | SRC-1 Search bar and keys | Search | In memory | Not started |
 | SRC-2 Default search scope | Search | In memory | Not started |
 | SRC-3 Search operators | Search | In memory | Not started |
@@ -1076,7 +1089,7 @@ Backend status is "Not started" for every item, because no backend code exists. 
 | ATT-3 Attachment list in messages | Images & attachments | Placeholder JSON, display only | Not started |
 | ATT-4 Open and download attachment | Images & attachments | Display only, no handler | Not started |
 | ATT-5 Attachment icon in list | Images & attachments | Placeholder JSON | Not started |
-| ATT-6 Attach files to a new message | Images & attachments | UI not built yet | Not started |
+| ATT-6 Attach files to a new message | Images & attachments | In memory, metadata only | Not started |
 | ATT-7 Forward keeps attachments | Images & attachments | UI not built yet | Not started |
 | LNK-1 Open link in browser | Links | Works locally, no backend | Not started |
 | LNK-2 Link safety checks | Links | UI not built yet | Not started |

@@ -28,8 +28,10 @@ pub struct Theme {
     // Interactive surfaces.
     pub hover_bg: Hsla,
     pub selected_bg: Hsla,
-    /// The list's selection while the reader has keyboard focus.
-    pub selected_inactive_bg: Hsla,
+    /// The list's selection while the list has keyboard focus.
+    pub selected_focused_bg: Hsla,
+    /// Rows picked for a bulk action (`x`, shift- and ⌘-click).
+    pub checked_bg: Hsla,
     pub nav_active_bg: Hsla,
     pub card_bg: Hsla,
     /// The message `n` / `p` moved to.
@@ -106,7 +108,8 @@ impl Theme {
 
             hover_bg: hex(0xffffff0a),
             selected_bg: hex(0xffffff1c),
-            selected_inactive_bg: hex(0xffffff0f),
+            selected_focused_bg: hex(0x7aa5ff38),
+            checked_bg: hex(0x7aa5ff1f),
             nav_active_bg: hex(0xffffff17),
             card_bg: hex(0xffffff0a),
             card_focused_bg: hex(0xffffff0d),
@@ -161,7 +164,8 @@ impl Theme {
 
             hover_bg: hex(0x0000000a),
             selected_bg: hex(0x00000012),
-            selected_inactive_bg: hex(0x0000000a),
+            selected_focused_bg: hex(0x1d5bd11c),
+            checked_bg: hex(0x1d5bd10f),
             nav_active_bg: hex(0x00000012),
             card_bg: hex(0xffffff00),
             card_focused_bg: hex(0x00000008),

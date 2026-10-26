@@ -3,9 +3,10 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, Div, FontStyle, FontWeight, HighlightStyle, Hsla, InteractiveText, IntoElement,
-    ParentElement, SharedString, StrikethroughStyle, Styled, StyledText, UnderlineStyle,
-    component::tooltip::Tooltip, div, prelude::FluentBuilder as _, px, relative,
+    AnyElement, Div, FontStyle, FontWeight, HighlightStyle, Hsla, InteractiveElement as _,
+    InteractiveText, IntoElement, ParentElement, SharedString, StatefulInteractiveElement as _,
+    StrikethroughStyle, Styled, StyledText, UnderlineStyle, component::tooltip::Tooltip, div,
+    prelude::FluentBuilder as _, px, relative,
 };
 
 use crate::ui::style::*;
@@ -18,12 +19,28 @@ const MONO: &str = "Menlo";
 const BLOCK_GAP: gpui::Pixels = SPACE_MD;
 
 pub fn render(doc: &Document, theme: &Theme) -> impl IntoElement {
+    render_filtered(doc, theme, |_| true)
+}
+
+/// The document's top-level blocks that `keep` accepts.
+pub fn render_filtered(
+    doc: &Document,
+    theme: &Theme,
+    keep: impl Fn(&Block) -> bool,
+) -> impl IntoElement {
     let mut renderer = Renderer {
         theme,
         next_id: 0,
         list_depth: 0,
     };
-    renderer.blocks(&doc.blocks, BLOCK_GAP)
+    let blocks = doc
+        .blocks
+        .iter()
+        .filter(|b| keep(b))
+        .enumerate()
+        .map(|(ix, b)| renderer.block(b, ix == 0))
+        .collect::<Vec<_>>();
+    div().flex().flex_col().gap(BLOCK_GAP).children(blocks)
 }
 
 struct Renderer<'a> {
@@ -115,11 +132,13 @@ impl Renderer<'_> {
                 .child(self.blocks(blocks, BLOCK_GAP))
                 .into_any_element(),
             Block::Table(table) => self.table(table),
+            // Remote images aren't loaded (see BACKEND_REQUIREMENTS RDR-4).
             Block::Image { alt } => div()
                 .max_w_full()
                 .flex()
                 .items_center()
                 .justify_center()
+                .gap(SPACE_SM)
                 .min_h(px(44.))
                 .px(SPACE_MD)
                 .py(SPACE_SM)
@@ -129,12 +148,64 @@ impl Renderer<'_> {
                 .bg(theme.chip_bg)
                 .text_size(TEXT_SM)
                 .text_color(theme.text_faint)
+                .child(super::icon(
+                    crate::assets::Icon::Image,
+                    px(14.),
+                    theme.text_faint,
+                ))
                 .child(if alt.is_empty() {
                     SharedString::from("Image")
                 } else {
                     alt.clone()
                 })
                 .into_any_element(),
+            Block::Button {
+                label,
+                url,
+                color,
+                align,
+            } => {
+                let fill = color
+                    .filter(|c| contrast(*c, theme.text) >= 1.5 || !theme.is_dark)
+                    .map(|c| Hsla { a: 1., ..c })
+                    .unwrap_or(theme.accent);
+                let text = if contrast(fill, gpui::white()) >= contrast(fill, gpui::black()) {
+                    gpui::white()
+                } else {
+                    gpui::black()
+                };
+                let url = url.clone();
+                let tip = url.clone();
+                let id = self.next_id;
+                self.next_id += 1;
+                div()
+                    .flex()
+                    .map(|d| match align {
+                        Align::Left => d,
+                        Align::Center => d.justify_center(),
+                        Align::Right => d.justify_end(),
+                    })
+                    .child(
+                        div()
+                            .id(("html-button", id))
+                            .h(px(36.))
+                            .px(SPACE_LG)
+                            .flex()
+                            .items_center()
+                            .rounded(RADIUS_MD)
+                            .bg(fill)
+                            .text_color(text)
+                            .text_size(TEXT_BASE)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .cursor_pointer()
+                            .hover(|s| s.opacity(0.9))
+                            .active(|s| s.opacity(0.8))
+                            .child(label.clone())
+                            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                            .on_click(move |_, _, cx| cx.open_url(&url)),
+                    )
+                    .into_any_element()
+            }
             Block::Rule => div()
                 .h(px(1.))
                 .my(SPACE_XS)
@@ -161,6 +232,11 @@ impl Renderer<'_> {
                     match row.get(col) {
                         Some(c) => cell
                             .map(|d| aligned(d, c.align))
+                            // The email's fill, where the text stays readable on it.
+                            .when_some(
+                                c.background.filter(|bg| contrast(*bg, theme.text) >= 4.5),
+                                |d, bg| d.bg(bg),
+                            )
                             .when(c.header, |d| d.font_weight(FontWeight::SEMIBOLD))
                             .child(self.blocks(&c.blocks, SPACE_XS)),
                         None => cell,
@@ -290,6 +366,12 @@ fn readable(color: Hsla, dark: bool) -> Hsla {
     }
     c.l = passing;
     c
+}
+
+/// WCAG contrast ratio between two opaque colors.
+fn contrast(a: Hsla, b: Hsla) -> f32 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
 fn luminance(color: Hsla) -> f32 {

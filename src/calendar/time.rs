@@ -174,15 +174,13 @@ pub fn parse_time(text: &str) -> Option<NaiveTime> {
 }
 
 /// A typed date: "today", "tomorrow", "2026-10-27", "10/27", "Oct 27",
-/// "October 27 2026", "27 Oct", "Tue, Oct 27, 2026". Without a year, the
-/// one of `today`.
+/// "October 27 2026", "27 Oct", "Tue, Oct 27, 2026", a month ("Dec", "Dec
+/// 2027": its first day), or relative to `today` (see `parse_relative`).
+/// Without a year, the one of `today`.
 pub fn parse_date(text: &str, today: NaiveDate) -> Option<NaiveDate> {
     let lower = text.trim().to_lowercase();
-    match lower.as_str() {
-        "today" => return Some(today),
-        "tomorrow" => return Some(today + Duration::days(1)),
-        "yesterday" => return Some(today - Duration::days(1)),
-        _ => {}
+    if let Some(date) = parse_relative(&lower, today) {
+        return Some(date);
     }
     let words: Vec<&str> = lower
         .split(|c: char| c.is_whitespace() || c == ',')
@@ -193,7 +191,18 @@ pub fn parse_date(text: &str, today: NaiveDate) -> Option<NaiveDate> {
     let without_year = |fmt: &str, sep: &str| {
         NaiveDate::parse_from_str(&format!("{joined}{sep}{}", today.year()), fmt).ok()
     };
-    with_year("%Y-%m-%d")
+    // A month alone, with or without its year: its first day. First, since
+    // "dec 2026" would otherwise read as December 20, year 26.
+    let month_alone = || {
+        let (month, year) = match words.as_slice() {
+            [month] => (*month, today.year()),
+            [month, year] if year.len() == 4 => (*month, year.parse().ok()?),
+            _ => return None,
+        };
+        NaiveDate::parse_from_str(&format!("1 {month} {year}"), "%d %B %Y").ok()
+    };
+    month_alone()
+        .or_else(|| with_year("%Y-%m-%d"))
         .or_else(|| with_year("%m/%d/%Y"))
         .or_else(|| with_year("%b %d %Y"))
         .or_else(|| with_year("%B %d %Y"))
@@ -204,6 +213,54 @@ pub fn parse_date(text: &str, today: NaiveDate) -> Option<NaiveDate> {
         .or_else(|| without_year("%B %d %Y", " "))
         .or_else(|| without_year("%d %b %Y", " "))
         .or_else(|| without_year("%d %B %Y", " "))
+}
+
+/// Dates said relative to `today`: "today", "tomorrow", "yesterday", "fri"
+/// (the next Friday, or today on a Friday), "next fri" and "last fri" (the
+/// Friday of next or last week), "next week" (its Monday), "next month",
+/// "next year" (their first days), "last week", and "in 3 days", "in 2
+/// weeks", "in 1 month".
+fn parse_relative(text: &str, today: NaiveDate) -> Option<NaiveDate> {
+    let weekday = |word: &str| word.parse::<Weekday>().ok();
+    let in_week = |monday: NaiveDate, day: Weekday| {
+        monday + Duration::days(day.num_days_from_monday() as i64)
+    };
+    let words: Vec<&str> = text.split_whitespace().collect();
+    Some(match words.as_slice() {
+        ["today"] => today,
+        ["tomorrow" | "tmr" | "tom"] => today + Duration::days(1),
+        ["yesterday"] => today - Duration::days(1),
+        [day] | ["this", day] => {
+            let day = weekday(day)?;
+            let ahead = (day.num_days_from_monday() as i64
+                - today.weekday().num_days_from_monday() as i64)
+                .rem_euclid(7);
+            today + Duration::days(ahead)
+        }
+        ["next" | "last", "week"] | ["next" | "last", "month"] | ["next" | "last", "year"] => {
+            let sign = if words[0] == "next" { 1 } else { -1 };
+            match words[1] {
+                "week" => week_start(today) + Duration::days(7 * sign),
+                "month" => month_start(add_months(today, sign as i32)),
+                _ => NaiveDate::from_ymd_opt(today.year() + sign as i32, 1, 1)?,
+            }
+        }
+        [which @ ("next" | "last"), day] => {
+            let sign = if *which == "next" { 1 } else { -1 };
+            in_week(week_start(today) + Duration::days(7 * sign), weekday(day)?)
+        }
+        ["in", count, unit] => {
+            let count: i64 = count.parse().ok()?;
+            match unit.trim_end_matches('s') {
+                "day" => today + Duration::days(count),
+                "week" => today + Duration::weeks(count),
+                "month" => add_months(today, count as i32),
+                "year" => add_months(today, 12 * count as i32),
+                _ => return None,
+            }
+        }
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -305,5 +362,29 @@ mod tests {
         assert_eq!(parse_date("Tue, Nov 3", today), Some(d(2026, 11, 3)));
         assert_eq!(parse_date("Wed, Jan 6, 2027", today), Some(d(2027, 1, 6)));
         assert_eq!(parse_date("someday", today), None);
+    }
+
+    #[test]
+    fn parses_relative_dates() {
+        // A Monday.
+        let today = d(2026, 10, 26);
+        assert_eq!(parse_date("yesterday", today), Some(d(2026, 10, 25)));
+        assert_eq!(parse_date("fri", today), Some(d(2026, 10, 30)));
+        assert_eq!(parse_date("Friday", today), Some(d(2026, 10, 30)));
+        assert_eq!(parse_date("mon", today), Some(today));
+        assert_eq!(parse_date("sun", today), Some(d(2026, 11, 1)));
+        assert_eq!(parse_date("next fri", today), Some(d(2026, 11, 6)));
+        assert_eq!(parse_date("last fri", today), Some(d(2026, 10, 23)));
+        assert_eq!(parse_date("next week", today), Some(d(2026, 11, 2)));
+        assert_eq!(parse_date("next month", today), Some(d(2026, 11, 1)));
+        assert_eq!(parse_date("next year", today), Some(d(2027, 1, 1)));
+        assert_eq!(parse_date("in 3 days", today), Some(d(2026, 10, 29)));
+        assert_eq!(parse_date("in 2 weeks", today), Some(d(2026, 11, 9)));
+        assert_eq!(parse_date("in 1 month", today), Some(d(2026, 11, 26)));
+        assert_eq!(parse_date("nov 12", today), Some(d(2026, 11, 12)));
+        assert_eq!(parse_date("dec", today), Some(d(2026, 12, 1)));
+        assert_eq!(parse_date("March 2027", today), Some(d(2027, 3, 1)));
+        assert_eq!(parse_date("next", today), None);
+        assert_eq!(parse_date("in 3 parsecs", today), None);
     }
 }

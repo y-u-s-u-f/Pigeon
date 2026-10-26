@@ -2,7 +2,8 @@
 
 use gpui::{
     AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _, px,
+    StatefulInteractiveElement, Styled, Window, component::tooltip::Tooltip, div,
+    prelude::FluentBuilder as _, px,
 };
 
 use super::{HEADER_HEIGHT, avatar, icon, icon_button, window_drag_area};
@@ -108,44 +109,39 @@ impl PigeonApp {
                     )),
             )
             .child(
-                // Account card.
+                // The account: who this mail is for. Display only; the
+                // address is in its tooltip.
                 div()
+                    .id("account")
+                    .role(gpui::Role::Group)
+                    .aria_label(format!("{}, {}", account.name, account.email))
                     .mx(SPACE_MD)
-                    .mb(SPACE_LG)
-                    .p(SPACE_SM)
+                    .mb(SPACE_SM)
+                    .h(HIT_TARGET)
+                    .px(SPACE_MD)
                     .flex()
                     .items_center()
                     .gap(SPACE_SM)
                     .rounded(RADIUS_MD)
-                    .bg(theme.card_bg)
-                    .border_1()
-                    .border_color(theme.border)
+                    .hover(|s| s.bg(theme.hover_bg))
                     .child(avatar(
                         account.initials(),
                         theme.avatar_color(&account.email),
-                        px(32.),
+                        px(18.),
                         &theme,
                     ))
                     .child(
                         div()
                             .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(TEXT_BASE)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(account.name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(TEXT_SM)
-                                    .text_color(theme.text_muted)
-                                    .child(account.email.clone()),
-                            ),
-                    ),
+                            .truncate()
+                            .text_size(TEXT_BASE)
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(account.name.clone()),
+                    )
+                    .tooltip({
+                        let email = account.email.clone();
+                        move |window, cx| Tooltip::new(email.clone()).build(window, cx)
+                    }),
             )
             .child(
                 div()
@@ -234,14 +230,18 @@ impl PigeonApp {
             })
             .child(div().flex_1().truncate().child(name))
             .when(count > 0, |this| {
+                // Unread counts (and Drafts' total); the Inbox's stands out.
+                let inbox = nav == Nav::Folder(Folder::Inbox);
                 this.child(
                     div()
                         .text_size(TEXT_SM)
-                        .text_color(if active {
-                            theme.text_muted
+                        .font_features(tabular_figures())
+                        .font_weight(if inbox {
+                            FontWeight::SEMIBOLD
                         } else {
-                            theme.text_faint
+                            FontWeight::NORMAL
                         })
+                        .text_color(if inbox { theme.text } else { theme.text_muted })
                         .child(count.to_string()),
                 )
             })

@@ -8,18 +8,18 @@ use gpui::{
     InteractiveElement, IntoElement, MouseButton, ParentElement, ScrollHandle, SharedString,
     StatefulInteractiveElement as _, Styled, Subscription, Window, actions, anchored,
     component::input::{Input, InputEvent, InputState, Textarea, TextareaState},
-    deferred, div, linear_color_stop, linear_gradient,
+    deferred, div,
     prelude::FluentBuilder as _,
     px, relative,
 };
 
-use super::{CalendarView, Menu, today};
+use super::{CalendarView, Menu, PromptKind, today};
 use crate::ui::style::*;
 use crate::{
     actions::*,
     assets::Icon,
     calendar::{
-        Attendee, Event, RsvpStatus,
+        Attendee, Event, RsvpStatus, SeriesScope,
         time::{
             self, add_months, date_label, duration_label, month_start, parse_date, parse_time,
             time_label, week_start,
@@ -124,6 +124,14 @@ pub struct EventPanel {
     /// The month the date picker shows.
     picker_month: NaiveDate,
     picker_scroll: ScrollHandle,
+    /// A repeating event's series as it was before the panel's first change
+    /// to it, until the user says whether the change is for this event or
+    /// all of them.
+    pub snapshot: Option<Event>,
+    /// Where the occurrence was when that first change came.
+    origin: NaiveDateTime,
+    /// The answer, once given.
+    pub scope: Option<SeriesScope>,
     /// Indices into the contact book, best first.
     suggestions: Vec<usize>,
     highlighted: usize,
@@ -170,7 +178,7 @@ impl EventPanel {
         let guests = input(Field::Guests, "Add guests", String::new());
         let notes = cx.new(|cx| {
             TextareaState::new(window, cx)
-                .auto_grow(3, 24)
+                .auto_grow(1, 24)
                 .placeholder("Add description")
                 .default_value(event.description.clone())
         });
@@ -201,6 +209,9 @@ impl EventPanel {
             picker: None,
             picker_month: month_start(occurrence.date()),
             picker_scroll: ScrollHandle::new(),
+            snapshot: None,
+            origin: occurrence,
+            scope: None,
             suggestions: Vec::new(),
             highlighted: 0,
             navigated: false,
@@ -355,7 +366,58 @@ impl CalendarView {
         false
     }
 
+    /// Before the panel's first change to a repeating event: keep the series
+    /// as it was, so "This event" can put it back.
+    fn before_panel_edit(&mut self) {
+        let Some(panel) = &self.panel else { return };
+        if panel.scope.is_some() || panel.snapshot.is_some() {
+            return;
+        }
+        let Some(event) = self.event(&panel.event_id).filter(|e| e.is_series()) else {
+            return;
+        };
+        let snapshot = event.clone();
+        let panel = self.panel.as_mut().expect("checked above");
+        panel.origin = panel.occurrence;
+        panel.snapshot = Some(snapshot);
+    }
+
+    /// "This event": the occurrence, as edited, becomes an event of its own
+    /// and the series goes back to how it was. "All events": the change
+    /// stays on the series.
+    fn choose_edit_scope(&mut self, scope: SeriesScope, cx: &mut Context<Self>) {
+        let Some(panel) = &mut self.panel else { return };
+        let Some(snapshot) = panel.snapshot.take() else {
+            return;
+        };
+        panel.scope = Some(scope);
+        if scope == SeriesScope::This {
+            let (series_id, origin, start) =
+                (panel.event_id.clone(), panel.origin, panel.occurrence);
+            let Some(duration) = self.event(&series_id).map(|e| e.duration()) else {
+                return;
+            };
+            // The copy takes the series as edited; the series goes back.
+            let Some(id) = self.detach(&series_id, origin, start, start + duration) else {
+                return;
+            };
+            if let Some(series) = self.event_mut(&series_id) {
+                *series = snapshot;
+                series.exceptions.push(origin);
+            }
+            if let Some(panel) = &mut self.panel {
+                panel.event_id = id.clone();
+            }
+            self.selected = Some(super::Selection {
+                event_id: id,
+                start,
+            });
+        }
+        cx.notify();
+    }
+
     fn edit_event(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Event)) {
+        self.before_panel_edit();
         let Some(id) = self.panel.as_ref().map(|p| p.event_id.clone()) else {
             return;
         };
@@ -484,6 +546,7 @@ impl CalendarView {
         };
         match change {
             Some((new_start, new_end)) if (new_start, new_end) != (start, end) => {
+                self.before_panel_edit();
                 self.retime_occurrence(&id, start, new_start, new_end, window, cx)
             }
             _ => self.sync_panel_times(window, cx),
@@ -512,6 +575,7 @@ impl CalendarView {
             ),
             _ => return cx.propagate(),
         };
+        self.before_panel_edit();
         self.retime_occurrence(&id, start, new_start, new_end, window, cx);
         if let Some(panel) = &mut self.panel {
             panel.picker_month = month_start(
@@ -600,7 +664,7 @@ impl CalendarView {
                     self.edit_event(cx, |e| e.reminder_minutes = minutes);
                 }
             }
-            Menu::Calendars => {}
+            Menu::Calendars | Menu::GoToDate => {}
         }
         self.menu = None;
         cx.notify();
@@ -713,6 +777,7 @@ impl CalendarView {
             let shift = date - start.date();
             (start + shift, end + shift)
         };
+        self.before_panel_edit();
         self.retime_occurrence(&id, start, new_start, new_end, window, cx);
         window.focus(&self.focus_handle, cx);
     }
@@ -734,6 +799,7 @@ impl CalendarView {
         } else {
             (value, value + (end - start))
         };
+        self.before_panel_edit();
         self.retime_occurrence(&id, start, new_start, new_end, window, cx);
         window.focus(&self.focus_handle, cx);
     }
@@ -755,6 +821,7 @@ impl CalendarView {
             let start = time::at(start.date(), 9, 0);
             (start, start + Duration::hours(1))
         };
+        self.before_panel_edit();
         if let Some(event) = self.event_mut(&id) {
             event.all_day = all_day;
         }
@@ -876,11 +943,16 @@ impl CalendarView {
 
     // Rendering.
 
-    pub(crate) fn render_panel(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    /// The panel for `panel`'s event (the open one, or the one sliding
+    /// shut); nothing once the event is gone.
+    pub(crate) fn render_panel(
+        &self,
+        panel: &EventPanel,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let theme = Theme::of(cx).clone();
-        let Some((panel, event)) = self.panel_event() else {
-            return div().into_any_element();
-        };
+        let event = self.event(&panel.event_id)?;
         let color = self.data.color_of(event);
         let accent = theme.event_accent(color, false);
 
@@ -894,13 +966,6 @@ impl CalendarView {
             .pr(SPACE_MD)
             .child(self.render_calendar_picker(event, &theme, window, cx))
             .child(div().flex_1())
-            .child(icon_button(
-                "event-delete",
-                Icon::Trash,
-                "Delete event",
-                Box::new(DeleteEvent),
-                &theme,
-            ))
             .child(icon_button(
                 "event-close",
                 Icon::X,
@@ -941,7 +1006,7 @@ impl CalendarView {
                         ),
                     ),
             )
-            .children(event.recurrence.map(|recurrence| {
+            .children(self.repeat_line(event).map(|line| {
                 div()
                     .pl(SPACE_LG)
                     .flex()
@@ -950,13 +1015,40 @@ impl CalendarView {
                     .text_size(TEXT_SM)
                     .text_color(theme.text_muted)
                     .child(icon(Icon::Repeat, px(13.), theme.text_faint))
-                    .child(recurrence.label())
-                    .child(
-                        div()
-                            .text_color(theme.text_faint)
-                            .child("· edits change every one"),
-                    )
-            }));
+                    .child(line)
+            }))
+            // After the first change to a repeating event: to which?
+            .when(panel.snapshot.is_some() && panel.scope.is_none(), |d| {
+                d.child(enter(
+                    "scope-choice",
+                    div()
+                        .ml(SPACE_LG)
+                        .mt(SPACE_XS)
+                        .p(SPACE_SM)
+                        .flex()
+                        .flex_col()
+                        .gap(SPACE_SM)
+                        .rounded(RADIUS_MD)
+                        .border_1()
+                        .border_color(theme.border)
+                        .child(
+                            div()
+                                .text_size(TEXT_SM)
+                                .text_color(theme.text_muted)
+                                .child("Apply this change to"),
+                        )
+                        .child(self.render_scope_buttons(
+                            &[
+                                (SeriesScope::This, "This event"),
+                                (SeriesScope::All, "All events"),
+                            ],
+                            false,
+                            &theme,
+                            cx,
+                            |this, scope, _, cx| this.choose_edit_scope(scope, cx),
+                        )),
+                ))
+            });
 
         let body = div()
             .id("event-panel-body")
@@ -995,29 +1087,7 @@ impl CalendarView {
             ))
             .child(divider(&theme))
             .child(self.render_options(event, &theme, window, cx))
-            .child(
-                div().px(SPACE_XL).pt(SPACE_LG).child(
-                    div()
-                        .id("event-delete-button")
-                        .h(px(32.))
-                        .px(SPACE_MD)
-                        .flex()
-                        .items_center()
-                        .gap(SPACE_SM)
-                        .rounded(RADIUS_MD)
-                        .text_size(TEXT_BASE)
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.danger)
-                        .hover(|s| s.bg(theme.danger.alpha(0.1)))
-                        .child(icon(Icon::Trash, px(15.), theme.danger))
-                        .child("Delete event")
-                        .child(div().flex_1())
-                        .child(keycap("⌫", &theme))
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(Box::new(DeleteEvent), cx)
-                        }),
-                ),
-            );
+            .child(self.render_delete(event, &theme, cx));
 
         div()
             .key_context(EVENT_PANEL)
@@ -1040,22 +1110,88 @@ impl CalendarView {
             .bg(theme.cal_panel_bg)
             .border_l_1()
             .border_color(theme.border)
-            // A wash of the calendar's color at the top.
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .right_0()
-                    .h(px(150.))
-                    .bg(linear_gradient(
-                        180.,
-                        linear_color_stop(color.alpha(if theme.is_dark { 0.16 } else { 0.11 }), 0.),
-                        linear_color_stop(color.alpha(0.), 1.),
-                    )),
-            )
             .child(header)
             .child(body)
+            .into_any_element()
+            .into()
+    }
+
+    /// "Repeats every week", or for an occurrence changed on its own, the
+    /// series it belongs to.
+    fn repeat_line(&self, event: &Event) -> Option<String> {
+        if let Some(recurrence) = event.recurrence {
+            return Some(recurrence.label().to_string());
+        }
+        let series = self.event(event.recurring_event_id.as_deref()?)?;
+        let label = series.recurrence.map_or("Repeating", |r| r.label());
+        Some(format!("{label} · this one changed separately"))
+    }
+
+    /// The delete row, with its shortcut; for a repeating event, once
+    /// asked, which occurrences to delete.
+    fn render_delete(&self, event: &Event, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let asking = self.prompt.as_ref().filter(|p| {
+            p.kind == PromptKind::Delete && p.event_id == event.id && self.panel.is_some()
+        });
+        if let Some(prompt) = asking {
+            return div()
+                .mx(SPACE_XL)
+                .mt(SPACE_LG)
+                .p(SPACE_MD)
+                .flex()
+                .flex_col()
+                .gap(SPACE_SM)
+                .rounded(RADIUS_MD)
+                .border_1()
+                .border_color(theme.danger.alpha(0.35))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(TEXT_BASE)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("Delete repeating event"),
+                        )
+                        .child(keycap("esc", theme)),
+                )
+                .child(self.render_prompt_choices(prompt.kind, theme, cx))
+                .into_any_element();
+        }
+        div()
+            .px(SPACE_XL)
+            .pt(SPACE_LG)
+            .child(
+                focusable_control(div().id("event-delete-button"), theme)
+                    .role(gpui::Role::Button)
+                    .aria_label("Delete event")
+                    .h(HIT_TARGET)
+                    .px(SPACE_MD)
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_SM)
+                    .rounded(RADIUS_MD)
+                    .text_size(TEXT_BASE)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.danger)
+                    .hover(|s| s.bg(theme.danger.alpha(0.1)))
+                    .child(icon(Icon::Trash, px(15.), theme.danger))
+                    .child(if event.is_series() {
+                        "Delete event…"
+                    } else {
+                        "Delete event"
+                    })
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_size(TEXT_XS)
+                            .text_color(theme.danger.alpha(0.7))
+                            .child("⌫"),
+                    )
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(DeleteEvent), cx)),
+            )
             .into_any_element()
     }
 
@@ -1481,13 +1617,36 @@ impl CalendarView {
                         .flex()
                         .items_center()
                         .gap(SPACE_SM)
-                        .child(
-                            field_box(panel.is_focused(Field::Video, window, cx), theme)
+                        .child({
+                            let focused = panel.is_focused(Field::Video, window, cx);
+                            let input = panel.video.clone();
+                            field_box(focused, theme)
                                 .flex_1()
                                 .min_w_0()
                                 .text_size(TEXT_BASE)
-                                .child(field_input(&panel.video)),
-                        )
+                                .map(|d| {
+                                    if focused || link.is_empty() {
+                                        d.child(field_input(&panel.video))
+                                    } else {
+                                        // A long link ends in an ellipsis
+                                        // until it's edited.
+                                        d.child(
+                                            div()
+                                                .id("video-link")
+                                                .flex_1()
+                                                .min_w_0()
+                                                .truncate()
+                                                .cursor_text()
+                                                .child(link.clone())
+                                                .on_click(move |_, window, cx| {
+                                                    input.update(cx, |input, cx| {
+                                                        input.focus(window, cx)
+                                                    })
+                                                }),
+                                        )
+                                    }
+                                })
+                        })
                         .when(!link.is_empty(), |d| {
                             d.child(
                                 div()
@@ -1633,12 +1792,14 @@ impl CalendarView {
             );
         }
 
-        let count = event.attendees.len();
+        // Everyone listed: the organizer, who goes, and the guests.
+        let count = rows.len();
         let yes = event
             .attendees
             .iter()
             .filter(|a| a.status == RsvpStatus::Accepted)
-            .count();
+            .count()
+            + usize::from(!event.attendees.is_empty() && !organizer_attends);
         let awaiting = event
             .attendees
             .iter()
@@ -1646,8 +1807,8 @@ impl CalendarView {
             .count();
         let summary = (count > 0).then(|| {
             let mut parts = vec![format!(
-                "{count} guest{}",
-                if count == 1 { "" } else { "s" }
+                "{count} {}",
+                if count == 1 { "person" } else { "people" }
             )];
             if yes > 0 {
                 parts.push(format!("{yes} yes"));
@@ -2087,9 +2248,9 @@ fn status_badge(status: RsvpStatus, theme: &Theme) -> impl IntoElement {
     };
     div()
         .absolute()
-        .right(px(-3.))
-        .bottom(px(-3.))
-        .size(px(15.))
+        .right(px(-5.))
+        .bottom(px(-5.))
+        .size(px(14.))
         .flex()
         .items_center()
         .justify_center()
@@ -2097,5 +2258,5 @@ fn status_badge(status: RsvpStatus, theme: &Theme) -> impl IntoElement {
         .bg(status_color(status, theme))
         .border_2()
         .border_color(theme.overlay_bg)
-        .child(icon(glyph, px(9.), theme.cal_selected_text))
+        .child(icon(glyph, px(8.), theme.cal_selected_text))
 }

@@ -1,7 +1,7 @@
 //! The activity rail on the far left: Mail and Calendar.
 
 use gpui::{
-    Action, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    Action, InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString,
     StatefulInteractiveElement as _, Styled, component::tooltip::Tooltip, div,
     prelude::FluentBuilder as _, px,
 };
@@ -15,18 +15,22 @@ use crate::{
     theme::Theme,
 };
 
-pub fn render(mode: Mode, theme: &Theme) -> impl IntoElement {
+/// `unread`: unread threads in the Inbox, shown as a dot on Mail so new
+/// mail is visible from Calendar too.
+pub fn render(mode: Mode, unread: usize, theme: &Theme) -> impl IntoElement {
     let item = |id: &'static str,
                 glyph: Icon,
                 item_mode: Mode,
-                tooltip: &'static str,
+                tooltip: SharedString,
                 action: Box<dyn Action>| {
         let active = mode == item_mode;
         let tooltip_action = action.boxed_clone();
+        let label = tooltip.clone();
         focusable_control(div().id(id), theme)
             .role(gpui::Role::Tab)
-            .aria_label(tooltip)
+            .aria_label(label)
             .aria_selected(active)
+            .relative()
             .size(px(36.))
             .flex()
             .items_center()
@@ -35,7 +39,7 @@ pub fn render(mode: Mode, theme: &Theme) -> impl IntoElement {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
             .tooltip(move |window, cx| {
-                Tooltip::new(tooltip)
+                Tooltip::new(tooltip.clone())
                     .action(tooltip_action.as_ref(), None)
                     .build(window, cx)
             })
@@ -74,18 +78,35 @@ pub fn render(mode: Mode, theme: &Theme) -> impl IntoElement {
             .border_r_1()
             .border_color(theme.border),
     )
-    .child(item(
-        "rail-mail",
-        Icon::Mail,
-        Mode::Mail,
-        "Mail",
-        Box::new(GoToMail),
-    ))
+    .child(
+        item(
+            "rail-mail",
+            Icon::Mail,
+            Mode::Mail,
+            match unread {
+                0 => "Mail".into(),
+                n => format!("Mail · {n} unread").into(),
+            },
+            Box::new(GoToMail),
+        )
+        .when(unread > 0, |this| {
+            // Off the envelope's top-right corner.
+            this.child(
+                div()
+                    .absolute()
+                    .top(px(5.))
+                    .right(px(4.))
+                    .size(px(8.))
+                    .rounded_full()
+                    .bg(theme.accent),
+            )
+        }),
+    )
     .child(item(
         "rail-calendar",
         Icon::Calendar,
         Mode::Calendar,
-        "Calendar",
+        "Calendar".into(),
         Box::new(GoToCalendar),
     ))
 }

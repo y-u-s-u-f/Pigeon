@@ -36,6 +36,14 @@ pub enum Block {
     Image {
         alt: SharedString,
     },
+    /// A link styled as a button: a call to action.
+    Button {
+        label: SharedString,
+        url: SharedString,
+        /// The email's own fill; the renderer keeps it when it's readable.
+        color: Option<Hsla>,
+        align: Align,
+    },
     Rule,
 }
 
@@ -64,6 +72,8 @@ pub struct Table {
 pub struct Cell {
     pub header: bool,
     pub align: Align,
+    /// The cell's (or its row's) own background color.
+    pub background: Option<Hsla>,
     pub blocks: Vec<Block>,
 }
 
@@ -132,6 +142,7 @@ pub fn plain_text(doc: &Document) -> String {
                     }
                 }
                 Block::Image { alt } => push_par(alt, out),
+                Block::Button { label, .. } => push_par(label, out),
                 Block::Rule => {}
             }
         }
@@ -180,6 +191,8 @@ struct Ctx {
     style: Style,
     align: Align,
     pre: bool,
+    /// Set by `tr`, `td` and `th` for their cells.
+    background: Option<Hsla>,
 }
 
 /// Block-level elements: they end the current paragraph and start a new one.
@@ -254,8 +267,10 @@ impl Parser {
                 let text = contents.borrow();
                 if parent.pre {
                     self.inline.push(&text, &parent.style);
-                } else {
+                } else if parent.style.link.is_some() {
                     self.inline.push_collapsed(&text, &parent.style);
+                } else {
+                    self.push_autolinked(&text, &parent.style);
                 }
                 return;
             }
@@ -277,6 +292,22 @@ impl Parser {
             "s" | "strike" | "del" => self.walk_styled(node, ctx, |s| s.strike = true),
             "code" | "kbd" | "tt" | "samp" => self.walk_styled(node, ctx, |s| s.code = true),
             "a" => match attr(&attrs, "href").filter(|href| is_safe_url(href)) {
+                Some(href) if is_button(&attrs) => {
+                    let label = plain_text(&Document {
+                        blocks: parse_blocks(node, ctx),
+                    });
+                    if label.is_empty() {
+                        return;
+                    }
+                    self.flush(TextKind::Paragraph, parent.align);
+                    let css = attr(&attrs, "style").unwrap_or_default();
+                    self.blocks.push(Block::Button {
+                        label: label.replace("\n\n", " ").into(),
+                        url: href.trim().to_string().into(),
+                        color: background(css, &attrs),
+                        align: parent.align,
+                    });
+                }
                 Some(href) => {
                     let href = SharedString::from(href.trim().to_string());
                     self.walk_styled(node, ctx, |s| s.link = Some(href));
@@ -364,6 +395,22 @@ impl Parser {
         }
     }
 
+    /// Text with its bare addresses ("example.com/path", "https://…") made
+    /// into links.
+    fn push_autolinked(&mut self, text: &str, style: &Style) {
+        let mut rest = 0;
+        for (range, url) in find_urls(text) {
+            self.inline.push_collapsed(&text[rest..range.start], style);
+            let linked = Style {
+                link: Some(url.into()),
+                ..style.clone()
+            };
+            self.inline.push_collapsed(&text[range.clone()], &linked);
+            rest = range.end;
+        }
+        self.inline.push_collapsed(&text[rest..], style);
+    }
+
     fn walk_styled(&mut self, node: &Handle, ctx: &Ctx, f: impl FnOnce(&mut Style)) {
         let mut ctx = ctx.clone();
         f(&mut ctx.style);
@@ -375,10 +422,22 @@ impl Parser {
         collect_rows(node, ctx, &mut rows);
 
         // A one-column table is layout, as most newsletters use them: keep
-        // only its content.
+        // only its content. A filled cell holding just a link is a button.
         if rows.iter().all(|row| row.len() <= 1) {
             for cell in rows.into_iter().flatten() {
-                self.blocks.extend(cell.blocks);
+                match (cell.background, &cell.blocks[..]) {
+                    (Some(color), [Block::Text { text, align, .. }])
+                        if text.links.len() == 1 && text.links[0].0 == (0..text.text.len()) =>
+                    {
+                        self.blocks.push(Block::Button {
+                            label: text.text.clone(),
+                            url: text.links[0].1.clone(),
+                            color: Some(color),
+                            align: *align,
+                        })
+                    }
+                    _ => self.blocks.extend(cell.blocks),
+                }
             }
             return;
         }
@@ -444,6 +503,7 @@ fn collect_rows(node: &Handle, ctx: &Ctx, rows: &mut Vec<Vec<Cell>>) {
                         Some(Cell {
                             header: tag == "th",
                             align: ctx.align,
+                            background: ctx.background,
                             blocks: parse_blocks(cell, &ctx),
                         })
                     })
@@ -471,6 +531,7 @@ fn text_len(blocks: &[Block]) -> usize {
                 .map(|c| text_len(&c.blocks))
                 .sum(),
             Block::Image { alt } => alt.len(),
+            Block::Button { label, .. } => label.len(),
             Block::Rule => 0,
         })
         .sum()
@@ -494,6 +555,11 @@ fn element_ctx(tag: &str, attrs: &[Attribute], parent: &Ctx) -> Ctx {
     }
     if css_value(css, "text-decoration").is_some_and(|v| v.contains("underline")) {
         ctx.style.underline = true;
+    }
+    if matches!(tag, "tr" | "td" | "th")
+        && let Some(color) = background(css, attrs)
+    {
+        ctx.background = Some(color);
     }
     let align = css_value(css, "text-align").or_else(|| attr(attrs, "align"));
     match align.map(str::to_ascii_lowercase).as_deref() {
@@ -520,6 +586,80 @@ fn css_value<'a>(css: &'a str, property: &str) -> Option<&'a str> {
             .eq_ignore_ascii_case(property)
             .then(|| value.trim().trim_end_matches("!important").trim())
     })
+}
+
+/// An element's background color, from `bgcolor` or its inline style.
+fn background(css: &str, attrs: &[Attribute]) -> Option<Hsla> {
+    css_value(css, "background-color")
+        .or_else(|| css_value(css, "background"))
+        .or_else(|| attr(attrs, "bgcolor"))
+        .and_then(parse_color)
+}
+
+/// A link dressed as a button: filled, or padded with a border, or named so.
+fn is_button(attrs: &[Attribute]) -> bool {
+    let css = attr(attrs, "style").unwrap_or_default();
+    let class = attr(attrs, "class")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    background(css, attrs).is_some()
+        || (css_value(css, "padding").is_some() && css_value(css, "border-radius").is_some())
+        || class
+            .split_whitespace()
+            .any(|c| c.contains("button") || c.contains("btn") || c == "cta")
+}
+
+/// Web addresses written out in text, with the URL each opens. Takes
+/// "https://…", "www.…" and lowercase "name.tld/path" for common TLDs;
+/// trailing punctuation stays outside.
+fn find_urls(text: &str) -> Vec<(Range<usize>, String)> {
+    const TLDS: &[&str] = &[
+        "com", "org", "net", "io", "dev", "app", "co", "me", "ai", "edu", "gov", "us", "uk", "de",
+        "fr", "es", "ca",
+    ];
+    let mut found = Vec::new();
+    let mut start = None;
+    let ends = text
+        .char_indices()
+        .map(|(ix, c)| (ix, c.is_whitespace()))
+        .chain([(text.len(), true)]);
+    for (ix, space) in ends {
+        match (space, start) {
+            (false, None) => start = Some(ix),
+            (true, Some(from)) => {
+                start = None;
+                let token = &text[from..ix];
+                let lead = token.len() - token.trim_start_matches(['(', '<', '[', '"', '\'']).len();
+                let token = token[lead..].trim_end_matches(|c: char| ".,;:!?)]}>'\"".contains(c));
+                if token.is_empty() || token.contains('@') {
+                    continue;
+                }
+                let lower = token.to_ascii_lowercase();
+                let url = if lower.starts_with("https://") || lower.starts_with("http://") {
+                    token.to_string()
+                } else {
+                    let host = token.split('/').next().unwrap_or_default();
+                    let labels: Vec<&str> = host.split('.').collect();
+                    let is_host = labels.len() >= 2
+                        && labels.iter().all(|l| {
+                            !l.is_empty()
+                                && l.chars().all(|c| {
+                                    c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'
+                                })
+                        })
+                        && TLDS.contains(labels.last().expect("two or more"));
+                    if !is_host {
+                        continue;
+                    }
+                    format!("https://{token}")
+                };
+                let begin = from + lead;
+                found.push((begin..begin + token.len(), url));
+            }
+            _ => {}
+        }
+    }
+    found
 }
 
 fn is_safe_url(url: &str) -> bool {
@@ -677,6 +817,7 @@ mod tests {
                 Block::Quote(_) => "quote".into(),
                 Block::Table(_) => "table".into(),
                 Block::Image { .. } => "image".into(),
+                Block::Button { label, .. } => format!("button({label})"),
                 Block::Rule => "hr".into(),
             })
             .collect()
@@ -727,6 +868,47 @@ mod tests {
         assert_eq!(table.rows.len(), 2);
         assert_eq!(table.rows[1][1].align, Align::Right);
         assert_eq!(texts(&doc.blocks[1..]), ["layout"]);
+    }
+
+    #[test]
+    fn bare_addresses_become_links() {
+        let doc = parse(
+            "<p>Check in at skylineair.com/checkin. Or https://x.io/a, \
+             not MessageStore.com or me@x.com.</p>",
+        );
+        let Block::Text { text, .. } = &doc.blocks[0] else {
+            panic!()
+        };
+        let linked: Vec<(&str, &str)> = text
+            .links
+            .iter()
+            .map(|(r, url)| (&text.text[r.clone()], url.as_ref()))
+            .collect();
+        assert_eq!(
+            linked,
+            [
+                ("skylineair.com/checkin", "https://skylineair.com/checkin"),
+                ("https://x.io/a", "https://x.io/a")
+            ]
+        );
+    }
+
+    #[test]
+    fn buttons_and_cell_backgrounds() {
+        let doc = parse(
+            r##"<p><a href="https://a.io" style="background:#0a7;padding:8px">Check in</a></p>
+               <table><tr><td bgcolor="#1d5bd1"><a href="https://b.io">Pay now</a></td></tr></table>
+               <table><tr><td style="background-color:#fee">a</td><td>b</td></tr></table>"##,
+        );
+        assert_eq!(
+            texts(&doc.blocks[..2]),
+            ["button(Check in)", "button(Pay now)"]
+        );
+        let Block::Table(table) = &doc.blocks[2] else {
+            panic!()
+        };
+        assert!(table.rows[0][0].background.is_some());
+        assert!(table.rows[0][1].background.is_none());
     }
 
     #[test]

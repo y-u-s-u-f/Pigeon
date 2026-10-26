@@ -1,6 +1,13 @@
 //! The root view. It owns all app state; the panes in `ui/` render from it.
 
-use std::{collections::HashSet, rc::Rc, time::Duration};
+mod mail;
+pub use mail::{Density, SearchSuggestion};
+
+use std::{
+    collections::{HashMap, HashSet},
+    rc::Rc,
+    time::Duration,
+};
 
 use chrono::Local;
 use gpui::{
@@ -18,14 +25,14 @@ use crate::ui::style::*;
 use crate::{
     actions::*,
     assets::Icon,
-    calendar::{CalendarData, Event},
+    calendar::CalendarData,
     data::{Contact, DraftOrigin, Folder, MailData, Message, Quote, Thread, full_date},
     html,
     search::{FocusResults, Query},
     theme::Theme,
     ui::{
         self, PaneResize,
-        calendar::{CalendarEvent, CalendarView},
+        calendar::{CalendarEvent, CalendarView, Removal},
         command_palette::{CommandPalette, Leading, PaletteCommand, PaletteEvent, PaletteItem},
         composer::{Composer, ComposerEvent, ContactBook, DraftContent, Quoted},
     },
@@ -110,8 +117,13 @@ pub enum UndoAction {
         removed_draft: Option<Thread>,
         composer: Entity<Composer>,
     },
-    /// Put a deleted calendar event back.
-    DeleteEvent { event: Box<Event>, index: usize },
+    /// Put deleted calendar events (or occurrences) back.
+    DeleteEvent(Box<Removal>),
+    /// Put moved threads back in their folders: (thread id, old folder).
+    Move {
+        moves: Vec<(String, Folder)>,
+        selected: Option<String>,
+    },
 }
 
 pub struct PigeonApp {
@@ -160,6 +172,27 @@ pub struct PigeonApp {
     pub focused_message: Option<usize>,
     pub toast: Option<Toast>,
     next_id: usize,
+    // Mail lists and search; see `app/mail.rs`.
+    /// Threads picked for a bulk action, by id. While any are, the reader
+    /// shows the bulk actions instead of a conversation.
+    pub checked: HashSet<String>,
+    /// Where a shift-extended selection started, by thread id.
+    select_anchor: Option<String>,
+    /// The row under the mouse, which shows its quick actions.
+    pub hovered_thread: Option<usize>,
+    pub density: Density,
+    /// Search all mail rather than the current view (the scope chip).
+    pub search_all: bool,
+    pub recent_searches: Vec<String>,
+    /// The highlighted search suggestion, once moved to with the arrows.
+    pub search_highlight: Option<usize>,
+    /// Palette commands by last use, most recent first.
+    recent_commands: Vec<&'static str>,
+    /// The When/Where lines an invite card summarizes, shown anyway.
+    pub invite_details_open: bool,
+    pub help_filter: Entity<InputState>,
+    /// A reveal waiting for the list's next layout.
+    reveal_pending: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -183,18 +216,22 @@ impl PigeonApp {
                 gpui::base::apply_system_reduce_motion(cx);
             }
         });
-        let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search mail"));
+        let search_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Search — try from:, is:unread, in:all")
+        });
         let search_events = cx.subscribe_in(&search_input, window, Self::on_search_event);
+        let help_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter shortcuts"));
+        let help_events = cx.subscribe(&help_filter, |_, _, event: &InputEvent, cx| {
+            if let InputEvent::Change = event {
+                cx.notify();
+            }
+        });
         let contact_book = Rc::new(ContactBook::new(data.contacts()));
-        let calendar = cx.new(|cx| CalendarView::new(calendar, contact_book.clone(), cx));
+        let calendar = cx.new(|cx| CalendarView::new(calendar, contact_book.clone(), window, cx));
         let calendar_events = cx.subscribe(&calendar, |this, _, event, cx| match event {
-            CalendarEvent::Deleted { event, index } => {
-                let message = format!("Deleted “{}”", event.display_title());
-                let undo = UndoAction::DeleteEvent {
-                    event: Box::new(event.clone()),
-                    index: *index,
-                };
-                this.show_toast(message, Some(undo), cx);
+            CalendarEvent::Deleted { message, removal } => {
+                let undo = UndoAction::DeleteEvent(Box::new(removal.clone()));
+                this.show_toast(message.clone(), Some(undo), cx);
             }
         });
 
@@ -229,7 +266,24 @@ impl PigeonApp {
             focused_message: None,
             toast: None,
             next_id: 0,
-            _subscriptions: vec![appearance, activation, search_events, calendar_events],
+            checked: HashSet::new(),
+            select_anchor: None,
+            hovered_thread: None,
+            density: Density::Comfortable,
+            search_all: false,
+            recent_searches: Vec::new(),
+            search_highlight: None,
+            recent_commands: Vec::new(),
+            invite_details_open: false,
+            help_filter,
+            reveal_pending: false,
+            _subscriptions: vec![
+                appearance,
+                activation,
+                search_events,
+                calendar_events,
+                help_events,
+            ],
         };
         this.refresh_rows(false);
         this
@@ -256,6 +310,7 @@ impl PigeonApp {
             }
             let in_scope = match self.search_query.scope {
                 Some(scope) => Query::in_scope(scope, thread),
+                None if self.search_all => Query::in_scope(crate::search::Scope::All, thread),
                 // The Inbox shows its archived threads too, so its search does.
                 None if self.nav == Nav::Folder(Folder::Inbox) => {
                     matches!(thread.folder, Folder::Inbox | Folder::Archive)
@@ -306,6 +361,7 @@ impl PigeonApp {
             self.stash_composer(cx);
             self.nav = nav;
             self.selected = None;
+            self.clear_checked();
             self.reader_focused = false;
             self.refresh_rows(false);
         }
@@ -328,15 +384,14 @@ impl PigeonApp {
         if self.selected != Some(ix) {
             self.expanded_messages.clear();
             self.focused_message = None;
+            self.invite_details_open = false;
             self.reader_scroll.set_offset(point(px(0.), px(0.)));
         }
         self.selected = Some(ix);
         self.data.threads[ix].unread = false;
-        if let Some(row) = self.rows.iter().position(|r| *r == Row::Thread(ix)) {
-            self.list_state.scroll_to_reveal_item(row);
-        }
+        self.reveal_selected();
         if self.data.threads[ix].folder == Folder::Drafts && !already_open {
-            self.open_draft(ix, window, cx);
+            self.open_draft(ix, false, window, cx);
         }
         cx.notify();
     }
@@ -374,8 +429,15 @@ impl PigeonApp {
                 Row::ArchivedHeader { .. } => None,
             }),
         };
-        if let Some(ix) = next {
-            self.select_thread(ix, window, cx);
+        match next {
+            // Moving through a selection leaves the threads unread.
+            Some(ix) if !self.checked.is_empty() => {
+                self.selected = Some(ix);
+                self.reveal_selected();
+                cx.notify();
+            }
+            Some(ix) => self.select_thread(ix, window, cx),
+            None => {}
         }
     }
 
@@ -385,21 +447,6 @@ impl PigeonApp {
         let row = self.selected_row()?;
         self.neighbor_thread(row, true)
             .or_else(|| self.neighbor_thread(row, false))
-    }
-
-    /// Move the selected thread to `folder` and advance to its neighbor, like
-    /// Gmail's auto-advance.
-    fn move_selected(&mut self, folder: Folder, window: &mut Window, cx: &mut Context<Self>) {
-        self.stash_composer(cx);
-        let Some(ix) = self.selected else { return };
-        let next = self.next_after_selected();
-        self.data.threads[ix].folder = folder;
-        self.refresh_rows(true);
-        match next {
-            Some(next) => self.select_thread(next, window, cx),
-            None => self.selected = None,
-        }
-        cx.notify();
     }
 
     // Action handlers.
@@ -512,13 +559,12 @@ impl PigeonApp {
             return cx.propagate();
         }
         self.search_open = false;
+        self.search_all = false;
         self.search_query = Query::default();
         self.search_input
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.refresh_rows(false);
-        if let Some(row) = self.selected_row() {
-            self.list_state.scroll_to_reveal_item(row);
-        }
+        self.reveal_selected();
         window.focus(&self.focus_handle, cx);
         cx.notify();
     }
@@ -533,10 +579,14 @@ impl PigeonApp {
         match event {
             InputEvent::Change => {
                 self.search_query = Query::parse(&input.read(cx).value());
+                self.search_highlight = None;
                 self.refresh_rows(false);
                 cx.notify();
             }
-            InputEvent::PressEnter { .. } => self.focus_results(&FocusResults, window, cx),
+            InputEvent::PressEnter { .. } if !self.accept_search_suggestion(window, cx) => {
+                self.remember_search(cx);
+                self.focus_results(&FocusResults, window, cx);
+            }
             _ => {}
         }
     }
@@ -572,19 +622,11 @@ impl PigeonApp {
     }
 
     fn archive(&mut self, _: &Archive, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(ix) = self.selected else { return };
-        if let Some(folder) = self.data.threads[ix].folder.archive_target() {
-            self.move_selected(folder, window, cx);
-        }
+        self.archive_threads(self.targets(), window, cx);
     }
 
     fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(ix) = self.selected else { return };
-        match self.data.threads[ix].folder {
-            Folder::Trash => {}
-            Folder::Drafts => self.discard_selected_draft(window, cx),
-            _ => self.move_selected(Folder::Trash, window, cx),
-        }
+        self.delete_threads(self.targets(), window, cx);
     }
 
     /// Delete in Drafts discards the draft, like the discard button, then
@@ -602,25 +644,15 @@ impl PigeonApp {
     }
 
     fn toggle_star(&mut self, _: &ToggleStar, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(ix) = self.selected else { return };
-        let thread = &mut self.data.threads[ix];
-        thread.starred = !thread.starred;
-        if self.nav == Nav::Starred {
-            self.refresh_rows(true);
-        }
-        cx.notify();
+        self.star_threads(self.targets(), cx);
     }
 
     fn mark_unread(&mut self, _: &MarkUnread, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(ix) = self.selected else { return };
-        self.data.threads[ix].unread = true;
-        cx.notify();
+        self.set_unread(self.targets(), true, cx);
     }
 
     fn mark_read(&mut self, _: &MarkRead, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(ix) = self.selected else { return };
-        self.data.threads[ix].unread = false;
-        cx.notify();
+        self.set_unread(self.targets(), false, cx);
     }
 
     fn compose_new(&mut self, _: &Compose, window: &mut Window, cx: &mut Context<Self>) {
@@ -645,6 +677,23 @@ impl PigeonApp {
     /// conversation for a reply or forward.
     fn compose(&mut self, kind: ComposeKind, window: &mut Window, cx: &mut Context<Self>) {
         self.stash_composer(cx);
+        if kind != ComposeKind::New && !self.checked.is_empty() {
+            return;
+        }
+        // One draft per conversation: answering again reopens it.
+        if matches!(kind, ComposeKind::Reply | ComposeKind::ReplyAll)
+            && let Some(ix) = self.selected
+            && let Some(draft) = self.reply_draft_of(&self.data.threads[ix].id)
+        {
+            self.open_draft(draft, true, window, cx);
+            if let Some((composer, _)) = &self.composer {
+                composer.update(cx, |c, cx| c.focus_first(window, cx));
+            }
+            self.reader_focused = true;
+            self.reader_scroll.scroll_to_bottom();
+            cx.notify();
+            return;
+        }
         let thread = self.selected.map(|ix| &self.data.threads[ix]);
         let (content, reply_to, quoted) = match (kind, thread) {
             (ComposeKind::New, _) => (DraftContent::default(), None, None),
@@ -664,6 +713,7 @@ impl PigeonApp {
                 reply_to.clone(),
                 None,
                 quoted,
+                reply_to.is_some(),
                 self.contact_book.clone(),
                 window,
                 cx,
@@ -745,12 +795,24 @@ impl PigeonApp {
             bcc: Vec::new(),
             subject,
             body: String::new(),
+            attachments: Vec::new(),
         };
         (content, quoted)
     }
 
-    /// Show a Drafts thread in the composer, without taking focus from the list.
-    fn open_draft(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+    /// The Drafts thread that answers the thread `id`, if there is one.
+    fn reply_draft_of(&self, id: &str) -> Option<usize> {
+        self.data.threads.iter().position(|t| {
+            t.folder == Folder::Drafts
+                && t.origin
+                    .as_ref()
+                    .is_some_and(|o| o.reply_to.as_deref() == Some(id))
+        })
+    }
+
+    /// Show a Drafts thread in the composer, without taking focus from the
+    /// list: alone, or `inline` under the conversation it answers.
+    fn open_draft(&mut self, ix: usize, inline: bool, window: &mut Window, cx: &mut Context<Self>) {
         let thread = &self.data.threads[ix];
         let message = thread.last_message();
         let content = DraftContent {
@@ -759,6 +821,7 @@ impl PigeonApp {
             bcc: message.bcc.clone(),
             subject: thread.subject.clone(),
             body: html::plain_text(&html::parse(&message.html)),
+            attachments: message.attachments.clone(),
         };
         let origin = thread.origin.as_ref();
         let kind = origin.map_or(ComposeKind::New, |o| o.kind);
@@ -768,8 +831,11 @@ impl PigeonApp {
             .map(|q| Quoted::new(q.header.clone(), q.html.clone()));
         let draft_id = Some(thread.id.clone());
         let book = self.contact_book.clone();
-        let composer =
-            cx.new(|cx| Composer::new(kind, content, reply_to, draft_id, quoted, book, window, cx));
+        let composer = cx.new(|cx| {
+            Composer::new(
+                kind, content, reply_to, draft_id, quoted, inline, book, window, cx,
+            )
+        });
         self.set_composer(composer, cx);
     }
 
@@ -792,7 +858,7 @@ impl PigeonApp {
             return false;
         };
         let composer = composer.read(cx);
-        composer.draft_id.is_none()
+        composer.inline
             && composer.reply_to.is_some()
             && self.selected.map(|ix| &self.data.threads[ix].id) == composer.reply_to.as_ref()
     }
@@ -801,11 +867,29 @@ impl PigeonApp {
     /// selection kept on the same thread.
     fn update_threads<R>(&mut self, f: impl FnOnce(&mut MailData) -> R) -> R {
         let selected = self.selected.map(|ix| self.data.threads[ix].id.clone());
+        let old_ids: Vec<String> = self.data.threads.iter().map(|t| t.id.clone()).collect();
         let result = f(&mut self.data);
         self.data
             .threads
             .sort_by_key(|t| std::cmp::Reverse(t.last_message().date));
         self.selected = selected.and_then(|id| self.data.thread_ix(&id));
+        // Point the old rows at where their threads are now, so a new or
+        // re-sorted thread only splices its own row and the list stays put.
+        let new_ix: HashMap<&str, usize> = self
+            .data
+            .threads
+            .iter()
+            .enumerate()
+            .map(|(ix, t)| (t.id.as_str(), ix))
+            .collect();
+        for row in &mut self.rows {
+            if let Row::Thread(ix) = row {
+                *ix = new_ix
+                    .get(old_ids[*ix].as_str())
+                    .copied()
+                    .unwrap_or(usize::MAX);
+            }
+        }
         self.refresh_rows(true);
         result
     }
@@ -832,7 +916,7 @@ impl PigeonApp {
             date: Local::now().fixed_offset(),
             snippet,
             html,
-            attachments: Vec::new(),
+            attachments: content.attachments.clone(),
             invite: None,
         }
     }
@@ -926,6 +1010,9 @@ impl PigeonApp {
             return;
         };
         let composer = composer.clone();
+        if !composer.update(cx, |c, cx| c.validate(window, cx)) {
+            return;
+        }
         let c = composer.read(cx);
         let content = c.content(cx);
         if !content.has_recipients() {
@@ -1050,9 +1137,9 @@ impl PigeonApp {
             return;
         };
         let (composer, removed_draft) = match undo {
-            UndoAction::DeleteEvent { event, index } => {
+            UndoAction::DeleteEvent(removal) => {
                 self.calendar
-                    .update(cx, |c, cx| c.restore_event(*event, index, window, cx));
+                    .update(cx, |c, cx| c.restore(*removal, window, cx));
                 // Undone from an invite card: focus stays with the mail.
                 if self.mode == Mode::Mail {
                     window.focus(&self.focus_handle, cx);
@@ -1083,6 +1170,9 @@ impl PigeonApp {
                 removed_draft,
                 composer,
             } => (composer, removed_draft),
+            UndoAction::Move { moves, selected } => {
+                return self.undo_move(moves, selected, window, cx);
+            }
         };
         let draft_id = removed_draft.as_ref().map(|t| t.id.clone());
         if let Some(thread) = removed_draft {
@@ -1278,13 +1368,43 @@ impl PigeonApp {
     }
 
     fn open_palette(&mut self, query: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.help_open = false;
         let items = self.palette_items(window, cx);
         let noun = match self.mode {
             Mode::Mail => "mail",
             Mode::Calendar => "events",
         };
-        let palette = cx.new(|cx| CommandPalette::new(items, query, noun, window, cx));
+        self.show_palette(
+            items,
+            query,
+            format!("Type a command or search {noun}…"),
+            format!("No matching commands or {noun}"),
+            window,
+            cx,
+        );
+    }
+
+    /// The palette with `items`: every command, or a list to pick from
+    /// (`v`, `l`).
+    pub(crate) fn show_palette(
+        &mut self,
+        items: Vec<PaletteItem>,
+        query: &str,
+        placeholder: String,
+        empty_text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.help_open = false;
+        let palette = cx.new(|cx| {
+            CommandPalette::new(
+                items,
+                query,
+                placeholder.into(),
+                empty_text.into(),
+                window,
+                cx,
+            )
+        });
         let events = cx.subscribe_in(&palette, window, Self::on_palette_event);
         window.focus(&palette.focus_handle(cx), cx);
         self.palette = Some((palette, events));
@@ -1300,19 +1420,30 @@ impl PigeonApp {
                     window.highest_precedence_binding_for_action_in_context(action, context)
                 })
         };
-        let commands = COMMANDS
+        let mut available = COMMANDS
             .iter()
             .filter(|c| {
-                !c.help_only && (c.group.scope() == Scope::Global || c.group.scope() == scope)
+                !c.help_only
+                    && (c.group.scope() == Scope::Global || c.group.scope() == scope)
+                    && self.command_available(c.when, cx)
             })
-            .map(|c| PaletteItem {
-                command: PaletteCommand::Action(c.action),
-                title: c.name.into(),
-                subtitle: None,
-                leading: Leading::Icon(c.icon),
-                binding: binding(&*(c.action)()),
-                search_only: false,
-            });
+            .collect::<Vec<_>>();
+        // Most recently used first; the rest keep their order.
+        available.sort_by_key(|c| {
+            let name = (c.action)().name();
+            self.recent_commands
+                .iter()
+                .position(|n| *n == name)
+                .unwrap_or(usize::MAX)
+        });
+        let commands = available.into_iter().map(|c| PaletteItem {
+            command: PaletteCommand::Action(c.action),
+            title: c.name.into(),
+            subtitle: None,
+            leading: Leading::Icon(c.icon),
+            binding: binding(&*(c.action)()),
+            search_only: false,
+        });
         if self.mode == Mode::Calendar {
             let calendar = self.calendar.read(cx);
             let calendars = calendar
@@ -1399,7 +1530,14 @@ impl PigeonApp {
         match *command {
             // Dispatched from the panes, which now have focus, exactly as if
             // its shortcut had been pressed there.
-            PaletteCommand::Action(action) => window.dispatch_action(action(), cx),
+            PaletteCommand::Action(action) => {
+                let action = action();
+                self.recent_commands.retain(|n| *n != action.name());
+                self.recent_commands.insert(0, action.name());
+                window.dispatch_action(action, cx)
+            }
+            PaletteCommand::MoveTo(folder) => self.move_to(folder, window, cx),
+            PaletteCommand::ToggleLabel(ix) => self.toggle_label(ix, cx),
             PaletteCommand::Nav(nav) => self.set_nav(nav, cx),
             PaletteCommand::Thread(ix) => self.reveal_thread(ix, window, cx),
             PaletteCommand::ToggleCalendar(ix) => {
@@ -1422,13 +1560,18 @@ impl PigeonApp {
         } else {
             self.palette = None;
             self.help_open = true;
-            window.focus(&self.help_focus, cx);
+            self.help_filter
+                .update(cx, |input, cx| input.focus(window, cx));
             cx.notify();
         }
     }
 
     fn close_overlays(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.palette = None;
+        if self.help_open {
+            self.help_filter
+                .update(cx, |input, cx| input.set_value("", window, cx));
+        }
         self.help_open = false;
         window.focus(&self.pane_focus(cx), cx);
         cx.notify();
@@ -1576,6 +1719,7 @@ impl Render for PigeonApp {
             window.focus(&self.pane_focus(cx), cx);
         }
         window.set_rem_size(px(ui::style::BASE_REM * self.text_scale));
+        self.schedule_reveal(window, cx);
         let theme = Theme::of(cx).clone();
 
         let width = window.viewport_size().width;
@@ -1668,6 +1812,7 @@ impl Render for PigeonApp {
             .on_action(cx.listener(Self::close_window))
             .on_action(cx.listener(Self::minimize))
             .on_action(cx.listener(Self::zoom_window))
+            .map(|this| self.on_mail_actions(this, cx))
             .on_drag_move(cx.listener(Self::resize_pane))
             .relative()
             .size_full()
@@ -1679,7 +1824,7 @@ impl Render for PigeonApp {
                         .size_full()
                         .flex()
                         .flex_row()
-                        .child(ui::rail::render(self.mode, &theme))
+                        .child(ui::rail::render(self.mode, self.inbox_unread(), &theme))
                         .child(self.calendar.clone()),
                 )
             })
@@ -1692,7 +1837,7 @@ impl Render for PigeonApp {
                         .size_full()
                         .flex()
                         .flex_row()
-                        .child(ui::rail::render(self.mode, &theme))
+                        .child(ui::rail::render(self.mode, self.inbox_unread(), &theme))
                         .when(sidebar_open > 0., |this| {
                             this.child(
                                 div()

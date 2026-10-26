@@ -25,7 +25,11 @@ use crate::{
 pub const MESSAGES_START: usize = 2;
 
 impl PigeonApp {
-    pub(crate) fn render_reader(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_reader(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         let thread = self.selected.map(|ix| &self.data.threads[ix]);
         let standalone = self
@@ -42,28 +46,15 @@ impl PigeonApp {
             .flex_col()
             .bg(theme.reader_bg)
             .map(|this| match standalone {
+                // The draft scrolls itself, above its send row.
                 Some(composer) => this
                     .child(self.render_compose_toolbar(&composer, &theme, cx))
-                    .child(
-                        div()
-                            .relative()
-                            .flex_1()
-                            .min_h_0()
-                            .child(
-                                div()
-                                    .id("compose-scroll")
-                                    .size_full()
-                                    .overflow_y_scroll()
-                                    .track_scroll(&self.reader_scroll)
-                                    .px(SPACE_XL)
-                                    .pt(SPACE_2XS)
-                                    .pb(SPACE_2XL)
-                                    .child(composer),
-                            )
-                            .vertical_scrollbar(&self.reader_scroll),
-                    ),
+                    .child(div().flex_1().min_h_0().child(composer)),
+                None if !self.checked.is_empty() => this
+                    .child(window_drag_area(div().id("reader-toolbar")).h(HEADER_HEIGHT))
+                    .child(self.render_bulk_summary(&theme, window)),
                 None => this
-                    .child(self.render_toolbar(thread, &theme))
+                    .child(self.render_toolbar(thread, &theme, cx))
                     .child(match thread {
                         Some(thread) => self.render_conversation(thread, &theme, cx),
                         None => empty_state(
@@ -123,7 +114,12 @@ impl PigeonApp {
             ))
     }
 
-    fn render_toolbar(&self, thread: Option<&Thread>, theme: &Theme) -> impl IntoElement {
+    fn render_toolbar(
+        &self,
+        thread: Option<&Thread>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let header = window_drag_area(div().id("reader-toolbar"))
             .h(HEADER_HEIGHT)
             .flex_none()
@@ -187,6 +183,11 @@ impl PigeonApp {
             } else {
                 icon_button("star", Icon::Star, "Star", Box::new(ToggleStar), theme)
             })
+            .child(more_button(theme).on_click(cx.listener(
+                |this, event: &gpui::ClickEvent, window, cx| {
+                    this.show_thread_menu(event.position(), false, window, cx)
+                },
+            )))
             .child(div().flex_1())
             .child(icon_button(
                 "reply",
@@ -394,33 +395,57 @@ impl PigeonApp {
             .join(" · ");
 
         let body = self.html_cache.get(&message.html);
-
-        let attachments = message.attachments.iter().map(|attachment| {
-            div()
-                .h(px(34.))
-                .px(SPACE_MD)
-                .flex()
-                .items_center()
-                .gap(SPACE_SM)
-                .rounded(RADIUS_MD)
-                .bg(theme.chip_bg)
-                .child(icon(Icon::File, px(15.), theme.icon))
-                .child(
-                    div()
-                        .text_size(TEXT_SM)
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(attachment.name.clone()),
-                )
-                .child(
-                    div()
-                        .text_size(TEXT_SM)
-                        .text_color(theme.text_faint)
-                        .child(file_size(attachment.size_bytes)),
-                )
+        // The invite card above says when, where and who; the lines saying
+        // it again in the body fold away.
+        let has_card = message.invite.as_ref().is_some_and(|invite| {
+            self.calendar
+                .read(cx)
+                .data
+                .event_ix(&invite.event_id)
+                .is_some()
         });
+        let folds = has_card && body.blocks.iter().any(super::invite::is_invite_summary);
+        let show_all = !folds || self.invite_details_open;
 
+        let attachments = message
+            .attachments
+            .iter()
+            .enumerate()
+            .map(|(n, attachment)| {
+                div()
+                    .id(("attachment", ix * 100 + n))
+                    .role(gpui::Role::Group)
+                    .aria_label(format!(
+                        "{}, {}",
+                        attachment.name,
+                        file_size(attachment.size_bytes)
+                    ))
+                    .h(px(34.))
+                    .px(SPACE_MD)
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_SM)
+                    .rounded(RADIUS_MD)
+                    .bg(theme.chip_bg)
+                    .child(super::attachment_icon(attachment, theme))
+                    .child(
+                        div()
+                            .text_size(TEXT_SM)
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(attachment.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(TEXT_SM)
+                            .text_color(theme.text_faint)
+                            .child(file_size(attachment.size_bytes)),
+                    )
+            });
+
+        let mine = self.data.is_me(&message.from);
         let header = div()
             .id(("message-header", ix))
+            .group("message-header")
             .flex()
             .items_start()
             .gap(SPACE_MD)
@@ -444,14 +469,19 @@ impl PigeonApp {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(self.contact_name(&message.from).to_string()),
                             )
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(TEXT_SM)
-                                    .text_color(theme.text_faint)
-                                    .child(message.from.email.clone()),
-                            ),
+                            // Others' addresses on hover; never my own.
+                            .when(!mine, |this| {
+                                this.child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_size(TEXT_SM)
+                                        .text_color(theme.text_faint)
+                                        .opacity(0.)
+                                        .group_hover("message-header", |s| s.opacity(1.))
+                                        .child(message.from.email.clone()),
+                                )
+                            }),
                     )
                     .child(
                         div()
@@ -491,7 +521,40 @@ impl PigeonApp {
                             .as_ref()
                             .map(|invite| self.render_invite(invite, theme, cx)),
                     )
-                    .child(render_body(&body, theme)),
+                    .child(render_body(&body, show_all, theme))
+                    .when(folds, |this| {
+                        let open = self.invite_details_open;
+                        this.child(
+                            div()
+                                .id(("invite-details", ix))
+                                .mt(SPACE_SM)
+                                .flex()
+                                .items_center()
+                                .gap(SPACE_XS)
+                                .text_size(TEXT_SM)
+                                .text_color(theme.text_muted)
+                                .cursor_pointer()
+                                .hover(|s| s.text_color(theme.text))
+                                .child(icon(
+                                    if open {
+                                        Icon::ChevronDown
+                                    } else {
+                                        Icon::ChevronRight
+                                    },
+                                    px(13.),
+                                    theme.text_faint,
+                                ))
+                                .child(if open {
+                                    "Hide invitation details"
+                                } else {
+                                    "Show invitation details"
+                                })
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.invite_details_open = !this.invite_details_open;
+                                    cx.notify();
+                                })),
+                        )
+                    }),
             )
             .when(!message.attachments.is_empty(), |this| {
                 this.child(
@@ -504,6 +567,172 @@ impl PigeonApp {
                         .children(attachments),
                 )
             })
+            .into_any_element()
+    }
+
+    /// In place of a conversation while several are selected: what they
+    /// are, and what can be done to all of them.
+    fn render_bulk_summary(&self, theme: &Theme, window: &Window) -> AnyElement {
+        let targets = self.targets();
+        let count = targets.len();
+        let all_unread = targets.iter().all(|&ix| self.data.threads[ix].unread);
+        let all_starred = targets.iter().all(|&ix| self.data.threads[ix].starred);
+        let archive_label = match targets
+            .first()
+            .and_then(|&ix| self.data.threads[ix].folder.archive_target())
+        {
+            Some(Folder::Inbox) => "Move to Inbox",
+            _ => "Archive",
+        };
+        let subjects = targets.iter().take(5).map(|&ix| {
+            let thread = &self.data.threads[ix];
+            div()
+                .flex()
+                .items_center()
+                .gap(SPACE_SM)
+                .min_w_0()
+                .child(icon(Icon::Mail, px(13.), theme.text_faint))
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .child(if thread.subject.is_empty() {
+                            "(no subject)".to_string()
+                        } else {
+                            thread.subject.clone()
+                        }),
+                )
+        });
+        let action =
+            |id: &'static str, glyph: Icon, label: &'static str, action: Box<dyn gpui::Action>| {
+                let caps = self
+                    .binding_for(action.as_ref(), window)
+                    .map(|b| super::binding_caps(&b, theme));
+                focusable_control(div().id(id), theme)
+                    .role(gpui::Role::Button)
+                    .aria_label(label)
+                    .h(px(36.))
+                    .px(SPACE_MD)
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_SM)
+                    .rounded(RADIUS_MD)
+                    .bg(theme.chip_bg)
+                    .hover(|s| s.bg(theme.selected_bg))
+                    .active(|s| s.opacity(0.8))
+                    .text_size(TEXT_BASE)
+                    .child(icon(glyph, px(15.), theme.icon))
+                    .child(div().flex_1().child(label))
+                    .children(caps)
+                    .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
+            };
+        div()
+            .id("bulk-summary")
+            .role(gpui::Role::Region)
+            .aria_label(format!("{count} conversations selected"))
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .items_center()
+            .pt(px(72.))
+            .px(SPACE_XL)
+            .child(
+                div()
+                    .w_full()
+                    .max_w(px(440.))
+                    .flex()
+                    .flex_col()
+                    .gap(SPACE_LG)
+                    .child(
+                        div()
+                            .text_size(TEXT_XL)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(match count {
+                                1 => "1 conversation selected".to_string(),
+                                n => format!("{n} conversations selected"),
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(SPACE_XS)
+                            .text_size(TEXT_SM)
+                            .text_color(theme.text_muted)
+                            .children(subjects)
+                            .when(count > 5, |d| {
+                                d.child(
+                                    div()
+                                        .pl(px(21.))
+                                        .text_color(theme.text_faint)
+                                        .child(format!("and {} more", count - 5)),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(SPACE_XS)
+                            .child(action(
+                                "bulk-archive",
+                                Icon::Archive,
+                                archive_label,
+                                Box::new(Archive),
+                            ))
+                            .child(action(
+                                "bulk-delete",
+                                Icon::Trash,
+                                "Delete",
+                                Box::new(Delete),
+                            ))
+                            .child(if all_unread {
+                                action(
+                                    "bulk-read",
+                                    Icon::MailOpen,
+                                    "Mark as Read",
+                                    Box::new(MarkRead),
+                                )
+                            } else {
+                                action(
+                                    "bulk-unread",
+                                    Icon::MailUnread,
+                                    "Mark as Unread",
+                                    Box::new(MarkUnread),
+                                )
+                            })
+                            .child(action(
+                                "bulk-star",
+                                Icon::Star,
+                                if all_starred { "Unstar" } else { "Star" },
+                                Box::new(ToggleStar),
+                            ))
+                            .child(action(
+                                "bulk-move",
+                                Icon::FolderInput,
+                                "Move to…",
+                                Box::new(MoveTo),
+                            ))
+                            .child(action(
+                                "bulk-label",
+                                Icon::Tag,
+                                "Label…",
+                                Box::new(ApplyLabel),
+                            )),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(SPACE_SM)
+                            .text_size(TEXT_SM)
+                            .text_color(theme.text_faint)
+                            .child(super::keycap("Esc", theme))
+                            .child("to clear the selection"),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -526,10 +755,33 @@ impl PigeonApp {
 }
 
 /// The message's HTML, rendered natively. Parsed once per message and cached.
-fn render_body(doc: &Document, theme: &Theme) -> impl IntoElement {
+/// Without `all`, the lines an invite card summarizes are left out.
+fn render_body(doc: &Document, all: bool, theme: &Theme) -> impl IntoElement {
     div()
         .text_size(TEXT_MD)
         .line_height(relative(1.55))
         .text_color(theme.text)
-        .child(html_view::render(doc, theme))
+        .child(html_view::render_filtered(doc, theme, |block| {
+            all || !super::invite::is_invite_summary(block)
+        }))
+}
+
+/// The toolbar's "…": the rest of the thread actions, in a menu.
+fn more_button(theme: &Theme) -> gpui::Stateful<gpui::Div> {
+    focusable_control(div().id("more-actions"), theme)
+        .aria_label("More actions")
+        .role(gpui::Role::Button)
+        .size(px(30.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(RADIUS_MD)
+        .hover(|s| s.bg(theme.hover_bg))
+        .active(|s| s.bg(theme.selected_bg))
+        .child(icon(Icon::Ellipsis, px(16.), theme.icon))
+        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .tooltip(|window, cx| {
+            gpui::component::tooltip::Tooltip::new("More: move, label, mark read").build(window, cx)
+        })
 }

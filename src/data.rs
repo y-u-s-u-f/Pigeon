@@ -39,6 +39,27 @@ pub enum Folder {
 }
 
 impl Folder {
+    /// Every folder, in sidebar order.
+    pub const ALL: [Folder; 6] = [
+        Folder::Inbox,
+        Folder::Archive,
+        Folder::Sent,
+        Folder::Drafts,
+        Folder::Spam,
+        Folder::Trash,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Folder::Inbox => "Inbox",
+            Folder::Archive => "Archive",
+            Folder::Sent => "Sent",
+            Folder::Drafts => "Drafts",
+            Folder::Spam => "Spam",
+            Folder::Trash => "Trash",
+        }
+    }
+
     /// Where archive moves a thread in this folder, or `None` when archive
     /// does nothing there.
     pub fn archive_target(self) -> Option<Folder> {
@@ -137,12 +158,87 @@ pub struct Contact {
     pub email: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Attachment {
     pub name: String,
     pub size_bytes: u64,
-    #[allow(dead_code)] // Used once attachments can be opened.
     pub mime: String,
+}
+
+/// What an attachment is, for its icon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileKind {
+    Pdf,
+    Image,
+    Archive,
+    Document,
+    Spreadsheet,
+    Other,
+}
+
+impl Attachment {
+    pub fn kind(&self) -> FileKind {
+        let mime = self.mime.to_ascii_lowercase();
+        let ext = self
+            .name
+            .rsplit_once('.')
+            .map(|(_, ext)| ext.to_ascii_lowercase())
+            .unwrap_or_default();
+        if mime == "application/pdf" || ext == "pdf" {
+            FileKind::Pdf
+        } else if mime.starts_with("image/") {
+            FileKind::Image
+        } else if mime.contains("zip")
+            || mime.contains("compressed")
+            || matches!(ext.as_str(), "zip" | "gz" | "tgz" | "rar" | "7z" | "tar")
+        {
+            FileKind::Archive
+        } else if mime.contains("spreadsheet")
+            || mime.contains("excel")
+            || matches!(ext.as_str(), "xlsx" | "xls" | "csv" | "numbers")
+        {
+            FileKind::Spreadsheet
+        } else if mime.contains("word")
+            || mime.contains("document")
+            || mime.starts_with("text/")
+            || matches!(
+                ext.as_str(),
+                "doc" | "docx" | "txt" | "md" | "rtf" | "pages"
+            )
+        {
+            FileKind::Document
+        } else {
+            FileKind::Other
+        }
+    }
+
+    /// An attachment for a file the user picked, guessing its type from
+    /// the extension.
+    pub fn from_file(name: String, size_bytes: u64) -> Self {
+        let ext = name
+            .rsplit_once('.')
+            .map(|(_, ext)| ext.to_ascii_lowercase())
+            .unwrap_or_default();
+        let mime = match ext.as_str() {
+            "pdf" => "application/pdf",
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "heic" => "image/heic",
+            "webp" => "image/webp",
+            "zip" => "application/zip",
+            "txt" | "md" => "text/plain",
+            "csv" => "text/csv",
+            "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            _ => "application/octet-stream",
+        };
+        Self {
+            name,
+            size_bytes,
+            mime: mime.into(),
+        }
+    }
 }
 
 pub(crate) fn hex_color<'de, D: Deserializer<'de>>(d: D) -> Result<Hsla, D::Error> {
@@ -165,6 +261,9 @@ impl MailData {
         }
         data.threads.retain(|t| !t.messages.is_empty());
         for thread in &mut data.threads {
+            for message in &mut thread.messages {
+                message.snippet = clean_snippet(message);
+            }
             thread.reindex();
         }
         // Newest first; every view is a filter over this order.
@@ -301,6 +400,46 @@ impl Contact {
     }
 }
 
+/// The snippet without the heading HTML mail often opens with, usually the
+/// sender's brand ("Skyline Air", "Stripe payout", a bold "Harbor Bank
+/// Alert"), which the row already shows. Inline tags also leave a space
+/// before punctuation ("the doc ."); that goes too.
+fn clean_snippet(message: &Message) -> String {
+    use crate::html::{Block, TextKind};
+    let mut snippet = message.snippet.trim();
+    let doc = crate::html::parse(&message.html);
+    if let Some(Block::Text { text, kind, .. }) = doc.blocks.first() {
+        let bold = text.spans.len() == 1
+            && text.spans[0].0 == (0..text.text.len())
+            && text.spans[0].1.bold;
+        if matches!(kind, TextKind::Heading(_)) || bold {
+            snippet = strip_word_prefix(snippet, text.text.trim());
+        }
+    }
+    let mut out = String::with_capacity(snippet.len());
+    for c in snippet.chars() {
+        if matches!(c, '.' | ',' | ';' | ':' | '!' | '?') && out.ends_with(' ') {
+            out.pop();
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// `text` without a leading `prefix` that ends at a word boundary.
+fn strip_word_prefix<'a>(text: &'a str, prefix: &str) -> &'a str {
+    match text.get(..prefix.len()) {
+        Some(head)
+            if !prefix.is_empty()
+                && head.eq_ignore_ascii_case(prefix)
+                && text[prefix.len()..].starts_with(char::is_whitespace) =>
+        {
+            text[prefix.len()..].trim_start()
+        }
+        _ => text,
+    }
+}
+
 /// "9:12 AM" today, "Yesterday", "Tue" this week, "Oct 3" this year, else "Oct 3, 2025".
 pub fn list_date(date: &DateTime<FixedOffset>) -> String {
     let date = date.with_timezone(&Local);
@@ -349,5 +488,81 @@ mod tests {
         assert_eq!(Folder::Trash.archive_target(), Some(Folder::Inbox));
         assert_eq!(Folder::Sent.archive_target(), None);
         assert_eq!(Folder::Drafts.archive_target(), None);
+    }
+
+    #[test]
+    fn snippets_skip_the_heading_and_sender() {
+        let message = |name: &str, html: &str, snippet: &str| Message {
+            from: Contact {
+                name: name.into(),
+                email: "x@example.com".into(),
+            },
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            date: chrono::DateTime::parse_from_rfc3339("2026-10-01T09:00:00Z").unwrap(),
+            snippet: snippet.into(),
+            html: html.into(),
+            attachments: Vec::new(),
+            invite: None,
+        };
+        let m = message(
+            "Skyline Air",
+            "<h2>Skyline Air</h2><p>Hi Alex</p>",
+            "Skyline Air Hi Alex",
+        );
+        assert_eq!(clean_snippet(&m), "Hi Alex");
+        let m = message(
+            "Stripe",
+            "<h2>Stripe payout</h2><p>Your</p>",
+            "Stripe payout Your",
+        );
+        assert_eq!(clean_snippet(&m), "Your");
+        let m = message("Sarah", "<p>See the doc .</p>", "See the doc . Thanks");
+        assert_eq!(clean_snippet(&m), "See the doc. Thanks");
+        // Only whole words.
+        let m = message("Sam", "<h1>Sam</h1><p>Samples</p>", "Samples ready");
+        assert_eq!(clean_snippet(&m), "Samples ready");
+        let m = message(
+            "Bank",
+            "<p><b>Bank Alert</b></p><p>A charge</p>",
+            "Bank Alert A charge",
+        );
+        assert_eq!(clean_snippet(&m), "A charge");
+        // A sentence that starts with the sender's name stays whole.
+        let m = message(
+            "Hannah",
+            "<p><b>Hannah</b> invited you</p>",
+            "Hannah invited you",
+        );
+        assert_eq!(clean_snippet(&m), "Hannah invited you");
+    }
+
+    #[test]
+    fn attachment_kinds() {
+        let a = |name: &str, mime: &str| Attachment {
+            name: name.into(),
+            size_bytes: 1,
+            mime: mime.into(),
+        };
+        assert_eq!(a("x.pdf", "application/pdf").kind(), FileKind::Pdf);
+        assert_eq!(a("x.png", "image/png").kind(), FileKind::Image);
+        assert_eq!(a("x.zip", "application/zip").kind(), FileKind::Archive);
+        assert_eq!(
+            Attachment::from_file("Budget.xlsx".into(), 10).kind(),
+            FileKind::Spreadsheet
+        );
+        assert_eq!(
+            a(
+                "notes.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
+            .kind(),
+            FileKind::Document
+        );
+        assert_eq!(
+            a("x.bin", "application/octet-stream").kind(),
+            FileKind::Other
+        );
     }
 }

@@ -5,7 +5,7 @@ use gpui::actions;
 
 use crate::data::{Folder, MailData, Thread};
 
-actions!(search, [FocusResults]);
+actions!(search, [FocusResults, NextSuggestion, PrevSuggestion]);
 
 #[derive(Debug, PartialEq)]
 enum Term {
@@ -41,6 +41,13 @@ impl Query {
         let mut query = Query::default();
         for token in tokenize(input) {
             let (key, value) = match token.split_once(':') {
+                // An operator still waiting for its value, as it's typed.
+                Some((key, ""))
+                    if ["from", "to", "subject", "label", "is", "has", "in"]
+                        .contains(&key.to_lowercase().as_str()) =>
+                {
+                    continue;
+                }
                 Some((key, value)) if !value.is_empty() => (key.to_lowercase(), value.to_string()),
                 _ => (String::new(), token.clone()),
             };
@@ -80,6 +87,33 @@ impl Query {
             query.terms.push(term);
         }
         query
+    }
+
+    /// The operators the query recognized, as they read: "from: sarah",
+    /// "is:unread", "in: Archive". Free text is left out.
+    pub fn operators(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .terms
+            .iter()
+            .filter_map(|term| match term {
+                Term::Text(_) => None,
+                Term::From(v) => Some(format!("from: {v}")),
+                Term::To(v) => Some(format!("to: {v}")),
+                Term::Subject(v) => Some(format!("subject: {v}")),
+                Term::Label(v) => Some(format!("label: {v}")),
+                Term::Unread => Some("is:unread".into()),
+                Term::Starred => Some("is:starred".into()),
+                Term::Attachment => Some("has:attachment".into()),
+            })
+            .collect();
+        if let Some(scope) = self.scope {
+            out.push(match scope {
+                Scope::Folder(folder) => format!("in: {}", folder.title()),
+                Scope::All => "in: all mail".into(),
+                Scope::Anywhere => "in: anywhere".into(),
+            });
+        }
+        out
     }
 
     pub fn is_empty(&self) -> bool {
@@ -165,5 +199,13 @@ mod tests {
         assert_eq!(q.scope, Some(Scope::All));
         assert_eq!(Query::parse("  ").terms, []);
         assert_eq!(Query::parse("re:").terms, [Term::Text("re:".into())]);
+        assert_eq!(
+            Query::parse("budget from:").terms,
+            [Term::Text("budget".into())]
+        );
+        assert_eq!(
+            q.operators(),
+            ["from: sarah chen", "is:unread", "in: all mail"]
+        );
     }
 }
