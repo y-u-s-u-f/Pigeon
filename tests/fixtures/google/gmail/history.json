@@ -1,0 +1,41 @@
+{
+  "history": [
+    {
+      "id": "1990",
+      "messages": [{ "id": "msg-a1", "threadId": "thread-a1" }],
+      "labelsRemoved": [
+        {
+          "message": { "id": "msg-a1", "threadId": "thread-a1", "labelIds": ["INBOX"] },
+          "labelIds": ["UNREAD"]
+        }
+      ]
+    },
+    {
+      "id": "1995",
+      "messages": [{ "id": "msg-b9", "threadId": "thread-b2" }],
+      "messagesAdded": [
+        {
+          "message": { "id": "msg-b9", "threadId": "thread-b2", "labelIds": ["INBOX", "UNREAD"] }
+        }
+      ]
+    },
+    {
+      "id": "1998",
+      "messages": [{ "id": "msg-c1", "threadId": "thread-c3" }],
+      "messagesDeleted": [
+        { "message": { "id": "msg-c1", "threadId": "thread-c3", "labelIds": ["DRAFT"] } }
+      ]
+    },
+    {
+      "id": "1999",
+      "messages": [{ "id": "msg-a1", "threadId": "thread-a1" }],
+      "labelsAdded": [
+        {
+          "message": { "id": "msg-d1", "threadId": "thread-d4", "labelIds": ["STARRED"] },
+          "labelIds": ["STARRED"]
+        }
+      ]
+    }
+  ],
+  "historyId": "2000"
+}

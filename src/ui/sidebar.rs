@@ -1,5 +1,7 @@
 //! Account card, system folders and labels.
 
+use std::collections::HashMap;
+
 use gpui::{
     AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ParentElement,
     StatefulInteractiveElement, Styled, Window, component::tooltip::Tooltip, div,
@@ -12,6 +14,7 @@ use crate::{
     actions::ToggleSidebar,
     app::{Nav, PigeonApp},
     assets::Icon,
+    backend::gmail,
     data::{Contact, Folder},
     theme::Theme,
 };
@@ -32,19 +35,77 @@ enum Marker {
     Dot(gpui::Hsla),
 }
 
+/// Gmail's unread counts for the Inbox, Spam and labels (FOL-2, LST-6),
+/// which hold more than the cached threads. Each keeps the local count
+/// from when it was read, so reading or marking unread here moves it at
+/// once, until the next sync brings the server's again.
+#[derive(Default)]
+pub struct ServerCounts {
+    /// By Gmail label id: (server unread, local unread then).
+    by_label: HashMap<String, (usize, usize)>,
+}
+
 impl PigeonApp {
+    /// The Gmail label whose count a view shows, if Gmail counts it.
+    fn counted_label(&self, nav: Nav) -> Option<&str> {
+        match nav {
+            Nav::Folder(Folder::Inbox) => Some(gmail::INBOX),
+            Nav::Folder(Folder::Spam) => Some(gmail::SPAM),
+            Nav::Label(ix) => self.data.labels.get(ix).map(|l| l.id.as_str()),
+            _ => None,
+        }
+    }
+
+    fn local_unread(&self, nav: Nav) -> usize {
+        self.data
+            .threads
+            .iter()
+            .filter(|t| t.unread && self.nav_contains(nav, t))
+            .count()
+    }
+
+    /// Take Gmail's counts from the store, as of the threads loaded now.
+    pub fn refresh_server_counts(&mut self, cx: &gpui::App) {
+        let counts = self.backend.read(cx).label_counts();
+        let navs = [Nav::Folder(Folder::Inbox), Nav::Folder(Folder::Spam)]
+            .into_iter()
+            .chain((0..self.data.labels.len()).map(Nav::Label));
+        let mut by_label = HashMap::new();
+        for nav in navs {
+            if let Some(label) = self.counted_label(nav)
+                && let Some(&(unread, _)) = counts.get(label)
+            {
+                by_label.insert(label.to_string(), (unread as usize, self.local_unread(nav)));
+            }
+        }
+        self.server_counts = ServerCounts { by_label };
+    }
+
+    /// Unread threads in a view: Gmail's count where it has one, moved by
+    /// what changed here since, else the cached threads'.
+    pub fn view_unread(&self, nav: Nav) -> usize {
+        let local = self.local_unread(nav);
+        match self
+            .counted_label(nav)
+            .and_then(|l| self.server_counts.by_label.get(l))
+        {
+            Some(&(server, then)) => (server + local).saturating_sub(then),
+            None => local,
+        }
+    }
+
     /// The number shown next to a nav item: total drafts, unread elsewhere,
     /// nothing for folders where an unread count means little.
     fn nav_count(&self, nav: Nav) -> usize {
-        let threads = self
-            .data
-            .threads
-            .iter()
-            .filter(|t| self.nav_contains(nav, t));
         match nav {
-            Nav::Folder(Folder::Drafts) => threads.count(),
+            Nav::Folder(Folder::Drafts) => self
+                .data
+                .threads
+                .iter()
+                .filter(|t| self.nav_contains(nav, t))
+                .count(),
             Nav::Folder(Folder::Sent | Folder::Archive | Folder::Trash) | Nav::Starred => 0,
-            _ => threads.filter(|t| t.unread).count(),
+            _ => self.view_unread(nav),
         }
     }
 

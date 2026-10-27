@@ -213,6 +213,8 @@ pub struct PigeonApp {
     pub(crate) system_reduce_motion: bool,
     /// The settings as last handed to the backend to save.
     saved: Saved,
+    /// Gmail's unread counts (`ui::sidebar`).
+    pub server_counts: ui::sidebar::ServerCounts,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -240,6 +242,10 @@ impl PigeonApp {
             if window.is_window_active() && !this.settings.reduce_motion {
                 gpui::base::apply_system_reduce_motion(cx);
             }
+            // Sync on focus; poll less in the background (SYN-2).
+            let active = window.is_window_active();
+            this.backend
+                .update(cx, |b, cx| b.set_window_active(active, cx));
         });
         let search_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Search — try from:, is:unread, in:all")
@@ -319,6 +325,7 @@ impl PigeonApp {
             settings_page,
             system_reduce_motion: false,
             saved,
+            server_counts: Default::default(),
             _subscriptions: vec![
                 settings_events,
                 appearance,
@@ -334,6 +341,7 @@ impl PigeonApp {
         };
         this.apply_settings(saved, window, cx);
         this.refresh_rows(false);
+        this.refresh_server_counts(cx);
         this
     }
 
@@ -402,6 +410,16 @@ impl PigeonApp {
 
     pub fn nav_contains(&self, nav: Nav, thread: &Thread) -> bool {
         match nav {
+            // Every conversation holding a message the user sent, like Gmail.
+            Nav::Folder(Folder::Sent) => {
+                thread.folder == Folder::Sent
+                    || (!thread.is_hidden()
+                        && thread.folder != Folder::Drafts
+                        && thread
+                            .messages
+                            .iter()
+                            .any(|m| m.label_ids.iter().any(|l| l == gmail::SENT)))
+            }
             Nav::Folder(folder) => thread.folder == folder,
             Nav::Starred => thread.starred && !thread.is_hidden(),
             Nav::Label(ix) => {
@@ -514,6 +532,8 @@ impl PigeonApp {
             });
         }
         self.reveal_selected();
+        // Bodies come on demand, once the selection settles (RDR-6).
+        self.backend.update(cx, |b, cx| b.fetch_body(&id, cx));
         if self.data.threads[ix].folder == Folder::Drafts && !already_open {
             self.open_draft(ix, false, window, cx);
         }

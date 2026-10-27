@@ -117,10 +117,18 @@ impl PigeonApp {
                 None => self.set_nav(Nav::Folder(crate::data::Folder::Inbox), cx),
             }
         }
+        // Labels come with the account's aliases (sendAs), which `is_me`
+        // checks.
+        if let Some(account) = self.backend.read(cx).account() {
+            self.data.account.aliases = account.aliases.clone();
+        }
+        self.refresh_server_counts(cx);
         cx.notify();
     }
 
+    /// Gmail's counts changed, or a view finished loading.
     fn on_counts_changed(&mut self, cx: &mut Context<Self>) {
+        self.refresh_server_counts(cx);
         cx.notify();
     }
 

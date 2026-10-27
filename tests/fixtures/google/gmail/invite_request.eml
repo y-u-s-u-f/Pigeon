@@ -1,0 +1,38 @@
+From: Organizer <org@example.com>
+To: me@example.com
+Subject: Invitation: Planning
+Date: Mon, 26 Oct 2026 09:00:00 +0100
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="m"
+
+--m
+Content-Type: multipart/alternative; boundary="a"
+
+--a
+Content-Type: text/plain; charset=UTF-8
+
+You have been invited to Planning.
+--a
+Content-Type: text/calendar; charset=UTF-8; method=REQUEST
+
+BEGIN:VCALENDAR
+PRODID:-//Example//EN
+VERSION:2.0
+METHOD:REQUEST
+BEGIN:VTIMEZONE
+TZID:Europe/Berlin
+END:VTIMEZONE
+BEGIN:VEVENT
+DTSTART;TZID=Europe/Berlin:20261102T100000
+SUMMARY:Planning
+UID:abc123@example.com
+END:VEVENT
+END:VCALENDAR
+--a--
+--m
+Content-Type: application/ics; name="invite.ics"
+Content-Disposition: attachment; filename="invite.ics"
+
+BEGIN:VCALENDAR
+END:VCALENDAR
+--m--

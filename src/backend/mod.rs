@@ -20,8 +20,10 @@ pub mod auth;
 pub mod demo;
 pub mod gmail;
 pub mod http;
+pub mod mime;
 pub mod outbox;
 pub mod store;
+pub mod sync;
 
 use std::{
     path::PathBuf,
@@ -494,6 +496,8 @@ pub struct Backend {
     sign_in_cancel: Option<Arc<AtomicBool>>,
     _sign_in: Option<Task<()>>,
     _profile: Option<Task<()>>,
+    /// Mail sync and body fetches (W3, `sync`).
+    sync: sync::SyncState,
 }
 
 impl EventEmitter<BackendEvent> for Backend {}
@@ -597,10 +601,14 @@ impl Backend {
             sign_in_cancel: None,
             _sign_in: None,
             _profile: None,
+            sync: Default::default(),
         };
         // Whatever was left queued at the last quit goes now.
         this.schedule(cx);
         this.check_profile(cx);
+        if let Some(transport) = this.transport() {
+            this.start_mail_sync(transport, cx);
+        }
         this
     }
 
@@ -664,9 +672,12 @@ impl Backend {
 
     /// The stored threads among `ids`; a missing one is gone.
     pub fn load_threads(&self, ids: &[String]) -> Vec<Thread> {
-        self.store
+        let mut threads = self
+            .store
             .load_threads(self.email(), ids)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        self.overlay_bodies(&mut threads);
+        threads
     }
 
     pub fn load_calendar(&self) -> CalendarData {
@@ -700,7 +711,9 @@ impl Backend {
     /// Fetch the bodies of a thread's messages that have none (RDR-6);
     /// emits `ThreadsChanged` once they're stored. Demo bodies are all
     /// there already.
-    pub fn fetch_body(&mut self, _thread_id: &str, _cx: &mut Context<Self>) {}
+    pub fn fetch_body(&mut self, thread_id: &str, cx: &mut Context<Self>) {
+        self.fetch_bodies(thread_id, cx);
+    }
 
     // Writes.
 
@@ -816,6 +829,7 @@ impl Backend {
 
     pub fn sync_now(&mut self, cx: &mut Context<Self>) {
         cx.emit(BackendEvent::Status(self.status.clone()));
+        self.run_sync(cx);
     }
 
     // The account (W2).
@@ -900,11 +914,7 @@ impl Backend {
             this.update(cx, |this, cx| match result {
                 Ok(claims) => {
                     this.update_profile(claims);
-                    // Sync (W3) takes the status over from here.
-                    if this.status == (SyncStatus::Syncing { done: 0, total: 0 }) {
-                        this.status = SyncStatus::Synced { at: now_ms() };
-                    }
-                    // The app picks the account's name up with the status.
+                    // Sync owns the status; the app picks the account's name up with the status.
                     cx.emit(BackendEvent::Status(this.status.clone()));
                 }
                 Err(e) => {

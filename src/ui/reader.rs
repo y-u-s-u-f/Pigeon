@@ -19,7 +19,7 @@ use crate::{
     actions::*,
     app::PigeonApp,
     assets::Icon,
-    data::{Contact, Folder, Message, Thread, file_size, full_date},
+    data::{Body, Contact, Folder, Message, Thread, file_size, full_date},
     html::Document,
     theme::Theme,
 };
@@ -567,7 +567,13 @@ impl PigeonApp {
                             .as_ref()
                             .map(|invite| self.render_invite(invite, theme, cx)),
                     )
-                    .child(render_body(&body, show_all, selection, theme))
+                    .child(match &message.body {
+                        Body::Loaded { .. } => {
+                            render_body(&body, show_all, selection, theme).into_any_element()
+                        }
+                        Body::Failed(reason) => render_body_failed(ix, reason, theme),
+                        Body::NotLoaded | Body::Loading => render_body_loading(theme),
+                    })
                     .when(folds, |this| {
                         let open = self.invite_details_open;
                         this.child(
@@ -818,6 +824,60 @@ fn render_body(
             Some(selection),
             |block| all || !super::invite::is_invite_summary(block),
         ))
+}
+
+/// In place of a body still on its way (RDR-6).
+fn render_body_loading(theme: &Theme) -> AnyElement {
+    div()
+        .id("message-loading")
+        .role(gpui::Role::Status)
+        .aria_label("Loading message")
+        .text_size(TEXT_BASE)
+        .text_color(theme.text_faint)
+        .child("Loading…")
+        .into_any_element()
+}
+
+/// A body that didn't load, with why and a way to try again.
+fn render_body_failed(ix: usize, reason: &str, theme: &Theme) -> AnyElement {
+    div()
+        .id(("message-failed", ix))
+        .role(gpui::Role::Alert)
+        .aria_label(format!("Couldn't load this message. {reason}"))
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap(SPACE_SM)
+        .child(
+            div()
+                .text_size(TEXT_BASE)
+                .text_color(theme.text_muted)
+                .child("Couldn't load this message"),
+        )
+        .child(
+            div()
+                .text_size(TEXT_SM)
+                .text_color(theme.text_faint)
+                .child(reason.to_string()),
+        )
+        .child(
+            focusable_control(div().id(("message-retry", ix)), theme)
+                .role(gpui::Role::Button)
+                .aria_label("Retry loading message")
+                .h(HIT_TARGET)
+                .px(SPACE_MD)
+                .flex()
+                .items_center()
+                .rounded(RADIUS_MD)
+                .bg(theme.chip_bg)
+                .hover(|s| s.bg(theme.selected_bg))
+                .text_size(TEXT_SM)
+                .child("Retry")
+                .on_click(|_, window, cx| {
+                    window.dispatch_action(Box::new(RetryLoadingMessage), cx)
+                }),
+        )
+        .into_any_element()
 }
 
 /// The toolbar's "…": the rest of the thread actions, in a menu.

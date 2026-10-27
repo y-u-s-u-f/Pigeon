@@ -44,17 +44,8 @@ impl PigeonApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
-        let unread = self
-            .rows
-            .iter()
-            .filter(|row| match row {
-                Row::Thread(ix) => {
-                    let t = &self.data.threads[*ix];
-                    t.unread && self.nav_contains(self.nav, t)
-                }
-                Row::ArchivedHeader { .. } => false,
-            })
-            .count();
+        // The sidebar's number, so the two agree (LST-6).
+        let unread = self.view_unread(self.nav);
 
         let header = window_drag_area(div().id("list-header"))
             .h(HEADER_HEIGHT)
@@ -118,6 +109,21 @@ impl PigeonApp {
                 }),
                 &theme,
             )
+        } else if self.rows.is_empty() && !self.view_loaded(cx) {
+            // Not "Nothing in …" before the first page is in (LST-9).
+            match self.backend.read(cx).sync_error() {
+                Some(error) => empty_state(
+                    Icon::OctagonAlert,
+                    format!("Couldn't load {}", self.nav_title()),
+                    Some(if error.starts_with("Couldn't reach") {
+                        "Pigeon will try again when it can reach Gmail"
+                    } else {
+                        "Pigeon will try again shortly"
+                    }),
+                    &theme,
+                ),
+                None => render_skeleton(&theme),
+            }
         } else if self.rows.is_empty() {
             empty_state(
                 Icon::Inbox,
@@ -163,6 +169,16 @@ impl PigeonApp {
             .when(!suggestions.is_empty(), |this| {
                 this.child(self.render_search_suggestions(suggestions, &theme, cx))
             })
+    }
+
+    /// Whether the view's first page has loaded from Gmail (STA-1).
+    fn view_loaded(&self, cx: &gpui::App) -> bool {
+        let view = match self.nav {
+            Nav::Folder(folder) => crate::backend::ViewKey::Folder(folder),
+            Nav::Starred => crate::backend::ViewKey::Starred,
+            Nav::Label(ix) => crate::backend::ViewKey::Label(self.data.labels[ix].id.clone()),
+        };
+        self.backend.read(cx).view_loaded(&view)
     }
 
     /// "in Inbox", or where an `in:` operator or the scope chip points.
@@ -977,4 +993,52 @@ fn checkbox(thread_ix: usize, checked: bool, theme: &Theme) -> gpui::Stateful<gp
                     }
                 }),
         )
+}
+
+/// Placeholder rows while a view's first page loads (STA-1).
+fn render_skeleton(theme: &Theme) -> AnyElement {
+    let bar = |width: gpui::DefiniteLength, height: gpui::Pixels| {
+        div()
+            .w(width)
+            .h(height)
+            .rounded(RADIUS_SM)
+            .bg(theme.chip_bg)
+    };
+    let row = |ix: usize| {
+        div()
+            .pl(ROW_MARGIN + ROW_INSET)
+            .pr(SPACE_LG)
+            .py(SPACE_MD)
+            .flex()
+            .flex_col()
+            .gap(SPACE_SM)
+            // Fainter down the list.
+            .opacity(1. - ix as f32 * 0.12)
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .child(bar(relative(0.35), px(10.)))
+                    .child(bar(relative(0.12), px(10.))),
+            )
+            .child(bar(relative(0.7), px(9.)))
+            .child(bar(relative(0.9), px(9.)))
+    };
+    div()
+        .id("thread-list-loading")
+        .role(gpui::Role::Status)
+        .aria_label("Loading conversations")
+        .size_full()
+        .pt(SPACE_XS)
+        .flex()
+        .flex_col()
+        .children((0..6).map(row))
+        .with_animation(
+            "thread-list-loading",
+            Animation::new(std::time::Duration::from_millis(1200))
+                .repeat()
+                .with_easing(gpui::pulsating_between(0.5, 1.)),
+            |this, delta| this.opacity(delta),
+        )
+        .into_any_element()
 }

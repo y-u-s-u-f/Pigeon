@@ -103,7 +103,13 @@ impl Store {
             "SELECT m.thread_id, m.id, m.label_ids, m.\"from\", m.\"to\", m.cc, m.bcc, m.date,
                     m.internal_date, m.snippet, m.attachments, m.message_id, m.in_reply_to,
                     m.\"references\", m.reply_to, m.size_estimate,
-                    b.html, b.invite_method, b.invite_event_id, b.invite_uid
+                    b.html, b.invite_method,
+                    COALESCE(NULLIF(b.invite_event_id, ''),
+                        (SELECT e.id FROM events e
+                         WHERE e.account = m.account AND e.ical_uid = b.invite_uid
+                         ORDER BY e.recurring_event_id IS NOT NULL
+                         LIMIT 1)),
+                    b.invite_uid
              FROM messages m
              LEFT JOIN bodies b ON b.account = m.account AND b.message_id = m.id
              WHERE m.account = ?1
@@ -324,6 +330,187 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    // Gmail sync (W3).
+
+    /// Every Gmail label as listed, with its counts: the user's visible
+    /// ones become the sidebar's labels, the rest are kept for their
+    /// counts. Labels gone from Gmail go.
+    pub fn replace_gmail_labels(
+        &self,
+        account: &str,
+        labels: &[gmail::GLabel],
+    ) -> anyhow::Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let ids: Vec<&str> = labels.iter().map(|l| l.id.as_str()).collect();
+        let stored: Vec<String> = {
+            let mut stmt = tx.prepare("SELECT id FROM labels WHERE account = ?1")?;
+            stmt.query_map([account], |r| r.get(0))?
+                .collect::<Result<_, _>>()?
+        };
+        for id in stored.iter().filter(|id| !ids.contains(&id.as_str())) {
+            tx.execute(
+                "DELETE FROM labels WHERE account = ?1 AND id = ?2",
+                params![account, id],
+            )?;
+        }
+        for label in labels {
+            let kind = if gmail::shows_label(label) {
+                "user"
+            } else if label.kind == "user" {
+                "hidden"
+            } else {
+                "system"
+            };
+            let model = gmail::label_from_gmail(label);
+            tx.execute(
+                "INSERT INTO labels (account, id, name, type, bg, threads_unread, threads_total)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT (account, id) DO UPDATE SET
+                    name = excluded.name, type = excluded.type, bg = excluded.bg,
+                    threads_unread = COALESCE(excluded.threads_unread, threads_unread),
+                    threads_total = COALESCE(excluded.threads_total, threads_total)",
+                params![
+                    account,
+                    label.id,
+                    label.name,
+                    kind,
+                    crate::data::to_hex(model.color),
+                    label.threads_unread.map(|n| n as i64),
+                    label.threads_total.map(|n| n as i64),
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Gmail's thread counts by label id: (unread, total). Empty in demo
+    /// mode, which has none.
+    pub fn label_counts(&self, account: &str) -> anyhow::Result<HashMap<String, (u64, u64)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, threads_unread, threads_total FROM labels
+             WHERE account = ?1 AND threads_unread IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([account], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                (
+                    r.get::<_, i64>(1)? as u64,
+                    r.get::<_, Option<i64>>(2)?.unwrap_or(0) as u64,
+                ),
+            ))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Each stored thread's history id, to skip the unchanged ones.
+    pub fn thread_history_ids(&self, account: &str) -> anyhow::Result<HashMap<String, u64>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, history_id FROM threads WHERE account = ?1 AND history_id IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([account], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Store threads fetched from Gmail without bodies, keeping the bodies,
+    /// attachments and invitations already stored for their messages.
+    pub fn put_synced_threads(&self, account: &str, threads: Vec<Thread>) -> anyhow::Result<()> {
+        let ids: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
+        let mut stored: HashMap<String, Message> = self
+            .load_threads(account, &ids)?
+            .into_iter()
+            .flat_map(|t| t.messages)
+            .map(|m| (m.id.clone(), m))
+            .collect();
+        let mut threads = threads;
+        for thread in &mut threads {
+            for message in &mut thread.messages {
+                if let Some(old) = stored.remove(&message.id)
+                    && matches!(old.body, Body::Loaded { .. })
+                {
+                    message.body = old.body;
+                    message.attachments = old.attachments;
+                    message.invite = old.invite;
+                }
+            }
+            thread.loaded = loaded(thread);
+            thread.reindex();
+        }
+        self.put_threads(account, &threads)
+    }
+
+    /// Store message bodies parsed from Gmail's raw messages (RDR-6).
+    pub fn put_bodies(
+        &self,
+        account: &str,
+        thread_id: &str,
+        bodies: Vec<(String, crate::backend::mime::ParsedBody)>,
+    ) -> anyhow::Result<()> {
+        let Some(mut thread) = self.load_threads(account, &[thread_id.to_string()])?.pop() else {
+            return Ok(());
+        };
+        for (id, parsed) in bodies {
+            let Some(message) = thread.messages.iter_mut().find(|m| m.id == id) else {
+                continue;
+            };
+            message.body = Body::Loaded { html: parsed.html };
+            message.attachments = parsed.attachments;
+            message.invite = parsed.invite.map(|(ical_uid, method)| Invite {
+                event_id: String::new(),
+                method,
+                ical_uid,
+            });
+        }
+        thread.loaded = loaded(&thread);
+        thread.reindex();
+        self.put_threads(account, &[thread])
+    }
+
+    /// The Drafts threads that are Gmail drafts: (thread id, Gmail draft
+    /// id if known, message id).
+    pub fn stored_drafts(
+        &self,
+        account: &str,
+    ) -> anyhow::Result<Vec<(String, Option<String>, String)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT local_id, draft_id, COALESCE(message_id, '') FROM drafts WHERE account = ?1",
+        )?;
+        let rows = stmt.query_map([account], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn set_draft_id(
+        &self,
+        account: &str,
+        local_id: &str,
+        draft_id: &str,
+    ) -> anyhow::Result<()> {
+        self.conn().execute(
+            "UPDATE drafts SET draft_id = ?3 WHERE account = ?1 AND local_id = ?2",
+            params![account, local_id, draft_id],
+        )?;
+        Ok(())
+    }
+}
+
+/// Full once every message has its body.
+fn loaded(thread: &Thread) -> Loaded {
+    if thread
+        .messages
+        .iter()
+        .all(|m| matches!(m.body, Body::Loaded { .. }))
+    {
+        Loaded::Full
+    } else {
+        Loaded::Metadata
     }
 }
 

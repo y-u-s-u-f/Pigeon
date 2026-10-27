@@ -185,26 +185,26 @@ The user's own plans, not driven by Google's APIs.
 
 #### FOL-1 System folders and go-to shortcuts
 
-- **Today:** The sidebar lists Inbox, Starred, Sent, Drafts, Archive, Spam, Trash. Shortcuts `g i`, `g s`, `g t`, `g d`, `g a`, `g !`; Trash via the palette. `Folder` (`src/data.rs`) has six variants (Inbox, Archive, Sent, Drafts, Spam, Trash); each thread has one. Starred is a flag. `FOLDERS` in `src/ui/sidebar.rs`, `set_nav()` in `src/app.rs`.
-- **Needs:** Map Gmail labels to the six folders: `INBOX`, `SENT`, `DRAFT`, `SPAM`, `TRASH`, and "not in INBOX" for Archive (IMAP: special-use `\Sent`, `\Drafts`, `\Junk`, `\Trash`, `\Archive`). Unmapped folders must be handled, because `Folder` deserialization fails on unknown values.
-- **Notes:** See DAT-2 for the one-folder limit.
+- **Today:** The sidebar lists Inbox, Starred, Sent, Drafts, Archive, Spam, Trash. Shortcuts `g i`, `g s`, `g t`, `g d`, `g a`, `g !`; Trash via the palette. `Folder` (`src/data.rs`) has six variants; each thread has one, derived from its messages' Gmail labels by `gmail::derive_folder()` when synced (W3). Sent lists every conversation holding a message the user sent, like Gmail (`nav_contains()`, 6.4 item 5). Starred is a flag. `FOLDERS` in `src/ui/sidebar.rs`, `set_nav()` in `src/app.rs`.
+- **Needs:** A tester pass on the real account (T1a). IMAP later: special-use `\Sent`, `\Drafts`, `\Junk`, `\Trash`, `\Archive`.
+- **Notes:** See DAT-2 for the one-folder limit. Spam and Trash sync only their newest 25 threads; older ones need LST-7.
 
 #### FOL-2 Sidebar counts
 
-- **Today:** Computed from loaded threads in `nav_count()` (`src/ui/sidebar.rs`). Drafts shows the total; Inbox, Spam and labels show unread threads; others show nothing.
-- **Needs:** Server counts: `labels.get` returns `threadsUnread`, `messagesUnread`, `threadsTotal`, `messagesTotal` (`labels.list` doesn't). IMAP: `STATUS … UNSEEN`. Update on sync.
-- **Notes:** With paging (LST-7) loaded counts would be wrong.
+- **Today:** Inbox, Spam and labels show Gmail's `threadsUnread` from `labels.get` (synced with the labels and after every partial sync that changed something; stored in `labels.threads_unread`). Reading or marking unread here moves the number at once: `ServerCounts` keeps the local count from when Gmail's was read and adds the difference (`view_unread()`, `src/ui/sidebar.rs`). Drafts shows the number of Drafts threads; demo mode (no server counts) counts loaded threads as before.
+- **Needs:** A tester pass comparing with Gmail (T1a). IMAP: `STATUS … UNSEEN`.
+- **Notes:** Between a local change and the next sync the count is an estimate.
 
 #### FOL-3 Label list with colours
 
-- **Today:** `MailData::labels` from JSON (ten labels); hex colours parsed by `hex_color()` (`src/data.rs`). Dots in the sidebar, chips in the reader.
-- **Needs:** `labels.list` (type `user`) with `color.backgroundColor` and `textColor`. IMAP has no colours; keep them locally.
-- **Notes:** `Thread::labels` holds label IDs; renames must keep IDs stable.
+- **Today:** From `labels.list` (W3): user labels the user hasn't hidden (`labelListVisibility != labelHide`), with `color.backgroundColor`, else Gmail's grey. Stored in `labels` (hidden ones as `type = 'hidden'`, system ones for their counts); labels gone from Gmail are dropped (`Store::replace_gmail_labels()`). Dots in the sidebar, chips in the reader. Demo mode: the ten placeholder labels.
+- **Needs:** A tester pass (T1a). `textColor` isn't used. IMAP has no colours; keep them locally.
+- **Notes:** `Thread::labels` holds label IDs; renames keep IDs stable. Nested labels (`a/b`) show their full name (FOL-9).
 
 #### FOL-4 Label views
 
-- **Today:** `Nav::Label(usize)` (`src/app.rs`); `nav_contains()` shows threads carrying the label, excluding Spam and Trash. `g l` or "Go to Label…" opens a label search.
-- **Needs:** `threads.list` with `labelIds` (and `pageToken`, LST-7). IMAP: folder or keyword search.
+- **Today:** `Nav::Label(usize)` (`src/app.rs`); `nav_contains()` shows cached threads carrying the label, excluding Spam and Trash. The cache holds the Inbox's first 100 threads, the first pages of Sent, Starred, Spam and Trash, and a backfill of up to 1,000 threads or 90 days (W3), so a label view shows the labelled threads in that window. `g l` or "Go to Label…" opens a label search.
+- **Needs:** Older labelled threads through `threads.list labelIds=…` with `pageToken` (LST-7, W9). IMAP: folder or keyword search.
 - **Notes:** Label views include Sent, Drafts and Archive, as in Gmail.
 
 #### FOL-5 Apply and remove labels on a thread
@@ -263,35 +263,35 @@ The user's own plans, not driven by Google's APIs.
 
 #### LST-1 Thread rows
 
-- **Today:** Sender (or "To: name" in Sent and Drafts), message count, attachment icon, star, date, subject, label dots, snippet of the last message. Compact density (View › Compact List) puts sender, subject and date on one line. `render_thread_row()` (`src/ui/thread_list.rs`); snippet from `Message::snippet` cleaned by `clean_snippet()`; date from `list_date()` (`src/data.rs`). Density is in memory (PER-3).
-- **Needs:** Per thread: subject, participants, message count, last date, snippet, unread, starred, has-attachment, labels. Gmail: `threads.list` then `threads.get` with `format=metadata` and `metadataHeaders` (batched, SYN-7). IMAP: `THREAD` or `References`, plus headers.
-- **Notes:** Gmail's thread `snippet` may differ from the last message's; pick one or rows change after sync.
+- **Today:** Sender (or "To: name" in Sent and Drafts), message count, attachment icon, star, date, subject, label dots, snippet of the last message. Compact density puts sender, subject and date on one line. `render_thread_row()` (`src/ui/thread_list.rs`). With Google (W3) rows come from `threads.list` + batched `threads.get format=metadata` (`gmail::thread_from_gmail()`): subject of the first message, per-message Gmail `snippet` (HTML entities decoded), headers parsed by `mail-parser` (RFC 2047, address lists), date from the Date header, sorted by `internalDate`. Demo: placeholder JSON.
+- **Needs:** A tester pass (T1a). The attachment icon needs the body (ATT-5).
+- **Notes:** The row's snippet is the last message's, not the thread's.
 
 #### LST-2 Unread styling
 
-- **Today:** Blue dot, bold sender and subject. `Thread::unread`, flipped by `select_thread()`, `mark_read()`, `mark_unread()` (`src/app.rs`).
-- **Needs:** Thread unread = any message has `UNREAD` (IMAP: `\Seen` per message).
+- **Today:** Blue dot, bold sender and subject. `Thread::unread` is true when any message has `UNREAD` (W3 mapping); flipped locally by `select_thread()`, `mark_read()`, `mark_unread()`.
+- **Needs:** A tester pass (T1a). IMAP: `\Seen` per message.
 - **Notes:** See ACT-4, ACT-5, DAT-3.
 
 #### LST-3 Sort order
 
-- **Today:** Newest first by last message. `MailData::load()` sorts once; `update_threads()` re-sorts all threads after every change (slow on large mailboxes).
-- **Needs:** Server order with a stable cursor (LST-7). Local order must match.
+- **Today:** Newest first by the last message's `internalDate` (`MailData::sort_threads()`); `update_threads()` re-sorts after every change and every sync.
+- **Needs:** A tester pass (T1a). A stable cursor once paging exists (LST-7).
 
 #### LST-4 Archived section in the Inbox
 
-- **Today:** The Inbox ends with a collapsible "Archived" header and count (`Row::ArchivedHeader` in `refresh_rows()`, `src/app.rs`); palette "Show / Hide Archived in Inbox"; `archived_expanded` in memory.
-- **Needs:** Archived threads fetched separately (for example `q=-in:inbox -in:sent -in:drafts -in:spam -in:trash`), with a server count.
+- **Today:** The Inbox ends with a collapsible "Archived" header counting the cached Archive threads (`Row::ArchivedHeader` in `refresh_rows()`, `src/app.rs`); palette "Show / Hide Archived in Inbox". With Google, the cache's archived threads come from the backfill (W3).
+- **Needs:** "Load older" (LST-7) for archived mail past the window. Gmail has no cheap server count for "not in Inbox" (1.1).
 
 #### LST-5 Keyboard list navigation
 
-- **Today:** `j`/`k` or arrows move; `Enter`/`o` open. `select_next()`, `select_prev()`, `select_thread()` (`src/app.rs`). Selecting marks read (RDR-1).
-- **Needs:** Load a selected thread's messages on demand when not loaded (RDR-6).
+- **Today:** `j`/`k` or arrows move; `Enter`/`o` open. `select_next()`, `select_prev()`, `select_thread()` (`src/app.rs`). Selecting marks read (RDR-1) and asks for the bodies (RDR-6), which are fetched only once the selection has stayed 150 ms, so key repeat doesn't spend quota.
+- **Needs:** A tester pass (T1a).
 
 #### LST-6 Unread count in the list header
 
-- **Today:** "N unread" from loaded rows (`render_thread_list()`).
-- **Needs:** Server count (FOL-2), matching the sidebar. They agree today only because both use loaded data.
+- **Today:** "N unread" from `view_unread()`, the same number as the sidebar: Gmail's count for Inbox, Spam and labels (FOL-2), else the loaded rows'.
+- **Needs:** A tester pass (T1a).
 
 #### LST-7 Pagination and lazy loading
 
@@ -301,13 +301,13 @@ The user's own plans, not driven by Google's APIs.
 
 #### LST-8 Live refresh and new mail in the list
 
-- **Today:** Not built.
-- **Needs:** The sync loop (SYN-2/SYN-3; IMAP IDLE). Insert new threads without losing selection or scroll; `refresh_rows(true)` already splices rows. Links to NTF-1, STA-5.
+- **Today:** Partial sync (SYN-2, W3) refetches the threads `history.list` reports every 45 s while the window is active (5 min in the background), on focus and on Sync Now, and emits `ThreadsChanged` / `ThreadsRemoved`. `on_threads_changed()` (`src/app/backend_events.rs`) reloads them through `update_threads()`, which keeps the selection and splices rows so the list stays put.
+- **Needs:** A tester pass (T1a item 5). Sync 2 s after a committed write comes with W5. Links to NTF-1, STA-5.
 
 #### LST-9 Empty-result text
 
-- **Today:** "Nothing in <view>", or "No results in <scope>" with a hint while searching (`render_thread_list()`).
-- **Needs:** A loaded / loading / empty state per list (STA-1) so "Nothing" doesn't flash before data arrives.
+- **Today:** "Nothing in <view>", or "No results in <scope>" with a hint while searching (`render_thread_list()`). With Google, an empty view shows skeleton rows until its first page is stored (`Backend::view_loaded()`), or "Couldn't load <view>" if the sync failed before then (W3).
+- **Needs:** A tester pass (T1a).
 
 ### 5.3 Reading pane (RDR)
 
@@ -330,36 +330,36 @@ The user's own plans, not driven by Google's APIs.
 
 #### RDR-2 Conversation view
 
-- **Today:** Subject, label chips, "N messages", every message oldest first, newest expanded. `render_conversation()` (`src/ui/reader.rs`). Messages sorted by `date` in `MailData::load()`.
-- **Needs:** All messages with order, flags and headers: `threads.get` `format=full` (or `metadata` plus RDR-6).
-- **Notes:** Date headers can be wrong; Gmail's `internalDate` is a safer sort key.
+- **Today:** Subject, label chips, "N messages", every message oldest first (by `internalDate`), newest expanded. `render_conversation()` (`src/ui/reader.rs`). Draft messages are left out of the conversation (they're Drafts threads). A sync that changes the open thread reloads it in place.
+- **Needs:** A tester pass (T1a).
 
 #### RDR-3 Expand and collapse older messages
 
-- **Today:** Collapsed rows show sender, snippet, date; click to expand. `expanded_messages`, `toggle_message()`, cleared in `select_thread()`.
-- **Needs:** A snippet per message (Gmail `Message.snippet`). Expanded state could be saved (PER-3).
+- **Today:** Collapsed rows show sender, snippet (Gmail's per-message `snippet`), date; click to expand. `expanded_messages`, `toggle_message()`, cleared in `select_thread()`.
+- **Needs:** A tester pass (T1a). Expanded state could be saved (PER-3).
 
 #### RDR-4 Message header
 
-- **Today:** Sender name, email, "to … · cc …", full local date ("Sun, Oct 25, 9:12 AM") via `full_date()`. Bcc not shown. `render_message()`.
-- **Needs:** From, To, Cc, Bcc (sent only), Date with zone, Subject: `messages.get` `format=metadata` with `metadataHeaders`. IMAP: `ENVELOPE`.
+- **Today:** Sender name, email, "to … · cc …", full local date via `full_date()`. Bcc not shown. `render_message()`. With Google the headers come from `format=metadata` (From, To, Cc, Bcc, Reply-To, Subject, Date, Message-ID, In-Reply-To, References), parsed by `mail-parser` (W3); `message_id`/`in_reply_to`/`references` are stored without angle brackets.
+- **Needs:** A tester pass (T1a).
 - **Notes:** Long recipient lists are shown in full.
 
 #### RDR-5 Message body rendering
 
-- **Today:** HTML is drawn natively (headings, lists, quotes, tables, links, emphasis, code, simple colours); scripts, styles, iframes and form controls dropped; images become placeholders (ATT-1). `html::parse()` (`src/html.rs`), `src/ui/html_view.rs`, cached by hash in `HtmlCache`. Message text is selectable.
-- **Needs:** The decoded HTML (or plain text) body: walk `payload.parts`, pick `text/html` in `multipart/alternative`, base64url-decode `body.data`, decode the charset. `cid:` parts per ATT-2.
+- **Today:** HTML is drawn natively (headings, lists, quotes, tables, links, emphasis, code, simple colours); scripts, styles, iframes and form controls dropped; images become placeholders (ATT-1). `html::parse()` (`src/html.rs`), `src/ui/html_view.rs`, cached by hash in `HtmlCache`. Message text is selectable. With Google the body comes from `messages.get format=raw` parsed by `mail-parser` (`mime::parse_message()`, W3): charsets, transfer encodings, the `text/html` part of `multipart/alternative`, plain text converted to HTML when there's no HTML.
+- **Needs:** A tester pass on real newsletters and replies (T1a). `cid:` parts per ATT-2.
 - **Notes:** Unknown tags keep their text only.
 
 #### RDR-6 Fetch a message body on demand
 
-- **Today:** Not built; every body is in memory.
-- **Needs:** `messages.get` `format=full` when a message is opened or expanded; a loading state (STA-1); cache bodies locally (PER-1). Lists use metadata only.
+- **Today:** Built (W3). When a thread stays selected 150 ms, `Backend::fetch_body()` fetches every message without a body with `messages.get format=raw` in one HTTP batch (60 units each), parses it (`mime::parse_message()`) and stores html, attachments and invitation in `bodies` / `messages`, plus `search_text`. Messages show "Loading…" meanwhile; a failure shows "Couldn't load this message", the reason and Retry (palette "Retry Loading Message"). Bodies survive later metadata refetches. Demo mode has every body already.
+- **Needs:** A tester pass (T1a). Eviction at 300 MB (`bodies.last_opened`) isn't built. Offline wording ("isn't downloaded yet") comes with W11.
+- **Notes:** A Gmail draft opened in the composer before its body arrives starts empty; W6 (`drafts.get`) handles opening drafts.
 
 #### RDR-7 Message navigation and reader focus
 
-- **Today:** `n`/`p` move between messages and expand; `o`/`Enter` focus the reader; `u`/`Esc` return; arrows scroll. `step_message()`, `open_thread()`, `back_to_list()`, `scroll_reader()` (`src/app.rs`).
-- **Needs:** Nothing beyond RDR-2 and RDR-6; `n`/`p` may land on an unloaded message.
+- **Today:** `n`/`p` move between messages and expand; `o`/`Enter` focus the reader; `u`/`Esc` return; arrows scroll. `step_message()`, `open_thread()`, `back_to_list()`, `scroll_reader()` (`src/app.rs`). A message whose body is loading shows "Loading…" when reached.
+- **Needs:** A tester pass on real data.
 
 #### RDR-8 Show original
 
@@ -527,8 +527,8 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 #### DRF-2 Drafts list
 
-- **Today:** Six starter drafts from JSON plus new ones in memory. Rows show "To: <first recipient>", "(no recipients)", "(no subject)". The sidebar shows the count.
-- **Needs:** `drafts.list` (or `DRAFT` label) with recipients and subject.
+- **Today:** Rows show "To: <first recipient>", "(no recipients)", "(no subject)". The sidebar shows the count. With Google (W3) the Drafts step lists `drafts.list` (up to 500) and fetches each changed draft's message with `messages.get format=metadata`: each draft is a Drafts thread `draft-<draft id>` (a reply draft keeps `origin.reply_to` = its thread), its draft id stored in `drafts.draft_id`; drafts gone from Gmail go. Re-read when history touches a draft. Demo: six starter drafts.
+- **Needs:** A tester pass (T1a). Opening one with its body and markdown is W6 (DRF-3, DRF-6).
 
 #### DRF-3 Open and edit a draft
 
@@ -713,8 +713,8 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 #### ATT-3 Attachment list in messages
 
-- **Today:** Chips under each body: type icon (image, PDF/document, spreadsheet, archive, other), name, size ("393 KB"). `Message::attachments` (`Attachment { name, size_bytes, mime }`), `render_message()`, `file_size()`, `Attachment::kind()` (MIME then extension), `attachment_icon()`.
-- **Needs:** Per part: `filename`, `mimeType`, `body.size`, `body.attachmentId`.
+- **Today:** Chips under each body: type icon, name, size. `Message::attachments`, `render_message()`, `file_size()`, `Attachment::kind()`, `attachment_icon()`. With Google (W3) they come from the raw message once the body loads (`mime::parse_message()`): RFC 2231/2047 names, decoded size, MIME type, `part_id` = the parser's part id. `.ics` parts and inline `cid:` images aren't listed.
+- **Needs:** A tester pass. Gmail's `attachmentId` (for ATT-4) isn't in `format=raw`; opening needs `messages.get format=full` or the raw part.
 
 #### ATT-4 Open and download an attachment
 
@@ -723,9 +723,9 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 #### ATT-5 Attachment icon in the list
 
-- **Today:** Paperclip when any message has an attachment (`Thread::has_attachments()`).
-- **Needs:** A thread-level flag from metadata (parts with a `filename`).
-- **Notes:** Decide whether inline images count.
+- **Today:** Paperclip when any message has an attachment (`Thread::has_attachments()`). With Google that's known only once the thread's bodies are loaded: `format=metadata` carries no parts.
+- **Needs:** A thread-level flag without fetching bodies (for example `q=has:attachment` ids, or `payload.mimeType == multipart/mixed` as a hint).
+- **Notes:** Inline `cid:` images don't count.
 
 #### ATT-6 Attach files to a new message
 
@@ -1120,11 +1120,13 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### SYN-1 Gmail full sync
 
-- **Needs:** On first sign-in (or when history expires): list recent threads or messages, fetch them in batches (`format=metadata`, bodies on demand per RDR-6), store them (PER-1) and the newest `historyId`.
+- **Today:** Built (W3, `src/backend/sync.rs`), as a plan of steps each stored and reported before the next: `getProfile` (history id H0 kept first), `labels.list` + batched `labels.get` (counts), `settings.sendAs` (aliases), Inbox (`threads.list labelIds=INBOX maxResults=100`, then `threads.get format=metadata` in batches of 50), drafts, the first 50 of Sent and Starred, 25 of Spam and Trash, then a backfill (`q=newer_than:90d`) to 1,000 threads. Threads whose stored `history_id` matches the listed one are skipped. On completion partial sync continues from H0. The status shows "Syncing done of total". Every request declares its quota cost.
+- **Needs:** W2's authenticated transport wired into `Backend::start_mail_sync()`; the quota limiter (W2). A tester pass (T1a).
 
 #### SYN-2 Gmail partial sync
 
-- **Needs:** Poll `history.list` from the stored `historyId` (`messageAdded`, `messageDeleted`, `labelAdded`, `labelRemoved`), apply changes, store the new ID. A 404 means the ID is too old: run SYN-1. Google recommends polling for installed apps. Feeds LST-8, DRF-6, NTF-1.
+- **Today:** Built (W3): `history.list` from the stored `gmail_history_id`, paged; touched threads refetched in batches (404 or drafts-only → removed), drafts re-read when a draft was touched, label counts refreshed when anything changed, then the new history id stored. A 404 runs the full sync again, skipping unchanged threads. Every 45 s while active, 5 min in the background, on focus and on Sync Now; two network failures in a row → Offline with backoff 15 s → 2 min.
+- **Needs:** A tester pass (T1a item 5). Sync 2 s after a committed write (W5). The pending-op overlay (2.7) is W5's.
 
 #### SYN-3 Gmail push
 
@@ -1182,8 +1184,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### STA-1 Initial load and loading states
 
-- **Today:** `MailData::load()` runs synchronously in `main()` and `expect`s valid JSON; everything is loaded before the window opens.
-- **Needs:** Per view and per message: loading, loaded, empty, error, stale. Skeleton rows, a reader spinner. Launch must not wait on the network; empty text (LST-9) must not show while loading.
+- **Today:** Launch reads the cache (`Backend::load_mail()`) and never waits on the network. List: skeleton rows while a view's first page loads, "Couldn't load <view>" if the first sync failed, the empty text only once loaded (`view_loaded()`, W3). Reader: "Loading…" per message, "Couldn't load this message" with Retry. The sidebar status line is W2's.
+- **Needs:** Stale and offline states (W11).
 
 #### STA-2 Action failure and rollback
 
@@ -1201,7 +1203,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### STA-5 Conflicts with server changes
 
-- **Needs:** Rules for threads, drafts and events changed elsewhere. Refresh the open thread; never silently replace a draft's text; use ETags for events (CAL-7). Links to DRF-6, LST-8.
+- **Today:** A sync that changes the open thread reloads it in place, keeping the selection (W3); drafts open in the composer aren't replaced.
+- **Needs:** Rules for drafts and events changed elsewhere; ETags for events (CAL-7). Links to DRF-6, LST-8.
 
 ---
 
@@ -1252,8 +1255,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### PAL-3 Label jumps
 
-- **Today:** "Go to Label: <name>" per label; `g l` opens the palette with `label: `. `go_to_label()`.
-- **Needs:** The label list (FOL-3); new labels (FOL-6) add entries.
+- **Today:** "Go to Label: <name>" per label; `g l` opens the palette with `label: `. `go_to_label()`. With Google the labels are Gmail's (FOL-3) and refresh with each label sync.
+- **Needs:** A tester pass; new labels (FOL-6) add entries.
 
 ### 8.3 Data model (DAT)
 

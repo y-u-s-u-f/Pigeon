@@ -1,0 +1,62 @@
+{
+  "id": "thread-a1",
+  "historyId": "1052",
+  "messages": [
+    {
+      "id": "msg-a2",
+      "threadId": "thread-a1",
+      "labelIds": ["SENT", "STARRED"],
+      "snippet": "Sounds good, see you at noon",
+      "sizeEstimate": 2310,
+      "historyId": "1050",
+      "internalDate": "1793003600000",
+      "payload": {
+        "mimeType": "multipart/alternative",
+        "headers": [
+          { "name": "From", "value": "Me Example <me@example.com>" },
+          { "name": "To", "value": "Ana Lima <ana@example.com>" },
+          { "name": "Cc", "value": "cc@example.com" },
+          { "name": "Subject", "value": "Re: Lunch on Friday?" },
+          { "name": "Date", "value": "Mon, 26 Oct 2026 10:13:20 -0700" },
+          { "name": "Message-ID", "value": "<m2@example.com>" },
+          { "name": "In-Reply-To", "value": "<m1@example.com>" },
+          { "name": "References", "value": "<m1@example.com>" }
+        ]
+      }
+    },
+    {
+      "id": "msg-a1",
+      "threadId": "thread-a1",
+      "labelIds": ["INBOX", "UNREAD", "IMPORTANT", "CATEGORY_PERSONAL", "Label_7"],
+      "snippet": "Are you free on Friday? It&#39;s my treat",
+      "sizeEstimate": 4120,
+      "historyId": "1040",
+      "internalDate": "1793000000000",
+      "payload": {
+        "mimeType": "multipart/alternative",
+        "headers": [
+          { "name": "From", "value": "\"Ana Lima\" <ana@example.com>" },
+          { "name": "To", "value": "me@example.com, Bo Chen <bo@example.com>" },
+          { "name": "Subject", "value": "=?UTF-8?Q?Lunch_on_Friday=3F?=" },
+          { "name": "Date", "value": "Mon, 26 Oct 2026 09:13:20 -0700" },
+          { "name": "Message-ID", "value": "<m1@example.com>" }
+        ]
+      }
+    },
+    {
+      "id": "msg-a3",
+      "threadId": "thread-a1",
+      "labelIds": ["DRAFT"],
+      "snippet": "Actually, can we",
+      "historyId": "1052",
+      "internalDate": "1793007200000",
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          { "name": "From", "value": "me@example.com" },
+          { "name": "Subject", "value": "Re: Lunch on Friday?" }
+        ]
+      }
+    }
+  ]
+}
