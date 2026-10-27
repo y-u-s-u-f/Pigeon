@@ -19,25 +19,25 @@ To update: change the status cell in the area's table, then the counts below.
 | [Planned features](#3-planned-features-pln) | 3 | 0 | 0 | 3 |
 | [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 2 | 3 | 3 | 8 |
 | [Folders and labels](#51-folders-and-labels-fol) | 6 | 0 | 6 | 12 |
-| [Thread list](#52-thread-list-lst) | 0 | 3 | 6 | 9 |
-| [Reading pane](#53-reading-pane-rdr) | 1 | 2 | 5 | 8 |
+| [Thread list](#52-thread-list-lst) | 0 | 2 | 7 | 9 |
+| [Reading pane](#53-reading-pane-rdr) | 1 | 0 | 7 | 8 |
 | [Message actions](#54-message-and-thread-actions-act) | 0 | 0 | 7 | 7 |
-| [Compose and sending](#55-compose-and-sending-cmp) | 0 | 2 | 11 | 13 |
+| [Compose and sending](#55-compose-and-sending-cmp) | 0 | 1 | 12 | 13 |
 | [Drafts](#56-drafts-drf) | 1 | 0 | 5 | 6 |
 | [Undo](#57-undo-und) | 0 | 0 | 3 | 3 |
 | [Search](#58-search-src) | 1 | 0 | 8 | 9 |
 | [Contacts](#59-contacts-con) | 6 | 0 | 2 | 8 |
-| [Images and attachments](#510-images-and-attachments-att) | 3 | 3 | 1 | 7 |
+| [Images and attachments](#510-images-and-attachments-att) | 3 | 1 | 3 | 7 |
 | [Links](#511-links-lnk) | 2 | 0 | 1 | 3 |
 | [Mail settings](#512-mail-settings-mst) | 10 | 0 | 0 | 10 |
-| [Calendar](#6-calendar-cal) | 18 | 7 | 17 | 42 |
+| [Calendar](#6-calendar-cal) | 18 | 5 | 19 | 42 |
 | [Sync and push](#71-sync-and-push-syn) | 2 | 1 | 4 | 7 |
 | [Notifications and background](#72-notifications-and-background-ntf) | 3 | 0 | 0 | 3 |
-| [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 0 | 4 | 1 | 5 |
+| [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 0 | 2 | 3 | 5 |
 | [Storage and persistence](#81-storage-and-persistence-per) | 0 | 0 | 3 | 3 |
-| [Command palette](#82-command-palette-pal) | 0 | 2 | 1 | 3 |
+| [Command palette](#82-command-palette-pal) | 0 | 0 | 3 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 6 | 0 | 7 |
-| **Overall** | **59** | **33** | **84** | **176** |
+| **Overall** | **59** | **21** | **96** | **176** |
 
 ## Contents
 
@@ -255,7 +255,7 @@ The user's own plans, not driven by Google's APIs.
 | LST-1 | Thread rows | 🟢 Fully linked | `threads.list` + `threads.get` (`format=metadata`) |
 | LST-2 | Unread styling | 🟢 Fully linked | `UNREAD` label |
 | LST-3 | Sort order | 🟢 Fully linked | `threads.list` order |
-| LST-4 | Archived section in the Inbox | 🟡 Partially done | `threads.list` (`q=-in:inbox`) |
+| LST-4 | Archived section in the Inbox | 🟢 Fully linked | `threads.list` (`q=-in:inbox`) |
 | LST-5 | Keyboard list navigation | 🟢 Fully linked | `threads.get` on demand |
 | LST-6 | Unread count in the list header | 🟢 Fully linked | `labels.get` |
 | LST-7 | Pagination and lazy loading | 🟢 Fully linked | `pageToken`, `maxResults` |
@@ -316,11 +316,11 @@ The user's own plans, not driven by Google's APIs.
 | --- | --- | --- | --- |
 | RDR-1 | Opening a thread marks it read | 🟢 Fully linked | `threads.modify` (remove `UNREAD`) |
 | RDR-2 | Conversation view | 🟢 Fully linked | `threads.get` (`format=full`) |
-| RDR-3 | Expand and collapse older messages | 🟡 Partially done | Per-message `snippet` |
+| RDR-3 | Expand and collapse older messages | 🟢 Fully linked | Per-message `snippet` |
 | RDR-4 | Message header | 🟢 Fully linked | `messages.get` headers |
 | RDR-5 | Message body rendering | 🟢 Fully linked | `messages.get` `payload` parts |
 | RDR-6 | Fetch a message body on demand | 🟢 Fully linked | `messages.get` (`format=full`) |
-| RDR-7 | Message navigation and reader focus | 🟡 Partially done | None |
+| RDR-7 | Message navigation and reader focus | 🟢 Fully linked | None |
 | RDR-8 | Show original (raw message) | ⚪ Not done | `messages.get` (`format=raw`) |
 
 #### RDR-1 Opening a thread marks it read
@@ -429,7 +429,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 | CMP-3 | Reply all | 🟢 Fully linked | As CMP-2 |
 | CMP-4 | Forward | 🟢 Fully linked | `messages.send` (no `threadId`) |
 | CMP-5 | Recipient fields | 🟢 Fully linked | Server validation on send |
-| CMP-6 | Show Cc and Bcc | 🟡 Partially done | `raw` MIME; Gmail delivers Bcc |
+| CMP-6 | Show Cc and Bcc | 🟢 Fully linked | `raw` MIME; Gmail delivers Bcc |
 | CMP-7 | Subject and formatted body | 🟢 Fully linked | `raw` MIME (`multipart/alternative`) |
 | CMP-8 | Send | 🟢 Fully linked | `messages.send`, `drafts.send` |
 | CMP-9 | Send validation | 🟢 Fully linked | Send errors |
@@ -707,9 +707,9 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 | --- | --- | --- | --- |
 | ATT-1 | Remote images | 🟢 Fully linked | None (HTTP fetch or proxy) |
 | ATT-2 | Inline (`cid:`) images | ⚪ Not done | `payload.parts` `Content-ID`, `messages.attachments.get` |
-| ATT-3 | Attachment list in messages | 🟡 Partially done | `payload.parts` (`filename`, `body.attachmentId`) |
+| ATT-3 | Attachment list in messages | 🟢 Fully linked | `payload.parts` (`filename`, `body.attachmentId`) |
 | ATT-4 | Open and download an attachment | ⚪ Not done | `messages.attachments.get` |
-| ATT-5 | Attachment icon in the list | 🟡 Partially done | `has:attachment`, `payload.parts` |
+| ATT-5 | Attachment icon in the list | 🟢 Fully linked | `has:attachment`, `payload.parts` |
 | ATT-6 | Attach files to a new message | 🟡 Partially done | `messages.send` / `drafts.*` upload (`multipart` or `resumable`) |
 | ATT-7 | Forward keeps attachments | ⚪ Not done | `messages.attachments.get` + re-attach |
 
@@ -846,7 +846,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | CAL-2 | Calendar list, colours and visibility | 🟢 Fully linked | `calendarList.list`, `calendarList.patch` (`selected`), `colors.get` |
 | CAL-3 | Load events for the visible range | 🟢 Fully linked | `events.list` (`timeMin`, `timeMax`, `syncToken`) |
 | CAL-4 | Day, week and month views and navigation | 🟢 Fully linked | As CAL-3 |
-| CAL-4a | Go to a date | 🟡 Partially done | None |
+| CAL-4a | Go to a date | 🟢 Fully linked | None |
 | CAL-18 | Today and the now-line | 🟢 Fully linked | None |
 | CAL-19 | Event search in the palette | 🟢 Fully linked | `events.list` with `q` |
 | CAL-23 | Persisted calendar UI state | ⚪ Not done | Local; `calendarList.selected` |
@@ -859,7 +859,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | CAL-12 | Time zones | 🟡 Partially done | `timeZone` fields; `settings` `timezone` |
 | CAL-15 | Reminders | 🟢 Fully linked | `reminders` (`useDefault`, `overrides`) |
 | CAL-16 | Busy and free | 🟢 Fully linked | `transparency` |
-| CAL-17 | Video links | 🟡 Partially done | `conferenceData.entryPoints`, `hangoutLink` |
+| CAL-17 | Video links | 🟢 Fully linked | `conferenceData.entryPoints`, `hangoutLink` |
 | CAL-21 | Drag to create, move and resize | 🟢 Fully linked | `events.insert`, `events.patch` |
 | CAL-22 | Organizer and read-only permissions | 🟡 Partially done | `accessRole`, `guestsCanModify`, `locked`, `organizer.self` |
 | CAL-28 | Event colours and labels | ⚪ Not done | `colorId` + `colors.get`; `eventLabelId` + `calendars` `labelProperties` |
@@ -1207,10 +1207,10 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| STA-1 | Initial load and loading states | 🟡 Partially done | None |
+| STA-1 | Initial load and loading states | 🟢 Fully linked | None |
 | STA-2 | Action failure and rollback | 🟡 Partially done | API error responses |
 | STA-3 | Offline mode and queued changes | 🟢 Fully linked | None |
-| STA-4 | Expired sign-in | 🟡 Partially done | OAuth `invalid_grant`, 401 |
+| STA-4 | Expired sign-in | 🟢 Fully linked | OAuth `invalid_grant`, 401 |
 | STA-5 | Conflicts with server changes | 🟡 Partially done | ETags, `historyId`, `syncToken` |
 
 #### STA-1 Initial load and loading states
@@ -1276,9 +1276,9 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| PAL-1 | Command list | 🟡 Partially done | Each command's own |
+| PAL-1 | Command list | 🟢 Fully linked | Each command's own |
 | PAL-2 | Thread search in the palette | 🟢 Fully linked | `threads.list` with `q` |
-| PAL-3 | Label jumps | 🟡 Partially done | `labels.list` |
+| PAL-3 | Label jumps | 🟢 Fully linked | `labels.list` |
 
 #### PAL-1 Command list
 
