@@ -19,7 +19,7 @@ A macOS email and calendar client in Rust + GPUI (`gpui-kit` 0.8, imported as `g
 ## Workflow
 
 1. One or more `implementer` agents make the changes. If there's a lot, split by non-overlapping files.
-2. A separate tester tests in Codex: the main agent runs `codex exec -m gpt-6.1-terra` in a background shell, with Codex's built-in computer use (no subagents, no Cua Driver).
+2. A separate tester tests in Codex: the main agent runs `codex exec -m gpt-6.1-terra` in a background shell, with Codex's built-in computer use, its `cua_repl` tool (no subagents, no third-party `cua-driver`; say so explicitly, since Codex can confuse the two).
 3. A fresh `implementer` fixes what the tester reports. Re-test as needed.
 
 Don't have one agent implement, test and fix in a loop. Subagents don't commit; the main agent does.
