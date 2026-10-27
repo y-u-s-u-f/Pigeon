@@ -17,7 +17,7 @@ To update: change the status cell in the area's table, then the counts below.
 | Section | ⚪ Not done | 🟡 Partially done | 🟢 Fully linked | Total |
 | --- | --- | --- | --- | --- |
 | [Planned features](#3-planned-features-pln) | 3 | 0 | 0 | 3 |
-| [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 2 | 6 | 0 | 8 |
+| [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 2 | 5 | 1 | 8 |
 | [Folders and labels](#51-folders-and-labels-fol) | 6 | 6 | 0 | 12 |
 | [Thread list](#52-thread-list-lst) | 1 | 8 | 0 | 9 |
 | [Reading pane](#53-reading-pane-rdr) | 1 | 7 | 0 | 8 |
@@ -30,14 +30,14 @@ To update: change the status cell in the area's table, then the counts below.
 | [Images and attachments](#510-images-and-attachments-att) | 3 | 4 | 0 | 7 |
 | [Links](#511-links-lnk) | 2 | 1 | 0 | 3 |
 | [Mail settings](#512-mail-settings-mst) | 10 | 0 | 0 | 10 |
-| [Calendar](#6-calendar-cal) | 19 | 23 | 0 | 42 |
+| [Calendar](#6-calendar-cal) | 19 | 17 | 6 | 42 |
 | [Sync and push](#71-sync-and-push-syn) | 3 | 4 | 0 | 7 |
 | [Notifications and background](#72-notifications-and-background-ntf) | 3 | 0 | 0 | 3 |
 | [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 3 | 2 | 0 | 5 |
 | [Storage and persistence](#81-storage-and-persistence-per) | 1 | 1 | 1 | 3 |
 | [Command palette](#82-command-palette-pal) | 0 | 3 | 0 | 3 |
 | [Data model](#83-data-model-dat) | 2 | 5 | 0 | 7 |
-| **Overall** | **69** | **106** | **1** | **176** |
+| **Overall** | **69** | **99** | **8** | **176** |
 
 ## Contents
 
@@ -108,7 +108,7 @@ The user's own plans, not driven by Google's APIs.
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| ACC-1 | Account card | 🟡 Partially done | Gmail `getProfile`; People `people.get` (`people/me`) |
+| ACC-1 | Account card | 🟢 Fully linked | Gmail `getProfile`; People `people.get` (`people/me`) |
 | ACC-2 | Identity of "me" | 🟡 Partially done | Gmail `settings.sendAs.list` |
 | ACC-3 | Add, sign in to and remove accounts | 🟡 Partially done | OAuth 2.0 for desktop apps (loopback + PKCE) |
 | ACC-4 | Account switcher and multiple accounts | ⚪ Not done | One OAuth grant per account |
@@ -828,13 +828,13 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
 | **Views and navigation** | | | |
-| CAL-1 | Switch between Mail and Calendar | 🟡 Partially done | None (calendar scopes at sign-in) |
+| CAL-1 | Switch between Mail and Calendar | 🟢 Fully linked | None (calendar scopes at sign-in) |
 | CAL-2 | Calendar list, colours and visibility | 🟡 Partially done | `calendarList.list`, `calendarList.patch` (`selected`), `colors.get` |
-| CAL-3 | Load events for the visible range | 🟡 Partially done | `events.list` (`timeMin`, `timeMax`, `syncToken`) |
-| CAL-4 | Day, week and month views and navigation | 🟡 Partially done | As CAL-3 |
+| CAL-3 | Load events for the visible range | 🟢 Fully linked | `events.list` (`timeMin`, `timeMax`, `syncToken`) |
+| CAL-4 | Day, week and month views and navigation | 🟢 Fully linked | As CAL-3 |
 | CAL-4a | Go to a date | 🟡 Partially done | None |
-| CAL-18 | Today and the now-line | 🟡 Partially done | None |
-| CAL-19 | Event search in the palette | 🟡 Partially done | `events.list` with `q` |
+| CAL-18 | Today and the now-line | 🟢 Fully linked | None |
+| CAL-19 | Event search in the palette | 🟢 Fully linked | `events.list` with `q` |
 | CAL-23 | Persisted calendar UI state | ⚪ Not done | Local; `calendarList.selected` |
 | **Events** | | | |
 | CAL-7 | Edit an event in the panel | 🟡 Partially done | `events.patch` / `events.update` with ETag |
@@ -856,7 +856,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | CAL-39 | Quick add from text | ⚪ Not done | `events.quickAdd` |
 | CAL-40 | Move an event to another calendar | 🟡 Partially done | `events.move` |
 | **Recurrence** | | | |
-| CAL-5 | Recurring events | 🟡 Partially done | `recurrence` (RRULE, EXDATE), `events.instances`, `singleEvents` |
+| CAL-5 | Recurring events | 🟢 Fully linked | `recurrence` (RRULE, EXDATE), `events.instances`, `singleEvents` |
 | CAL-6 | This event or all events | 🟡 Partially done | Instance `events.patch`; series split with `UNTIL` |
 | CAL-29 | Set and edit repeat rules | ⚪ Not done | `recurrence` |
 | **Invites and RSVP** | | | |
@@ -1121,7 +1121,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### SYN-1 Gmail full sync
 
-- **Today:** Built (W3, `src/backend/sync.rs`), as a plan of steps each stored and reported before the next: `getProfile` (history id H0 kept first), `labels.list` + batched `labels.get` (counts), `settings.sendAs` (aliases), Inbox (`threads.list labelIds=INBOX maxResults=100`, then `threads.get format=metadata` in batches of 50), drafts, the first 50 of Sent and Starred, 25 of Spam and Trash, then a backfill (`q=newer_than:90d`) to 1,000 threads. Threads whose stored `history_id` matches the listed one are skipped. On completion partial sync continues from H0. The status shows "Syncing done of total". Every request declares its quota cost.
+- **Today:** Built (W3, `src/backend/sync.rs`), as a plan of steps each stored and reported before the next: `getProfile` (history id H0 kept first), `labels.list` + batched `labels.get` (counts), `settings.sendAs` (aliases), Inbox (`threads.list labelIds=INBOX maxResults=100`, then `threads.get format=metadata` in batches of 20), drafts, the first 50 of Sent and Starred, 25 of Spam and Trash, then a backfill (`q=newer_than:90d`) to 1,000 threads. Threads whose stored `history_id` matches the listed one are skipped. On completion partial sync continues from H0. A step that fails (after the transport's own retries) doesn't restart the sync: the next pass resumes from that step, and a failed thread fetch retries only the threads that failed. The status shows "Syncing done of total". Every request declares its quota cost.
 - **Needs:** W2's authenticated transport wired into `Backend::start_mail_sync()`; the quota limiter (W2). A tester pass (T1a).
 
 #### SYN-2 Gmail partial sync
@@ -1150,7 +1150,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### SYN-7 Batching, quotas and backoff
 
-- **Today:** W2, in `src/backend/http.rs`. `GoogleTransport` (what `Backend::transport()` hands sync) adds the access token, waits on a token-bucket limiter in Gmail quota units (6,000/min, 1,000 kept for user actions: `send_user()`; every `Request` declares `cost`), keeps at most 4 calls in flight, and retries network errors, 429, 5xx and 403 `rateLimitExceeded`/`userRateLimitExceeded` with truncated exponential backoff (1, 2, 4 … 64 s plus up to 1 s jitter, 8 tries). `UreqTransport` logs each call as `METHOD host/path status ms`, query redacted. HTTP batch encode/decode is from W1.
+- **Today:** W2, in `src/backend/http.rs`. `GoogleTransport` (what `Backend::transport()` hands sync) adds the access token, waits on a token-bucket limiter in Gmail quota units (6,000/min, 1,000 kept for user actions: `send_user()`; every `Request` declares `cost`), keeps at most 4 calls in flight, and retries network errors, 429, 5xx and 403 `rateLimitExceeded`/`userRateLimitExceeded` with truncated exponential backoff (1, 2, 4 … 64 s plus up to 1 s jitter, 8 tries). `UreqTransport` logs each call as `METHOD host/path status ms`, query redacted. HTTP batch encode/decode is from W1. `Gmail::batch` (`gmail.rs`) sends at most 20 calls per batch (Gmail runs a batch's calls in parallel and answers 429 "Too many concurrent requests for user" at 50), one batch at a time across sync and body fetches, and retries just the calls a batch answered with 429, 5xx or a rate-limit 403, on the same backoff schedule; other per-call errors (404 etc.) are answered as before.
 - **Needs:** W3/W5 to batch their gets and modifies; `fields=` partial responses; a "Waiting for Gmail…" status during long backoffs (2.9). Group calls into HTTP batch requests (up to 100 calls; Gmail advises at most 50) for list-then-get and bulk actions (ACT-6). Respect per-user rate limits with exponential backoff on `429` and `403 rateLimitExceeded`/`userRateLimitExceeded`. Ask for partial responses (`fields`) to cut payloads.
 
 ### 7.2 Notifications and background (NTF)
