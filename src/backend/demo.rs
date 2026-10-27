@@ -108,18 +108,13 @@ mod tests {
     fn demo_labels_follow_the_thread() {
         let data = mail_data();
         for thread in &data.threads {
-            let labels: Vec<Vec<String>> = thread
-                .messages
-                .iter()
-                .map(|m| m.label_ids.clone())
-                .collect();
             assert_eq!(
                 thread.unread,
                 thread.label_ids.iter().any(|l| l == gmail::UNREAD)
             );
             if matches!(thread.folder, Folder::Inbox | Folder::Spam | Folder::Trash) {
                 assert_eq!(
-                    gmail::derive_folder(&labels),
+                    gmail::derive_folder(&thread.messages, &data.account),
                     thread.folder,
                     "{}",
                     thread.id

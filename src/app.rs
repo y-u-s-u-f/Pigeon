@@ -427,16 +427,7 @@ impl PigeonApp {
 
     pub fn nav_contains(&self, nav: Nav, thread: &Thread) -> bool {
         match nav {
-            // Every conversation holding a message the user sent, like Gmail.
-            Nav::Folder(Folder::Sent) => {
-                thread.folder == Folder::Sent
-                    || (!thread.is_hidden()
-                        && thread.folder != Folder::Drafts
-                        && thread
-                            .messages
-                            .iter()
-                            .any(|m| m.label_ids.iter().any(|l| l == gmail::SENT)))
-            }
+            Nav::Folder(Folder::Sent) => thread.in_sent(),
             Nav::Folder(folder) => thread.folder == folder,
             Nav::Starred => thread.starred && !thread.is_hidden(),
             Nav::Label(ix) => {

@@ -186,7 +186,7 @@ The user's own plans, not driven by Google's APIs.
 
 #### FOL-1 System folders and go-to shortcuts
 
-- **Today:** The sidebar lists Inbox, Starred, Sent, Drafts, Archive, Spam, Trash. Shortcuts `g i`, `g s`, `g t`, `g d`, `g a`, `g !`; Trash via the palette. `Folder` (`src/data.rs`) has six variants; each thread has one, derived from its messages' Gmail labels by `gmail::derive_folder()` when synced (W3). Sent lists every conversation holding a message the user sent, like Gmail (`nav_contains()`, 6.4 item 5). Starred is a flag. `FOLDERS` in `src/ui/sidebar.rs`, `set_nav()` in `src/app.rs`.
+- **Today:** The sidebar lists Inbox, Starred, Sent, Drafts, Archive, Spam, Trash. Shortcuts `g i`, `g s`, `g t`, `g d`, `g a`, `g !`; Trash via the palette. `Folder` (`src/data.rs`) has six variants; each thread has one, derived from its messages' Gmail labels by `gmail::derive_folder()` when synced (W3). Sent lists every conversation holding a message the user sent, like Gmail (`Thread::in_sent()`, also for `in:sent`; 6.4 item 5). Archive is Gmail's "All Mail minus Inbox": any thread out of Inbox/Spam/Trash holding mail the user received, including mail they sent to themselves or an alias, so such a thread shows in Sent and Archive both. Starred is a flag. `FOLDERS` in `src/ui/sidebar.rs`, `set_nav()` in `src/app.rs`.
 - **Needs:** A tester pass on the real account (T1a). IMAP later: special-use `\Sent`, `\Drafts`, `\Junk`, `\Trash`, `\Archive`.
 - **Notes:** See DAT-2 for the one-folder limit. Spam and Trash sync only their newest 25 threads; older ones load with "Load older" (LST-7, W9).
 
@@ -382,7 +382,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 #### ACT-1 Archive and move to Inbox
 
-- **Today:** `e`, toolbar "Archive" (tooltip "Move to Inbox" for archived threads), palette. Selection advances (Settings › Mail › Auto-advance off clears it). `archive()`, `move_selected()` (`src/app.rs`); target from `Folder::archive_target()`: Inbox → Archive; Archive, Spam, Trash → Inbox; Sent and Drafts nothing (button hidden there). Follows each thread's own folder, also in Starred and label views.
+- **Today:** `e`, toolbar "Archive" (tooltip "Move to Inbox" for archived threads), palette. Selection advances (Settings › Mail › Auto-advance off clears it). `archive()`, `move_selected()` (`src/app.rs`); target from `Folder::archive_target()`: Inbox → Archive; Archive, Spam, Trash → Inbox; Sent and Drafts nothing (button hidden there). Follows each thread's own folder, also in Starred and label views. Archiving mail the user sent to themselves (or an alias) leaves only `SENT` on it; it still lands in Archive, at once and after sync (`derive_folder()` with the account's addresses from `Store::me()`).
 - **Needs:** Done for Gmail (W5): `threads.modify` removing `INBOX` (and `SPAM`); back to Inbox adds `INBOX`; Spam → Inbox is "not spam" (FOL-7); Trash → Inbox is `threads.untrash`, then the modify. Commits after the 5 s undo window. IMAP: `UID MOVE`.
 - **Notes:** Rollback on failure (STA-2).
 
@@ -1315,7 +1315,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### DAT-2 Thread model: one folder per thread
 
-- **Today:** Decided and implemented: `gmail::derive_folder()` (`src/backend/gmail.rs`) takes each message's labels (drafts left out): any `TRASH` → Trash, any `SPAM` → Spam, any `INBOX` → Inbox, only `SENT` messages → Sent, else Archive. Drafts are one-message threads with `folder = Drafts`. `Thread::label_ids` is the union over messages; `labels` (user labels), `unread` (any `UNREAD`) and `starred` (any `STARRED`) are derived from it when the store loads a thread. The store applies `MailOp::Modify`/`Trash`/`Untrash` to every message like `threads.modify` and derives the folder again when a folder label changed. UI moves map to Gmail ops in `MailOp::moves()`.
+- **Today:** Decided and implemented: `gmail::derive_folder()` (`src/backend/gmail.rs`) takes each message's labels (drafts left out): any `TRASH` → Trash, any `SPAM` → Spam, any `INBOX` → Inbox; Sent when every message is one the user sent to others; else Archive. A message counts as received when it lacks `SENT` or the user sent it to one of their own addresses (To/Cc, aliases from `sendAs`, `Store::me()`). Drafts are one-message threads with `folder = Drafts`. `Thread::label_ids` is the union over messages; `labels` (user labels), `unread` (any `UNREAD`) and `starred` (any `STARRED`) are derived from it when the store loads a thread. The store applies `MailOp::Modify`/`Trash`/`Untrash` to every message like `threads.modify` and derives the folder again when a folder label changed. UI moves map to Gmail ops in `MailOp::moves()`.
 - **Needs:** Decision 6.4/5 of the sprint plan: the Sent view lists every thread with a message the user sent (W3, `nav_contains`).
 - **Notes:** The most important data-model decision; it touches FOL, LST and ACT.
 

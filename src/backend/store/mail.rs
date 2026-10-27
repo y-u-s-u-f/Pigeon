@@ -9,7 +9,9 @@ use rusqlite::{Transaction, params};
 use super::{Store, from_json, json};
 use crate::{
     backend::{MailOp, gmail},
-    data::{Body, DraftOrigin, Folder, Invite, InviteMethod, Label, Loaded, Message, Thread},
+    data::{
+        Account, Body, DraftOrigin, Folder, Invite, InviteMethod, Label, Loaded, Message, Thread,
+    },
 };
 
 impl Store {
@@ -283,9 +285,10 @@ impl Store {
         add: &[String],
         remove: &[String],
     ) -> anyhow::Result<()> {
+        let me = self.me(account);
         let mut threads = self.load_threads(account, ids)?;
         for thread in &mut threads {
-            modify_thread(thread, add, remove);
+            modify_thread(thread, add, remove, &me);
         }
         self.put_threads(account, &threads)
     }
@@ -483,7 +486,7 @@ impl Store {
 
 /// Add and remove labels on every message of the thread, like
 /// `threads.modify`, and derive its flags, labels and folder again.
-pub fn modify_thread(thread: &mut Thread, add: &[String], remove: &[String]) {
+pub fn modify_thread(thread: &mut Thread, add: &[String], remove: &[String], me: &Account) {
     let moves = add
         .iter()
         .chain(remove)
@@ -496,12 +499,7 @@ pub fn modify_thread(thread: &mut Thread, add: &[String], remove: &[String]) {
             }
         }
     }
-    let labels: Vec<Vec<String>> = thread
-        .messages
-        .iter()
-        .map(|m| m.label_ids.clone())
-        .collect();
-    thread.label_ids = gmail::union_labels(&labels);
+    thread.label_ids = gmail::union_labels(thread.messages.iter().map(|m| &m.label_ids));
     thread.labels = thread
         .label_ids
         .iter()
@@ -512,7 +510,7 @@ pub fn modify_thread(thread: &mut Thread, add: &[String], remove: &[String]) {
     thread.unread = has(gmail::UNREAD);
     thread.starred = has(gmail::STARRED);
     if moves && thread.folder != Folder::Drafts {
-        thread.folder = gmail::derive_folder(&labels);
+        thread.folder = gmail::derive_folder(&thread.messages, me);
     }
 }
 

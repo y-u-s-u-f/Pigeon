@@ -214,7 +214,7 @@ pub enum BackendEvent {
     | `TRASH` | Trash |
     | `SPAM` | Spam |
     | `INBOX` | Inbox |
-    | only `SENT` messages | Sent |
+    | only `SENT` messages, none to the user's own addresses | Sent |
     | anything else | Archive |
 
   - Drafts are not folders of conversations. Each Gmail draft is its own one-message `Thread` with `folder = Drafts`, as today. A reply draft keeps `origin.reply_to` = its `threadId`.

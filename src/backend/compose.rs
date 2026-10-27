@@ -26,7 +26,7 @@ use super::{
     outbox::UserPriority,
     store::Store,
 };
-use crate::data::{Body, DraftOrigin, Folder, Thread};
+use crate::data::{Account, Body, DraftOrigin, Folder, Thread};
 
 /// Whether `commit_compose` takes the op.
 pub fn handles(op: &MailOp) -> bool {
@@ -305,7 +305,7 @@ fn send(
         Some(mut thread) => {
             thread.messages.retain(|m| m.id != message.id);
             thread.messages.push(message);
-            rederive(&mut thread);
+            rederive(&mut thread, &store.me(account));
             thread
         }
         None => {
@@ -316,7 +316,7 @@ fn send(
                 vec![message],
                 None,
             );
-            rederive(&mut thread);
+            rederive(&mut thread, &store.me(account));
             thread
         }
     };
@@ -332,14 +332,9 @@ fn send(
 }
 
 /// Folder, flags and labels from the messages' labels, as sync derives them.
-fn rederive(thread: &mut Thread) {
-    let labels: Vec<Vec<String>> = thread
-        .messages
-        .iter()
-        .map(|m| m.label_ids.clone())
-        .collect();
-    thread.folder = gmail::derive_folder(&labels);
-    thread.label_ids = gmail::union_labels(&labels);
+fn rederive(thread: &mut Thread, me: &Account) {
+    thread.folder = gmail::derive_folder(&thread.messages, me);
+    thread.label_ids = gmail::union_labels(thread.messages.iter().map(|m| &m.label_ids));
     thread.unread = thread.label_ids.iter().any(|l| l == gmail::UNREAD);
     thread.starred = thread.label_ids.iter().any(|l| l == gmail::STARRED);
     thread.labels = thread

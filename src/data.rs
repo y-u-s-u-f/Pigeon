@@ -606,6 +606,18 @@ impl Thread {
     pub fn is_hidden(&self) -> bool {
         matches!(self.folder, Folder::Spam | Folder::Trash)
     }
+
+    /// In the Sent view: every conversation holding a message the user
+    /// sent, like Gmail, so a thread can show in Sent and Archive both.
+    pub fn in_sent(&self) -> bool {
+        self.folder == Folder::Sent
+            || (!self.is_hidden()
+                && self.folder != Folder::Drafts
+                && self
+                    .messages
+                    .iter()
+                    .any(|m| m.label_ids.iter().any(|l| l == crate::backend::gmail::SENT)))
+    }
 }
 
 impl Contact {

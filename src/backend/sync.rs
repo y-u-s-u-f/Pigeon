@@ -25,7 +25,7 @@ use super::{
     gmail::{self, Gmail, GmailError},
     http::Transport,
     mime,
-    store::Store,
+    store::{ALIASES_KEY, Store},
 };
 use crate::data::{Body, Folder, Thread};
 
@@ -33,7 +33,6 @@ use crate::data::{Body, Folder, Thread};
 const HISTORY_KEY: &str = "gmail_history_id";
 /// The history id taken at the start of a full sync, kept until it ends.
 const FULL_START_KEY: &str = "gmail_full_h0";
-const ALIASES_KEY: &str = "gmail_aliases";
 pub(super) const LAST_SYNC_KEY: &str = "last_sync";
 
 const POLL_ACTIVE: Duration = Duration::from_secs(45);
@@ -323,12 +322,13 @@ impl MailSync {
         let mut removed = Vec::new();
         let mut failed = Vec::new();
         let mut error = None;
+        let me = self.store.me(&self.account);
         for (id, result) in ids
             .iter()
             .zip(self.gmail.batch::<gmail::GThread>(&requests))
         {
             match result {
-                Ok(t) => match gmail::thread_from_gmail(&t) {
+                Ok(t) => match gmail::thread_from_gmail(&t, &me) {
                     Some(thread) => threads.push(thread),
                     // Only drafts left: no conversation.
                     None => removed.push(id.clone()),
@@ -1055,7 +1055,10 @@ mod tests {
         ))
         .unwrap();
         sync.store
-            .put_synced_threads(ACCOUNT, vec![gmail::thread_from_gmail(&t).unwrap()])
+            .put_synced_threads(
+                ACCOUNT,
+                vec![gmail::thread_from_gmail(&t, &Default::default()).unwrap()],
+            )
             .unwrap();
         let outcome = sync.list(ListKind::Label(gmail::INBOX, 100), None, 0);
         assert_eq!(outcome.queued, 1);
@@ -1174,7 +1177,10 @@ mod tests {
         let (sync, fake) =
             sync_batches(FakeTransport::new().on("POST", BATCH, &[], &[(200, &body)]));
         sync.store
-            .put_synced_threads(ACCOUNT, vec![gmail::thread_from_gmail(&t).unwrap()])
+            .put_synced_threads(
+                ACCOUNT,
+                vec![gmail::thread_from_gmail(&t, &Default::default()).unwrap()],
+            )
             .unwrap();
         let failed = sync.fetch_bodies("thread-a1", &["msg-a1".into(), "msg-a2".into()]);
         assert_eq!(
@@ -1190,7 +1196,10 @@ mod tests {
         assert_eq!(stored.loaded, crate::data::Loaded::Metadata);
         // A later metadata refetch keeps the body.
         sync.store
-            .put_synced_threads(ACCOUNT, vec![gmail::thread_from_gmail(&t).unwrap()])
+            .put_synced_threads(
+                ACCOUNT,
+                vec![gmail::thread_from_gmail(&t, &Default::default()).unwrap()],
+            )
             .unwrap();
         let stored = &sync.store.load_all_threads(ACCOUNT).unwrap()[0];
         let m = stored.messages.iter().find(|m| m.id == "msg-a1").unwrap();

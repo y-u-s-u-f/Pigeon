@@ -7,7 +7,7 @@ use chrono::{DateTime, FixedOffset, Local, TimeZone as _};
 use serde::Deserialize;
 
 use super::http::{self, Clock, Request, Response, SystemClock, Transport, TransportError};
-use crate::data::{Body, Contact, DraftOrigin, Folder, Label, Loaded, Message, Thread};
+use crate::data::{Account, Body, Contact, DraftOrigin, Folder, Label, Loaded, Message, Thread};
 
 pub const INBOX: &str = "INBOX";
 pub const SPAM: &str = "SPAM";
@@ -31,24 +31,37 @@ pub fn is_system_label(id: &str) -> bool {
         || id.ends_with("_STAR")
 }
 
-/// A thread's folder from its messages' labels (drafts left out), first
-/// match wins: any TRASH, any SPAM, any INBOX, only SENT messages, else
-/// Archive.
-pub fn derive_folder(message_labels: &[Vec<String>]) -> Folder {
-    let any = |label: &str| message_labels.iter().any(|m| m.iter().any(|l| l == label));
+/// A thread's folder from its messages (drafts left out), first match
+/// wins: any TRASH, any SPAM, any INBOX; Sent when the user only sent mail
+/// to others in it; else Archive, like Gmail's "All Mail minus Inbox".
+pub fn derive_folder(messages: &[Message], me: &Account) -> Folder {
+    let any = |label: &str| {
+        messages
+            .iter()
+            .any(|m| m.label_ids.iter().any(|l| l == label))
+    };
     if any(TRASH) {
         Folder::Trash
     } else if any(SPAM) {
         Folder::Spam
     } else if any(INBOX) {
         Folder::Inbox
-    } else if !message_labels.is_empty()
-        && message_labels.iter().all(|m| m.iter().any(|l| l == SENT))
-    {
+    } else if !messages.is_empty() && !messages.iter().any(|m| received(m, me)) {
         Folder::Sent
     } else {
         Folder::Archive
     }
+}
+
+/// The user received the message: someone else sent it, or they sent it
+/// to one of their own addresses.
+fn received(message: &Message, me: &Account) -> bool {
+    !message.label_ids.iter().any(|l| l == SENT)
+        || message
+            .to
+            .iter()
+            .chain(&message.cc)
+            .any(|c| me.is_me(&c.email))
 }
 
 /// A thread's labels: the union over its messages, in first-seen order.
@@ -813,10 +826,11 @@ pub fn list_and_store(
         .map(|t| t.id.clone())
         .collect();
     let requests: Vec<Request> = wanted.iter().map(|id| thread_get_request(id)).collect();
+    let me = store.me(account);
     let mut threads = Vec::new();
     for result in gmail.batch::<GThread>(&requests) {
         match result {
-            Ok(t) => threads.extend(thread_from_gmail(&t)),
+            Ok(t) => threads.extend(thread_from_gmail(&t, &me)),
             Err(e) if e.is_network() => return Err(e),
             // Gone since it was listed, or one bad answer: the rest count.
             Err(_) => {}
@@ -995,7 +1009,7 @@ pub fn message_from_gmail(m: &GMessage) -> (Message, String) {
 
 /// A conversation from `threads.get format=metadata`, drafts left out
 /// (they're their own Drafts threads). `None` when only drafts are left.
-pub fn thread_from_gmail(t: &GThread) -> Option<Thread> {
+pub fn thread_from_gmail(t: &GThread, me: &Account) -> Option<Thread> {
     let mut parsed: Vec<(Message, String)> = t
         .messages
         .iter()
@@ -1013,13 +1027,12 @@ pub fn thread_from_gmail(t: &GThread) -> Option<Thread> {
         .find(|s| !s.is_empty())
         .unwrap_or_default();
     let messages: Vec<Message> = parsed.into_iter().map(|(m, _)| m).collect();
-    let message_labels: Vec<Vec<String>> = messages.iter().map(|m| m.label_ids.clone()).collect();
-    let label_ids = union_labels(&message_labels);
+    let label_ids = union_labels(messages.iter().map(|m| &m.label_ids));
     let has = |label: &str| label_ids.iter().any(|l| l == label);
     let mut thread = Thread {
         id: t.id.clone(),
         subject,
-        folder: derive_folder(&message_labels),
+        folder: derive_folder(&messages, me),
         labels: label_ids
             .iter()
             .filter(|l| !is_system_label(l))
@@ -1109,28 +1122,86 @@ mod tests {
     use super::*;
     use crate::backend::http::FakeTransport;
 
-    fn labels(messages: &[&[&str]]) -> Vec<Vec<String>> {
-        messages
-            .iter()
-            .map(|m| m.iter().map(|l| l.to_string()).collect())
-            .collect()
+    fn me() -> Account {
+        Account {
+            email: "me@x.com".into(),
+            aliases: vec!["alias@x.com".into()],
+            ..Default::default()
+        }
     }
+
+    /// A message with these labels, from `me@x.com` when SENT, to `to`.
+    fn message(labels: &[&str], to: &str) -> Message {
+        let sent = labels.contains(&SENT);
+        let contact = |email: &str| Contact {
+            name: String::new(),
+            email: email.into(),
+        };
+        Message {
+            label_ids: labels.iter().map(|l| l.to_string()).collect(),
+            to: vec![contact(to)],
+            ..Message::new(contact(if sent { "me@x.com" } else { "ann@x.com" }))
+        }
+    }
+
+    /// A message's labels and its To.
+    type Spec<'a> = (&'a [&'a str], &'a str);
 
     #[test]
     fn derive_folder_table() {
-        let cases: &[(&[&[&str]], Folder)] = &[
-            (&[&["INBOX", "TRASH"]], Folder::Trash),
-            (&[&["SPAM"], &["INBOX"]], Folder::Spam),
-            (&[&["TRASH"], &["SPAM"]], Folder::Trash),
-            (&[&["SENT"], &["INBOX", "UNREAD"]], Folder::Inbox),
-            (&[&["SENT"], &["SENT", "STARRED"]], Folder::Sent),
-            (&[&["SENT"], &["work"]], Folder::Archive),
-            (&[&["work", "UNREAD"]], Folder::Archive),
+        let cases: &[(&[Spec], Folder)] = &[
+            (&[(&["INBOX", "TRASH"], "me@x.com")], Folder::Trash),
+            (
+                &[(&["SPAM"], "me@x.com"), (&["INBOX"], "me@x.com")],
+                Folder::Spam,
+            ),
+            (
+                &[(&["TRASH"], "me@x.com"), (&["SPAM"], "me@x.com")],
+                Folder::Trash,
+            ),
+            (
+                &[(&["SENT"], "ann@x.com"), (&["INBOX", "UNREAD"], "me@x.com")],
+                Folder::Inbox,
+            ),
+            // Sent only to others.
+            (
+                &[(&["SENT"], "ann@x.com"), (&["SENT", "STARRED"], "bo@x.com")],
+                Folder::Sent,
+            ),
+            // Sent to others, a reply received and archived.
+            (
+                &[(&["SENT"], "ann@x.com"), (&["work"], "me@x.com")],
+                Folder::Archive,
+            ),
+            // Received and archived.
+            (&[(&["work", "UNREAD"], "me@x.com")], Folder::Archive),
+            // Sent to themselves, then archived: Gmail keeps only SENT.
+            (&[(&["SENT", "UNREAD"], "me@x.com")], Folder::Archive),
+            (&[(&["SENT"], "ME@x.com")], Folder::Archive),
+            // To an alias.
+            (&[(&["SENT"], "alias@x.com")], Folder::Archive),
+            // Sent to themselves, still in the Inbox.
+            (&[(&["SENT", "INBOX"], "me@x.com")], Folder::Inbox),
             (&[], Folder::Archive),
         ];
         for (messages, folder) in cases {
-            assert_eq!(derive_folder(&labels(messages)), *folder, "{messages:?}");
+            let messages: Vec<Message> = messages.iter().map(|(l, to)| message(l, to)).collect();
+            assert_eq!(derive_folder(&messages, &me()), *folder, "{messages:?}");
         }
+    }
+
+    #[test]
+    fn self_mail_in_cc_counts_as_received() {
+        let mut m = message(&["SENT"], "ann@x.com");
+        assert_eq!(derive_folder(std::slice::from_ref(&m), &me()), Folder::Sent);
+        m.cc =
+            m.to.iter()
+                .map(|c| Contact {
+                    email: "alias@x.com".into(),
+                    ..c.clone()
+                })
+                .collect();
+        assert_eq!(derive_folder(&[m], &me()), Folder::Archive);
     }
 
     #[test]
@@ -1148,7 +1219,7 @@ mod tests {
             "../../tests/fixtures/google/gmail/thread_metadata.json"
         ))
         .unwrap();
-        let thread = thread_from_gmail(&t).unwrap();
+        let thread = thread_from_gmail(&t, &Default::default()).unwrap();
         assert_eq!(thread.id, "thread-a1");
         assert_eq!(thread.history_id, Some(1052));
         assert_eq!(thread.subject, "Lunch on Friday?");
@@ -1188,7 +1259,7 @@ mod tests {
                 ..Default::default()
             }],
         };
-        assert!(thread_from_gmail(&t).is_none());
+        assert!(thread_from_gmail(&t, &Default::default()).is_none());
     }
 
     #[test]
@@ -1341,7 +1412,10 @@ mod tests {
         ))
         .unwrap();
         store
-            .put_synced_threads("me@example.com", vec![thread_from_gmail(&t).unwrap()])
+            .put_synced_threads(
+                "me@example.com",
+                vec![thread_from_gmail(&t, &Default::default()).unwrap()],
+            )
             .unwrap();
         store
     }

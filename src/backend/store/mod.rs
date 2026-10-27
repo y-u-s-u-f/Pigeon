@@ -22,6 +22,9 @@ use rusqlite::{Connection, OptionalExtension as _, params};
 
 const SCHEMA: &str = include_str!("schema.sql");
 
+/// The sync state key of the account's aliases (Gmail's `sendAs`), as JSON.
+pub const ALIASES_KEY: &str = "gmail_aliases";
+
 #[derive(Clone)]
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
@@ -112,6 +115,22 @@ impl Store {
             params![account, key, value],
         )?;
         Ok(())
+    }
+
+    /// The account's addresses: its own and its aliases as last synced, to
+    /// tell mail the user received from mail they sent (`derive_folder`).
+    pub fn me(&self, account: &str) -> crate::data::Account {
+        let aliases = self
+            .sync_state(account, ALIASES_KEY)
+            .ok()
+            .flatten()
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default();
+        crate::data::Account {
+            email: account.to_string(),
+            aliases,
+            ..Default::default()
+        }
     }
 
     /// Everything stored for `account`: signing out.

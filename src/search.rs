@@ -132,6 +132,7 @@ impl Query {
 
     pub fn in_scope(scope: Scope, thread: &Thread) -> bool {
         match scope {
+            Scope::Folder(Folder::Sent) => thread.in_sent(),
             Scope::Folder(folder) => thread.folder == folder,
             Scope::All => !thread.is_hidden(),
             Scope::Anywhere => true,

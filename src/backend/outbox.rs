@@ -22,7 +22,7 @@ use super::{
     http::{GoogleTransport, Request, Response, Transport, TransportError},
     store::{Store, modify_thread},
 };
-use crate::data::Thread;
+use crate::data::{Account, Thread};
 
 /// How long an op that couldn't reach Google waits before it goes again.
 pub const RETRY_LATER_MS: i64 = 15_000;
@@ -200,9 +200,10 @@ impl Outbox {
         let Ok(rows) = self.store.outbox_pending(&self.account) else {
             return;
         };
+        let me = self.store.me(&self.account);
         for row in rows {
             if let Ok(Op::Mail(op)) = serde_json::from_str::<Op>(&row.payload) {
-                apply(&op, threads);
+                apply(&op, threads, &me);
             }
         }
     }
@@ -280,12 +281,12 @@ fn label_change(op: &MailOp) -> Option<(&[String], Vec<String>, Vec<String>)> {
 }
 
 /// Apply a thread op to threads in memory, as Gmail will.
-fn apply(op: &MailOp, threads: &mut [Thread]) {
+fn apply(op: &MailOp, threads: &mut [Thread], me: &Account) {
     let Some((ids, add, remove)) = label_change(op) else {
         return;
     };
     for thread in threads.iter_mut().filter(|t| ids.contains(&t.id)) {
-        modify_thread(thread, &add, &remove);
+        modify_thread(thread, &add, &remove, me);
     }
 }
 
@@ -386,11 +387,12 @@ fn refetch(
     ids: &[String],
 ) -> (Vec<String>, Vec<String>) {
     let requests: Vec<Request> = ids.iter().map(|id| gmail::thread_get_request(id)).collect();
+    let me = store.me(account);
     let mut fresh = Vec::new();
     let mut removed = Vec::new();
     for (id, result) in ids.iter().zip(gmail.batch::<gmail::GThread>(&requests)) {
         match result {
-            Ok(t) => match gmail::thread_from_gmail(&t) {
+            Ok(t) => match gmail::thread_from_gmail(&t, &me) {
                 Some(thread) => fresh.push(thread),
                 None => removed.push(id.clone()),
             },
@@ -851,6 +853,74 @@ mod tests {
         let mut threads = store.load_all_threads(ACCOUNT).unwrap();
         outbox.overlay(&mut threads);
         assert_eq!(of(&threads, "t"), Folder::Inbox);
+    }
+
+    #[test]
+    fn archived_self_mail_lands_in_archive_and_sent() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .set_sync_state(
+                ACCOUNT,
+                crate::backend::store::ALIASES_KEY,
+                r#"["alias@example.com"]"#,
+            )
+            .unwrap();
+        let me = |email: &str| crate::data::Contact {
+            name: String::new(),
+            email: email.into(),
+        };
+        // To themselves, to an alias, and only to someone else.
+        let threads: Vec<Thread> = [
+            ("self", ACCOUNT),
+            ("alias", "alias@example.com"),
+            ("other", "ann@x.com"),
+        ]
+        .into_iter()
+        .map(|(id, to)| {
+            let mut thread = Thread::local(
+                id.into(),
+                id.into(),
+                Folder::Inbox,
+                vec![Message {
+                    id: format!("m-{id}"),
+                    label_ids: s(&[gmail::SENT, gmail::INBOX]),
+                    to: vec![me(to)],
+                    ..Message::new(me(ACCOUNT))
+                }],
+                None,
+            );
+            thread.label_ids = s(&[gmail::SENT, gmail::INBOX]);
+            thread
+        })
+        .collect();
+        store.put_threads(ACCOUNT, &threads).unwrap();
+        let ids = s(&["self", "alias", "other"]);
+
+        // Waiting out the undo window: the overlay already has it archived.
+        let outbox = Outbox::new(store.clone(), ACCOUNT.into());
+        let ops = MailOp::moves(ids.clone(), Folder::Inbox, Folder::Archive);
+        outbox.push(Op::Mail(ops[0].clone()), 5_000, 0).unwrap();
+        let mut overlaid = store.load_all_threads(ACCOUNT).unwrap();
+        outbox.overlay(&mut overlaid);
+        let of = |threads: &[Thread], id: &str| threads.iter().find(|t| t.id == id).unwrap().folder;
+        assert_eq!(of(&overlaid, "self"), Folder::Archive);
+        assert_eq!(of(&overlaid, "alias"), Folder::Archive);
+        assert_eq!(of(&overlaid, "other"), Folder::Sent);
+
+        // Committed to the store.
+        store.apply_mail_op(ACCOUNT, &ops[0]).unwrap();
+        assert_eq!(folder(&store, "self"), Folder::Archive);
+        assert_eq!(folder(&store, "alias"), Folder::Archive);
+        assert_eq!(folder(&store, "other"), Folder::Sent);
+        let threads = store.load_all_threads(ACCOUNT).unwrap();
+        assert!(threads.iter().all(Thread::in_sent));
+
+        // Back to the Inbox (Undo past the window, or Move to Inbox).
+        for op in MailOp::moves(ids, Folder::Archive, Folder::Inbox) {
+            store.apply_mail_op(ACCOUNT, &op).unwrap();
+        }
+        assert_eq!(folder(&store, "self"), Folder::Inbox);
+        assert_eq!(folder(&store, "alias"), Folder::Inbox);
     }
 
     #[test]
