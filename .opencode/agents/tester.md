@@ -23,7 +23,7 @@ Temp dir (call it `$TMP`): `/private/var/folders/sc/26v_9jsx0s9_fkjttv6jzjdh0000
 
 ## Setup
 
-1. Load the `cua-driver` skill first and follow it. Drive the app with the `cua-driver` CLI (`/opt/homebrew/bin/cua-driver`) through the shell; that is the default path in the skill. Don't stop if Cua isn't exposed through `execute`.
+1. Load the `cua-driver` skill first and follow it. Use the already-running Cua Driver daemon (check with `cua-driver status`). If none runs, start it ONLY with `open -n -g -a CuaDriver --args serve` (so macOS attributes it to CuaDriver.app, which has Screen Recording). Never start `cua-driver serve` yourself and never stop the daemon: a daemon started from the shell has no screenshot permission. Drive the app with the `cua-driver` CLI (`/opt/homebrew/bin/cua-driver`) through the shell; that is the default path in the skill. Don't stop if Cua isn't exposed through `execute`.
 2. Build into your own target dir so you do not collide with other agents:
    `CARGO_TARGET_DIR=$TMP/target-test cargo build --release`
 3. Sign it so the Keychain trusts it: `codesign -f -s "Pigeon Dev" --identifier com.pigeon.dev $TMP/target-test/release/pigeon` (or build+sign+run with `scripts/run.sh`, which honours `CARGO_TARGET_DIR`). Then launch that binary in the background. Record its pid and find its window id with Cua. Write both down; every action below is scoped to them.
