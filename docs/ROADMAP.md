@@ -60,10 +60,11 @@ Principles are in [`AGENTS.md`](../AGENTS.md): blazing fast and light (no webvie
 
 **Current phase: linked to Google; demo mode on placeholder data.** Backend sprint 1 ([`BACKEND_SPRINT_1.md`](BACKEND_SPRINT_1.md)) is done: sign-in, Gmail read and write, compose and drafts, Calendar read and write, contacts, search and paging, invites, remote images, offline queueing and status are merged and tested on the real account. Items still 🟡 wait on checks only the user can do (sign-in flow, attaching a file, invites from a second address) or on rare server errors. `PIGEON_DEMO=1` runs on the placeholder data.
 
-- Mail comes from `assets/mailbox.json`, loaded once by `MailData::load()` (`src/data.rs`). Calendar comes from `assets/calendar.json`, loaded by `CalendarData::load()` (`src/calendar/mod.rs`). Both are called from `main()`.
-- There is no network, sync, sending or storage code in `src/`.
-- Mail changes apply in memory to `PigeonApp::data` (`src/app.rs`); calendar changes to `CalendarView::data` (`src/ui/calendar/mod.rs`). Nothing is saved: quitting loses everything, drafts and sent messages included.
-- There is one account, from the `account` object in the JSON.
+**In progress: backend sprint 2, "Pigeon as a daily driver"** ([`BACKEND_SPRINT_2.md`](BACKEND_SPRINT_2.md)): staying open with a menu bar panel, notifications and a Dock badge; attachments; Gmail categories; labels; aliases and signatures; repeat rules, reminders and Meet in the calendar.
+
+- Data lives in a local SQLite cache (`src/backend/store/`), synced with Gmail, Calendar and People by polling (`src/backend/sync.rs`). Writes go through the outbox (`src/backend/outbox.rs`) with undo and rollback.
+- Demo mode seeds an in-memory store from `assets/mailbox.json` and `assets/calendar.json`; its changes are not sent anywhere.
+- There is one account.
 
 **Reading the entries.** Each area has a table (ID, feature, status, Google API), then one entry per ID: **Today** (how it works now, with file and function), **Needs** (what the backend must provide) and **Notes** (edge cases). Gmail methods are written without the `users.` prefix (`threads.modify` is `users.threads.modify`). IMAP/SMTP equivalents are kept where useful, as Gmail also speaks IMAP with XOAUTH2.
 
