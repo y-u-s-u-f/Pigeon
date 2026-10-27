@@ -49,7 +49,7 @@ pub fn ago(at_ms: i64, now_ms: i64) -> String {
     }
 }
 
-fn thousands(n: usize) -> String {
+pub(crate) fn thousands(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (ix, c) in digits.chars().enumerate() {

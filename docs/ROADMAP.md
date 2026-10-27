@@ -620,7 +620,7 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 #### SRC-4 Scope operator `in:`
 
-- **Today:** `in:inbox`, `in:archive(d)`, `in:sent`, `in:draft(s)`, `in:spam`, `in:trash`, `in:anywhere`, `in:all`, `in:starred`, `in:<label>`. `Scope` (`src/search.rs`). `in:all` = everything but Spam and Trash; `in:anywhere` = everything.
+- **Today:** `in:inbox`, `in:archive(d)`, `in:sent`, `in:draft(s)`, `in:spam`, `in:trash`, `in:anywhere`, `in:all`, `in:starred`, `in:<label>`. `Scope` (`src/search.rs`). `in:all` = everything but Spam and Trash; `in:anywhere` = everything. A thread is in scope the way Gmail finds it (`Query::in_scope`): `in:sent` = any message the user sent (`Thread::in_sent`, so self-sent mail in the Inbox counts), `in:archive` = in no folder (sent-only conversations too); labels and stars match the thread's own, so Gmail's results aren't dropped for having one other derived folder.
 - **Needs:** A tester pass (T3a).
 - **Notes:** W9: `in:all` → no restriction (Gmail leaves out Spam and Trash), `in:anywhere` → `includeSpamTrash=true`, `in:archive` → `-in:inbox -in:spam -in:trash -in:drafts`, `in:inbox/sent/spam/trash` → their `labelIds`, `in:starred` → `is:starred`, `in:drafts` → local only.
 
@@ -632,7 +632,7 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 #### SRC-6 Result count
 
-- **Today:** "N results in <scope>" from the thread rows. W9: "About N results" when Gmail's `resultSizeEstimate` is larger than what's shown (`render_search_summary()`).
+- **Today:** "N results in <scope>" from the thread rows. W9: while Gmail has another page, the count is approximate: "About N results" when Gmail's `resultSizeEstimate` is larger than what's shown, else "N+ results"; exact once every page is in (`result_count()` in `src/ui/thread_list.rs`).
 - **Needs:** A tester pass (T3a).
 - **Notes:** Gmail's estimate is rough (often 201 for anything past a page).
 

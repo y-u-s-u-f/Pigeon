@@ -225,7 +225,11 @@ impl PigeonApp {
             .count();
         // W9: Gmail's estimate, when it knows of more (SRC-6), and how its
         // half of the search is going (SRC-7).
-        let estimate = self.server_search.estimate.filter(|&n| n > count);
+        let counted = result_count(
+            count,
+            self.server_search.estimate,
+            self.server_search.has_more(),
+        );
         let note = match self.server_search.state {
             ServerState::Waiting => Some("Searching Gmail…"),
             ServerState::Offline => Some("Offline: downloaded mail only"),
@@ -259,14 +263,7 @@ impl PigeonApp {
                 div()
                     .ml(SPACE_2XS)
                     .font_features(tabular_figures())
-                    .child(match estimate {
-                        Some(n) => format!("About {n} results {}", self.search_scope_text()),
-                        None => format!(
-                            "{count} result{} {}",
-                            if count == 1 { "" } else { "s" },
-                            self.search_scope_text()
-                        ),
-                    }),
+                    .child(format!("{counted} {}", self.search_scope_text())),
             )
             .children(note.map(|note| {
                 div()
@@ -1130,4 +1127,36 @@ fn render_skeleton(theme: &Theme) -> AnyElement {
             |this, delta| this.opacity(delta),
         )
         .into_any_element()
+}
+
+/// "12 results", or approximate while Gmail has more pages (SRC-6): its
+/// estimate when larger, else "12+ results". Exact once everything is in.
+fn result_count(count: usize, estimate: Option<usize>, more: bool) -> String {
+    use super::status::thousands;
+    match estimate.filter(|&n| n > count) {
+        Some(n) if more => format!("About {} results", thousands(n)),
+        _ if more => format!("{}+ results", thousands(count)),
+        _ => format!(
+            "{} result{}",
+            thousands(count),
+            if count == 1 { "" } else { "s" }
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::result_count;
+
+    #[test]
+    fn result_count_is_approximate_while_gmail_has_more() {
+        assert_eq!(result_count(1, None, false), "1 result");
+        assert_eq!(result_count(1124, Some(1124), false), "1,124 results");
+        assert_eq!(result_count(1124, Some(1200), true), "About 1,200 results");
+        assert_eq!(result_count(1124, Some(1000), true), "1,124+ results");
+        assert_eq!(result_count(1124, None, true), "1,124+ results");
+        // Everything in: exact, whatever the estimate said.
+        assert_eq!(result_count(30, Some(41), false), "30 results");
+        assert_eq!(result_count(0, None, false), "0 results");
+    }
 }

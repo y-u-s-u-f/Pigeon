@@ -130,9 +130,16 @@ impl Query {
         self.terms.is_empty() && self.scope.is_none()
     }
 
+    /// The thread is where `scope` looks, the way Gmail's half of the search
+    /// (`GmailQuery::folder`) finds it: Sent by any message the user sent,
+    /// Archive by being in no folder, so a sent-only conversation counts.
+    /// Labels and stars are terms, matched on the thread's own.
     pub fn in_scope(scope: Scope, thread: &Thread) -> bool {
         match scope {
             Scope::Folder(Folder::Sent) => thread.in_sent(),
+            Scope::Folder(Folder::Archive) => {
+                matches!(thread.folder, Folder::Archive | Folder::Sent)
+            }
             Scope::Folder(folder) => thread.folder == folder,
             Scope::All => !thread.is_hidden(),
             Scope::Anywhere => true,
@@ -650,5 +657,72 @@ mod tests {
         // Nothing found by Gmail: the local matches alone.
         search.ask(None);
         assert_eq!(search.merge(&threads, |_| true, |t| t.id == "c"), [2]);
+    }
+
+    /// Gmail found every thread; each scope keeps the ones it holds by their
+    /// labels and messages, not only by their one folder.
+    #[test]
+    fn gmail_results_kept_by_scope() {
+        use crate::data::Message;
+        let msg = |labels: &[&str]| {
+            let mut m = Message::new(Default::default());
+            m.label_ids = labels.iter().map(|l| l.to_string()).collect();
+            m
+        };
+        let thread = |id: &str, folder, messages| {
+            Thread::local(id.into(), id.into(), folder, messages, None)
+        };
+        let mut starred = thread("starred", Folder::Inbox, vec![msg(&["INBOX", "STARRED"])]);
+        starred.starred = true;
+        let mut labelled = thread("labelled", Folder::Archive, vec![msg(&["Label_1"])]);
+        labelled.labels = vec!["Label_1".into()];
+        let threads = [
+            // Sent to myself: SENT and INBOX on one message.
+            thread("self", Folder::Inbox, vec![msg(&["SENT", "INBOX"])]),
+            // A reply I sent, archived.
+            thread("reply", Folder::Archive, vec![msg(&[]), msg(&["SENT"])]),
+            // Sent only to others.
+            thread("sent", Folder::Sent, vec![msg(&["SENT"])]),
+            thread("inbox", Folder::Inbox, vec![msg(&["INBOX"])]),
+            starred,
+            labelled,
+            thread("trash", Folder::Trash, vec![msg(&["SENT", "TRASH"])]),
+        ];
+        let ids: Vec<&str> = threads.iter().map(|t| t.id.as_str()).collect();
+        let mut search = ServerSearch::default();
+        let s = search.ask(Some(just_q("q"))).unwrap();
+        assert!(search.answer(s, found(&ids, ids.len(), None)));
+        let data = MailData {
+            account: Default::default(),
+            labels: vec![label("Label_1", "Pigeon Test")],
+            threads: Vec::new(),
+        };
+        let shown = |search: &ServerSearch, input: &str| -> Vec<&str> {
+            let query = Query::parse(input);
+            let scope = query.scope.unwrap();
+            search
+                .merge(
+                    &threads,
+                    |t| Query::in_scope(scope, t),
+                    |t| query.matches(t, &data),
+                )
+                .into_iter()
+                .map(|ix| threads[ix].id.as_str())
+                .collect()
+        };
+        assert_eq!(shown(&search, "in:sent"), ["self", "reply", "sent"]);
+        assert_eq!(shown(&search, "in:inbox"), ["self", "inbox", "starred"]);
+        assert_eq!(shown(&search, "in:archive"), ["reply", "sent", "labelled"]);
+        assert_eq!(shown(&search, "in:trash"), ["trash"]);
+        // Labels and stars are terms; Gmail's word on them stands, outside
+        // spam and trash.
+        assert_eq!(shown(&search, "in:all is:starred").len(), 6);
+        assert_eq!(shown(&search, "label:x in:all").len(), 6);
+        // Locally, without Gmail's answer.
+        search.ask(None);
+        assert_eq!(shown(&search, "is:starred in:all"), ["starred"]);
+        assert_eq!(shown(&search, "in:label_1"), ["labelled"]);
+        assert_eq!(shown(&search, "in:sent"), ["self", "reply", "sent"]);
+        assert_eq!(shown(&search, "in:archive"), ["reply", "sent", "labelled"]);
     }
 }
