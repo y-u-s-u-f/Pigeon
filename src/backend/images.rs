@@ -2,14 +2,14 @@
 //! a plain HTTPS GET with no cookies, no referer and no credentials, image
 //! types only, at most 10 MB each, cached in the store's `images` table.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail};
 use gpui::{Context, Task};
 
 use super::{
     Backend,
-    http::{Request, Response, Transport, TransportError},
+    http::{Request, Response, Transport, TransportError, log_line},
     now_ms,
     store::{IMAGE_CACHE_CAP, Store},
 };
@@ -53,6 +53,7 @@ impl Default for ImageTransport {
 
 impl Transport for ImageTransport {
     fn send(&self, request: &Request) -> Result<Response, TransportError> {
+        let started = Instant::now();
         let run = || -> Result<Response, ureq::Error> {
             let mut builder = ureq::http::Request::builder().uri(&request.url);
             for (name, value) in &request.headers {
@@ -76,7 +77,13 @@ impl Transport for ImageTransport {
                 body,
             })
         };
-        run().map_err(|e| TransportError::Network(e.to_string()))
+        let result = run();
+        let status = result.as_ref().ok().map(|r| r.status);
+        eprintln!(
+            "Pigeon: {}",
+            log_line(request.method, &request.url, status, started.elapsed())
+        );
+        result.map_err(|e| TransportError::Network(e.to_string()))
     }
 }
 
@@ -284,6 +291,18 @@ mod tests {
         let image = fetch_image(&fake, &store, "http://cdn.example.com/b.png").unwrap();
         assert_eq!((image.width, image.height), (4, 3));
         assert_eq!(fake.requests().len(), 1);
+    }
+
+    #[test]
+    fn image_log_lines_hide_the_query() {
+        let line = log_line(
+            "GET",
+            "https://cdn.example.com/open.gif?u=me@example.com&t=abc#x",
+            Some(200),
+            Duration::from_millis(42),
+        );
+        assert_eq!(line, "GET cdn.example.com/open.gif?… 200 42ms");
+        assert!(!line.contains("me@example.com"));
     }
 
     #[test]

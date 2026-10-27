@@ -201,6 +201,18 @@ impl PigeonApp {
         }
     }
 
+    /// Sign Out from ⌘K or the menu (ACC-7): Settings › Accounts with the
+    /// confirmation showing, as its own button asks.
+    pub(crate) fn ask_sign_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.settings_page.open {
+            self.close_overlays(window, cx);
+            self.settings_page.open = true;
+        }
+        self.jump_to_setting(Entry::Setting(SettingId::SignOut), window, cx);
+        self.settings_page.confirm_sign_out = true;
+        cx.notify();
+    }
+
     pub(crate) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.settings_page.open = false;
         self.clear_settings_search(window, cx);
@@ -414,8 +426,10 @@ impl PigeonApp {
                     self.settings_page.confirm_sign_out = false;
                     if google {
                         self.close_settings(window, cx);
+                        self.backend.update(cx, |b, cx| b.sign_out(cx));
+                    } else {
+                        window.dispatch_action(Box::new(SignOut), cx);
                     }
-                    window.dispatch_action(Box::new(SignOut), cx);
                 }
             }
             _ => {}

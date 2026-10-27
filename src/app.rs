@@ -736,7 +736,10 @@ impl PigeonApp {
         }
     }
 
-    fn sign_out(&mut self, _: &SignOut, _: &mut Window, cx: &mut Context<Self>) {
+    fn sign_out(&mut self, _: &SignOut, window: &mut Window, cx: &mut Context<Self>) {
+        if self.backend.read(cx).source() == Source::Google {
+            return self.ask_sign_out(window, cx);
+        }
         let demo = self.backend.read(cx).is_demo();
         self.backend.update(cx, |b, cx| b.sign_out(cx));
         if demo {

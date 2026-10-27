@@ -420,7 +420,7 @@ impl PigeonApp {
         });
         let folds = has_card && body.blocks.iter().any(super::invite::is_invite_summary);
         let show_all = !folds || self.invite_details_open;
-        let images_bar = self.message_images(message, &body, cx);
+        let images = self.message_images(message, &body, cx);
 
         let attachments = message
             .attachments
@@ -569,14 +569,18 @@ impl PigeonApp {
                             .as_ref()
                             .map(|invite| self.render_invite(invite, theme, cx)),
                     )
-                    .when_some(images_bar, |this, hidden| {
+                    .when_some(images.ask, |this, hidden| {
                         this.child(render_images_bar(ix, &message.id, hidden, theme, cx))
                     })
                     .child(match &message.body {
-                        Body::Loaded { .. } => {
-                            render_body(&body, show_all, selection, &self.images, theme)
-                                .into_any_element()
-                        }
+                        Body::Loaded { .. } => render_body(
+                            &body,
+                            show_all,
+                            selection,
+                            images.show.then_some(&self.images),
+                            theme,
+                        )
+                        .into_any_element(),
                         Body::Failed(reason) => render_body_failed(ix, reason, theme),
                         Body::NotLoaded | Body::Loading => render_body_loading(theme),
                     })
@@ -818,7 +822,7 @@ fn render_body(
     doc: &Document,
     all: bool,
     selection: html_view::Selection,
-    images: &html_view::LoadedImages,
+    images: Option<&html_view::LoadedImages>,
     theme: &Theme,
 ) -> impl IntoElement {
     div()
@@ -829,7 +833,7 @@ fn render_body(
             doc,
             theme,
             Some(selection),
-            Some(images),
+            images,
             |block| all || !super::invite::is_invite_summary(block),
         ))
 }
@@ -838,25 +842,24 @@ fn render_body(
 
 impl PigeonApp {
     /// A message's remote images: fetched (after this frame) once the user
-    /// let them load, or always per the setting. Returns how many are
-    /// hidden when the "Load images" bar should ask.
+    /// let them load, or always per the setting.
     fn message_images(
         &self,
         message: &Message,
         body: &Document,
         cx: &mut Context<Self>,
-    ) -> Option<usize> {
+    ) -> ImageConsent {
         if !matches!(message.body, Body::Loaded { .. }) || self.backend.read(cx).is_demo() {
-            return None;
+            return ImageConsent::default();
         }
         let remote = crate::html::remote_images(body);
-        if remote.is_empty() {
-            return None;
-        }
-        let setting = self.remote_images_setting();
-        let allowed = setting == RemoteImages::Always || self.images.allowed.contains(&message.id);
-        if !allowed {
-            return (setting == RemoteImages::Ask).then_some(remote.len());
+        let consent = image_consent(
+            self.remote_images_setting(),
+            self.images.allowed.contains(&message.id),
+            remote.len(),
+        );
+        if !consent.show {
+            return consent;
         }
         let missing: Vec<SharedString> = remote
             .into_iter()
@@ -869,7 +872,7 @@ impl PigeonApp {
                     .ok();
             });
         }
-        None
+        consent
     }
 
     /// Let a message's remote images load.
@@ -909,6 +912,27 @@ impl PigeonApp {
             .ok();
         })
         .detach();
+    }
+}
+
+/// Whether a message shows its remote images, and how many the "Load images"
+/// bar says are hidden. Consent is per message: an image another message
+/// already loaded stays hidden here until this one is allowed, so the count
+/// is always true.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ImageConsent {
+    show: bool,
+    ask: Option<usize>,
+}
+
+fn image_consent(setting: RemoteImages, allowed: bool, remote: usize) -> ImageConsent {
+    if remote == 0 {
+        return ImageConsent::default();
+    }
+    let show = setting == RemoteImages::Always || allowed;
+    ImageConsent {
+        show,
+        ask: (!show && setting == RemoteImages::Ask).then_some(remote),
     }
 }
 
@@ -1035,4 +1059,43 @@ fn more_button(theme: &Theme) -> gpui::Stateful<gpui::Div> {
         .tooltip(|window, cx| {
             gpui::component::tooltip::Tooltip::new("More: move, label, mark read").build(window, cx)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn images_show_only_with_consent_for_this_message() {
+        let ask = image_consent(RemoteImages::Ask, false, 5);
+        assert_eq!(
+            ask,
+            ImageConsent {
+                show: false,
+                ask: Some(5)
+            }
+        );
+        let allowed = image_consent(RemoteImages::Ask, true, 5);
+        assert_eq!(
+            allowed,
+            ImageConsent {
+                show: true,
+                ask: None
+            }
+        );
+        let always = image_consent(RemoteImages::Always, false, 5);
+        assert_eq!(
+            always,
+            ImageConsent {
+                show: true,
+                ask: None
+            }
+        );
+        let never = image_consent(RemoteImages::Never, false, 5);
+        assert_eq!(never, ImageConsent::default());
+        assert_eq!(
+            image_consent(RemoteImages::Ask, false, 0),
+            ImageConsent::default()
+        );
+    }
 }
