@@ -1481,24 +1481,12 @@ impl Backend {
         self.run_sync(cx);
     }
 
-    /// The Dock badge's count: the Inbox's unread conversations, Gmail's
-    /// own count; on the placeholder data, counted here.
+    /// The Dock badge's count: unread conversations in Primary, the Inbox as
+    /// Pigeon shows it (FOL-11).
     pub fn inbox_unread(&self) -> u64 {
-        if let Some((unread, _)) = self.label_counts().get(gmail::INBOX) {
-            return *unread;
-        }
-        if self.source != Source::Demo {
-            return 0;
-        }
-        let mut threads = self
-            .store
-            .load_all_threads(self.email())
-            .unwrap_or_default();
-        self.outbox.overlay(&mut threads);
-        threads
-            .iter()
-            .filter(|t| t.unread && t.folder == Folder::Inbox)
-            .count() as u64
+        self.category_counts()
+            .unread(categories::Category::Primary)
+            .into()
     }
 
     /// Whether these threads are read, or out of the Inbox, now: their

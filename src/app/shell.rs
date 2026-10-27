@@ -382,8 +382,7 @@ fn frontmost_thread(cx: &App) -> Option<String> {
         .flatten()
 }
 
-/// NTF-2: the Inbox's unread count on the Dock icon. W4a switches it to
-/// Primary.
+/// NTF-2: Primary's unread count on the Dock icon.
 fn update_badge(cx: &mut App) {
     let count = backend_of(cx).read(cx).inbox_unread();
     let shell = cx.global_mut::<Shell>();
