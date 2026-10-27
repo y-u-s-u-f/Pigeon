@@ -683,14 +683,23 @@ impl CalendarView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> String {
-        let calendar = self
-            .data
-            .calendars
+        // The primary calendar when shown, else the first shown one the
+        // user can write to. Before the first sync there may be none.
+        let calendars = &self.data.calendars;
+        let writable = |c: &&crate::calendar::Calendar| {
+            matches!(
+                c.access_role,
+                crate::calendar::AccessRole::Owner | crate::calendar::AccessRole::Writer
+            )
+        };
+        let calendar = calendars
             .iter()
-            .find(|c| c.visible)
-            .unwrap_or(&self.data.calendars[0])
-            .id
-            .clone();
+            .find(|c| c.primary && c.visible)
+            .or_else(|| calendars.iter().filter(writable).find(|c| c.visible))
+            .or_else(|| calendars.iter().find(writable))
+            .or(calendars.first())
+            .map(|c| c.id.clone())
+            .unwrap_or_default();
         let (start, end) = if all_day {
             let first = start.date();
             let last = (end - Duration::minutes(1)).date().max(first);

@@ -1,14 +1,19 @@
 //! Repeat rules, and recurring events expanded into occurrences, only for
 //! the range on screen. Nothing is materialized ahead.
 //!
-//! `Rule` follows RFC 5545's RRULE, as Google stores it. Expansion covers
-//! FREQ, INTERVAL, BYDAY without ordinals and UNTIL; ordinals, BYMONTHDAY
-//! and COUNT are kept but not applied yet (CAL-5).
+//! `Rule` follows RFC 5545's RRULE, as Google stores it. Supported: FREQ
+//! (daily to yearly), INTERVAL, BYDAY (with ordinals for monthly rules),
+//! BYMONTHDAY, COUNT and UNTIL, plus EXDATE (`parse_recurrence`). Anything
+//! else marks the rule `unsupported`: it isn't expanded, and the backend
+//! stores the series' occurrences from Google instead (CAL-5).
 
-use chrono::{Datelike, Duration, NaiveDateTime, Weekday};
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Weekday};
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::{Event, time::add_months};
+use super::{
+    Event,
+    time::{LocalZone, add_months, midnight, month_start, week_start},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Freq {
@@ -27,8 +32,17 @@ pub struct Rule {
     pub by_day: Vec<(Option<i8>, Weekday)>,
     pub by_month_day: Vec<i8>,
     pub count: Option<u32>,
-    /// The series' end: no occurrence starts at or after it.
+    /// The series' end: no occurrence starts at or after it. (RRULE's
+    /// UNTIL is inclusive; `parse` and `to_rrule` convert.)
     pub until: Option<NaiveDateTime>,
+    /// Not expanded here (the rule is outside the subset, or the series
+    /// needs a time zone database); Google's own occurrences are stored
+    /// instead.
+    #[serde(default)]
+    pub unsupported: bool,
+    /// The RRULE has parts this type doesn't hold, so `label` can't say it.
+    #[serde(default)]
+    pub custom: bool,
 }
 
 const WEEKDAYS: [Weekday; 5] = [
@@ -48,6 +62,8 @@ impl Rule {
             by_month_day: Vec::new(),
             count: None,
             until: None,
+            unsupported: false,
+            custom: false,
         }
     }
 
@@ -98,8 +114,12 @@ impl Rule {
                 .all(|&d| self.by_day.iter().any(|&(n, w)| n.is_none() && w == d))
     }
 
-    /// "Every weekday", "Every 2 weeks", "Every week on Mon, Wed".
+    /// "Every weekday", "Every 2 weeks", "Every week on Mon, Wed", "Every
+    /// month on the last Fri".
     pub fn label(&self) -> String {
+        if self.custom {
+            return "Custom repeat".into();
+        }
         let n = self.interval.max(1);
         let unit = match self.freq {
             Freq::Daily => "day",
@@ -116,11 +136,329 @@ impl Rule {
             format!("Every {n} {unit}s")
         };
         if self.freq == Freq::Weekly && self.by_day.len() > 1 {
-            let days: Vec<String> = self.by_day.iter().map(|(_, d)| format!("{d:?}")).collect();
+            let mut days: Vec<Weekday> = self.by_day.iter().map(|&(_, d)| d).collect();
+            days.sort_by_key(|d| d.num_days_from_monday());
+            let days: Vec<String> = days.iter().map(|d| format!("{d:?}")).collect();
             return format!("{every} on {}", days.join(", "));
+        }
+        if self.freq == Freq::Monthly
+            && let [(Some(ord), day)] = self.by_day[..]
+        {
+            let ord = match ord {
+                -1 => "last".to_string(),
+                1 => "1st".into(),
+                2 => "2nd".into(),
+                3 => "3rd".into(),
+                n => format!("{n}th"),
+            };
+            return format!("{every} on the {ord} {day:?}");
         }
         every
     }
+
+    /// An RRULE's value (after "RRULE:"). `all_day` says whether UNTIL is a
+    /// date; a UTC UNTIL is converted to `zone`'s wall clock.
+    pub fn parse(value: &str, all_day: bool, zone: &LocalZone) -> Option<Rule> {
+        let mut rule = Rule::new(Freq::Daily, 1);
+        let mut freq = None;
+        let mut week_start = Weekday::Mon;
+        for part in value.split(';').filter(|p| !p.is_empty()) {
+            let (key, val) = part.split_once('=')?;
+            match key.to_ascii_uppercase().as_str() {
+                "FREQ" => {
+                    freq = Some(match val {
+                        "DAILY" => Freq::Daily,
+                        "WEEKLY" => Freq::Weekly,
+                        "MONTHLY" => Freq::Monthly,
+                        "YEARLY" => Freq::Yearly,
+                        _ => {
+                            rule.unsupported = true;
+                            Freq::Daily
+                        }
+                    })
+                }
+                "INTERVAL" => rule.interval = val.parse().ok().filter(|&n| n > 0)?,
+                "COUNT" => rule.count = Some(val.parse().ok()?),
+                "UNTIL" => {
+                    let until = parse_ical_time(val, zone)?;
+                    // Inclusive in RRULE; exclusive here.
+                    rule.until = Some(if val.len() == 8 || all_day {
+                        midnight(until.date() + Duration::days(1))
+                    } else {
+                        until + Duration::seconds(1)
+                    });
+                }
+                "BYDAY" => {
+                    for day in val.split(',') {
+                        rule.by_day.push(parse_by_day(day)?);
+                    }
+                }
+                "BYMONTHDAY" => {
+                    for day in val.split(',') {
+                        let day: i8 = day.parse().ok()?;
+                        if day == 0 || day.abs() > 31 {
+                            return None;
+                        }
+                        rule.by_month_day.push(day);
+                    }
+                }
+                "WKST" => week_start = parse_weekday(val)?,
+                _ => rule.unsupported = true,
+            }
+        }
+        rule.freq = freq?;
+        let ordinals = rule.by_day.iter().any(|(n, _)| n.is_some());
+        rule.unsupported |= match rule.freq {
+            Freq::Daily => ordinals || !rule.by_month_day.is_empty(),
+            // The week start only moves occurrences when weeks are skipped
+            // and the rule names several days.
+            Freq::Weekly => {
+                ordinals
+                    || !rule.by_month_day.is_empty()
+                    || (week_start != Weekday::Mon && rule.interval > 1 && rule.by_day.len() > 1)
+            }
+            Freq::Monthly => !rule.by_day.is_empty() && !rule.by_month_day.is_empty(),
+            Freq::Yearly => !rule.by_day.is_empty() || !rule.by_month_day.is_empty(),
+        };
+        rule.custom = rule.unsupported;
+        Some(rule)
+    }
+
+    /// The RRULE line for Google ("RRULE:FREQ=WEEKLY;BYDAY=MO,WE").
+    #[allow(dead_code)] // Calendar writes (W7).
+    pub fn to_rrule(&self, all_day: bool, zone: &LocalZone) -> String {
+        let freq = match self.freq {
+            Freq::Daily => "DAILY",
+            Freq::Weekly => "WEEKLY",
+            Freq::Monthly => "MONTHLY",
+            Freq::Yearly => "YEARLY",
+        };
+        let mut parts = vec![format!("FREQ={freq}")];
+        if self.interval > 1 {
+            parts.push(format!("INTERVAL={}", self.interval));
+        }
+        if !self.by_day.is_empty() {
+            let days: Vec<String> = self
+                .by_day
+                .iter()
+                .map(|&(n, d)| {
+                    let code = &format!("{d:?}")[..2].to_ascii_uppercase();
+                    n.map_or_else(|| code.clone(), |n| format!("{n}{code}"))
+                })
+                .collect();
+            parts.push(format!("BYDAY={}", days.join(",")));
+        }
+        if !self.by_month_day.is_empty() {
+            let days: Vec<String> = self.by_month_day.iter().map(|d| d.to_string()).collect();
+            parts.push(format!("BYMONTHDAY={}", days.join(",")));
+        }
+        if let Some(count) = self.count {
+            parts.push(format!("COUNT={count}"));
+        }
+        if let Some(until) = self.until {
+            let last = until - Duration::seconds(1);
+            parts.push(if all_day {
+                format!("UNTIL={}", last.format("%Y%m%d"))
+            } else {
+                format!("UNTIL={}", (zone.to_utc)(last).format("%Y%m%dT%H%M%SZ"))
+            });
+        }
+        format!("RRULE:{}", parts.join(";"))
+    }
+
+    /// Which period (day, week, month or year, counted from the series'
+    /// first) `date` falls in.
+    fn period_of(&self, first: NaiveDate, date: NaiveDate) -> i64 {
+        let months = |a: NaiveDate, b: NaiveDate| {
+            ((b.year() - a.year()) * 12 + b.month() as i32 - a.month() as i32) as i64
+        };
+        match self.freq {
+            Freq::Daily => (date - first).num_days(),
+            Freq::Weekly => (week_start(date) - week_start(first))
+                .num_days()
+                .div_euclid(7),
+            Freq::Monthly => months(first, date),
+            Freq::Yearly => months(first, date).div_euclid(12),
+        }
+    }
+
+    /// Period `k`'s first day and the days in it the rule names, in order.
+    fn period(&self, first: NaiveDate, k: i64) -> (NaiveDate, Vec<NaiveDate>) {
+        let on_day = |date: &NaiveDate| {
+            self.by_day.is_empty() || self.by_day.iter().any(|&(_, d)| d == date.weekday())
+        };
+        match self.freq {
+            Freq::Daily => {
+                let day = first + Duration::days(k);
+                (day, Some(day).filter(on_day).into_iter().collect())
+            }
+            Freq::Weekly => {
+                let week = week_start(first) + Duration::days(7 * k);
+                let mut days: Vec<NaiveDate> = if self.by_day.is_empty() {
+                    vec![first.weekday()]
+                } else {
+                    self.by_day.iter().map(|&(_, d)| d).collect()
+                }
+                .into_iter()
+                .map(|d| week + Duration::days(d.num_days_from_monday() as i64))
+                .collect();
+                days.sort();
+                days.dedup();
+                (week, days)
+            }
+            Freq::Monthly => {
+                let month = add_months(month_start(first), k as i32);
+                let last = add_months(month, 1) - Duration::days(1);
+                let mut days: Vec<NaiveDate> = if !self.by_month_day.is_empty() {
+                    self.by_month_day
+                        .iter()
+                        .filter_map(|&d| {
+                            let day = if d > 0 {
+                                d as i64
+                            } else {
+                                last.day() as i64 + d as i64 + 1
+                            };
+                            (day >= 1).then(|| month.with_day(day as u32)).flatten()
+                        })
+                        .collect()
+                } else if !self.by_day.is_empty() {
+                    self.by_day
+                        .iter()
+                        .flat_map(|&(n, wd)| {
+                            let all: Vec<NaiveDate> = month
+                                .iter_days()
+                                .take_while(|d| *d <= last)
+                                .filter(|d| d.weekday() == wd)
+                                .collect();
+                            match n {
+                                None => all,
+                                Some(n) if n > 0 => {
+                                    all.get(n as usize - 1).copied().into_iter().collect()
+                                }
+                                Some(n) => all
+                                    .len()
+                                    .checked_sub(n.unsigned_abs() as usize)
+                                    .and_then(|ix| all.get(ix).copied())
+                                    .into_iter()
+                                    .collect(),
+                            }
+                        })
+                        .collect()
+                } else {
+                    // Months without the series' day (the 31st) are skipped.
+                    month.with_day(first.day()).into_iter().collect()
+                };
+                days.sort();
+                days.dedup();
+                (month, days)
+            }
+            Freq::Yearly => {
+                let month = add_months(month_start(first), 12 * k as i32);
+                // Years without Feb 29 are skipped.
+                (month, month.with_day(first.day()).into_iter().collect())
+            }
+        }
+    }
+}
+
+fn parse_weekday(code: &str) -> Option<Weekday> {
+    Some(match code {
+        "MO" => Weekday::Mon,
+        "TU" => Weekday::Tue,
+        "WE" => Weekday::Wed,
+        "TH" => Weekday::Thu,
+        "FR" => Weekday::Fri,
+        "SA" => Weekday::Sat,
+        "SU" => Weekday::Sun,
+        _ => return None,
+    })
+}
+
+/// "MO", "2TU", "-1FR", "+1MO".
+fn parse_by_day(text: &str) -> Option<(Option<i8>, Weekday)> {
+    let split = text.len().checked_sub(2)?;
+    let (ordinal, day) = text.split_at(split);
+    let day = parse_weekday(day)?;
+    if ordinal.is_empty() {
+        return Some((None, day));
+    }
+    let n: i8 = ordinal.trim_start_matches('+').parse().ok()?;
+    (n != 0 && n.abs() <= 5).then_some((Some(n), day))
+}
+
+/// "20261028" (midnight), "20261028T100000" (wall time) or
+/// "20261028T170000Z" (UTC, to `zone`'s wall time).
+fn parse_ical_time(text: &str, zone: &LocalZone) -> Option<NaiveDateTime> {
+    if let Some(utc) = text.strip_suffix('Z') {
+        let t = NaiveDateTime::parse_from_str(utc, "%Y%m%dT%H%M%S").ok()?;
+        return Some((zone.to_local)(t.and_utc()));
+    }
+    if text.len() == 8 {
+        return NaiveDate::parse_from_str(text, "%Y%m%d").ok().map(midnight);
+    }
+    NaiveDateTime::parse_from_str(text, "%Y%m%dT%H%M%S").ok()
+}
+
+/// A Google event's `recurrence` lines, read: the rule, and the EXDATEs
+/// as wall times in `zone`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Recurrence {
+    pub rule: Option<Rule>,
+    pub exdates: Vec<NaiveDateTime>,
+}
+
+/// Reads RRULE and EXDATE lines. The rule comes back `unsupported` when
+/// it's outside the subset, or the lines hold something only Google can
+/// expand: RDATE, EXRULE, several RRULEs, or EXDATEs in another zone.
+pub fn parse_recurrence(lines: &[String], all_day: bool, zone: &LocalZone) -> Recurrence {
+    let mut out = Recurrence::default();
+    let mut unsupported = false;
+    for line in lines {
+        let Some((head, value)) = line.split_once(':') else {
+            unsupported = true;
+            continue;
+        };
+        let mut params = head.split(';');
+        match params
+            .next()
+            .unwrap_or_default()
+            .to_ascii_uppercase()
+            .as_str()
+        {
+            "RRULE" if out.rule.is_none() => match Rule::parse(value, all_day, zone) {
+                Some(rule) => out.rule = Some(rule),
+                None => {
+                    out.rule = Some(Rule {
+                        custom: true,
+                        ..Rule::daily()
+                    });
+                    unsupported = true;
+                }
+            },
+            "EXDATE" => {
+                let foreign_zone = params.any(|p| {
+                    p.strip_prefix("TZID=")
+                        .is_some_and(|tz| !tz.eq_ignore_ascii_case(zone.name))
+                });
+                if foreign_zone {
+                    unsupported = true;
+                    continue;
+                }
+                for text in value.split(',') {
+                    match parse_ical_time(text.trim(), zone) {
+                        Some(t) => out.exdates.push(t),
+                        None => unsupported = true,
+                    }
+                }
+            }
+            _ => unsupported = true,
+        }
+    }
+    if unsupported {
+        let rule = out.rule.get_or_insert_with(Rule::daily);
+        rule.unsupported = true;
+    }
+    out
 }
 
 /// An event's `recurrence`: a keyword in the placeholder data, a `Rule`
@@ -178,77 +516,57 @@ pub fn occurrences(
 }
 
 /// Starts of the event's occurrences overlapping `[from, to)`. A series
-/// skips its exceptions and stops at its end.
+/// skips its exceptions and stops at its end or count. Unsupported rules
+/// give none: their occurrences are events of their own.
 fn starts_in(event: &Event, from: NaiveDateTime, to: NaiveDateTime) -> Vec<NaiveDateTime> {
     let duration = event.duration().max(Duration::zero());
-    let Some(rule) = &event.recurrence else {
-        let overlaps = |start: NaiveDateTime| {
-            start < to && (start + duration > from || (duration.is_zero() && start >= from))
-        };
-        return [event.start].into_iter().filter(|&s| overlaps(s)).collect();
-    };
-    let to = rule.until.map_or(to, |until| to.min(until));
     // Zero-length events still show at their start.
     let overlaps = |start: NaiveDateTime| {
-        start < to
-            && (start + duration > from || (duration.is_zero() && start >= from))
-            && !event.exceptions.contains(&start)
+        start < to && (start + duration > from || (duration.is_zero() && start >= from))
     };
-    // The earliest start whose occurrence could still reach `from`.
-    let earliest = from - duration;
+    let Some(rule) = &event.recurrence else {
+        return [event.start].into_iter().filter(|&s| overlaps(s)).collect();
+    };
+    if rule.unsupported {
+        return Vec::new();
+    }
+    let end = rule.until.map_or(to, |until| to.min(until));
+    let first = event.start.date();
+    let time = event.start.time();
     let interval = rule.interval.max(1) as i64;
-    let days: Vec<Weekday> = rule.by_day.iter().map(|&(_, d)| d).collect();
-    let on_day = |start: NaiveDateTime| days.is_empty() || days.contains(&start.weekday());
+    // COUNT counts from the first occurrence; otherwise skip to the period
+    // whose occurrences could still reach `from`.
+    let mut period = match rule.count {
+        Some(_) => 0,
+        None => {
+            let earliest = (from - duration).date();
+            (rule.period_of(first, earliest) / interval).max(0) * interval
+        }
+    };
+    let mut seen = 0;
     let mut out = Vec::new();
-    match rule.freq {
-        Freq::Weekly if !days.is_empty() => {
-            // Week by week from the series' first week (weeks start Monday),
-            // each day the rule names.
-            let first = event.start.date();
-            let week0 = first - Duration::days(first.weekday().num_days_from_monday() as i64);
-            let skip = ((earliest.date() - week0).num_days() / (7 * interval)).max(0);
-            let mut week = week0 + Duration::days(skip * 7 * interval);
-            while week.and_time(event.start.time()) < to {
-                for offset in 0..7 {
-                    let date = week + Duration::days(offset);
-                    let start = date.and_time(event.start.time());
-                    if date >= first && on_day(start) && overlaps(start) {
-                        out.push(start);
-                    }
-                }
-                week += Duration::days(7 * interval);
+    'periods: loop {
+        let (period_start, days) = rule.period(first, period);
+        if period_start.and_time(time) >= end {
+            break;
+        }
+        for date in days {
+            if date < first {
+                continue;
+            }
+            let start = date.and_time(time);
+            if start >= end {
+                break 'periods;
+            }
+            seen += 1;
+            if rule.count.is_some_and(|count| seen > count) {
+                break 'periods;
+            }
+            if overlaps(start) && !event.exceptions.contains(&start) {
+                out.push(start);
             }
         }
-        Freq::Daily | Freq::Weekly => {
-            let step = if rule.freq == Freq::Weekly { 7 } else { 1 } * interval;
-            let skip = ((earliest - event.start).num_days() / step).max(0);
-            let mut start = event.start + Duration::days(skip * step);
-            while start < to {
-                if overlaps(start) && on_day(start) {
-                    out.push(start);
-                }
-                start += Duration::days(step);
-            }
-        }
-        Freq::Monthly | Freq::Yearly => {
-            let step = interval as i32 * if rule.freq == Freq::Yearly { 12 } else { 1 };
-            let months_between = |a: NaiveDateTime, b: NaiveDateTime| {
-                (b.year() - a.year()) * 12 + b.month() as i32 - a.month() as i32
-            };
-            let mut n = (months_between(event.start, earliest) / step - 1).max(0) * step;
-            loop {
-                // Months without the series' day (the 31st, Feb 29) are skipped.
-                let date = add_months(event.start.date(), n);
-                let start = date.and_time(event.start.time());
-                if start >= to {
-                    break;
-                }
-                if date.day() == event.start.day() && overlaps(start) {
-                    out.push(start);
-                }
-                n += step;
-            }
-        }
+        period += interval;
     }
     out
 }
@@ -426,5 +744,176 @@ mod tests {
             .map(|o| o.event)
             .collect();
         assert_eq!(order, vec![2, 1, 0]);
+    }
+
+    /// UTC−7 all year, so tests don't depend on the machine's zone.
+    fn zone() -> LocalZone {
+        LocalZone {
+            name: "America/Los_Angeles",
+            to_local: |t| t.naive_utc() - Duration::hours(7),
+            to_utc: |t| (t + Duration::hours(7)).and_utc(),
+        }
+    }
+
+    fn series(start: NaiveDateTime, lines: &[&str]) -> Event {
+        let lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        let parsed = parse_recurrence(&lines, false, &zone());
+        let mut e = event(start, 60, parsed.rule);
+        e.exceptions = parsed.exdates;
+        e
+    }
+
+    #[test]
+    fn rrule_weekly_on_days() {
+        // Mon Oct 26, 2026.
+        let e = series(
+            at(d(2026, 10, 26), 10, 0),
+            &["RRULE:FREQ=WEEKLY;BYDAY=MO,WE"],
+        );
+        assert_eq!(
+            starts(&e, d(2026, 10, 26), 14),
+            vec![
+                at(d(2026, 10, 26), 10, 0),
+                at(d(2026, 10, 28), 10, 0),
+                at(d(2026, 11, 2), 10, 0),
+                at(d(2026, 11, 4), 10, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn rrule_monthly_ordinals() {
+        // Second Tuesday: Oct 13, Nov 10, Dec 8.
+        let e = series(at(d(2026, 10, 13), 9, 0), &["RRULE:FREQ=MONTHLY;BYDAY=2TU"]);
+        assert_eq!(
+            starts(&e, d(2026, 10, 1), 92),
+            vec![
+                at(d(2026, 10, 13), 9, 0),
+                at(d(2026, 11, 10), 9, 0),
+                at(d(2026, 12, 8), 9, 0),
+            ]
+        );
+        assert_eq!(
+            e.recurrence.as_ref().unwrap().label(),
+            "Every month on the 2nd Tue"
+        );
+        // Last Friday: Oct 30, Nov 27, Dec 25.
+        let e = series(
+            at(d(2026, 10, 30), 16, 0),
+            &["RRULE:FREQ=MONTHLY;BYDAY=-1FR"],
+        );
+        assert_eq!(
+            starts(&e, d(2026, 10, 1), 92),
+            vec![
+                at(d(2026, 10, 30), 16, 0),
+                at(d(2026, 11, 27), 16, 0),
+                at(d(2026, 12, 25), 16, 0),
+            ]
+        );
+        // The last day of each month.
+        let e = series(
+            at(d(2026, 1, 31), 8, 0),
+            &["RRULE:FREQ=MONTHLY;BYMONTHDAY=-1"],
+        );
+        let days: Vec<u32> = starts(&e, d(2026, 1, 1), 90)
+            .iter()
+            .map(|s| s.day())
+            .collect();
+        assert_eq!(days, [31, 28, 31]);
+    }
+
+    #[test]
+    fn rrule_count_until_interval_exdate() {
+        // COUNT counts from the first, even when the range starts later.
+        let e = series(
+            at(d(2026, 10, 26), 9, 0),
+            &["RRULE:FREQ=WEEKLY;WKST=MO;COUNT=3;BYDAY=MO,FR"],
+        );
+        assert_eq!(starts(&e, d(2026, 10, 26), 60).len(), 3);
+        assert_eq!(
+            starts(&e, d(2026, 11, 1), 60),
+            vec![at(d(2026, 11, 2), 9, 0)]
+        );
+        // UNTIL is inclusive, in UTC: 06:59:59Z on Nov 4 is 23:59:59 on
+        // Nov 3 here, so Tuesday the 3rd is the last.
+        let e = series(
+            at(d(2026, 10, 20), 19, 30),
+            &["RRULE:FREQ=WEEKLY;UNTIL=20261104T065959Z;BYDAY=TU"],
+        );
+        assert_eq!(starts(&e, d(2026, 10, 1), 60).len(), 3);
+        // An UNTIL exactly on an occurrence keeps it.
+        let e = series(
+            at(d(2026, 10, 20), 10, 0),
+            &["RRULE:FREQ=DAILY;UNTIL=20261022T170000Z"],
+        );
+        assert_eq!(starts(&e, d(2026, 10, 1), 60).len(), 3);
+        // Every other week, minus an EXDATE in the local zone.
+        let e = series(
+            at(d(2026, 10, 7), 15, 0),
+            &[
+                "EXDATE;TZID=America/Los_Angeles:20261021T150000",
+                "RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=WE",
+            ],
+        );
+        assert_eq!(
+            starts(&e, d(2026, 10, 1), 42),
+            vec![at(d(2026, 10, 7), 15, 0), at(d(2026, 11, 4), 15, 0)]
+        );
+        // An all-day EXDATE.
+        let lines = vec![
+            "RRULE:FREQ=DAILY;COUNT=3".to_string(),
+            "EXDATE;VALUE=DATE:20261027".to_string(),
+        ];
+        let parsed = parse_recurrence(&lines, true, &zone());
+        assert_eq!(parsed.exdates, [at(d(2026, 10, 27), 0, 0)]);
+    }
+
+    #[test]
+    fn unsupported_rules_are_flagged_and_not_expanded() {
+        let flagged = |lines: &[&str]| {
+            let lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+            parse_recurrence(&lines, false, &zone())
+                .rule
+                .is_some_and(|r| r.unsupported)
+        };
+        assert!(flagged(&["RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=4TH"]));
+        assert!(flagged(&[
+            "RRULE:FREQ=MONTHLY;BYSETPOS=-1;BYDAY=MO,TU,WE,TH,FR"
+        ]));
+        assert!(flagged(&["RRULE:FREQ=HOURLY"]));
+        assert!(flagged(&["RRULE:FREQ=WEEKLY", "RDATE:20261101T100000Z"]));
+        assert!(flagged(&[
+            "EXDATE;TZID=Asia/Riyadh:20260429T074500",
+            "RRULE:FREQ=WEEKLY;BYDAY=SU"
+        ]));
+        assert!(flagged(&[
+            "RRULE:FREQ=WEEKLY;WKST=SU;INTERVAL=2;BYDAY=SU,MO"
+        ]));
+        assert!(!flagged(&["RRULE:FREQ=WEEKLY;WKST=SU;BYDAY=TU,WE"]));
+        assert!(!flagged(&["RRULE:FREQ=YEARLY"]));
+        let e = series(
+            at(d(2026, 10, 26), 9, 0),
+            &["RRULE:FREQ=YEARLY;BYWEEKNO=20"],
+        );
+        assert!(starts(&e, d(2026, 10, 1), 400).is_empty());
+    }
+
+    #[test]
+    fn rrule_round_trips() {
+        let z = zone();
+        for (line, all_day) in [
+            ("RRULE:FREQ=WEEKLY;BYDAY=MO,WE", false),
+            ("RRULE:FREQ=MONTHLY;BYDAY=-1FR;COUNT=4", false),
+            (
+                "RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=TU;UNTIL=20261104T065959Z",
+                false,
+            ),
+            ("RRULE:FREQ=MONTHLY;BYMONTHDAY=15", false),
+            ("RRULE:FREQ=YEARLY;UNTIL=20301231", true),
+        ] {
+            let rule = Rule::parse(line.strip_prefix("RRULE:").unwrap(), all_day, &z).unwrap();
+            assert!(!rule.unsupported, "{line}");
+            assert_eq!(rule.to_rrule(all_day, &z), line);
+        }
     }
 }

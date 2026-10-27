@@ -887,19 +887,19 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-2 Calendar list, colours and visibility
 
-- **Today:** The header's calendars button shows and hides calendars; palette "Show/Hide Calendar: X". Events take their calendar's colour. `calendars` in JSON; `toggle_calendar()`; `render_calendars_button()` (`header.rs`).
-- **Needs:** `calendarList.list` with `summary`/`summaryOverride`, `backgroundColor`/`foregroundColor` (or `colorId` from `colors.get`), `selected`, `hidden`, `accessRole`, `primary`. Save visibility with `calendarList.patch` (`selected`) or locally (CAL-23).
+- **Today:** The header's calendars button shows and hides calendars; palette "Show/Hide Calendar: X". Events take their calendar's colour. The menu groups "My calendars" (owner) and "Other calendars", marks reader calendars "View only", truncates long names and scrolls when long; rows are checkboxes for VoiceOver. `toggle_calendar()`; `render_calendars_button()` (`header.rs`). From Google (W4, `backend/calendar.rs`): `calendarList.list` (with `showHidden`, then its sync token) gives the name (`summaryOverride` else `summary`), colour (`backgroundColor`, else `colorId` through `colors.get`, fetched once and cached in `sync_state`), `selected` → visible, `hidden` (left out of the menu and not synced), `accessRole`, `primary`, `timeZone`, `defaultReminders` (`Store::put_google_calendar()`). Changes reach the view as `CalendarsChanged`.
+- **Needs:** Save visibility with `calendarList.patch` (`selected`) (W7).
 - **Notes:** Shared and subscribed calendars are often read-only (CAL-22).
 
 #### CAL-3 Load events for the visible range
 
-- **Today:** All events in memory; `visible_range()` and `visible_occurrences()` filter on every render.
-- **Needs:** `events.list` per visible calendar with `timeMin`/`timeMax`, cached locally, ranges either side prefetched; incremental sync with `syncToken` (SYN-4). Series come once with their `recurrence` (CAL-5).
+- **Today:** All events in memory; `visible_range()` and `visible_occurrences()` filter on every render. From Google (W4): every calendar that isn't hidden or free/busy-only is synced whole, not by visible range: `events.list singleEvents=false timeZone=<local>` from 180 days back with no end, then by sync token (SYN-4), cached in the `events` table with Google's JSON beside the model. On the test account that is about 2,100 rows in 9 calendars, synced in 6–12 s the first time.
+- **Needs:** Wiring `backend::calendar::sync_pass()` into the sync scheduler (merge of W3 and W4). Events older than 180 days aren't fetched (Load older isn't built for the calendar).
 
 #### CAL-4 Day, week and month views and navigation
 
 - **Today:** Day, Week (default), Month. `d`/`w`/`m`; `t` today; `n`/`p` period; `←`/`→` move the selected day; `↓`/`↑`, `j`/`k`, `tab`/`shift-tab` step through events past the period. Clicking a day number opens it. The grid scrolls to ~8am. Overlaps sit in equal columns, widening into free ones; columns narrower than 60pt overlap a little. Day view caps the event column at 640pt and shows a mini month and the day's list beside it. Week numbers via View menu or palette. `set_view()`, `open_day()`, `step()`, `step_day()`, `select_adjacent()` (`mod.rs`); `week_view.rs` (`layout::pack_columns()`, `column_box()`), `agenda.rs`, `mini_month.rs`, `month_view.rs` (`layout::pack_lanes()`, "+N more").
-- **Needs:** Beyond CAL-3: next/previous event looks up to 62 days ahead, so that range must be cached or fetched.
+- **Needs:** Nothing beyond CAL-3: the whole future is cached, so next/previous event (62 days ahead) always finds what's there.
 - **Notes:** Week start is fixed to Monday (`time::week_start()`); Google's `weekStart` setting could drive it (CAL-41).
 
 #### CAL-4a Go to a date
@@ -909,14 +909,14 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-18 Today and the now-line
 
-- **Today:** Today highlighted; a red now-line in Day and Week; past events faded. `today()`, `now()` from the system clock.
+- **Today:** Today highlighted; a red now-line in Day and Week; past events faded. `today()`, `now()` from the system clock; Google's times are converted to the same local wall clock (CAL-12).
 - **Needs:** None. A per-minute redraw timer isn't built; the line moves only on re-render.
 
 #### CAL-19 Event search in the palette
 
 - **Today:** In Calendar mode the palette finds events by title and jumps to the next occurrence. `PaletteCommand::Event` items in `palette_items()`; `reveal_event()`.
 - **Needs:** `events.list` with `q` (matches title, description, location, attendees) and a cap, as PAL-2.
-- **Notes:** Locally only titles are searched.
+- **Notes:** Locally only titles are searched. With Google, the master of a series Pigeon can't expand also matches, and jumps to its first start (CAL-5).
 
 #### CAL-23 Persisted calendar UI state
 
@@ -955,8 +955,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-12 Time zones
 
-- **Today:** Wall-clock times: `wall_time()` drops the JSON's UTC offset (`naive_local()`), and also reads the offset-less times the store writes; the model uses `NaiveDateTime`. `Event::time_zone` and `Calendar::time_zone` exist for writes, empty in demo mode. The placeholder data uses Eastern offsets for San Francisco places, so converting would move every event.
-- **Needs:** Keep each event's `timeZone`, show in the user's zone (Google's `timezone` setting or macOS), write back with a zone. All-day events have none. Expand recurrences in the event's zone so they hold across DST.
+- **Today:** Wall-clock times: `wall_time()` drops the JSON's UTC offset (`naive_local()`), and also reads the offset-less times the store writes; the model uses `NaiveDateTime`. The placeholder data uses Eastern offsets for San Francisco places, so converting would move every event. From Google (W4): events are read with `timeZone=<macOS zone>` and every `dateTime` is converted to the local wall clock (`time::LocalZone`, `iana-time-zone` + `chrono::Local`; no tz database). `Event::time_zone` keeps the event's own `start.timeZone` and `Calendar::time_zone` the calendar's, for writes. A timed series kept in another zone isn't expanded locally (its wall time moves across DST and its days can land on other dates here); Google's own occurrences are stored instead (CAL-5).
+- **Needs:** Write back with the event's zone (W7). All-day events have none. Google's `timezone` setting isn't read; the macOS zone is used.
 - **Notes:** No zone picker or "shown in another zone" hint yet.
 
 #### CAL-15 Reminders
@@ -971,8 +971,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-17 Video links
 
-- **Today:** Shows and edits a link with a Join button (`cx.open_url()`). `video_link` in JSON.
-- **Needs:** Read `conferenceData.entryPoints` (video URI, phone, PIN) and `hangoutLink`, or a URL in location/description. Creating Meet links: CAL-34.
+- **Today:** Shows and edits a link with a Join button (`cx.open_url()`). `video_link` in JSON. From Google (W4): `conferenceData.entryPoints` (the `video` one) or else `hangoutLink` fills `Event::conference_uri` and `video_link`, so Join works.
+- **Needs:** Make the link read-only when it comes from `conferenceData` (6.4 item 9; W7). Phone and PIN entry points aren't shown, nor a URL found in location or description. Creating Meet links: CAL-34.
 
 #### CAL-21 Drag to create, move and resize
 
@@ -1019,8 +1019,9 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-5 Recurring events
 
-- **Today:** `recurrence` is a `Rule` (`src/calendar/recurrence.rs`): `freq`, `interval`, `by_day` (with optional ordinals), `by_month_day`, `count`, `until` (the series' end, set by CAL-6). The placeholder data's keywords (`daily`, `weekdays`, `weekly`, `biweekly`, `monthly`, `yearly`) become constructors; `Rule::label()` says "Every weekday", "Every 2 weeks", "Every week on Mon, Wed". Expansion covers `FREQ`, `INTERVAL`, `BYDAY` without ordinals and `UNTIL`; ordinals, `BYMONTHDAY` and `COUNT` are kept but not applied yet. A series can carry `exceptions` (like `EXDATE`); a changed occurrence is its own event with `recurring_event_id` and `original_start` (like `RECURRENCE-ID`). `recurrence::occurrences()` expands only the visible range.
-- **Needs:** Full RRULE (`FREQ`, `INTERVAL`, `BYDAY`, `BYMONTHDAY`, `UNTIL`, `COUNT`), `EXDATE`, `RDATE`, and exceptions (`recurringEventId` + `originalStartTime`). Either expand on Google (`singleEvents=true`, or `events.instances` for one series) keeping the series ID, or expand locally from the RRULE.
+- **Today:** `recurrence` is a `Rule` (`src/calendar/recurrence.rs`): `freq`, `interval`, `by_day` (with optional ordinals), `by_month_day`, `count`, `until` (the series' end, exclusive; RRULE's inclusive UNTIL is converted both ways), plus `unsupported` and `custom` flags. The placeholder data's keywords become constructors; `Rule::label()` says "Every weekday", "Every 2 weeks", "Every week on Mon, Wed", "Every month on the last Fri", or "Custom repeat". `Rule::parse()` / `to_rrule()` read and write RRULE; `parse_recurrence()` reads Google's `recurrence` lines (RRULE, EXDATE in the local zone, a date, or UTC). Expansion (`recurrence::occurrences()`, visible range only) covers `FREQ` daily to yearly, `INTERVAL`, `BYDAY` (ordinals for monthly), `BYMONTHDAY` (negative too), `COUNT`, `UNTIL` and exceptions. With Google (W4), series come once with their rule (`singleEvents=false`); every instance Google lists on its own, moved or cancelled, is stored (cancelled ones as hidden rows) and the series' `exceptions` are recomputed as its EXDATEs plus those instances' `original_start`. Rules outside the subset (BYSETPOS, BYMONTH, BYWEEKNO, hourly…), RDATE/EXRULE, EXDATEs in another zone, and timed series kept in another zone are flagged `unsupported`: not expanded, and `events.instances` (180 days back to 400 ahead) is stored as concrete occurrences instead. Checked against Google's own expansion (`singleEvents=true`) on the test account: the same 913 occurrences over 70 days, across the DST change.
+- **Needs:** Nothing more for reading. Writes of series scopes are CAL-6 (W7).
+- **Notes:** Instances of an unsupported series show as occurrences "changed separately" in the panel's repeat line (W7 could say "part of a series" instead). Their window doesn't slide until the series changes or the calendar fully resyncs.
 - **Notes:** The UI can't set a rule (CAL-29); new events never repeat.
 
 #### CAL-6 This event or all events
@@ -1135,7 +1136,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### SYN-4 Calendar incremental sync
 
-- **Needs:** Full `events.list` per calendar to get `nextSyncToken` (on the last page), then list with `syncToken` for changes (deleted events come with `status=cancelled`). `410 Gone` means resync. Same for `calendarList.list`.
+- **Today:** `backend::calendar::sync_pass(transport, store, account)` (W4) does one pass, blocking, off the main thread: `colors.get` once (cached), `calendarList.list` (full with `showHidden`, then by sync token; calendars gone from a full list or marked `deleted` lose their events), then per calendar `events.list singleEvents=false maxResults=2500 timeZone=<local>` with `timeMin=now−180d` on a full sync, paged to the end, storing `nextSyncToken` in `calendars.sync_token`; later passes send only `syncToken`. Cancelled items delete the event (and its instances) or, for an instance, become an exception of its series. A 410 wipes that calendar's events and syncs it in full again; a full listing replaces what was stored. A calendar Google refuses (403/404) is skipped and named in `CalendarChanges::errors`; a network failure stops the pass with an error. It returns `CalendarChanges { calendars, changed, removed }`, and `backend_events()` turns them into `CalendarsChanged` / `EventsChanged` / `EventsRemoved`; the app reloads just those ids in place (an event shared into several calendars is replaced copy by copy), so the view's date and selection stay.
+- **Needs:** The scheduler (W3's `sync.rs`) calling it every 2 min while the window is active, on focus, and ~2 s after a committed calendar write, then emitting `backend_events()` (merge). Status line wiring for errors (ACC-5).
 
 #### SYN-5 Calendar push
 

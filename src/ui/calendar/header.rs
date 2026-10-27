@@ -16,6 +16,7 @@ use crate::ui::style::*;
 use crate::{
     actions::*,
     assets::Icon,
+    calendar::{AccessRole, Calendar},
     theme::Theme,
     ui::{HEADER_HEIGHT, icon, icon_button, popover_shadow, window_drag_area},
 };
@@ -368,65 +369,84 @@ impl CalendarView {
             .collect::<Vec<_>>();
 
         let menu = open.then(|| {
-            let rows = self
+            let row = |ix: usize, calendar: &Calendar| {
+                let visible = calendar.visible;
+                let read_only = matches!(
+                    calendar.access_role,
+                    AccessRole::Reader | AccessRole::FreeBusyReader
+                );
+                div()
+                    .id(("calendar-toggle", ix))
+                    .role(gpui::Role::CheckBox)
+                    .aria_label(SharedString::from(calendar.name.clone()))
+                    .aria_toggled(if visible {
+                        gpui::Toggled::True
+                    } else {
+                        gpui::Toggled::False
+                    })
+                    .h(px(32.))
+                    .flex_none()
+                    .px(SPACE_MD)
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_SM)
+                    .rounded(RADIUS_MD)
+                    .hover(|s| s.bg(theme.hover_bg))
+                    .child(
+                        div()
+                            .size(px(16.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(RADIUS_SM)
+                            .border_1()
+                            .border_color(calendar.color)
+                            .when(visible, |d| d.bg(calendar.color))
+                            .when(visible, |d| {
+                                d.child(icon(Icon::Check, px(12.), theme.cal_selected_text))
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(TEXT_BASE)
+                            .text_color(if visible {
+                                theme.text
+                            } else {
+                                theme.text_muted
+                            })
+                            .child(calendar.name.clone()),
+                    )
+                    .when(read_only, |d| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .text_size(TEXT_XS)
+                                .text_color(theme.text_faint)
+                                .child("View only"),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_calendar(ix, cx)))
+            };
+            // Like Google Calendar: the user's own calendars, then the
+            // others (shared, subscribed, holidays), each in list order.
+            let (mine, others): (Vec<_>, Vec<_>) = self
                 .data
                 .calendars
                 .iter()
                 .enumerate()
-                .map(|(ix, calendar)| {
-                    let visible = calendar.visible;
+                .partition(|(_, c)| c.access_role == AccessRole::Owner);
+            let section = |title: &'static str, calendars: Vec<(usize, &Calendar)>| {
+                (!calendars.is_empty()).then(|| {
                     div()
-                        .id(("calendar-toggle", ix))
-                        .h(px(32.))
-                        .px(SPACE_MD)
-                        .flex()
-                        .items_center()
-                        .gap(SPACE_SM)
-                        .rounded(RADIUS_MD)
-                        .hover(|s| s.bg(theme.hover_bg))
-                        .child(
-                            div()
-                                .size(px(16.))
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(RADIUS_SM)
-                                .border_1()
-                                .border_color(calendar.color)
-                                .when(visible, |d| d.bg(calendar.color))
-                                .when(visible, |d| {
-                                    d.child(icon(Icon::Check, px(12.), theme.cal_selected_text))
-                                }),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_size(TEXT_BASE)
-                                .text_color(if visible {
-                                    theme.text
-                                } else {
-                                    theme.text_muted
-                                })
-                                .child(calendar.name.clone()),
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| this.toggle_calendar(ix, cx)))
-                });
-            deferred(
-                anchored().snap_to_window_with_margin(px(8.)).child(
-                    div()
-                        .id("calendars-menu")
-                        .occlude()
-                        .mt(SPACE_2XL)
-                        .w(px(220.))
-                        .p(SPACE_XS)
+                        .id(title)
                         .flex()
                         .flex_col()
-                        .rounded(RADIUS_MD)
-                        .bg(theme.overlay_bg)
-                        .border_1()
-                        .border_color(theme.overlay_border)
-                        .shadow(popover_shadow(theme))
+                        .role(gpui::Role::Group)
+                        .aria_label(title)
                         .child(
                             div()
                                 .px(SPACE_MD)
@@ -435,9 +455,32 @@ impl CalendarView {
                                 .text_size(TEXT_XS)
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(theme.text_faint)
-                                .child("CALENDARS"),
+                                .child(title.to_uppercase()),
                         )
-                        .children(rows),
+                        .children(calendars.into_iter().map(|(ix, c)| row(ix, c)))
+                })
+            };
+            deferred(
+                anchored().snap_to_window_with_margin(px(8.)).child(
+                    div()
+                        .id("calendars-menu")
+                        .occlude()
+                        .role(gpui::Role::Group)
+                        .aria_label("Calendars")
+                        .mt(SPACE_2XL)
+                        .w(px(260.))
+                        .max_h(px(440.))
+                        .overflow_y_scroll()
+                        .p(SPACE_XS)
+                        .flex()
+                        .flex_col()
+                        .rounded(RADIUS_MD)
+                        .bg(theme.overlay_bg)
+                        .border_1()
+                        .border_color(theme.overlay_border)
+                        .shadow(popover_shadow(theme))
+                        .children(section("My calendars", mine))
+                        .children(section("Other calendars", others)),
                 ),
             )
             .with_priority(2)

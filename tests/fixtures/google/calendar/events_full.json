@@ -1,0 +1,47 @@
+{
+  "kind": "calendar#events",
+  "summary": "primary@example.com",
+  "timeZone": "America/Los_Angeles",
+  "accessRole": "owner",
+  "defaultReminders": [{ "method": "popup", "minutes": 30 }],
+  "nextPageToken": "p2",
+  "items": [
+    {
+      "kind": "calendar#event",
+      "etag": "\"10\"",
+      "id": "standup",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=c3RhbmR1cA",
+      "summary": "Standup",
+      "organizer": { "email": "primary@example.com", "self": true },
+      "start": { "dateTime": "2026-10-19T09:00:00-07:00", "timeZone": "America/Los_Angeles" },
+      "end": { "dateTime": "2026-10-19T09:15:00-07:00", "timeZone": "America/Los_Angeles" },
+      "recurrence": ["RRULE:FREQ=WEEKLY;WKST=MO;BYDAY=MO,TU,WE,TH,FR"],
+      "iCalUID": "standup@google.com",
+      "reminders": { "useDefault": true },
+      "eventType": "default"
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"11\"",
+      "id": "standup_20261028T160000Z",
+      "status": "cancelled",
+      "recurringEventId": "standup",
+      "originalStartTime": { "dateTime": "2026-10-28T09:00:00-07:00", "timeZone": "America/Los_Angeles" }
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"12\"",
+      "id": "offsite",
+      "status": "confirmed",
+      "summary": "Offsite",
+      "organizer": { "email": "primary@example.com", "self": true },
+      "start": { "date": "2026-10-29" },
+      "end": { "date": "2026-10-31" },
+      "transparency": "transparent",
+      "iCalUID": "offsite@google.com",
+      "reminders": { "useDefault": false },
+      "eventType": "default"
+    }
+  ]
+}

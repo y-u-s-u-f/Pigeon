@@ -1,0 +1,65 @@
+{
+  "kind": "calendar#events",
+  "summary": "primary@example.com",
+  "timeZone": "America/Los_Angeles",
+  "accessRole": "owner",
+  "nextSyncToken": "sync-1",
+  "items": [
+    {
+      "kind": "calendar#event",
+      "etag": "\"13\"",
+      "id": "standup_20261030T160000Z",
+      "status": "confirmed",
+      "summary": "Standup",
+      "organizer": { "email": "primary@example.com", "self": true },
+      "start": { "dateTime": "2026-10-30T11:00:00-07:00", "timeZone": "America/Los_Angeles" },
+      "end": { "dateTime": "2026-10-30T11:15:00-07:00", "timeZone": "America/Los_Angeles" },
+      "recurringEventId": "standup",
+      "originalStartTime": { "dateTime": "2026-10-30T09:00:00-07:00", "timeZone": "America/Los_Angeles" },
+      "iCalUID": "standup@google.com",
+      "reminders": { "useDefault": true },
+      "eventType": "default"
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"14\"",
+      "id": "odd",
+      "status": "confirmed",
+      "summary": "Odd rule",
+      "organizer": { "email": "primary@example.com", "self": true },
+      "start": { "dateTime": "2026-09-29T12:00:00-07:00", "timeZone": "America/Los_Angeles" },
+      "end": { "dateTime": "2026-09-29T13:00:00-07:00", "timeZone": "America/Los_Angeles" },
+      "recurrence": ["RRULE:FREQ=MONTHLY;BYSETPOS=-1;BYDAY=TU"],
+      "iCalUID": "odd@google.com",
+      "reminders": { "useDefault": true },
+      "eventType": "default"
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"15\"",
+      "id": "review",
+      "status": "confirmed",
+      "summary": "Review",
+      "organizer": { "email": "boss@example.com", "displayName": "Boss" },
+      "attendees": [
+        { "email": "boss@example.com", "organizer": true, "responseStatus": "accepted" },
+        { "email": "primary@example.com", "self": true, "responseStatus": "needsAction" }
+      ],
+      "start": { "dateTime": "2026-10-28T13:00:00-04:00", "timeZone": "America/New_York" },
+      "end": { "dateTime": "2026-10-28T14:00:00-04:00", "timeZone": "America/New_York" },
+      "iCalUID": "review@example.com",
+      "reminders": { "useDefault": true },
+      "eventType": "default"
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"16\"",
+      "id": "loc",
+      "status": "confirmed",
+      "summary": "Home",
+      "start": { "date": "2026-10-27" },
+      "end": { "date": "2026-10-28" },
+      "eventType": "workingLocation"
+    }
+  ]
+}

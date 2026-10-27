@@ -134,17 +134,36 @@ impl PigeonApp {
 
     // Calendar.
 
+    /// Reload the events from the store, in place; new ones join, and ones
+    /// no longer stored go. An event shared into several calendars has a
+    /// copy in each, under one id. Selection and the view stay put: they
+    /// go by id and date.
     fn on_events_changed(&mut self, ids: &[String], cx: &mut Context<Self>) {
-        let events = self.backend.read(cx).load_events(ids);
+        let mut fresh = self.backend.read(cx).load_events(ids);
+        let gone: Vec<String> = ids
+            .iter()
+            .filter(|id| !fresh.iter().any(|e| &e.id == *id))
+            .cloned()
+            .collect();
         self.calendar.update(cx, |calendar, cx| {
-            for event in events {
-                match calendar.data.event_ix(&event.id) {
-                    Some(ix) => calendar.data.events[ix] = event,
-                    None => calendar.data.events.push(event),
+            calendar.data.events.retain_mut(|event| {
+                if !ids.contains(&event.id) {
+                    return true;
                 }
-            }
+                match fresh.iter().position(|e| e.id == event.id) {
+                    Some(ix) => {
+                        *event = fresh.remove(ix);
+                        true
+                    }
+                    None => false,
+                }
+            });
+            calendar.data.events.append(&mut fresh);
             cx.notify();
         });
+        if !gone.is_empty() {
+            self.on_events_removed(&gone, cx);
+        }
     }
 
     fn on_events_removed(&mut self, ids: &[String], cx: &mut Context<Self>) {

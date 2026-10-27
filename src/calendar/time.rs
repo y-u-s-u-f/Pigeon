@@ -1,6 +1,9 @@
 //! Date math, formatting and lenient parsing of typed dates and times.
 
-use chrono::{Datelike, Duration, Months, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Weekday};
+use chrono::{
+    DateTime, Datelike, Duration, Local, Months, NaiveDate, NaiveDateTime, NaiveTime,
+    TimeZone as _, Timelike, Utc, Weekday,
+};
 
 /// Weeks start on Monday.
 pub fn week_start(date: NaiveDate) -> NaiveDate {
@@ -261,6 +264,41 @@ fn parse_relative(text: &str, today: NaiveDate) -> Option<NaiveDate> {
         }
         _ => return None,
     })
+}
+
+/// The user's zone: its IANA name, and conversions between UTC and its
+/// wall clock. Tests pass a fixed one, so they don't depend on the machine.
+#[derive(Clone, Copy, Debug)]
+pub struct LocalZone {
+    pub name: &'static str,
+    pub to_local: fn(DateTime<Utc>) -> NaiveDateTime,
+    #[allow(dead_code)] // Calendar writes (W7).
+    pub to_utc: fn(NaiveDateTime) -> DateTime<Utc>,
+}
+
+impl LocalZone {
+    /// The system's zone (`iana-time-zone`, converted with `chrono::Local`).
+    pub fn system() -> Self {
+        static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let name =
+            NAME.get_or_init(|| iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into()));
+        Self {
+            name,
+            to_local: |t| t.with_timezone(&Local).naive_local(),
+            to_utc: |t| {
+                Local
+                    .from_local_datetime(&t)
+                    .earliest()
+                    // A wall time skipped by a DST change: an hour on.
+                    .or_else(|| {
+                        Local
+                            .from_local_datetime(&(t + Duration::hours(1)))
+                            .earliest()
+                    })
+                    .map_or_else(|| t.and_utc(), |t| t.to_utc())
+            },
+        }
+    }
 }
 
 #[cfg(test)]

@@ -1,0 +1,38 @@
+{
+  "kind": "calendar#events",
+  "summary": "primary@example.com",
+  "timeZone": "America/Los_Angeles",
+  "accessRole": "owner",
+  "items": [
+    {
+      "kind": "calendar#event",
+      "etag": "\"20\"",
+      "id": "odd_20261027T190000Z",
+      "status": "confirmed",
+      "summary": "Odd rule",
+      "organizer": { "email": "primary@example.com", "self": true },
+      "start": { "dateTime": "2026-10-27T12:00:00-07:00", "timeZone": "America/Los_Angeles" },
+      "end": { "dateTime": "2026-10-27T13:00:00-07:00", "timeZone": "America/Los_Angeles" },
+      "recurringEventId": "odd",
+      "originalStartTime": { "dateTime": "2026-10-27T12:00:00-07:00", "timeZone": "America/Los_Angeles" },
+      "iCalUID": "odd@google.com",
+      "reminders": { "useDefault": true },
+      "eventType": "default"
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"21\"",
+      "id": "odd_20261124T200000Z",
+      "status": "confirmed",
+      "summary": "Odd rule",
+      "organizer": { "email": "primary@example.com", "self": true },
+      "start": { "dateTime": "2026-11-24T12:00:00-08:00", "timeZone": "America/Los_Angeles" },
+      "end": { "dateTime": "2026-11-24T13:00:00-08:00", "timeZone": "America/Los_Angeles" },
+      "recurringEventId": "odd",
+      "originalStartTime": { "dateTime": "2026-11-24T12:00:00-08:00", "timeZone": "America/Los_Angeles" },
+      "iCalUID": "odd@google.com",
+      "reminders": { "useDefault": true },
+      "eventType": "default"
+    }
+  ]
+}

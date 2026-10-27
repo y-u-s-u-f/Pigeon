@@ -1,0 +1,57 @@
+{
+  "kind": "calendar#calendarList",
+  "etag": "\"p32o\"",
+  "nextSyncToken": "list-1",
+  "items": [
+    {
+      "kind": "calendar#calendarListEntry",
+      "etag": "\"1\"",
+      "id": "primary@example.com",
+      "summary": "primary@example.com",
+      "summaryOverride": "Me",
+      "timeZone": "America/Los_Angeles",
+      "colorId": "14",
+      "backgroundColor": "#9fe1e7",
+      "foregroundColor": "#000000",
+      "selected": true,
+      "accessRole": "owner",
+      "defaultReminders": [{ "method": "popup", "minutes": 30 }],
+      "primary": true
+    },
+    {
+      "kind": "calendar#calendarListEntry",
+      "etag": "\"2\"",
+      "id": "team@example.com",
+      "summary": "Team",
+      "timeZone": "America/Los_Angeles",
+      "colorId": "19",
+      "backgroundColor": "#b8b8b8",
+      "foregroundColor": "#ffffff",
+      "selected": true,
+      "accessRole": "writer",
+      "defaultReminders": []
+    },
+    {
+      "kind": "calendar#calendarListEntry",
+      "etag": "\"3\"",
+      "id": "en.usa#holiday@group.v.calendar.google.com",
+      "summary": "Holidays",
+      "timeZone": "America/Los_Angeles",
+      "colorId": "7",
+      "accessRole": "reader",
+      "defaultReminders": []
+    },
+    {
+      "kind": "calendar#calendarListEntry",
+      "etag": "\"4\"",
+      "id": "hidden@example.com",
+      "summary": "Hidden",
+      "timeZone": "UTC",
+      "colorId": "24",
+      "backgroundColor": "#a47ae2",
+      "hidden": true,
+      "accessRole": "owner",
+      "defaultReminders": []
+    }
+  ]
+}

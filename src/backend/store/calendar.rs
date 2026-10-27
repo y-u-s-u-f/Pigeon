@@ -1,6 +1,7 @@
 //! Calendars and events in the store. Events are kept whole as JSON
 //! (`model`), with the columns lookups need beside it.
 
+use chrono::NaiveDateTime;
 use rusqlite::{OptionalExtension as _, Transaction, params};
 
 use super::Store;
@@ -88,8 +89,11 @@ impl Store {
         ids: Option<&[String]>,
     ) -> anyhow::Result<Vec<Event>> {
         let conn = self.conn();
-        let mut stmt =
-            conn.prepare("SELECT id, model FROM events WHERE account = ?1 ORDER BY rowid")?;
+        // Cancelled instances are kept only as their series' exceptions.
+        let mut stmt = conn.prepare(
+            "SELECT id, model FROM events
+             WHERE account = ?1 AND (status IS NULL OR status != 'cancelled') ORDER BY rowid",
+        )?;
         let mut rows = stmt.query([account])?;
         let mut events = Vec::new();
         while let Some(r) = rows.next()? {
@@ -113,6 +117,234 @@ impl Store {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    // Google sync (W4): calendars by their list entry, events per calendar
+    // with Google's JSON beside them.
+
+    /// A calendar from Google's list; its sync token stays.
+    pub fn put_google_calendar(
+        &self,
+        account: &str,
+        c: &Calendar,
+        hidden: bool,
+    ) -> anyhow::Result<()> {
+        self.conn().execute(
+            "INSERT INTO calendars (account, id, summary, bg, selected, hidden, access_role,
+                is_primary, time_zone, default_reminder)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT (account, id) DO UPDATE SET
+                summary = excluded.summary, bg = excluded.bg, selected = excluded.selected,
+                hidden = excluded.hidden, access_role = excluded.access_role,
+                is_primary = excluded.is_primary, time_zone = excluded.time_zone,
+                default_reminder = excluded.default_reminder",
+            params![
+                account,
+                c.id,
+                c.name,
+                crate::data::to_hex(c.color),
+                c.visible,
+                hidden,
+                c.access_role.key(),
+                c.primary,
+                c.time_zone,
+                c.default_reminder,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Every stored calendar, hidden ones too.
+    pub fn all_calendar_ids(&self, account: &str) -> anyhow::Result<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT id FROM calendars WHERE account = ?1 ORDER BY rowid")?;
+        let rows = stmt.query_map([account], |r| r.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The calendars whose events to sync, with their default reminder:
+    /// not hidden, and not free/busy only (Google lists no events there).
+    pub fn calendars_to_sync(&self, account: &str) -> anyhow::Result<Vec<(String, Option<u32>)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, default_reminder FROM calendars
+             WHERE account = ?1 AND hidden = 0 AND access_role != 'freeBusyReader'
+             ORDER BY rowid",
+        )?;
+        let rows = stmt.query_map([account], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// A calendar and its events; returns the events' ids.
+    pub fn delete_calendar(&self, account: &str, id: &str) -> anyhow::Result<Vec<String>> {
+        let removed = self.delete_calendar_events(account, id, None)?;
+        self.conn().execute(
+            "DELETE FROM calendars WHERE account = ?1 AND id = ?2",
+            params![account, id],
+        )?;
+        Ok(removed)
+    }
+
+    pub fn calendar_sync_token(&self, account: &str, id: &str) -> anyhow::Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT sync_token FROM calendars WHERE account = ?1 AND id = ?2",
+                params![account, id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    pub fn set_calendar_sync_token(
+        &self,
+        account: &str,
+        id: &str,
+        token: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.conn().execute(
+            "UPDATE calendars SET sync_token = ?3 WHERE account = ?1 AND id = ?2",
+            params![account, id, token],
+        )?;
+        Ok(())
+    }
+
+    /// Every event row in a calendar, cancelled instances too.
+    pub fn calendar_event_ids(&self, account: &str, calendar: &str) -> anyhow::Result<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id FROM events WHERE account = ?1 AND calendar_id = ?2 ORDER BY rowid",
+        )?;
+        let rows = stmt.query_map(params![account, calendar], |r| r.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The events `ids` in a calendar and their series' instances, or with
+    /// `None` all of the calendar's. Returns the ids deleted.
+    pub fn delete_calendar_events(
+        &self,
+        account: &str,
+        calendar: &str,
+        ids: Option<&[String]>,
+    ) -> anyhow::Result<Vec<String>> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let mut removed = Vec::new();
+        {
+            let mut select = tx.prepare(
+                "SELECT id, recurring_event_id FROM events WHERE account = ?1 AND calendar_id = ?2",
+            )?;
+            let rows = select.query_map(params![account, calendar], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            })?;
+            for row in rows {
+                let (id, series) = row?;
+                let goes = ids.is_none_or(|ids| {
+                    ids.contains(&id) || series.as_ref().is_some_and(|s| ids.contains(s))
+                });
+                if goes {
+                    removed.push(id);
+                }
+            }
+            let mut delete = tx.prepare(
+                "DELETE FROM events WHERE account = ?1 AND calendar_id = ?2 AND id = ?3",
+            )?;
+            for id in &removed {
+                delete.execute(params![account, calendar, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(removed)
+    }
+
+    /// Events from Google, each with its JSON.
+    pub fn put_google_events(
+        &self,
+        account: &str,
+        events: &[(Event, String)],
+    ) -> anyhow::Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        for (event, json) in events {
+            write_event(&tx, account, event)?;
+            tx.execute(
+                "UPDATE events SET json = ?4 WHERE account = ?1 AND calendar_id = ?2 AND id = ?3",
+                params![account, event.calendar, event.id, json],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// One event in a calendar, cancelled or not, with Google's JSON.
+    pub fn calendar_event(
+        &self,
+        account: &str,
+        calendar: &str,
+        id: &str,
+    ) -> anyhow::Result<Option<(Event, Option<String>)>> {
+        let row: Option<(String, Option<String>)> = self
+            .conn()
+            .query_row(
+                "SELECT model, json FROM events WHERE account = ?1 AND calendar_id = ?2 AND id = ?3",
+                params![account, calendar, id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        Ok(match row {
+            Some((model, json)) => Some((serde_json::from_str(&model)?, json)),
+            None => None,
+        })
+    }
+
+    /// Where the rule put each instance of `series` stored on its own,
+    /// moved or cancelled.
+    pub fn instance_starts(
+        &self,
+        account: &str,
+        calendar: &str,
+        series: &str,
+    ) -> anyhow::Result<Vec<NaiveDateTime>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT model FROM events
+             WHERE account = ?1 AND calendar_id = ?2 AND recurring_event_id = ?3",
+        )?;
+        let rows = stmt.query_map(params![account, calendar, series], |r| {
+            r.get::<_, String>(0)
+        })?;
+        let mut out = Vec::new();
+        for model in rows {
+            let event: Event = serde_json::from_str(&model?)?;
+            out.extend(event.original_start);
+        }
+        Ok(out)
+    }
+
+    /// The shown instances of `series` (cancelled ones stay); returns
+    /// their ids.
+    pub fn delete_instances(
+        &self,
+        account: &str,
+        calendar: &str,
+        series: &str,
+    ) -> anyhow::Result<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id FROM events WHERE account = ?1 AND calendar_id = ?2
+                AND recurring_event_id = ?3 AND (status IS NULL OR status != 'cancelled')",
+        )?;
+        let ids: Vec<String> = stmt
+            .query_map(params![account, calendar, series], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        conn.execute(
+            "DELETE FROM events WHERE account = ?1 AND calendar_id = ?2
+                AND recurring_event_id = ?3 AND (status IS NULL OR status != 'cancelled')",
+            params![account, calendar, series],
+        )?;
+        Ok(ids)
     }
 
     /// Apply a calendar op the way Google will (or, in demo mode, instead
