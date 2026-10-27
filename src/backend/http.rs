@@ -515,7 +515,46 @@ impl Transport for GoogleTransport {
     }
 }
 
-// Tests' transport.
+// Tests' clock and transport.
+
+/// Time that moves only when slept through; jitter is always 250 ms.
+#[cfg(test)]
+pub struct FakeClock {
+    start: Instant,
+    offset: Mutex<Duration>,
+    sleeps: Mutex<Vec<Duration>>,
+}
+
+#[cfg(test)]
+impl FakeClock {
+    pub fn new() -> Self {
+        Self {
+            start: Instant::now(),
+            offset: Mutex::new(Duration::ZERO),
+            sleeps: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn sleeps(&self) -> Vec<Duration> {
+        self.sleeps.lock().unwrap().clone()
+    }
+}
+
+#[cfg(test)]
+impl Clock for FakeClock {
+    fn now(&self) -> Instant {
+        self.start + *self.offset.lock().unwrap()
+    }
+
+    fn sleep(&self, duration: Duration) {
+        *self.offset.lock().unwrap() += duration;
+        self.sleeps.lock().unwrap().push(duration);
+    }
+
+    fn jitter(&self) -> Duration {
+        Duration::from_millis(250)
+    }
+}
 
 /// Answers requests from a script: each route matches a method, a path and
 /// some query pairs, and replies with its responses in turn, the last one
@@ -783,42 +822,6 @@ mod tests {
         assert_eq!(second.status, 404);
         // Item 3 is missing from the response.
         assert!(parts[2].is_none());
-    }
-
-    /// Time that moves only when slept through.
-    struct FakeClock {
-        start: Instant,
-        offset: Mutex<Duration>,
-        sleeps: Mutex<Vec<Duration>>,
-    }
-
-    impl FakeClock {
-        fn new() -> Self {
-            Self {
-                start: Instant::now(),
-                offset: Mutex::new(Duration::ZERO),
-                sleeps: Mutex::new(Vec::new()),
-            }
-        }
-
-        fn sleeps(&self) -> Vec<Duration> {
-            self.sleeps.lock().unwrap().clone()
-        }
-    }
-
-    impl Clock for FakeClock {
-        fn now(&self) -> Instant {
-            self.start + *self.offset.lock().unwrap()
-        }
-
-        fn sleep(&self, duration: Duration) {
-            *self.offset.lock().unwrap() += duration;
-            self.sleeps.lock().unwrap().push(duration);
-        }
-
-        fn jitter(&self) -> Duration {
-            Duration::from_millis(250)
-        }
     }
 
     /// Hands out `token-1`, then `token-2` after each invalidation.

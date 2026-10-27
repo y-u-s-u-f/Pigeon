@@ -1,12 +1,12 @@
 //! Gmail: the API types and calls (W3), and how Gmail's labels map onto
 //! Pigeon's model (DAT-2).
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, FixedOffset, Local, TimeZone as _};
 use serde::Deserialize;
 
-use super::http::{self, Request, Response, Transport, TransportError};
+use super::http::{self, Clock, Request, Response, SystemClock, Transport, TransportError};
 use crate::data::{Body, Contact, DraftOrigin, Folder, Label, Loaded, Message, Thread};
 
 pub const INBOX: &str = "INBOX";
@@ -436,56 +436,118 @@ pub fn drafts_list_request(page: Option<&str>) -> Request {
     Request::get(url, cost::DRAFTS_LIST)
 }
 
+/// Calls per HTTP batch. Gmail runs a batch's calls in parallel and caps
+/// how many run at once per user: at 50 `threads.get` (Google's suggested
+/// ceiling) it answers some with 429 "Too many concurrent requests for
+/// user". 20 stays under it, and costs no speed: 20 `threads.get` are 800
+/// units, so sync is bound by the quota (5,000 a minute) anyway.
+pub const BATCH_SIZE: usize = 20;
+
 /// Gmail's calls over a transport. Blocking; called off the main thread.
 #[derive(Clone)]
 pub struct Gmail {
     transport: Arc<dyn Transport>,
+    clock: Arc<dyn Clock>,
+    /// One batch in flight at a time, shared by every clone (sync and
+    /// bodies), so their calls don't add up to too many at once.
+    batching: Arc<Mutex<()>>,
 }
 
 impl Gmail {
     pub fn new(transport: Arc<dyn Transport>) -> Self {
-        Self { transport }
+        Self::with_clock(transport, Arc::new(SystemClock))
+    }
+
+    pub fn with_clock(transport: Arc<dyn Transport>, clock: Arc<dyn Clock>) -> Self {
+        Self {
+            transport,
+            clock,
+            batching: Arc::default(),
+        }
     }
 
     pub fn call<T: serde::de::DeserializeOwned>(&self, request: &Request) -> Result<T, GmailError> {
         parse(&self.transport.send(request)?)
     }
 
-    /// Each request's answer, in order, sent in HTTP batches of at most 50.
+    /// Each request's answer, in order, sent in HTTP batches of at most
+    /// `BATCH_SIZE`, one after another. Calls answered with a rate limit or
+    /// a server error (429, 5xx, rate-limit 403) go again after the
+    /// transport's backoff, up to `MAX_ATTEMPTS` tries; the others are
+    /// answered as they came.
     pub fn batch<T: serde::de::DeserializeOwned>(
         &self,
         requests: &[Request],
     ) -> Vec<Result<T, GmailError>> {
-        let mut out = Vec::with_capacity(requests.len());
-        for chunk in requests.chunks(http::BATCH_LIMIT) {
-            let batch = http::encode_batch(BATCH_ENDPOINT, chunk, "batch_pigeon");
-            let response = match self.transport.send(&batch) {
-                Ok(r) if r.is_success() => r,
-                Ok(r) => {
-                    let e = parse::<serde_json::Value>(&r)
-                        .err()
-                        .unwrap_or(GmailError::Status {
-                            status: r.status,
-                            message: String::new(),
-                        });
-                    out.extend(chunk.iter().map(|_| Err(e.clone())));
-                    continue;
+        let mut out: Vec<Option<Result<T, GmailError>>> = std::iter::repeat_with(|| None)
+            .take(requests.len())
+            .collect();
+        let mut pending: Vec<usize> = (0..requests.len()).collect();
+        let mut attempt = 0;
+        while !pending.is_empty() {
+            let last = attempt + 1 >= http::MAX_ATTEMPTS;
+            let mut retry = Vec::new();
+            for chunk in pending.chunks(BATCH_SIZE) {
+                let calls: Vec<Request> = chunk.iter().map(|&ix| requests[ix].clone()).collect();
+                for (&ix, part) in chunk.iter().zip(self.send_batch(&calls)) {
+                    match part {
+                        Ok(r) if !last && http::is_retryable(&r) => retry.push(ix),
+                        Ok(r) => out[ix] = Some(parse(&r)),
+                        Err(e) => out[ix] = Some(Err(e)),
+                    }
                 }
-                Err(e) => {
-                    let e = GmailError::from(e);
-                    out.extend(chunk.iter().map(|_| Err(e.clone())));
-                    continue;
-                }
-            };
-            match http::decode_batch(&response, chunk.len()) {
-                Ok(parts) => out.extend(parts.into_iter().map(|part| match part {
-                    Some(part) => parse(&part),
-                    None => Err(GmailError::Parse("missing from the batch".into())),
-                })),
-                Err(e) => out.extend(chunk.iter().map(|_| Err(GmailError::Parse(e.clone())))),
             }
+            if !retry.is_empty() {
+                let wait = http::backoff(attempt, self.clock.jitter());
+                eprintln!(
+                    "Pigeon: Gmail batch: {} of {} calls rate-limited; retrying in {:.1}s",
+                    retry.len(),
+                    pending.len(),
+                    wait.as_secs_f32()
+                );
+                self.clock.sleep(wait);
+            }
+            pending = retry;
+            attempt += 1;
         }
-        out
+        out.into_iter()
+            .map(|r| r.expect("every call answered"))
+            .collect()
+    }
+
+    /// One HTTP batch: each call's response, or why there's none.
+    fn send_batch(&self, calls: &[Request]) -> Vec<Result<Response, GmailError>> {
+        let batch = http::encode_batch(BATCH_ENDPOINT, calls, "batch_pigeon");
+        let sent = {
+            let _one = self.batching.lock().unwrap_or_else(|e| e.into_inner());
+            self.transport.send(&batch)
+        };
+        let response = match sent {
+            Ok(r) if r.is_success() => r,
+            Ok(r) => {
+                let e = parse::<serde_json::Value>(&r)
+                    .err()
+                    .unwrap_or(GmailError::Status {
+                        status: r.status,
+                        message: String::new(),
+                    });
+                return calls.iter().map(|_| Err(e.clone())).collect();
+            }
+            Err(e) => {
+                let e = GmailError::from(e);
+                return calls.iter().map(|_| Err(e.clone())).collect();
+            }
+        };
+        match http::decode_batch(&response, calls.len()) {
+            Ok(parts) => parts
+                .into_iter()
+                .map(|part| part.ok_or_else(|| GmailError::Parse("missing from the batch".into())))
+                .collect(),
+            Err(e) => calls
+                .iter()
+                .map(|_| Err(GmailError::Parse(e.clone())))
+                .collect(),
+        }
     }
 }
 
@@ -863,6 +925,105 @@ mod tests {
         assert_eq!(results[0].as_ref().unwrap()["id"], "thread-a1");
         assert!(results[1].as_ref().unwrap_err().is_not_found());
         assert!(results[2].is_err());
+    }
+
+    /// Answers batches with boundary `b`.
+    struct Batches(Arc<FakeTransport>);
+    impl Transport for Batches {
+        fn send(&self, r: &Request) -> Result<Response, TransportError> {
+            let mut response = self.0.send(r)?;
+            response.headers = vec![("Content-Type".into(), "multipart/mixed; boundary=b".into())];
+            Ok(response)
+        }
+    }
+
+    fn batch_body(parts: &[(u16, &str)]) -> String {
+        let mut out = String::new();
+        for (ix, (status, body)) in parts.iter().enumerate() {
+            out.push_str(&format!(
+                "--b\r\nContent-ID: <response-item-{}>\r\n\r\nHTTP/1.1 {status} X\r\n\r\n{body}\r\n",
+                ix + 1
+            ));
+        }
+        out + "--b--\r\n"
+    }
+
+    /// The paths a batch request carries, in order.
+    fn batch_paths(request: &Request) -> Vec<String> {
+        String::from_utf8_lossy(&request.body)
+            .lines()
+            .filter_map(|l| l.strip_prefix("GET "))
+            .map(|l| l.split(['?', ' ']).next().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn rate_limited_calls_in_a_batch_retry_alone() {
+        let busy = r#"{"error":{"code":429,"message":"Too many concurrent requests for user."}}"#;
+        let limited = r#"{"error":{"code":403,"errors":[{"reason":"rateLimitExceeded"}]}}"#;
+        let first = batch_body(&[
+            (200, r#"{"id":"a"}"#),
+            (429, busy),
+            (404, r#"{"error":{"code":404}}"#),
+            (403, limited),
+        ]);
+        let second = batch_body(&[(200, r#"{"id":"b"}"#), (503, "{}")]);
+        let third = batch_body(&[(200, r#"{"id":"d"}"#)]);
+        let fake = Arc::new(FakeTransport::new().on(
+            "POST",
+            "/batch/gmail/v1",
+            &[],
+            &[(200, &first), (200, &second), (200, &third)],
+        ));
+        let clock = Arc::new(http::FakeClock::new());
+        let gmail = Gmail::with_clock(Arc::new(Batches(fake.clone())), clock.clone());
+        let requests: Vec<Request> = ["a", "b", "c", "d"]
+            .iter()
+            .map(|id| thread_get_request(id))
+            .collect();
+        let results = gmail.batch::<serde_json::Value>(&requests);
+        assert_eq!(results[0].as_ref().unwrap()["id"], "a");
+        assert_eq!(results[1].as_ref().unwrap()["id"], "b");
+        assert!(results[2].as_ref().unwrap_err().is_not_found());
+        assert_eq!(results[3].as_ref().unwrap()["id"], "d");
+        let sent: Vec<Vec<String>> = fake.requests().iter().map(batch_paths).collect();
+        let path = |id: &str| format!("/gmail/v1/users/me/threads/{id}");
+        assert_eq!(
+            sent,
+            [
+                vec![path("a"), path("b"), path("c"), path("d")],
+                vec![path("b"), path("d")],
+                vec![path("d")],
+            ]
+        );
+        let j = std::time::Duration::from_millis(250);
+        assert_eq!(
+            clock.sleeps(),
+            [
+                std::time::Duration::from_secs(1) + j,
+                std::time::Duration::from_secs(2) + j
+            ]
+        );
+    }
+
+    #[test]
+    fn batches_hold_at_most_batch_size_calls() {
+        let fake = Arc::new(FakeTransport::new().on("POST", "/batch/gmail/v1", &[], &[(200, "")]));
+        let gmail = Gmail::with_clock(
+            Arc::new(Batches(fake.clone())),
+            Arc::new(http::FakeClock::new()),
+        );
+        let requests: Vec<Request> = (0..45)
+            .map(|i| thread_get_request(&format!("t{i}")))
+            .collect();
+        let results = gmail.batch::<serde_json::Value>(&requests);
+        assert_eq!(results.len(), 45);
+        let sizes: Vec<usize> = fake
+            .requests()
+            .iter()
+            .map(|r| batch_paths(r).len())
+            .collect();
+        assert_eq!(sizes, [BATCH_SIZE, BATCH_SIZE, 5]);
     }
 
     #[test]

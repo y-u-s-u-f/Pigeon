@@ -59,6 +59,8 @@ pub struct SyncState {
     loaded: Vec<Folder>,
     /// Threads fetched and queued in this pass, for the status line.
     progress: (usize, usize),
+    /// The rest of a pass that stopped on an error: the next one resumes it.
+    resume: VecDeque<Step>,
     last_error: Option<String>,
     _pass: Option<Task<()>>,
     _timer: Option<Task<()>>,
@@ -84,7 +86,7 @@ enum Step {
         page: Option<String>,
         seen: usize,
     },
-    /// Up to 50 threads, by id: one HTTP batch.
+    /// Up to `gmail::BATCH_SIZE` threads, by id: one HTTP batch.
     Fetch(Vec<String>),
     Drafts,
     Labels,
@@ -291,7 +293,7 @@ impl MailSync {
         let changed = changed_threads(&list.threads, &stored);
         let seen = seen + list.threads.len();
         let mut next: Vec<Step> = changed
-            .chunks(super::http::BATCH_LIMIT)
+            .chunks(gmail::BATCH_SIZE)
             .map(|chunk| Step::Fetch(chunk.to_vec()))
             .collect();
         if kind == ListKind::Backfill
@@ -315,6 +317,7 @@ impl MailSync {
         let requests: Vec<_> = ids.iter().map(|id| gmail::thread_get_request(id)).collect();
         let mut threads: Vec<Thread> = Vec::new();
         let mut removed = Vec::new();
+        let mut failed = Vec::new();
         let mut error = None;
         for (id, result) in ids
             .iter()
@@ -327,17 +330,27 @@ impl MailSync {
                     None => removed.push(id.clone()),
                 },
                 Err(e) if e.is_not_found() => removed.push(id.clone()),
-                Err(e) => error = Some(e),
+                Err(e) => {
+                    failed.push(id.clone());
+                    error = Some(e);
+                }
             }
         }
         let changed: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
         let fetched = changed.len() + removed.len();
         tri!(self.store.put_synced_threads(&self.account, threads));
         tri!(self.store.delete_threads(&self.account, &removed));
+        // The next pass picks up only the ones that failed.
+        let next = if failed.is_empty() {
+            Vec::new()
+        } else {
+            vec![Step::Fetch(failed)]
+        };
         Outcome {
             changed,
             removed,
             fetched,
+            next,
             error,
             ..Default::default()
         }
@@ -509,6 +522,21 @@ impl MailSync {
     }
 }
 
+/// Puts the steps `outcome` asks for at the front of `plan`. A step that
+/// failed without saying how to go on goes back to the front itself, so
+/// the next pass resumes there instead of starting over.
+fn advance(plan: &mut VecDeque<Step>, step: Step, outcome: &mut Outcome) {
+    if outcome.replan {
+        plan.clear();
+    }
+    if outcome.error.is_some() && outcome.next.is_empty() {
+        outcome.next.push(step);
+    }
+    for step in outcome.next.drain(..).rev() {
+        plan.push_front(step);
+    }
+}
+
 /// The listed threads the store lacks, or has at another history id.
 fn changed_threads(listed: &[gmail::ThreadRef], stored: &HashMap<String, u64>) -> Vec<String> {
     listed
@@ -523,7 +551,7 @@ fn changed_threads(listed: &[gmail::ThreadRef], stored: &HashMap<String, u64>) -
 fn partial_plan(history: &[gmail::History], latest: u64) -> Outcome {
     let touched = gmail::touched_threads(history);
     let mut next: Vec<Step> = touched
-        .chunks(super::http::BATCH_LIMIT)
+        .chunks(gmail::BATCH_SIZE)
         .map(|chunk| Step::Fetch(chunk.to_vec()))
         .collect();
     if gmail::touches_drafts(history) {
@@ -603,33 +631,33 @@ impl Backend {
         self.sync.running = true;
         self.sync.again = false;
         self.sync._timer = None;
-        self.sync.progress = (0, 0);
         let worker = MailSync {
             gmail,
             store: self.store.clone(),
             account: self.email().to_string(),
         };
-        let plan = if self.sync.full_done {
-            vec![Step::Partial]
+        // A pass that stopped on an error goes on from there.
+        let plan = if !self.sync.resume.is_empty() {
+            std::mem::take(&mut self.sync.resume)
+        } else if self.sync.full_done {
+            self.sync.progress = (0, 0);
+            VecDeque::from([Step::Partial])
         } else {
+            self.sync.progress = (0, 0);
             self.set_status(SyncStatus::Syncing { done: 0, total: 0 }, cx);
-            full_plan()
+            full_plan().into()
         };
         self.sync._pass = Some(cx.spawn(async move |this, cx| {
-            let mut plan: VecDeque<Step> = plan.into();
+            let mut plan = plan;
             let mut error = None;
             while let Some(step) = plan.pop_front() {
                 let w = worker.clone();
+                let again = step.clone();
                 let mut outcome = cx
                     .background_executor()
                     .spawn(async move { w.run(step) })
                     .await;
-                if outcome.replan {
-                    plan.clear();
-                }
-                for step in outcome.next.drain(..).rev() {
-                    plan.push_front(step);
-                }
+                advance(&mut plan, again, &mut outcome);
                 error = outcome.error.take();
                 if this
                     .update(cx, |this, cx| this.apply_outcome(outcome, cx))
@@ -641,7 +669,7 @@ impl Backend {
                     break;
                 }
             }
-            this.update(cx, |this, cx| this.pass_finished(error, cx))
+            this.update(cx, |this, cx| this.pass_finished(error, plan, cx))
                 .ok();
         }));
     }
@@ -679,8 +707,15 @@ impl Backend {
         }
     }
 
-    fn pass_finished(&mut self, error: Option<GmailError>, cx: &mut Context<Self>) {
+    /// `rest` is what's left of a plan that stopped on `error`.
+    fn pass_finished(
+        &mut self,
+        error: Option<GmailError>,
+        rest: VecDeque<Step>,
+        cx: &mut Context<Self>,
+    ) {
         self.sync.running = false;
+        self.sync.resume = rest;
         let email = self.email().to_string();
         let retry = match error {
             None => {
@@ -706,7 +741,7 @@ impl Backend {
                         let waiting = self.outbox.waiting();
                         self.set_status(SyncStatus::Offline { waiting }, cx);
                     }
-                } else {
+                } else if self.sync.full_done {
                     self.set_status(
                         SyncStatus::Synced {
                             at: super::now_ms(),
@@ -1056,7 +1091,7 @@ mod tests {
         let message = format!(r#"{{"id":"msg-a1","raw":"{raw}"}}"#);
         let body = batch_body(&[
             (200, &message),
-            (500, r#"{"error":{"message":"Backend Error"}}"#),
+            (400, r#"{"error":{"message":"Bad Request"}}"#),
         ]);
         let (sync, fake) =
             sync_batches(FakeTransport::new().on("POST", BATCH, &[], &[(200, &body)]));
@@ -1066,7 +1101,7 @@ mod tests {
         let failed = sync.fetch_bodies("thread-a1", &["msg-a1".into(), "msg-a2".into()]);
         assert_eq!(
             failed,
-            [("msg-a2".to_string(), "Gmail: Backend Error".to_string())]
+            [("msg-a2".to_string(), "Gmail: Bad Request".to_string())]
         );
         assert_eq!(fake.requests()[0].cost, 120);
         let stored = &sync.store.load_all_threads(ACCOUNT).unwrap()[0];
@@ -1087,23 +1122,76 @@ mod tests {
 
     /// Runs a plan the way the scheduler does, without the app.
     fn drive(sync: &MailSync, plan: Vec<Step>) -> Vec<Outcome> {
-        let mut plan: VecDeque<Step> = plan.into();
+        drive_rest(sync, plan.into()).0
+    }
+
+    /// Also what's left when a step fails, for the next pass.
+    fn drive_rest(sync: &MailSync, mut plan: VecDeque<Step>) -> (Vec<Outcome>, VecDeque<Step>) {
         let mut out = Vec::new();
         while let Some(step) = plan.pop_front() {
-            let mut outcome = sync.run(step);
-            if outcome.replan {
-                plan.clear();
-            }
-            for step in outcome.next.drain(..).rev() {
-                plan.push_front(step);
-            }
+            let mut outcome = sync.run(step.clone());
+            advance(&mut plan, step, &mut outcome);
             let stop = outcome.error.is_some();
             out.push(outcome);
             if stop {
                 break;
             }
         }
-        out
+        (out, plan)
+    }
+
+    #[test]
+    fn rate_limited_threads_retry_and_the_fetch_completes() {
+        let thread = include_str!("../../tests/fixtures/google/gmail/thread_metadata.json");
+        let busy = r#"{"error":{"code":429,"message":"Too many concurrent requests for user."}}"#;
+        let first = batch_body(&[(429, busy), (404, r#"{"error":{"code":404}}"#)]);
+        let second = batch_body(&[(200, thread)]);
+        let fake =
+            Arc::new(FakeTransport::new().on("POST", BATCH, &[], &[(200, &first), (200, &second)]));
+        let sync = MailSync {
+            gmail: Gmail::with_clock(
+                Arc::new(Batches(fake.clone())),
+                Arc::new(crate::backend::http::FakeClock::new()),
+            ),
+            store: Store::open_in_memory().unwrap(),
+            account: ACCOUNT.into(),
+        };
+        let outcome = sync.fetch(&["thread-a1".into(), "gone".into()]);
+        assert!(outcome.error.is_none());
+        assert!(outcome.next.is_empty());
+        assert_eq!(outcome.changed, ["thread-a1"]);
+        assert_eq!(outcome.removed, ["gone"]);
+        // The retry carried only the rate-limited thread.
+        let requests = fake.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].cost, 40);
+    }
+
+    #[test]
+    fn a_failed_step_leaves_the_rest_to_resume() {
+        let thread = include_str!("../../tests/fixtures/google/gmail/thread_metadata.json");
+        let denied = r#"{"error":{"code":400,"message":"Bad Request"}}"#;
+        let body = batch_body(&[(200, thread), (400, denied)]);
+        let (worker, _) =
+            sync_batches(FakeTransport::new().on("POST", BATCH, &[], &[(200, &body)]));
+        let plan = VecDeque::from([
+            Step::Fetch(vec!["thread-a1".into(), "bad".into()]),
+            Step::Drafts,
+            Step::Finish,
+        ]);
+        let (outcomes, rest) = drive_rest(&worker, plan);
+        assert_eq!(outcomes.len(), 1);
+        assert!(outcomes[0].error.is_some());
+        // Only the failed thread is fetched again, then the plan goes on.
+        assert_eq!(
+            rest,
+            [Step::Fetch(vec!["bad".into()]), Step::Drafts, Step::Finish]
+        );
+        // A step that fails as a whole goes back as it was.
+        let (sync, _) =
+            sync(FakeTransport::new().on("GET", "/gmail/v1/users/me/drafts", &[], &[(0, "")]));
+        let (_, rest) = drive_rest(&sync, VecDeque::from([Step::Drafts, Step::Finish]));
+        assert_eq!(rest, [Step::Drafts, Step::Finish]);
     }
 
     #[test]
