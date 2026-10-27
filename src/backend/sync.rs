@@ -37,6 +37,9 @@ pub(super) const LAST_SYNC_KEY: &str = "last_sync";
 
 const POLL_ACTIVE: Duration = Duration::from_secs(45);
 const POLL_INACTIVE: Duration = Duration::from_secs(5 * 60);
+/// Sprint 2 W1: with the window closed or behind, while notifications are
+/// on (NTF-1).
+const POLL_BACKGROUND: Duration = Duration::from_secs(60);
 const BODY_DEBOUNCE: Duration = Duration::from_millis(150);
 /// The backfill's bounds (6.4 item 2).
 const BACKFILL_MAX: usize = 1000;
@@ -50,6 +53,8 @@ pub struct SyncState {
     /// Asked to sync while a pass ran: go again once it ends.
     again: bool,
     pub(super) active: bool,
+    /// Sprint 2 W1: notifications are on, so the background poll is quicker.
+    pub(super) notifications: bool,
     /// Network failures in a row (2.9).
     failures: u32,
     /// A full sync has finished once; every view is loaded.
@@ -95,7 +100,12 @@ enum Step {
     Labels,
     /// The view's first page is stored.
     Loaded(Folder),
-    SetHistory(u64),
+    /// Move on to `history`, with the messages history added since the
+    /// last one: those still news are notified about (NTF-1).
+    SetHistory {
+        history: u64,
+        added: Vec<(String, String)>,
+    },
     /// The full sync is done: continue from the history id taken at Start.
     Finish,
     Partial,
@@ -139,6 +149,8 @@ struct Outcome {
     changed: Vec<String>,
     removed: Vec<String>,
     labels: bool,
+    /// Sprint 2 W1: mail to notify about (NTF-1).
+    new_mail: Vec<super::new_mail::NewMail>,
     aliases: Option<Vec<String>>,
     loaded: Option<Folder>,
     full_done: bool,
@@ -196,13 +208,17 @@ impl MailSync {
                 loaded: Some(folder),
                 ..Default::default()
             },
-            Step::SetHistory(id) => {
-                tri!(
-                    self.store
-                        .set_sync_state(&self.account, HISTORY_KEY, &id.to_string())
-                );
-                Outcome::default()
-            }
+            Step::SetHistory { history, added } => Outcome {
+                new_mail: tri!(super::new_mail::checkpoint(
+                    &self.store,
+                    &self.account,
+                    &added,
+                    HISTORY_KEY,
+                    history,
+                    super::now_ms(),
+                )),
+                ..Default::default()
+            },
             Step::Finish => {
                 if let Some(h0) = tri!(self.store.sync_state(&self.account, FULL_START_KEY)) {
                     tri!(self.store.set_sync_state(&self.account, HISTORY_KEY, &h0));
@@ -564,7 +580,10 @@ fn partial_plan(history: &[gmail::History], latest: u64) -> Outcome {
     if !history.is_empty() {
         next.push(Step::Labels);
     }
-    next.push(Step::SetHistory(latest));
+    next.push(Step::SetHistory {
+        history: latest,
+        added: super::new_mail::added_messages(history),
+    });
     Outcome {
         queued: touched.len(),
         next,
@@ -690,6 +709,9 @@ impl Backend {
         if !outcome.removed.is_empty() {
             cx.emit(BackendEvent::ThreadsRemoved(outcome.removed));
         }
+        if !outcome.new_mail.is_empty() {
+            cx.emit(BackendEvent::NewMail(outcome.new_mail));
+        }
         if outcome.labels {
             cx.emit(BackendEvent::LabelsChanged);
             cx.emit(BackendEvent::CountsChanged);
@@ -771,6 +793,8 @@ impl Backend {
         }
         let wait = retry.unwrap_or(if self.sync.active {
             POLL_ACTIVE
+        } else if self.sync.notifications {
+            POLL_BACKGROUND
         } else {
             POLL_INACTIVE
         });
@@ -1124,7 +1148,11 @@ mod tests {
                 ]),
                 Step::Drafts,
                 Step::Labels,
-                Step::SetHistory(2000)
+                Step::SetHistory {
+                    history: 2000,
+                    // The new Inbox message carries through to the end.
+                    added: vec![("msg-b9".into(), "thread-b2".into())]
+                }
             ]
         );
     }
@@ -1152,7 +1180,13 @@ mod tests {
     #[test]
     fn quiet_history_only_moves_on() {
         let outcome = partial_plan(&[], 77);
-        assert_eq!(outcome.next, [Step::SetHistory(77)]);
+        assert_eq!(
+            outcome.next,
+            [Step::SetHistory {
+                history: 77,
+                added: Vec::new()
+            }]
+        );
     }
 
     #[test]

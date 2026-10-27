@@ -55,7 +55,7 @@ pub fn derive_folder(messages: &[Message], me: &Account) -> Folder {
 
 /// The user received the message: someone else sent it, or they sent it
 /// to one of their own addresses.
-fn received(message: &Message, me: &Account) -> bool {
+pub fn received(message: &Message, me: &Account) -> bool {
     !message.label_ids.iter().any(|l| l == SENT)
         || message
             .to

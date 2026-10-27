@@ -25,6 +25,7 @@ pub mod health;
 pub mod http;
 pub mod images;
 pub mod mime;
+pub mod new_mail;
 pub mod outbox;
 pub mod people;
 pub mod store;
@@ -450,7 +451,10 @@ impl Op {
 pub enum BackendEvent {
     ThreadsChanged(Vec<String>),
     ThreadsRemoved(Vec<String>),
-    IdReplaced { old: String, new: String },
+    IdReplaced {
+        old: String,
+        new: String,
+    },
     LabelsChanged,
     CountsChanged,
     EventsChanged(Vec<String>),
@@ -459,9 +463,15 @@ pub enum BackendEvent {
     ContactsChanged,
     Status(SyncStatus),
     OpCommitted(OpId),
-    OpFailed { op: OpId, message: String },
+    OpFailed {
+        op: OpId,
+        message: String,
+    },
     SignedIn,
     SignedOut,
+    // Sprint 2 W1.
+    /// Mail that just arrived and is news (NTF-1); never from a full sync.
+    NewMail(Vec<new_mail::NewMail>),
 }
 
 /// A view that can load older threads (LST-7).
@@ -1445,6 +1455,53 @@ impl Backend {
                 .await;
         }));
     }
+
+    // Sprint 2 W1 (NTF-1, NTF-2, NTF-3) -------------------------------
+
+    /// Notifications on: poll every minute in the background instead of
+    /// every five.
+    pub fn set_notifications(&mut self, on: bool) {
+        self.sync.notifications = on;
+    }
+
+    /// The Mac woke: sync mail and the calendar now.
+    pub fn wake(&mut self, cx: &mut Context<Self>) {
+        self.sync.calendar_due = true;
+        self.run_sync(cx);
+    }
+
+    /// The Dock badge's count: the Inbox's unread conversations, Gmail's
+    /// own count; on the placeholder data, counted here.
+    pub fn inbox_unread(&self) -> u64 {
+        if let Some((unread, _)) = self.label_counts().get(gmail::INBOX) {
+            return *unread;
+        }
+        if self.source != Source::Demo {
+            return 0;
+        }
+        let mut threads = self
+            .store
+            .load_all_threads(self.email())
+            .unwrap_or_default();
+        self.outbox.overlay(&mut threads);
+        threads
+            .iter()
+            .filter(|t| t.unread && t.folder == Folder::Inbox)
+            .count() as u64
+    }
+
+    /// Whether these threads are read, or out of the Inbox, now: their
+    /// notifications can go.
+    pub fn threads_done(&self, ids: &[String]) -> bool {
+        let threads = self.load_threads(ids);
+        ids.iter().all(|id| {
+            threads
+                .iter()
+                .find(|t| &t.id == id)
+                .is_none_or(|t| !t.unread || t.folder != Folder::Inbox)
+        })
+    }
+    // end sprint 2 W1 ---------------------------------------------------
 
     /// Write settings still waiting to settle: on quit.
     pub fn flush_settings(&mut self) {

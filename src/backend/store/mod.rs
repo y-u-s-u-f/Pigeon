@@ -7,6 +7,7 @@ mod calendar;
 mod contacts;
 mod images;
 mod mail;
+mod notified;
 mod outbox;
 
 pub use images::IMAGE_CACHE_CAP;
@@ -148,6 +149,7 @@ impl Store {
             "contacts",
             "sync_state",
             "outbox",
+            "notified",
         ] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE account = ?1"),

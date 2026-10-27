@@ -170,3 +170,13 @@ CREATE TABLE images (
 -- W10 (CAL-20): what an invitation's iCalendar part says (JSON
 -- InviteDetails), for a read-only card when its event isn't stored.
 ALTER TABLE bodies ADD COLUMN invite_details TEXT;
+
+-- migration: 100
+-- Sprint 2 W1 (NTF-1): messages already notified about, so a retry or a
+-- relaunch doesn't notify again. Bounded; written with the history id.
+CREATE TABLE notified (
+    account TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    at INTEGER NOT NULL,                 -- ms
+    PRIMARY KEY (account, message_id)
+);

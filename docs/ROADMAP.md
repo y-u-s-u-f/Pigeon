@@ -32,12 +32,12 @@ To update: change the status cell in the area's table, then the counts below.
 | [Mail settings](#512-mail-settings-mst) | 10 | 0 | 0 | 10 |
 | [Calendar](#6-calendar-cal) | 18 | 4 | 20 | 42 |
 | [Sync and push](#71-sync-and-push-syn) | 2 | 0 | 5 | 7 |
-| [Notifications and background](#72-notifications-and-background-ntf) | 3 | 0 | 0 | 3 |
+| [Notifications and background](#72-notifications-and-background-ntf) | 4 | 0 | 0 | 4 |
 | [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 0 | 2 | 3 | 5 |
-| [Storage and persistence](#81-storage-and-persistence-per) | 0 | 0 | 3 | 3 |
+| [Storage and persistence](#81-storage-and-persistence-per) | 2 | 0 | 3 | 5 |
 | [Command palette](#82-command-palette-pal) | 0 | 0 | 3 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 3 | 3 | 7 |
-| **Overall** | **59** | **14** | **103** | **176** |
+| **Overall** | **62** | **14** | **103** | **179** |
 
 ## Contents
 
@@ -1190,19 +1190,27 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | NTF-1 | New mail notifications | ⚪ Not done | From SYN-2 / SYN-3 |
 | NTF-2 | Unread badge | ⚪ Not done | `labels.get` (`INBOX`) |
 | NTF-3 | Background sync when the window is closed | ⚪ Not done | SYN loop |
+| NTF-6 | Open at login | ⚪ Not done | None |
 
 #### NTF-1 New mail notifications
 
-- **Needs:** A macOS notification with sender and subject for new Inbox mail; clicking opens the thread. Respect Focus; per-label mute if added.
+- **Today (sprint 2 W1):** gpui's own API (`cx.show_system_notification`, over `UNUserNotificationCenter`; it posts at once and reports no delivery result). `src/notify.rs` owns `notify(Notice, cx)`, `dismiss(tag, cx)` and the click routing (`on_system_notification_response` → `shell::show`, also for notices from before a relaunch, by tag); W5 and W7 use it. Every new Inbox mail, any category: the partial sync carries history's `messagesAdded` ids through the metadata fetch to its last step (`Step::SetHistory { history, added }`, `src/backend/sync.rs`), where each stored message is judged on its current labels and `internalDate` (`backend/new_mail.rs` `eligible()`: INBOX + UNREAD, not SPAM/TRASH/DRAFT, received by `gmail::received()` so self-mail and aliases count, within 15 min of the poll). Notified ids go in the store's `notified` table (migration 100, last 500 per account) in the same transaction as the history id, so a retry, crash, relaunch or offline gap neither repeats nor drops one. A full sync or a history reset never notifies. One notice per conversation (`mail-<thread id>`; title the sender, body subject and snippet); more than 3 at once become one summary under `mail-summary`, replaced by the next. Nothing for the conversation open in the frontmost window. A notice goes (by tag) once its conversations are read or out of the Inbox anywhere, seen in the next sync. Clicking opens the thread (the window opens if closed). Settings › Notifications: "New mail notifications" (on by default, saved as `notifications`) and "Send test notification", which also brings up macOS's permission prompt; ⌘K "Send Test Notification", "Turn New Mail Notifications On / Off". Each notice submitted is logged as `notify: tag=… title=…` in `<data dir>/pigeon.log`; clicks as `notify: clicked …`, dismissals as `notify: dismissed …`. In test-instance mode (`PIGEON_DEV=1`) tags start with `dev-`. Notifications only work when Pigeon runs from its bundle (PER-4).
+- **Needs:** User checks: a notice arriving, clicking it, the permission prompt. Respect Focus (macOS does); per-label mute if added. W4a's categories don't change which mail notifies (decision 4).
 
 #### NTF-2 Unread badge
 
-- **Needs:** Dock badge from the server's Inbox unread count (FOL-2), not loaded data.
+- **Today (sprint 2 W1):** The Dock badge is the Inbox's unread conversation count from Gmail's `labels.get INBOX` (`Backend::inbox_unread()`; counted from the store on the placeholder data), set through `NSApp.dockTile.setBadgeLabel` (`native::set_dock_badge()`), none at zero. Updated app-wide on `CountsChanged`, thread changes and committed ops, with the window closed too (`app/shell.rs`); each change is logged as `badge: N`. Testers read it with `lsappinfo info -long <ASN> | grep StatusLabel`.
+- **Needs:** W4a switches it to Primary unread in the Inbox (sprint 2, 8.2).
 
 #### NTF-3 Background sync when the window is closed
 
-- **Today:** `main()` quits when the last window closes (`cx.on_window_closed`); quitting stops everything and loses state (PER-2).
-- **Needs:** Keep syncing and holding the outbox in the background (stay running, a login item, or a helper), or catch up on launch. Calendar reminders (CAL-15) need this too.
+- **Today (sprint 2 W1):** Closing the window leaves Pigeon running in the Dock (gpui's macOS default; the quit on last window closed is gone); ⌘Q quits and flushes the outbox as before, from any state. `src/app/shell.rs`: `ensure_main_window(cx)` is the one way to the main window and `show(Show, cx)` the one way to put something in it (`Main`, `Thread`, `Event`, `Compose(Option<Mailto>)`, `NewEvent`), used by the Dock (`on_reopen`), notification clicks, a second launch, `mailto:` and later the menu bar. App-level handlers run Compose, New Event, Open Thread, Settings, Sync Now and the W1 commands with no window open; ⌘O / Window › Pigeon (`ShowMainWindow`) reopens it. Settings are app-owned (`settings::AppSettings`, a gpui global every save goes through), so a reopened window has the latest appearance, layout and preferences. Closing the window saves an open composer to Drafts, writes the settings and drops the window's state and timers (`PigeonApp::before_close()`). Sync goes on with the window closed: Gmail every 60 s and Calendar every 2 min while notifications are on (5 min otherwise), and at once on wake (`NSWorkspaceDidWakeNotification`, logged `wake: syncing now`).
+- **Needs:** User checks: the Dock reopen and idle CPU with the window closed (T3). Calendar reminders (W5) send through `notify`.
+
+#### NTF-6 Open at login
+
+- **Today (sprint 2 W1):** Settings › General › Open at login registers `SMAppService.mainApp` through small runtime bindings to ServiceManagement (`native::login_item()`, `set_login_item()`; the framework is linked, no crate). Off by default; only offered when Pigeon runs from `/Applications` and not in test-instance mode, otherwise the row says why. The "Login item" row shows macOS's real status: on, off, needs approval in System Settings › General › Login Items (which turning it on opens), or the error macOS gave. ⌘K "Turn Open at Login On / Off".
+- **Needs:** A user check on the installed copy.
 
 ### 7.3 Loading, error and offline states (STA)
 
@@ -1255,6 +1263,18 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | PER-1 | Local mailbox store | 🟢 Fully linked | Holds SYN data |
 | PER-2 | Outbox and drafts that survive quit | 🟢 Fully linked | None |
 | PER-3 | Persisted UI state and settings | 🟢 Fully linked | None |
+| PER-4 | App bundle and install | ⚪ Not done | None |
+| PER-5 | Single instance | ⚪ Not done | None |
+
+#### PER-4 App bundle and install
+
+- **Today (sprint 2 W1):** `scripts/bundle.sh` builds `Pigeon.app` in the target dir (`release/Pigeon.app`): `packaging/Info.plist` (bundle id `com.pigeon.dev`, `mailto:` URL type, not `LSUIElement`), a placeholder icon drawn by `packaging/make_icon.py` (standard library, then `sips` and `iconutil`), signed with the "Pigeon Dev" identity like before (ad hoc, with a warning, without it). `scripts/run.sh` builds the bundle and runs its binary directly, so the environment and terminal output pass through and notifications work in dev. `scripts/install.sh` quits the installed copy, copies the bundle to `/Applications` and registers it with Launch Services. Logs go to `<data dir>/pigeon.log` (`src/logging.rs`): stderr when launched from the Dock, plus gpui's `log` warnings and notification lines; capped at 2 MB, then moved to `pigeon.log.1`.
+- **Needs:** The user installs after each merge; making Pigeon the default mail app is a user check (W3, LNK-3).
+
+#### PER-5 Single instance
+
+- **Today (sprint 2 W1):** `src/instance.rs`: the first Pigeon holds a `flock` on `<data dir>/pigeon.lock` with its pid in it; a second launch on the same data folder posts a distributed notification (object: the data folder) and activates the first, which shows its window, then exits (`native::hand_over()`; logged `instance: …`). Another data folder (`PIGEON_DATA_DIR`) is another Pigeon. Test-instance mode (`PIGEON_DEV=1`) registers no login item, no global shortcuts (`instance::global_shortcuts_allowed()`, for W7b) and prefixes notification tags with `dev-`.
+- **Needs:** Nothing from the server.
 
 #### PER-1 Local mailbox store
 
@@ -1263,12 +1283,12 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### PER-2 Outbox and drafts that survive quit
 
-- **Today:** Every `MailOp` and `CalOp` is a row in the store's `outbox` table (`src/backend/outbox.rs`) before it commits. Sends, discards, moves, deletes and event deletes wait out the 5 s undo window (`UNDO_WINDOW`); Undo inside it deletes the row (`Backend::cancel()`), past it the UI queues the inverse op (`Backend::mail_now()`). Consecutive label changes to the same threads merge; a newer save of a draft replaces an older one; ops on one thread, event or draft go one at a time, also across bulk ops. The worker (`Backend::schedule()`) commits due rows: thread ops through `outbox::commit_threads()` (W5), drafts and sends through `compose::commit_compose()` (W6), calendar writes through `calendar::commit()` (W7), all at the user's priority (`outbox::UserPriority`); a mail sync runs 2 s after a committed mail write, a calendar sync after a calendar write. Demo mode commits by applying the op to its in-memory store (`Store::apply_mail_op()`, `apply_cal_op()`), so nothing survives a quit there. Rows left pending or in flight at quit go on the next launch (`Outbox::new()` puts in-flight rows back), and `load_mail()` shows them as made. Quit (⌘Q, the menu, closing the last window) runs `Backend::flush_on_quit()` first (W11, `src/main.rs` `quit()`): sends still in their undo window become due at once (`Outbox::send_now()`), and Quit waits until nothing due is left to commit, at most 5 s (`health::QUIT_WAIT`); other queued rows stay for the next launch.
+- **Today:** Every `MailOp` and `CalOp` is a row in the store's `outbox` table (`src/backend/outbox.rs`) before it commits. Sends, discards, moves, deletes and event deletes wait out the 5 s undo window (`UNDO_WINDOW`); Undo inside it deletes the row (`Backend::cancel()`), past it the UI queues the inverse op (`Backend::mail_now()`). Consecutive label changes to the same threads merge; a newer save of a draft replaces an older one; ops on one thread, event or draft go one at a time, also across bulk ops. The worker (`Backend::schedule()`) commits due rows: thread ops through `outbox::commit_threads()` (W5), drafts and sends through `compose::commit_compose()` (W6), calendar writes through `calendar::commit()` (W7), all at the user's priority (`outbox::UserPriority`); a mail sync runs 2 s after a committed mail write, a calendar sync after a calendar write. Demo mode commits by applying the op to its in-memory store (`Store::apply_mail_op()`, `apply_cal_op()`), so nothing survives a quit there. Rows left pending or in flight at quit go on the next launch (`Outbox::new()` puts in-flight rows back), and `load_mail()` shows them as made. Quit (⌘Q, the menu; closing the window no longer quits, NTF-3) runs `Backend::flush_on_quit()` first (W11, `src/main.rs` `quit()`): sends still in their undo window become due at once (`Outbox::send_now()`), and Quit waits until nothing due is left to commit, at most 5 s (`health::QUIT_WAIT`); other queued rows stay for the next launch.
 - **Needs:** A tester pass of Quit inside a send's undo window (T4). Calendar writes waiting offline have no overlay: a calendar sync before they go can show the old event until they commit. Deviation from the plan: the store keeps the server's state and takes an op's change only when it commits, so Undo never reverts the store; reads (`load_mail()`, `load_threads()`) lay the queued thread ops over it (`Outbox::overlay()`): that is the pending-op overlay.
 
 #### PER-3 Persisted UI state and settings
 
-- **Today:** Saved to the `settings` table (one row per key, JSON values) of the on-disk store, in demo mode too: appearance, Reduce motion, auto-advance, default search scope, list density, text size, sidebar shown, sidebar and list widths, Archived expanded, calendar view, week numbers, and remote images (Ask/Always/Never, for ATT-1). `Saved` (`src/settings.rs`) is the snapshot; `PigeonApp::save_settings()` hands it to `Backend::save_settings()` whenever the app or the calendar notifies and it changed (written 300 ms after it settles, and on quit); `main()` loads it and `PigeonApp::apply_settings()` applies it before the first frame. Unknown keys are ignored and bad values take their default. The file is `~/Library/Application Support/Pigeon/pigeon.sqlite`, or `$PIGEON_DATA_DIR/pigeon.sqlite`. Still in memory: `nav`, `expanded_messages`, recent searches, recent palette commands, the window's size.
+- **Today:** Saved to the `settings` table (one row per key, JSON values) of the on-disk store, in demo mode too: appearance, Reduce motion, auto-advance, default search scope, list density, text size, sidebar shown, sidebar and list widths, Archived expanded, calendar view, week numbers, and remote images (Ask/Always/Never, for ATT-1). `Saved` (`src/settings.rs`) is the snapshot; `PigeonApp::save_settings()` hands it to `Backend::save_settings()` whenever the app or the calendar notifies and it changed (written 300 ms after it settles, and on quit); `shell::init()` loads it at launch into the app-wide `AppSettings` (sprint 2 W1, NTF-3), and each new window's `PigeonApp::apply_settings()` applies the latest before its first frame; Settings › Notifications saves `notifications`. Unknown keys are ignored and bad values take their default. The file is `~/Library/Application Support/Pigeon/pigeon.sqlite`, or `$PIGEON_DATA_DIR/pigeon.sqlite`. Still in memory: `nav`, `expanded_messages`, recent searches, recent palette commands, the window's size.
 - **Today (W11):** Settings › Mail › Load remote images (Ask / Always / Never) changes and saves `saved.remote_images`, which the reader reads (ATT-1). The plan's list (appearance, motion, auto-advance, search scope, density, text size, pane widths, images) is all saved.
 - **Needs:** Nothing from the server.
 - **Notes:** `expanded_messages` is per thread; keep it or accept the reset.

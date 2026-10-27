@@ -25,10 +25,11 @@ use super::{HEADER_HEIGHT, avatar, binding_caps, empty_state, icon, keycap, wind
 use crate::ui::style::*;
 use crate::{
     actions::{COMMANDS, Scope, SignOut, SyncNow},
-    app::{Density, PigeonApp},
+    app::{Density, PigeonApp, shell},
     assets::Icon,
     backend::Source,
     data::Contact,
+    native::{self, LoginItem},
     settings::{self, Appearance, Entry, Match, RemoteImages, Section, SettingId},
     theme::Theme,
     ui::{calendar::ViewKind, shortcuts_help::live_bindings},
@@ -418,6 +419,7 @@ impl PigeonApp {
     fn press_setting(&mut self, id: SettingId, window: &mut Window, cx: &mut Context<Self>) {
         match id {
             SettingId::SyncNow => window.dispatch_action(Box::new(SyncNow), cx),
+            SettingId::TestNotification => crate::notify::send_test(cx),
             SettingId::SignOut => {
                 let google = self.backend.read(cx).source() == Source::Google;
                 if google && !self.settings_page.confirm_sign_out {
@@ -535,6 +537,18 @@ impl PigeonApp {
                 label: "Sign Out",
                 danger: true,
             },
+            // Sprint 2 W1.
+            SettingId::Notifications => Control::Switch(settings::current(cx).notifications),
+            SettingId::TestNotification => Control::Button {
+                label: "Send",
+                danger: false,
+            },
+            SettingId::OpenAtLogin => match native::login_item() {
+                LoginItem::Unavailable(why) => Control::Info(why.into()),
+                LoginItem::On | LoginItem::NeedsApproval => Control::Switch(true),
+                LoginItem::Off => Control::Switch(false),
+            },
+            SettingId::LoginItemStatus => Control::Info(shell::login_item_status()),
         }
     }
 
@@ -592,14 +606,20 @@ impl PigeonApp {
                 // Kept on `saved` itself, where the reader reads it (ATT-1).
                 self.saved.remote_images =
                     [RemoteImages::Ask, RemoteImages::Always, RemoteImages::Never][choice];
+                self.saved.notifications = settings::current(cx).notifications;
+                settings::remember(self.saved, cx);
                 let map = self.saved.to_map();
                 self.backend.update(cx, |b, cx| b.save_settings(map, cx));
             }
+            SettingId::Notifications => shell::set_notifications(on, cx),
+            SettingId::OpenAtLogin => shell::set_open_at_login(on, cx),
             SettingId::Account
             | SettingId::Access
             | SettingId::LastSync
             | SettingId::SyncNow
-            | SettingId::SignOut => {}
+            | SettingId::SignOut
+            | SettingId::TestNotification
+            | SettingId::LoginItemStatus => {}
         }
         cx.notify();
     }

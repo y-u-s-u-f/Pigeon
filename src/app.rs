@@ -3,6 +3,7 @@
 mod backend_events;
 mod compose;
 mod mail;
+pub mod shell;
 pub use mail::{Density, SearchSuggestion};
 
 use std::{
@@ -413,6 +414,7 @@ impl PigeonApp {
             },
             week_numbers: calendar.show_week_numbers,
             remote_images: self.saved.remote_images,
+            notifications: crate::settings::current(cx).notifications,
         }
     }
 
@@ -421,6 +423,7 @@ impl PigeonApp {
         let now = self.current_settings(cx);
         if now != self.saved {
             self.saved = now;
+            crate::settings::remember(now, cx);
             self.backend
                 .update(cx, |b, cx| b.save_settings(now.to_map(), cx));
         }
@@ -819,7 +822,8 @@ impl PigeonApp {
         }
     }
 
-    fn close_window(&mut self, _: &CloseWindow, window: &mut Window, _: &mut Context<Self>) {
+    fn close_window(&mut self, _: &CloseWindow, window: &mut Window, cx: &mut Context<Self>) {
+        self.before_close(cx);
         window.remove_window();
     }
 

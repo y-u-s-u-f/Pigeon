@@ -35,6 +35,40 @@ sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 # The local IANA zone for event writes. Already pulled in by chrono's clock.
 iana-time-zone = "0.1"
+# Sprint 2 W1: gpui's own log output, into the log file. Already in the lock file.
+log = { version = "0.4", default-features = false, features = ["std"] }
+# Sprint 2 W1/W7: the Dock badge, wake, the single-instance handoff and the
+# menu bar item. The versions gpui's macOS platform already builds.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSDictionary",
+    "NSDistributedNotificationCenter",
+    "NSNotification",
+    "NSObject",
+    "NSString",
+    "NSError",
+    "NSURL",
+] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSApplication",
+    "NSDockTile",
+    "NSEvent",
+    "NSImage",
+    "NSPanel",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSScreen",
+    "NSStatusBar",
+    "NSStatusBarButton",
+    "NSStatusItem",
+    "NSView",
+    "NSWindow",
+    "NSWorkspace",
+    "libc",
+    "objc2-core-foundation",
+] }
 
 [profile.release]
 opt-level = 3

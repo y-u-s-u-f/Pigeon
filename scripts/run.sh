@@ -1,14 +1,11 @@
 #!/bin/sh
-# Build Pigeon in release mode, sign it with the stable "Pigeon Dev" identity
-# (so the Keychain keeps trusting it across rebuilds), then run it.
+# Build Pigeon.app in release mode (scripts/bundle.sh: signed with the stable
+# "Pigeon Dev" identity, so the Keychain keeps trusting it across rebuilds)
+# and run it from the bundle, so notifications work in dev too. The binary
+# runs directly, so the environment (PIGEON_DEMO, PIGEON_DATA_DIR,
+# PIGEON_DEV, …) passes through and its output stays in this terminal.
 # Honours CARGO_TARGET_DIR. Extra arguments are passed to the app.
 set -e
 cd "$(dirname "$0")/.."
-cargo build --release
-BIN="${CARGO_TARGET_DIR:-target}/release/pigeon"
-if security find-identity -p codesigning | grep -q '"Pigeon Dev"'; then
-  codesign -f -s "Pigeon Dev" --identifier com.pigeon.dev "$BIN" 2>/dev/null
-else
-  echo "warning: no \"Pigeon Dev\" signing identity; the Keychain will ask for access after each build" >&2
-fi
-exec "$BIN" "$@"
+APP=$(scripts/bundle.sh)
+exec "$APP/Contents/MacOS/Pigeon" "$@"

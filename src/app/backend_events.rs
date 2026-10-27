@@ -30,6 +30,8 @@ impl PigeonApp {
             BackendEvent::OpFailed { op, message } => self.on_op_failed(*op, message, cx),
             BackendEvent::SignedIn => self.on_signed_in(cx),
             BackendEvent::SignedOut => self.on_signed_out(cx),
+            // Sprint 2 W1: handled app-wide (`app::shell`).
+            BackendEvent::NewMail(_) => {}
         }
     }
 

@@ -6,24 +6,22 @@ mod calendar;
 mod contacts;
 mod data;
 mod html;
+mod instance;
+mod logging;
 mod markdown;
+mod native;
+mod notify;
 mod search;
 mod settings;
 mod theme;
 mod ui;
 
-use gpui::{
-    App, AppContext as _, Bounds, Entity, Menu, MenuItem, OsAction, SystemMenuType,
-    TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, component::input,
-    point, px, size,
-};
+use gpui::{App, Entity, Menu, MenuItem, OsAction, SystemMenuType, component::input};
 
 use crate::{
     actions::*,
-    app::{PigeonApp, RAIL_WIDTH},
+    app::shell::{self, Show},
     backend::Backend,
-    settings::Saved,
-    theme::Theme,
 };
 
 /// The standard macOS menus. Every item runs an existing action, so it shows
@@ -110,6 +108,8 @@ fn menus() -> Vec<Menu> {
         Menu::new("Window").items([
             MenuItem::action("Minimize", Minimize),
             MenuItem::action("Zoom", ZoomWindow),
+            MenuItem::separator(),
+            MenuItem::action("Pigeon", ShowMainWindow),
         ]),
         Menu::new("Help").items([
             MenuItem::action("Keyboard Shortcuts", ToggleShortcutsHelp),
@@ -119,9 +119,13 @@ fn menus() -> Vec<Menu> {
 }
 
 /// Quit once the queue has had its chance (2.7): sends inside their undo
-/// window go now, and Quit waits up to 5 s for what's going.
+/// window go now, and Quit waits up to 5 s for what's going. Works with no
+/// window open too (NTF-3).
 fn quit(backend: &Entity<Backend>, cx: &mut App) {
-    let flush = backend.update(cx, |b, cx| b.flush_on_quit(cx));
+    let flush = backend.update(cx, |b, cx| {
+        b.flush_settings();
+        b.flush_on_quit(cx)
+    });
     cx.spawn(async move |cx| {
         flush.await;
         cx.update(|cx| cx.quit());
@@ -130,50 +134,37 @@ fn quit(backend: &Entity<Backend>, cx: &mut App) {
 }
 
 fn main() {
-    gpui::application()
-        .with_assets(assets::Assets)
-        .run(move |cx: &mut App| {
-            gpui::init(cx);
-            actions::bind_keys(cx);
-            cx.on_action(|_: &Hide, cx| cx.hide());
-            cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
-            cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
-            cx.set_menus(menus());
-            let backend = Backend::open(cx);
-            let quit_backend = backend.clone();
-            cx.on_action(move |_: &Quit, cx| quit(&quit_backend, cx));
-            let quit_backend = backend.clone();
-            cx.on_window_closed(move |cx, _| {
-                if cx.windows().is_empty() {
-                    quit(&quit_backend, cx);
-                }
-            })
-            .detach();
-            let saved = Saved::from_map(backend.read(cx).load_settings());
-
-            let bounds = Bounds::centered(None, size(px(1360.), px(860.)), cx);
-            // The traffic lights (60pt wide on macOS 26) sit centered in the
-            // rail, level with the middle of the pane headers.
-            let lights_x = (RAIL_WIDTH - px(60.)) / 2.;
-            let options = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(900.), px(560.))),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Pigeon".into()),
-                    appears_transparent: true,
-                    traffic_light_position: Some(point(lights_x, px(19.))),
-                }),
-                // Panes move the window themselves (see `ui::window_drag_area`).
-                app_owns_titlebar_drag: true,
-                window_background: WindowBackgroundAppearance::Blurred,
-                ..Default::default()
-            };
-
-            gpui::open_window(options, cx, |window, cx| {
-                Theme::sync(window, cx);
-                cx.new(|cx| PigeonApp::new(backend, saved, window, cx))
-            })
-            .expect("failed to open the main window");
-            cx.activate(true);
-        });
+    let dir = backend::data_dir();
+    logging::init(&dir);
+    // PER-5: one Pigeon per data folder; a second one hands over and goes.
+    let _lock = match instance::acquire(&dir) {
+        Ok(lock) => lock,
+        Err(running) => {
+            logging::info(&format!(
+                "instance: Pigeon (pid {}) already runs on {}; handing over",
+                running.pid.map_or("?".into(), |p| p.to_string()),
+                dir.display()
+            ));
+            native::hand_over(&dir.to_string_lossy(), running.pid);
+            return;
+        }
+    };
+    let app = gpui::application().with_assets(assets::Assets);
+    app.on_open_urls(shell::open_urls);
+    // The Dock icon clicked, or Pigeon opened again (NTF-3).
+    app.on_reopen(|cx| shell::show(Show::Main, cx));
+    app.run(move |cx: &mut App| {
+        gpui::init(cx);
+        actions::bind_keys(cx);
+        cx.on_action(|_: &Hide, cx| cx.hide());
+        cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
+        cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+        cx.set_menus(menus());
+        let backend = Backend::open(cx);
+        let quit_backend = backend.clone();
+        cx.on_action(move |_: &Quit, cx| quit(&quit_backend, cx));
+        // Closing the window leaves Pigeon running, in the Dock (NTF-3).
+        shell::init(backend, cx);
+        shell::show(Show::Main, cx);
+    });
 }

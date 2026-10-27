@@ -75,6 +75,8 @@ pub struct Saved {
     pub calendar_view: CalendarViewSetting,
     pub week_numbers: bool,
     pub remote_images: RemoteImages,
+    /// Sprint 2 W1: notify about new mail (NTF-1).
+    pub notifications: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,6 +106,7 @@ impl Default for Saved {
             calendar_view: CalendarViewSetting::Week,
             week_numbers: false,
             remote_images: RemoteImages::Ask,
+            notifications: true,
         }
     }
 }
@@ -137,20 +140,43 @@ impl Saved {
     }
 }
 
+/// Sprint 2 W1 (NTF-3): the settings belong to the app, not the window, so
+/// a window opened after the last one closed starts from them. The window
+/// hands every change here (`remember`) as it saves it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AppSettings(pub Saved);
+
+impl gpui::Global for AppSettings {}
+
+/// The settings as last saved, wherever they were changed.
+pub fn current(cx: &gpui::App) -> Saved {
+    cx.try_global::<AppSettings>()
+        .map(|s| s.0)
+        .unwrap_or_default()
+}
+
+pub fn remember(saved: Saved, cx: &mut gpui::App) {
+    cx.set_global(AppSettings(saved));
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
     Appearance,
     Mail,
     Calendar,
+    Notifications,
+    General,
     Accounts,
     Shortcuts,
 }
 
 impl Section {
-    pub const ALL: [Section; 5] = [
+    pub const ALL: [Section; 7] = [
         Section::Appearance,
         Section::Mail,
         Section::Calendar,
+        Section::Notifications,
+        Section::General,
         Section::Accounts,
         Section::Shortcuts,
     ];
@@ -160,6 +186,8 @@ impl Section {
             Section::Appearance => "Appearance",
             Section::Mail => "Mail",
             Section::Calendar => "Calendar",
+            Section::Notifications => "Notifications",
+            Section::General => "General",
             Section::Accounts => "Accounts",
             Section::Shortcuts => "Keyboard Shortcuts",
         }
@@ -170,6 +198,8 @@ impl Section {
             Section::Appearance => Icon::SunMoon,
             Section::Mail => Icon::Mail,
             Section::Calendar => Icon::Calendar,
+            Section::Notifications => Icon::Bell,
+            Section::General => Icon::Settings,
             Section::Accounts => Icon::User,
             Section::Shortcuts => Icon::Keyboard,
         }
@@ -180,6 +210,8 @@ impl Section {
             Section::Appearance => &["theme", "look", "display"],
             Section::Mail => &["inbox", "email", "list"],
             Section::Calendar => &["events", "schedule"],
+            Section::Notifications => &["alerts", "banners", "badge", "notify"],
+            Section::General => &["startup", "launch", "app"],
             Section::Accounts => &["profile", "user", "sign in", "login"],
             Section::Shortcuts => &["keys", "keymap", "hotkeys", "keybindings", "shortcuts"],
         }
@@ -204,6 +236,11 @@ pub enum SettingId {
     LastSync,
     SyncNow,
     SignOut,
+    // Sprint 2 W1.
+    Notifications,
+    TestNotification,
+    OpenAtLogin,
+    LoginItemStatus,
 }
 
 pub struct SettingMeta {
@@ -261,6 +298,14 @@ pub const SETTINGS: &[SettingMeta] = settings! {
         ["refresh", "reload", "fetch", "update"];
     Accounts: SignOut, "Sign out", "Removes this account and its cached mail and calendar from this Mac.",
         ["log out", "logout", "sign off", "remove account", "disconnect"];
+    Notifications: Notifications, "New mail notifications", "A notification for each new message in the Inbox; more than three at once become one.",
+        ["alerts", "banners", "notify", "new mail"];
+    Notifications: TestNotification, "Send test notification", "Shows one now. The first time, macOS asks whether Pigeon may notify you.",
+        ["try", "permission", "allow", "test"];
+    General: OpenAtLogin, "Open at login", "Start Pigeon when you log in to this Mac.",
+        ["startup", "launch", "login item", "start", "boot"];
+    General: LoginItemStatus, "Login item", "What macOS says about Pigeon's login item.",
+        ["startup", "approval", "system settings", "status"];
 };
 
 pub fn meta(id: SettingId) -> &'static SettingMeta {
@@ -455,6 +500,7 @@ mod tests {
             text_scale: 1.2,
             calendar_view: CalendarViewSetting::Month,
             remote_images: RemoteImages::Never,
+            notifications: false,
             ..Saved::default()
         };
         assert_eq!(Saved::from_map(saved.to_map()), saved);
@@ -464,6 +510,13 @@ mod tests {
         map.insert("week_numbers".into(), "yes".into());
         assert_eq!(Saved::from_map(map), saved);
         assert_eq!(Saved::from_map(Default::default()), Saved::default());
+    }
+
+    #[test]
+    fn notifications_default_on_for_settings_saved_before_them() {
+        let mut map = Saved::default().to_map();
+        map.remove("notifications");
+        assert!(Saved::from_map(map).notifications);
     }
 
     #[test]

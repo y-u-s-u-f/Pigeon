@@ -128,6 +128,11 @@ actions!(
         LoadImages,
         LoadOlderConversations,
         UseDemoData,
+        // W1: the app shell and notifications (sprint 2).
+        ShowMainWindow,
+        SendTestNotification,
+        ToggleNotifications,
+        ToggleOpenAtLogin,
     ]
 );
 
@@ -409,6 +414,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("down", command_palette::SelectNext, Some(PALETTE_INPUT)),
         KeyBinding::new("ctrl-p", command_palette::SelectPrev, Some(PALETTE_INPUT)),
         KeyBinding::new("ctrl-n", command_palette::SelectNext, Some(PALETTE_INPUT)),
+        // W1: works with no window open too.
+        KeyBinding::new("cmd-o", ShowMainWindow, None),
     ]);
 }
 
@@ -643,4 +650,9 @@ pub const COMMANDS: &[Command] = commands! {
     App: "Sign Out", User, SignOut;
     App: "Use Demo Data", Layers, UseDemoData;
     App: "Quit Pigeon", Command, Quit;
+    // W1
+    App: "Open Pigeon Window", Mail, ShowMainWindow, help_only;
+    App: "Send Test Notification", Bell, SendTestNotification;
+    App: "Turn New Mail Notifications On / Off", Bell, ToggleNotifications;
+    App: "Turn Open at Login On / Off", Settings, ToggleOpenAtLogin;
 };
