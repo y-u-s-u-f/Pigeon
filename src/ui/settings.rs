@@ -73,7 +73,7 @@ pub struct SettingsPage {
     /// A setting jumped to, lit for a moment.
     flash: Option<Entry>,
     /// Scroll the cursor into view at the next render, once its rows exist.
-    pending_scroll: bool,
+    pending_scroll: Option<Reveal>,
     pub focus: FocusHandle,
     pub search: Entity<InputState>,
     scroll: ScrollHandle,
@@ -91,7 +91,7 @@ impl SettingsPage {
             result: 0,
             keyboard: false,
             flash: None,
-            pending_scroll: false,
+            pending_scroll: None,
             focus: cx.focus_handle(),
             search,
             scroll: ScrollHandle::new(),
@@ -137,6 +137,33 @@ fn shown(entry: Entry, window: &Window) -> bool {
     match entry {
         Entry::Shortcut(ix) => !shortcut_bindings(ix, window).is_empty(),
         _ => true,
+    }
+}
+
+/// How the cursor's row is scrolled into view.
+#[derive(Clone, Copy)]
+enum Reveal {
+    /// The least scroll that shows it with a neighbour on the side it's nearer.
+    Nearest,
+    /// Near the top, under the item above it; for jumps, whose layout is new.
+    Top,
+}
+
+/// Scroll child `ix` of the rows into view, keeping one neighbour visible as margin.
+fn reveal_child(scroll: &ScrollHandle, ix: usize, len: usize, reveal: Reveal) {
+    let above = ix.saturating_sub(1);
+    let below = (ix + 1).min(len.saturating_sub(1));
+    match reveal {
+        Reveal::Top => scroll.scroll_to_top_of_item(above),
+        // Last frame's layout still holds for a move between rows.
+        Reveal::Nearest => match scroll.bounds_for_item(ix) {
+            Some(item) => {
+                let view = scroll.bounds();
+                let upper = item.top() + scroll.offset().y < view.center().y;
+                scroll.scroll_to_item(if upper { above } else { below });
+            }
+            None => scroll.scroll_to_item(ix),
+        },
     }
 }
 
@@ -246,7 +273,7 @@ impl PigeonApp {
         page.section = section;
         page.row = row;
         page.keyboard = true;
-        page.pending_scroll = row.is_some();
+        page.pending_scroll = row.is_some().then_some(Reveal::Top);
         if row.is_none() {
             page.scroll.set_offset(point(px(0.), px(0.)));
         }
@@ -289,11 +316,11 @@ impl PigeonApp {
         if !self.settings_query(cx).is_empty() {
             let len = self.settings_results(window, cx).len();
             self.settings_page.result = step(self.settings_page.result, len);
-            self.settings_page.pending_scroll = true;
+            self.settings_page.pending_scroll = Some(Reveal::Nearest);
         } else if let Some(row) = self.settings_page.row {
             let len = self.section_rows(self.settings_page.section, window).len();
             self.settings_page.row = Some(step(row, len));
-            self.settings_page.pending_scroll = true;
+            self.settings_page.pending_scroll = Some(Reveal::Nearest);
         } else {
             let ix = Section::ALL
                 .iter()
@@ -315,7 +342,7 @@ impl PigeonApp {
         {
             let page = &mut self.settings_page;
             page.row = Some(page.row.unwrap_or(0));
-            page.pending_scroll = true;
+            page.pending_scroll = Some(Reveal::Nearest);
         }
         cx.notify();
     }
@@ -594,10 +621,10 @@ impl PigeonApp {
                 children.push(self.render_settings_row(*entry, None, cursor, ring, ix, window, cx));
             }
         }
-        if std::mem::take(&mut self.settings_page.pending_scroll)
+        if let Some(reveal) = self.settings_page.pending_scroll.take()
             && let Some(child) = cursor_child
         {
-            self.settings_page.scroll.scroll_to_item(child);
+            reveal_child(&self.settings_page.scroll, child, children.len(), reveal);
         }
 
         let title: SharedString = if searching {
@@ -713,13 +740,18 @@ impl PigeonApp {
                                     .px(SPACE_2XL)
                                     .pt(SPACE_LG)
                                     .pb(SPACE_2XL)
-                                    .child(
+                                    .flex()
+                                    .flex_col()
+                                    // Rows are the scroll view's own children, so
+                                    // `scroll_to_item` can find them by index.
+                                    .children(children.into_iter().map(|child| {
                                         div()
+                                            .flex_none()
                                             .max_w(CONTENT_MAX)
                                             .flex()
                                             .flex_col()
-                                            .children(children),
-                                    ),
+                                            .child(child)
+                                    })),
                             )
                         }
                     }),
