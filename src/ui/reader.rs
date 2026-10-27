@@ -1,14 +1,18 @@
 //! The reading pane: toolbar, subject, and the thread as a conversation.
 
+use std::rc::Rc;
+
 use gpui::{
-    AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, Window, component::scroll::ScrollableElement as _, div,
-    prelude::FluentBuilder as _, px, relative,
+    AnyElement, Context, ElementId, FontWeight, InteractiveElement, IntoElement, ParentElement,
+    StatefulInteractiveElement, Styled, Window, base::TextSelection,
+    component::scroll::ScrollableElement as _, div, prelude::FluentBuilder as _, px, relative,
 };
 
 use super::{
     HEADER_HEIGHT, avatar, empty_state, html_view, icon, icon_button, icon_button_tinted,
-    label_chip, window_drag_area,
+    label_chip,
+    selectable::{ORDER_BASE, OnClear, Selectable},
+    window_drag_area,
 };
 use crate::ui::style::*;
 use crate::{
@@ -235,8 +239,10 @@ impl PigeonApp {
             } else {
                 self.render_collapsed_message(ix, message, theme, cx)
             };
+            // Keyed by thread, so the text inside keeps no selection state
+            // from another conversation.
             div()
-                .id(("message-card", ix))
+                .id(ElementId::NamedInteger(thread.id.clone().into(), ix as u64))
                 .role(gpui::Role::Article)
                 .aria_label(format!(
                     "{}, {}: {}",
@@ -305,7 +311,14 @@ impl PigeonApp {
                             .text_size(TEXT_XL)
                             .line_height(relative(1.3))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(thread.subject.clone()),
+                            .child(
+                                Selectable::plain(
+                                    ElementId::Name(format!("subject-{}", thread.id).into()),
+                                    thread.subject.clone(),
+                                    theme.text_selection,
+                                )
+                                .order(ORDER_BASE),
+                            ),
                     )
                     .child(
                         div()
@@ -443,6 +456,7 @@ impl PigeonApp {
             });
 
         let mine = self.data.is_me(&message.from);
+        let order = ORDER_BASE + ((ix as u64 + 1) << 20);
         let header = div()
             .id(("message-header", ix))
             .group("message-header")
@@ -467,7 +481,14 @@ impl PigeonApp {
                                     .flex_none()
                                     .text_size(TEXT_BASE)
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(self.contact_name(&message.from).to_string()),
+                                    .child(
+                                        Selectable::plain(
+                                            "sender-name",
+                                            self.contact_name(&message.from).to_string(),
+                                            theme.text_selection,
+                                        )
+                                        .order(order),
+                                    ),
                             )
                             // Others' addresses on hover; never my own.
                             .when(!mine, |this| {
@@ -479,7 +500,14 @@ impl PigeonApp {
                                         .text_color(theme.text_faint)
                                         .opacity(0.)
                                         .group_hover("message-header", |s| s.opacity(1.))
-                                        .child(message.from.email.clone()),
+                                        .child(
+                                            Selectable::plain(
+                                                "sender-address",
+                                                message.from.email.clone(),
+                                                theme.text_selection,
+                                            )
+                                            .order(order + 1),
+                                        ),
                                 )
                             }),
                     )
@@ -500,8 +528,26 @@ impl PigeonApp {
             )
             .when(collapsible, |this| {
                 this.cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_message(ix, cx)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        // Not when the click ended selecting the sender.
+                        if TextSelection::selected_text(window, cx).is_empty() {
+                            this.toggle_message(ix, cx)
+                        }
+                    }))
             });
+        let selection = html_view::Selection {
+            order: order + 2,
+            all: (self.select_all_text == Some(ix)).then(|| {
+                let app = cx.entity().downgrade();
+                Rc::new(move |cx: &mut gpui::App| {
+                    _ = app.update(cx, |this, cx| {
+                        if this.select_all_text.take().is_some() {
+                            cx.notify();
+                        }
+                    });
+                }) as OnClear
+            }),
+        };
 
         div()
             .px(SPACE_LG)
@@ -521,7 +567,7 @@ impl PigeonApp {
                             .as_ref()
                             .map(|invite| self.render_invite(invite, theme, cx)),
                     )
-                    .child(render_body(&body, show_all, theme))
+                    .child(render_body(&body, show_all, selection, theme))
                     .when(folds, |this| {
                         let open = self.invite_details_open;
                         this.child(
@@ -756,14 +802,22 @@ impl PigeonApp {
 
 /// The message's HTML, rendered natively. Parsed once per message and cached.
 /// Without `all`, the lines an invite card summarizes are left out.
-fn render_body(doc: &Document, all: bool, theme: &Theme) -> impl IntoElement {
+fn render_body(
+    doc: &Document,
+    all: bool,
+    selection: html_view::Selection,
+    theme: &Theme,
+) -> impl IntoElement {
     div()
         .text_size(TEXT_MD)
         .line_height(relative(1.55))
         .text_color(theme.text)
-        .child(html_view::render_filtered(doc, theme, |block| {
-            all || !super::invite::is_invite_summary(block)
-        }))
+        .child(html_view::render_filtered(
+            doc,
+            theme,
+            Some(selection),
+            |block| all || !super::invite::is_invite_summary(block),
+        ))
 }
 
 /// The toolbar's "…": the rest of the thread actions, in a menu.

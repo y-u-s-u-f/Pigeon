@@ -626,31 +626,38 @@ impl PigeonApp {
                 .into_any_element()
         };
 
-        // In the inset: the unread dot, or a checkbox while picking.
+        // In the inset, clear of the focus bar: the unread dot on the sender
+        // line, or a checkbox centered in the row while picking.
         let show_checkbox = checked || selecting || hovered;
         let marker = div()
             .absolute()
-            .left(-ROW_INSET)
-            .w(ROW_INSET)
+            .left(-ROW_INSET + SPACE_XS)
+            .w(ROW_INSET - SPACE_XS)
             .top_0()
             .bottom_0()
             .flex()
             .items_center()
             .justify_center()
-            .map(|this| {
-                if show_checkbox {
-                    this.child(checkbox(thread_ix, checked, theme).on_click(cx.listener(
-                        move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.toggle_row_checked(thread_ix, cx);
-                        },
-                    )))
-                } else if unread {
-                    this.child(div().size(px(6.)).rounded_full().bg(theme.accent))
-                } else {
-                    this
-                }
+            .when(unread && !show_checkbox, |this| {
+                this.child(div().size(px(6.)).rounded_full().bg(theme.accent))
             });
+        let check = show_checkbox.then(|| {
+            div()
+                .absolute()
+                .left(SPACE_XS)
+                .w(ROW_INSET - SPACE_XS)
+                .top_0()
+                .bottom_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(checkbox(thread_ix, checked, theme).on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.toggle_row_checked(thread_ix, cx);
+                    },
+                )))
+        });
 
         let sender = div()
             .min_w_0()
@@ -784,19 +791,20 @@ impl PigeonApp {
                         )
                 }
             })
-            // The keyboard's place: a bar on the leading edge.
+            // The keyboard's place: a short pill on the leading edge.
             .when(selected && list_focused, |this| {
                 this.child(
                     div()
                         .absolute()
-                        .left_0()
-                        .top(SPACE_SM)
-                        .bottom(SPACE_SM)
-                        .w(px(2.))
-                        .rounded_r(RADIUS_SM)
-                        .bg(theme.accent),
+                        .left(SPACE_2XS)
+                        .top(relative(0.25))
+                        .bottom(relative(0.25))
+                        .w(px(3.))
+                        .rounded_full()
+                        .bg(theme.focus_bar),
                 )
             })
+            .children(check)
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered {
                     this.hovered_thread = Some(thread_ix);

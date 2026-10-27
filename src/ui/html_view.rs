@@ -5,10 +5,11 @@ use std::rc::Rc;
 use gpui::{
     AnyElement, Div, FontStyle, FontWeight, HighlightStyle, Hsla, InteractiveElement as _,
     InteractiveText, IntoElement, ParentElement, SharedString, StatefulInteractiveElement as _,
-    StrikethroughStyle, Styled, StyledText, UnderlineStyle, component::tooltip::Tooltip, div,
-    prelude::FluentBuilder as _, px, relative,
+    StrikethroughStyle, Styled, StyledText, UnderlineStyle, base::TextSelection,
+    component::tooltip::Tooltip, div, prelude::FluentBuilder as _, px, relative,
 };
 
+use super::selectable::{OnClear, Selectable};
 use crate::ui::style::*;
 use crate::{
     html::{Align, Block, Document, Inline, Style, Table, TextKind},
@@ -19,19 +20,30 @@ const MONO: &str = "Menlo";
 const BLOCK_GAP: gpui::Pixels = SPACE_MD;
 
 pub fn render(doc: &Document, theme: &Theme) -> impl IntoElement {
-    render_filtered(doc, theme, |_| true)
+    render_filtered(doc, theme, None, |_| true)
+}
+
+/// Makes a rendered document's text selectable.
+pub struct Selection {
+    /// Reading order of the document's first text (see `Selectable::order`).
+    pub order: u64,
+    /// Selects all of it (⌘A) until a click clears it, which calls this.
+    pub all: Option<OnClear>,
 }
 
 /// The document's top-level blocks that `keep` accepts.
 pub fn render_filtered(
     doc: &Document,
     theme: &Theme,
+    selection: Option<Selection>,
     keep: impl Fn(&Block) -> bool,
 ) -> impl IntoElement {
     let mut renderer = Renderer {
         theme,
         next_id: 0,
         list_depth: 0,
+        selection,
+        next_text: 0,
     };
     let blocks = doc
         .blocks
@@ -48,6 +60,9 @@ struct Renderer<'a> {
     /// Ids for the interactive (linked) texts; unique within the message.
     next_id: usize,
     list_depth: usize,
+    selection: Option<Selection>,
+    /// Counts the selectable texts, for their ids and reading order.
+    next_text: u64,
 }
 
 impl Renderer<'_> {
@@ -280,24 +295,52 @@ impl Renderer<'_> {
         let text = StyledText::new(inline.text.clone())
             .with_highlights(highlights)
             .with_font_family_overrides(monospace);
-        if inline.links.is_empty() {
-            return text.into_any_element();
-        }
+        let wrap = self.links(inline);
+        let Some(selection) = &self.selection else {
+            return wrap(text);
+        };
+        let n = self.next_text;
+        self.next_text += 1;
+        Selectable::new(
+            ("html-selectable", n as usize),
+            inline.text.clone(),
+            text,
+            wrap,
+        )
+        .order(selection.order + n)
+        .color(self.theme.text_selection)
+        .select_all(selection.all.clone())
+        .into_any_element()
+    }
 
-        let links: Rc<[_]> = inline.links.clone().into();
-        let ranges = links.iter().map(|(range, _)| range.clone()).collect();
+    /// Makes the text's links clickable, unless the click ended a selection.
+    fn links(&mut self, inline: &Inline) -> impl FnOnce(StyledText) -> AnyElement + use<> {
+        let links: Option<Rc<[_]>> =
+            (!inline.links.is_empty()).then(|| inline.links.clone().into());
         let id = self.next_id;
-        self.next_id += 1;
-        InteractiveText::new(("html-text", id), text)
-            .on_click(ranges, {
-                let links = links.clone();
-                move |ix, _, cx| cx.open_url(&links[ix].1)
-            })
-            .tooltip(move |ix, window, cx| {
-                let (_, url) = links.iter().find(|(range, _)| range.contains(&ix))?;
-                Some(Tooltip::new(url.clone()).build(window, cx))
-            })
-            .into_any_element()
+        if links.is_some() {
+            self.next_id += 1;
+        }
+        move |text| {
+            let Some(links) = links else {
+                return text.into_any_element();
+            };
+            let ranges = links.iter().map(|(range, _)| range.clone()).collect();
+            InteractiveText::new(("html-text", id), text)
+                .on_click(ranges, {
+                    let links = links.clone();
+                    move |ix, window, cx| {
+                        if TextSelection::selected_text(window, cx).is_empty() {
+                            cx.open_url(&links[ix].1)
+                        }
+                    }
+                })
+                .tooltip(move |ix, window, cx| {
+                    let (_, url) = links.iter().find(|(range, _)| range.contains(&ix))?;
+                    Some(Tooltip::new(url.clone()).build(window, cx))
+                })
+                .into_any_element()
+        }
     }
 
     fn highlight(&self, style: &Style) -> HighlightStyle {

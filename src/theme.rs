@@ -30,6 +30,8 @@ pub struct Theme {
     pub selected_bg: Hsla,
     /// The list's selection while the list has keyboard focus.
     pub selected_focused_bg: Hsla,
+    /// The quiet bar on the focused list's selected row.
+    pub focus_bar: Hsla,
     /// Rows picked for a bulk action (`x`, shift- and ⌘-click).
     pub checked_bg: Hsla,
     pub nav_active_bg: Hsla,
@@ -50,6 +52,8 @@ pub struct Theme {
     pub accent: Hsla,
     /// Text on an `accent` background.
     pub accent_text: Hsla,
+    /// Behind selected text in the reader.
+    pub text_selection: Hsla,
     pub danger: Hsla,
     /// An accepted invite.
     pub success: Hsla,
@@ -115,6 +119,7 @@ impl Theme {
             hover_bg: hex(0xffffff0a),
             selected_bg: hex(0xffffff1c),
             selected_focused_bg: hex(0x7aa5ff38),
+            focus_bar: hex(0x7aa5ff8c),
             checked_bg: hex(0x7aa5ff1f),
             nav_active_bg: hex(0xffffff17),
             card_bg: hex(0xffffff0a),
@@ -129,6 +134,7 @@ impl Theme {
             icon_active: hex(0xf2f2f5ff),
             accent: hex(0x7aa5ffff),
             accent_text: hex(0x0b1530ff),
+            text_selection: hex(0x7aa5ff59),
             danger: hex(0xff7b72ff),
             success: hex(0x4fd07fff),
             star: hex(0xf5bf4fff),
@@ -174,6 +180,7 @@ impl Theme {
             hover_bg: hex(0x0000000a),
             selected_bg: hex(0x00000012),
             selected_focused_bg: hex(0x1d5bd11c),
+            focus_bar: hex(0x1d5bd166),
             checked_bg: hex(0x1d5bd10f),
             nav_active_bg: hex(0x00000012),
             card_bg: hex(0xffffff00),
@@ -188,6 +195,7 @@ impl Theme {
             icon_active: hex(0x1c1c1fff),
             accent: hex(0x1d5bd1ff),
             accent_text: hex(0xffffffff),
+            text_selection: hex(0x1d5bd138),
             danger: hex(0xd93a32ff),
             success: hex(0x1e9a52ff),
             star: hex(0xe2a21cff),

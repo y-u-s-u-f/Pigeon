@@ -8,6 +8,7 @@ pub mod invite;
 pub mod rail;
 pub mod reader;
 pub mod rich_editor;
+pub mod selectable;
 pub mod settings;
 pub mod shortcuts_help;
 pub mod sidebar;

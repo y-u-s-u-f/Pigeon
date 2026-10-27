@@ -69,6 +69,7 @@ actions!(
         CloseSearch,
         NextMessage,
         PrevMessage,
+        SelectMessageText,
         GoToInbox,
         GoToStarred,
         GoToSent,
@@ -210,6 +211,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("u", BackToList, Some(READING)),
         KeyBinding::new("n", NextMessage, Some(READING)),
         KeyBinding::new("p", PrevMessage, Some(READING)),
+        KeyBinding::new("cmd-a", SelectMessageText, Some(READING)),
         // Thread actions.
         KeyBinding::new("e", Archive, Some(MAIL)),
         KeyBinding::new("#", Delete, Some(MAIL)),
@@ -584,6 +586,7 @@ pub const COMMANDS: &[Command] = commands! {
     Navigation: "Back to List", Inbox, BackToList if Thread;
     Navigation: "Next Message in Conversation", ChevronDown, NextMessage if Messages;
     Navigation: "Previous Message in Conversation", ChevronUp, PrevMessage if Messages;
+    Conversation: "Select Message Text", Text, SelectMessageText if Thread;
     Navigation: "Scroll Conversation Down", ChevronDown, ScrollReaderDown, help_only;
     Navigation: "Scroll Conversation Up", ChevronUp, ScrollReaderUp, help_only;
     Navigation: "Search Mail", Search, ToggleSearch;

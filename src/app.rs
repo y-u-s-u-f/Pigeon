@@ -192,6 +192,8 @@ pub struct PigeonApp {
     recent_commands: Vec<&'static str>,
     /// The When/Where lines an invite card summarizes, shown anyway.
     pub invite_details_open: bool,
+    /// The message whose whole text ⌘A selected, until a click clears it.
+    pub select_all_text: Option<usize>,
     pub help_filter: Entity<InputState>,
     /// A reveal waiting for the list's next layout.
     reveal_pending: bool,
@@ -284,6 +286,7 @@ impl PigeonApp {
             search_highlight: None,
             recent_commands: Vec::new(),
             invite_details_open: false,
+            select_all_text: None,
             help_filter,
             reveal_pending: false,
             settings: Settings::default(),
@@ -398,6 +401,7 @@ impl PigeonApp {
             self.expanded_messages.clear();
             self.focused_message = None;
             self.invite_details_open = false;
+            self.select_all_text = None;
             self.reader_scroll.set_offset(point(px(0.), px(0.)));
         }
         self.selected = Some(ix);
@@ -1260,6 +1264,24 @@ impl PigeonApp {
         cx.notify();
     }
 
+    /// ⌘A in the reader: all of the focused message's text, or the last one's.
+    fn select_message_text(
+        &mut self,
+        _: &SelectMessageText,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(thread) = self.selected.map(|ix| &self.data.threads[ix]) else {
+            return;
+        };
+        gpui::base::TextSelection::clear(window, cx);
+        self.select_all_text = Some(
+            self.focused_message
+                .unwrap_or(thread.messages.len().saturating_sub(1)),
+        );
+        cx.notify();
+    }
+
     fn next_message(&mut self, _: &NextMessage, _: &mut Window, cx: &mut Context<Self>) {
         self.step_message(true, cx);
     }
@@ -1859,6 +1881,7 @@ impl Render for PigeonApp {
             .on_action(cx.listener(Self::close_search))
             .on_action(cx.listener(Self::focus_results))
             .on_action(cx.listener(Self::next_message))
+            .on_action(cx.listener(Self::select_message_text))
             .on_action(cx.listener(Self::prev_message))
             .on_action(cx.listener(Self::go_to_mail))
             .on_action(cx.listener(Self::go_to_calendar))
