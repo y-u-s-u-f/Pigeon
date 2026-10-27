@@ -23,15 +23,14 @@ Temp dir (call it `$TMP`): `/private/var/folders/sc/26v_9jsx0s9_fkjttv6jzjdh0000
 
 ## Setup
 
-1. Load the `cua-driver` skill first and follow it. Use the already-running Cua Driver daemon (check with `cua-driver status`). If none runs, start it ONLY with `open -n -g -a CuaDriver --args serve` (so macOS attributes it to CuaDriver.app, which has Screen Recording). Never start `cua-driver serve` yourself and never stop the daemon: a daemon started from the shell has no screenshot permission. Drive the app with the `cua-driver` CLI (`/opt/homebrew/bin/cua-driver`) through the shell; that is the default path in the skill. Don't stop if Cua isn't exposed through `execute`.
-2. Build into your own target dir so you do not collide with other agents:
-   `CARGO_TARGET_DIR=$TMP/target-test cargo build --release`
-3. Sign it so the Keychain trusts it: `codesign -f -s "Pigeon Dev" --identifier com.pigeon.dev $TMP/target-test/release/pigeon` (or build+sign+run with `scripts/run.sh`, which honours `CARGO_TARGET_DIR`). Then launch that binary in the background. Record its pid and find its window id with Cua. Write both down; every action below is scoped to them.
+1. Drive the app with the **Cua Driver MCP** tools, called through the `execute` tool as `tools["cua-driver"].…` (use `search` inside `execute` to find them, e.g. `list_windows`, `get_window_state`, `run_steps`, `verify_state`, screenshots). Don't use the `cua-driver` CLI. Read the MCP's guides first (`get_guide`, `skill://cua-driver/SKILL.md`) and use one short `session` label on every call. If `check_permissions` shows Accessibility or Screen Recording off, stop and report; never approve system prompts yourself.
+2. Build into your own target dir so you do not collide with other agents, using what your task says (usually `CARGO_TARGET_DIR=$TMP/target-test scripts/bundle.sh`, which builds release, signs with "Pigeon Dev" and prints the `.app` path).
+3. Launch the binary inside the bundle (`<app>/Contents/MacOS/Pigeon`) from the shell in the background, with the env vars your task gives. Record its pid and find its window id with Cua (`list_windows`). Write both down; every action below is scoped to them.
 
 ## Hard safety rules
 
 - Target ONLY your own Pigeon process, by pid + window_id. NEVER send input to any other app. (An earlier agent typed into the user's browser. Do not repeat that.)
-- No `osascript`, no `cliclick`, no other input tools outside Cua Driver.
+- No `osascript`, no `cliclick`, no `cua-driver` CLI, no other input tools outside the Cua Driver MCP.
 - GPUI ignores background clicks and drags. When you need foreground delivery, use Cua's foreground delivery targeted at Pigeon's window, and first confirm the frontmost window belongs to your pid. If it does not, stop and re-focus your window; never type or click blind.
 - The accessibility tree is partial: main surfaces expose roles/labels. Use element tokens where available; otherwise use pixel coordinates inside your window's bounds only.
 - Never change the Mac's appearance setting or wallpaper.
