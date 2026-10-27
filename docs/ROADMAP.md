@@ -30,14 +30,14 @@ To update: change the status cell in the area's table, then the counts below.
 | [Images and attachments](#510-images-and-attachments-att) | 3 | 1 | 3 | 7 |
 | [Links](#511-links-lnk) | 2 | 0 | 1 | 3 |
 | [Mail settings](#512-mail-settings-mst) | 10 | 0 | 0 | 10 |
-| [Calendar](#6-calendar-cal) | 18 | 6 | 18 | 42 |
+| [Calendar](#6-calendar-cal) | 18 | 5 | 19 | 42 |
 | [Sync and push](#71-sync-and-push-syn) | 2 | 1 | 4 | 7 |
 | [Notifications and background](#72-notifications-and-background-ntf) | 3 | 0 | 0 | 3 |
 | [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 0 | 2 | 3 | 5 |
 | [Storage and persistence](#81-storage-and-persistence-per) | 0 | 0 | 3 | 3 |
 | [Command palette](#82-command-palette-pal) | 0 | 0 | 3 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 6 | 0 | 7 |
-| **Overall** | **59** | **21** | **96** | **176** |
+| **Overall** | **59** | **20** | **97** | **176** |
 
 ## Contents
 
@@ -871,7 +871,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | CAL-40 | Move an event to another calendar | 🟡 Partially done | `events.move` |
 | **Recurrence** | | | |
 | CAL-5 | Recurring events | 🟢 Fully linked | `recurrence` (RRULE, EXDATE), `events.instances`, `singleEvents` |
-| CAL-6 | This event or all events | 🟡 Partially done | Instance `events.patch`; series split with `UNTIL` |
+| CAL-6 | This event or all events | 🟢 Fully linked | Instance `events.patch`; series split with `UNTIL` |
 | CAL-29 | Set and edit repeat rules | ⚪ Not done | `recurrence` |
 | **Invites and RSVP** | | | |
 | CAL-13 | Guests and invitations | 🟢 Fully linked | `attendees`, `sendUpdates` |
