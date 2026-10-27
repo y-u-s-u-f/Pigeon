@@ -14,7 +14,7 @@ use gpui::{
 };
 
 use super::{
-    CalendarView, MeetState, Menu, PromptKind,
+    CalendarEvent, CalendarView, MeetState, Menu, PromptKind,
     repeat::{self, RepeatDraft, RepeatEnd},
     today,
 };
@@ -601,6 +601,7 @@ impl CalendarView {
             return;
         };
         if !self.can_edit(&id) {
+            self.refuse(&id, cx);
             return;
         }
         self.before_panel_edit();
@@ -1070,6 +1071,8 @@ impl CalendarView {
             return;
         };
         if self.access_of(event) != Access::Edit {
+            let id = event.id.clone();
+            self.refuse(&id, cx);
             return;
         }
         let (start, end) = panel.times(event);
@@ -1509,7 +1512,7 @@ impl CalendarView {
         let access = self.access_of(event);
         let editable = access == Access::Edit;
         // Why the fields don't take typing (CAL-22).
-        let read_only_note = (!editable).then(|| {
+        let read_only_note = self.refusal_of(event).map(|why| {
             div()
                 .pl(SPACE_LG)
                 .flex()
@@ -1517,11 +1520,7 @@ impl CalendarView {
                 .gap(SPACE_SM)
                 .text_size(TEXT_SM)
                 .text_color(theme.text_muted)
-                .child(if access == Access::Rsvp {
-                    "Only the organizer can change this event"
-                } else {
-                    "You can't change events in this calendar"
-                })
+                .child(why)
         });
 
         let header = window_drag_area(div().id("event-panel-header"))
@@ -2306,16 +2305,24 @@ impl CalendarView {
                 .map(|r| r.to_string())
                 .or_else(|| status.map(|s| status_text(s).to_string()))
                 .unwrap_or_default();
+            let shown = contact.clone();
             div()
                 .id(id)
                 .group("guest")
+                .role(gpui::Role::Button)
+                .aria_label(format!("Show contact: {name}"))
                 .h(px(40.))
                 .px(SPACE_SM)
                 .flex()
                 .items_center()
                 .gap(SPACE_SM)
                 .rounded(RADIUS_MD)
+                .cursor_pointer()
                 .hover(|s| s.bg(theme.hover_bg))
+                // W6: the guest's contact card (CON-5).
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(CalendarEvent::ShowContact(shown.clone()))
+                }))
                 .child(
                     div()
                         .relative()
@@ -2361,7 +2368,10 @@ impl CalendarView {
                         .group_hover("guest", |s| s.opacity(1.))
                         .hover(|s| s.bg(theme.selected_bg))
                         .child(icon(Icon::X, px(12.), theme.text_faint))
-                        .on_click(cx.listener(move |this, _, _, cx| this.remove_guest(ix, cx)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.remove_guest(ix, cx)
+                        }))
                 }))
         };
 

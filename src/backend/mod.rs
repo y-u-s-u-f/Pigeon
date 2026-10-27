@@ -1600,6 +1600,28 @@ impl Backend {
     }
     // end sprint 2 W3 ---------------------------------------------------
 
+    // Sprint 2 W6 -------------------------------------------------------
+
+    /// The contact card for `email` (CON-5), from the store only; `name` is
+    /// the one the mail gave, for people who aren't contacts.
+    pub fn contact_card(&self, email: &str, name: &str) -> crate::contacts::ContactCard {
+        let fallback = || crate::contacts::ContactCard {
+            name: name.to_string(),
+            emails: vec![email.to_string()],
+            ..Default::default()
+        };
+        let Some(account) = &self.account else {
+            return fallback();
+        };
+        self.store
+            .contact_card(account, email, name)
+            .unwrap_or_else(|e| {
+                eprintln!("Pigeon: couldn't read the contact card: {e:#}");
+                fallback()
+            })
+    }
+    // end sprint 2 W6 ---------------------------------------------------
+
     /// Write settings still waiting to settle: on quit.
     pub fn flush_settings(&mut self) {
         self._save_settings = None;

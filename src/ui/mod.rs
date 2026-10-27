@@ -3,6 +3,7 @@
 pub mod calendar;
 pub mod command_palette;
 pub mod composer;
+pub mod contact_card;
 pub mod html_view;
 pub mod invite;
 pub mod menu_bar;

@@ -10,6 +10,14 @@
         { "metadata": { "primary": true, "source": { "type": "CONTACT", "id": "1" } }, "value": "sarah.chen@example.com", "type": "work" },
         { "metadata": { "source": { "type": "CONTACT", "id": "1" } }, "value": "sarah@home.example.com", "type": "home" },
         { "metadata": { "source": { "type": "CONTACT", "id": "1" } }, "value": "SARAH.CHEN@example.com" }
+      ],
+      "phoneNumbers": [
+        { "metadata": { "primary": true }, "value": "+1 415 555 0134", "canonicalForm": "+14155550134", "type": "mobile", "formattedType": "Mobile" },
+        { "value": "+1 415 555 0134", "type": "work", "formattedType": "Work" },
+        { "value": "+1 415 555 0199", "type": "work", "formattedType": "Work" }
+      ],
+      "organizations": [
+        { "metadata": { "primary": true }, "name": "Acme", "title": "Head of Design", "type": "work" }
       ]
     },
     {

@@ -2,7 +2,8 @@
 //! (`people.connections.list`) and other contacts (`otherContacts.list`,
 //! people they've written to) into the store, then searched locally. Both
 //! go by sync token after the first full list; an expired token lists
-//! everything again. Read-only.
+//! everything again. Read-only. Contacts also bring their phone numbers and
+//! organisation, for the contact card (CON-5); other contacts can't.
 
 use anyhow::{Context as _, anyhow};
 use serde::Deserialize;
@@ -11,6 +12,7 @@ use super::{
     http::{Request, Response, Transport, TransportError},
     store::Store,
 };
+use crate::contacts::{ContactDetails, Phone};
 
 /// `otherContacts.list`'s scope; contacts need `auth::CONTACTS_SCOPE`.
 pub const OTHER_CONTACTS_SCOPE: &str = "https://www.googleapis.com/auth/contacts.other.readonly";
@@ -18,6 +20,9 @@ pub const OTHER_CONTACTS_SCOPE: &str = "https://www.googleapis.com/auth/contacts
 const API: &str = "https://people.googleapis.com/v1";
 const COST: u32 = 1;
 const PAGE_SIZE: u32 = 1000;
+/// The connections' field mask. Other contacts keep their own,
+/// `names,emailAddresses`.
+const CONNECTION_FIELDS: &str = "names,emailAddresses,phoneNumbers,organizations";
 
 /// Which list a contact comes from. Contacts rank before other contacts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,7 +39,9 @@ impl Source {
         }
     }
 
-    /// The `sync_state` key its token is kept under.
+    /// The `sync_state` key its token is kept under. People reuses a token
+    /// only with the field mask it was made with: a change to `FIELDS`
+    /// needs a migration that drops it (as 170 did).
     fn token_key(self) -> &'static str {
         match self {
             Source::Connection => "people_sync_token",
@@ -45,7 +52,7 @@ impl Source {
     fn url(self, sync_token: Option<&str>, page: Option<&str>) -> String {
         let mut url = match self {
             Source::Connection => format!(
-                "{API}/people/me/connections?personFields=names,emailAddresses\
+                "{API}/people/me/connections?personFields={CONNECTION_FIELDS}\
                  &requestSyncToken=true&pageSize={PAGE_SIZE}"
             ),
             Source::Other => format!(
@@ -84,6 +91,27 @@ pub struct Person {
     names: Vec<Name>,
     #[serde(default)]
     email_addresses: Vec<Email>,
+    #[serde(default)]
+    phone_numbers: Vec<PhoneNumber>,
+    #[serde(default)]
+    organizations: Vec<Organization>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct PhoneNumber {
+    #[serde(default)]
+    value: String,
+    #[serde(default)]
+    formatted_type: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+struct Organization {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    title: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -125,6 +153,30 @@ impl Person {
             out.push(email.to_string());
         }
         out
+    }
+
+    /// Phone numbers (once each) and the first organisation, for the card.
+    pub fn details(&self) -> ContactDetails {
+        let mut phones: Vec<Phone> = Vec::new();
+        for p in &self.phone_numbers {
+            let number = p.value.trim();
+            if number.is_empty() || phones.iter().any(|o| o.number == number) {
+                continue;
+            }
+            phones.push(Phone {
+                number: number.to_string(),
+                label: p.formatted_type.trim().to_lowercase(),
+            });
+        }
+        let org = self
+            .organizations
+            .iter()
+            .find(|o| !o.name.trim().is_empty() || !o.title.trim().is_empty());
+        ContactDetails {
+            phones,
+            organization: org.map(|o| o.name.trim().to_string()).unwrap_or_default(),
+            title: org.map(|o| o.title.trim().to_string()).unwrap_or_default(),
+        }
     }
 }
 
@@ -283,6 +335,32 @@ mod tests {
         let contacts = store.contacts(&account()).unwrap();
         assert_eq!(contacts[0].name, "Sarah Chen");
         assert_eq!(contacts[4].name, "");
+        // W6: phones (once each) and the organisation, for the card.
+        let card = store
+            .contact_card(&account(), "sarah.chen@example.com", "")
+            .unwrap();
+        assert!(card.is_contact);
+        let phones: Vec<(&str, &str)> = card
+            .details
+            .phones
+            .iter()
+            .map(|p| (p.number.as_str(), p.label.as_str()))
+            .collect();
+        assert_eq!(
+            phones,
+            [("+1 415 555 0134", "mobile"), ("+1 415 555 0199", "work")]
+        );
+        assert_eq!(
+            (
+                card.details.organization.as_str(),
+                card.details.title.as_str()
+            ),
+            ("Acme", "Head of Design")
+        );
+        assert_eq!(
+            card.emails,
+            ["sarah.chen@example.com", "sarah@home.example.com"]
+        );
         assert_eq!(
             store
                 .sync_state(ME, "people_sync_token")
@@ -301,7 +379,7 @@ mod tests {
         assert!(
             requests[0]
                 .url
-                .contains("personFields=names,emailAddresses")
+                .contains("personFields=names,emailAddresses,phoneNumbers,organizations")
         );
         assert!(requests[0].url.contains("requestSyncToken=true"));
         assert!(

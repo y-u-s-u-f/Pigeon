@@ -190,6 +190,8 @@ pub struct UreqTransport {
     agent: ureq::Agent,
     /// The dev offline switch's file, with `PIGEON_DEV=1` (`offline_switch`).
     offline_switch: Option<PathBuf>,
+    /// W6: the folder the failure drills' files go in, with `PIGEON_DEV=1`.
+    drills: Option<PathBuf>,
 }
 
 /// W11, dev only: with `PIGEON_DEV=1`, every request fails as a network
@@ -209,6 +211,72 @@ pub fn simulating_offline() -> bool {
     offline_switch().is_some_and(|f| f.exists())
 }
 
+/// Sprint 2 W6, dev only: with `PIGEON_DEV=1`, the next Google write (a
+/// POST, PUT, PATCH or DELETE, or a batch holding one; never a read or the
+/// sign-in's token calls) fails once while one of these files is in the
+/// data folder, which is then deleted. Refusal answers 400 as Gmail does;
+/// conflict answers 412, as for a stale ETag.
+pub const REFUSAL_DRILL_FILE: &str = "simulate-refusal";
+pub const CONFLICT_DRILL_FILE: &str = "simulate-conflict";
+
+pub const REFUSAL_BODY: &str = r#"{"error":{"code":400,"message":"Simulated refusal (drill)","errors":[{"message":"Simulated refusal (drill)","domain":"global","reason":"invalidArgument"}],"status":"INVALID_ARGUMENT"}}"#;
+pub const CONFLICT_BODY: &str = r#"{"error":{"code":412,"message":"Precondition Failed","errors":[{"message":"Precondition Failed","domain":"global","reason":"conditionNotMet","location":"If-Match","locationType":"header"}]}}"#;
+
+/// The drills' folder: the data folder with `PIGEON_DEV=1`, else none.
+pub fn drill_dir() -> Option<PathBuf> {
+    std::env::var("PIGEON_DEV")
+        .is_ok_and(|v| v == "1")
+        .then(super::data_dir)
+}
+
+/// A write to a Google API: what a drill may fail.
+fn is_google_write(request: &Request) -> bool {
+    const WRITES: [&str; 4] = ["POST", "PUT", "PATCH", "DELETE"];
+    let rest = request
+        .url
+        .split_once("://")
+        .map_or(request.url.as_str(), |(_, rest)| rest);
+    let host = rest.split(['/', '?']).next().unwrap_or_default();
+    if !WRITES.contains(&request.method)
+        || !host.ends_with("googleapis.com")
+        || host == "oauth2.googleapis.com"
+    {
+        return false;
+    }
+    // A batch is a POST either way: it counts when a call in it writes.
+    if request.path().starts_with("/batch") {
+        return String::from_utf8_lossy(&request.body)
+            .lines()
+            .any(|line| WRITES.iter().any(|w| line.starts_with(&format!("{w} /"))));
+    }
+    true
+}
+
+/// The drill's answer to `request`, taking the drill's file, if one is set
+/// and `request` is a write.
+fn drill(dir: &std::path::Path, request: &Request) -> Option<Response> {
+    if !is_google_write(request) {
+        return None;
+    }
+    let (file, status, body) = [
+        (REFUSAL_DRILL_FILE, 400, REFUSAL_BODY),
+        (CONFLICT_DRILL_FILE, 412, CONFLICT_BODY),
+    ]
+    .into_iter()
+    .find(|(file, ..)| dir.join(file).exists())?;
+    // Taken once: a drill whose file is already gone fails nothing.
+    std::fs::remove_file(dir.join(file)).ok()?;
+    crate::logging::info(&format!(
+        "drill: {file}: {}",
+        log_line(request.method, &request.url, Some(status), Duration::ZERO)
+    ));
+    Some(Response {
+        status,
+        headers: vec![("Content-Type".into(), "application/json".into())],
+        body: body.as_bytes().to_vec(),
+    })
+}
+
 impl Default for UreqTransport {
     fn default() -> Self {
         Self::new()
@@ -226,6 +294,16 @@ impl UreqTransport {
         Self {
             agent: ureq::Agent::new_with_config(config),
             offline_switch: offline_switch(),
+            drills: drill_dir(),
+        }
+    }
+
+    /// Fails the next write once while a drill's file is in `dir`, as
+    /// `PIGEON_DEV=1` does with the data folder.
+    pub fn with_drills(dir: PathBuf) -> Self {
+        Self {
+            drills: Some(dir),
+            ..Self::new()
         }
     }
 
@@ -278,6 +356,9 @@ impl Transport for UreqTransport {
                 log_line(request.method, &request.url, None, started.elapsed())
             );
             return Err(TransportError::Network("simulated offline".into()));
+        }
+        if let Some(response) = self.drills.as_deref().and_then(|dir| drill(dir, request)) {
+            return Ok(response);
         }
         let result = self.run(request);
         let status = result.as_ref().ok().map(|r| r.status);
@@ -1010,6 +1091,75 @@ mod tests {
             Err(TransportError::Network("simulated offline".into()))
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn drills_fail_the_next_write_once() {
+        let dir = std::env::temp_dir().join(format!("pigeon-drills-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let modify = Request::json(
+            "POST",
+            "https://gmail.googleapis.com/gmail/v1/users/me/threads/t1/modify",
+            &serde_json::json!({"removeLabelIds": ["INBOX"]}),
+            10,
+        );
+        let read = Request::get(
+            "https://gmail.googleapis.com/gmail/v1/users/me/threads/t1",
+            10,
+        );
+        let token = Request {
+            method: "POST",
+            ..Request::get("https://oauth2.googleapis.com/token", 0)
+        };
+        let reads = encode_batch(
+            "https://gmail.googleapis.com/batch/gmail/v1",
+            &[read.clone(), read.clone()],
+            "b",
+        );
+        let writes = encode_batch(
+            "https://gmail.googleapis.com/batch/gmail/v1",
+            &[modify.clone(), modify.clone()],
+            "b",
+        );
+        let event = Request::json(
+            "PATCH",
+            "https://www.googleapis.com/calendar/v3/calendars/c/events/e",
+            &serde_json::json!({"summary": "x"}),
+            1,
+        );
+
+        // Nothing set: nothing fails.
+        assert_eq!(drill(&dir, &modify), None);
+
+        // Reads, read-only batches and the sign-in leave the drill waiting.
+        std::fs::write(dir.join(REFUSAL_DRILL_FILE), "").unwrap();
+        for request in [&read, &reads, &token] {
+            assert_eq!(drill(&dir, request), None, "{request:?}");
+        }
+        let refused = drill(&dir, &writes).unwrap();
+        assert_eq!(refused.status, 400);
+        assert!(
+            String::from_utf8_lossy(&refused.body).contains("Simulated refusal"),
+            "a Gmail-like error body"
+        );
+        // Once.
+        assert!(!dir.join(REFUSAL_DRILL_FILE).exists());
+        assert_eq!(drill(&dir, &modify), None);
+
+        std::fs::write(dir.join(CONFLICT_DRILL_FILE), "").unwrap();
+        assert_eq!(drill(&dir, &event).unwrap().status, 412);
+        assert_eq!(drill(&dir, &event), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn drills_are_inert_without_dev_mode() {
+        // The test runner doesn't set PIGEON_DEV=1; read only, never set.
+        if std::env::var("PIGEON_DEV").is_ok_and(|v| v == "1") {
+            return;
+        }
+        assert_eq!(drill_dir(), None);
+        assert_eq!(UreqTransport::new().drills, None);
     }
 
     #[test]

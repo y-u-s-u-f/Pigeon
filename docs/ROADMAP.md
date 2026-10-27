@@ -518,6 +518,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 #### CMP-12 Send failure feedback
 
 - **Today:** With Google (W6), a send Gmail turns down (after the transport's retries) goes back to Drafts as a draft (`draft-local-*`, or the draft it was sent from), leaves the conversation it was shown in, and shows the toast "Not sent: <Gmail's reason>" (for example "Not sent: Invalid To header", checked on the real account). `send()` in `src/backend/compose.rs`.
+- **Today (drills, sprint 2 W6):** With `PIGEON_DEV=1`, `touch <data dir>/simulate-refusal` makes the next Google write answer 400 with a Gmail-like body, so a send shows "Not sent: Simulated refusal (drill)" and goes back to Drafts on the real account (see STA-2).
 - **Needs:** A tester pass (T2b). No retry button; reopening the draft and sending again is the retry.
 
 #### CMP-13 Sent copy on the server
@@ -698,7 +699,8 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 #### CON-5 Contact card
 
-- **Needs:** Clicking a sender or guest shows name, addresses, phone, organisation and recent threads. `people.get` / `getBatchGet` for details; recent threads from search (`from:` / `to:`).
+- **Today (sprint 2 W6):** Clicking a sender (name or avatar) or a recipient in the reader, a guest or organizer in the event panel, or ⌘K "Show Contact" (`⇧P`, the focused message's sender, or the first other person on the user's own mail) opens a card over the panes (`src/ui/contact_card.rs`, `src/app/contact_card.rs`): initial avatar, name, title · organisation, every address of the contact, phone numbers with their type, Compose (`C`, a new message to them) and Copy Address (`⌘C`, with a toast), and up to 8 recent conversations with any of their addresses, newest first, Spam, Trash and Drafts left out (`↑`/`↓`, `↵` opens one). Esc or a click outside closes it. All from the store (`Store::contact_card()`, `Backend::contact_card()`); no People call. People who aren't contacts show the name the mail gives, the address, "Not in your contacts" and the conversations. The connections sync now asks `personFields=names,emailAddresses,phoneNumbers,organizations` and stores them per contact (`contacts.details`, schema 170); 170 also drops the connections' sync token once, since People only takes a token back with the field mask it was made with, so the next sync lists the contacts again. Other contacts keep `readMask=names,emailAddresses`. In demo mode the card works on the placeholder mail (no phones or organisations there).
+- **Needs:** A tester pass. Photos (CON-4). A live refresh (`people.get`) isn't planned while the cache is kept current by sync.
 
 #### CON-6 Contact groups
 
@@ -1028,7 +1030,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 #### CAL-22 Organizer and read-only permissions
 
 - **Today (W7):** `backend::calendar::access()` gives Edit, Rsvp or ReadOnly: a reader or free/busy calendar is read-only; on a writer/owner calendar the organizer (`organizer.self`, or the user's address, as in demo mode) or a guest with `guestsCanModify` edits; birthdays and events from Gmail don't; an invited user only answers. Read-only events show their fields read-only with a line saying why, no guest field, no resize edge, and can't be dragged; Delete is hidden. For an invite, Delete reads "Decline and remove" and declines it, then deletes the user's copy (CAL-10). The calendar picker (CAL-40) is only for the organizer of a whole event, and lists calendars the user can't write to faded. Applies in demo mode too.
-- **Needs:** A tester pass (T2c). `locked` and `privateCopy` aren't read.
+- **Today (sprint 2 W6):** A refused change now says why in a toast (`backend::calendar::refusal()`, `CalendarView::refuse()`): dragging or resizing a read-only event (once per drag; it stays put and the release opens it), changing its times, all day or any field through the panel, and Delete / ⌫ on it. On a reader or free/busy calendar the toast and the panel's line read "“<calendar>” is read-only"; someone else's invite "Only the organizer can change this event"; birthdays and events from Gmail "You can't change this event".
+- **Needs:** A tester pass (T2c) on a subscribed read-only calendar (public holidays). `locked` and `privateCopy` aren't read.
 - **Notes:** Guests can usually change only their RSVP, reminders and, on their copy, busy/free.
 
 #### CAL-28 Event colours and labels
@@ -1270,6 +1273,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 - **Today:** Every action (W5) changes `data` at once and queues an op. When Google refuses one (anything but 401 or no network), the op fails for good: thread actions apply what went to the store and read the refused threads again with `threads.get` (`outbox::commit_threads()`); sends go back to Drafts (CMP-12); calendar writes reload Google's version of the event. The backend emits what changed (`ThreadsChanged`, `EventsChanged`: the app reloads them, the rollback) and then `OpFailed`, whose toast reads e.g. "Couldn't archive 2 conversations: Invalid label". Retryable errors (429, 5xx, rate-limit 403) back off first (transport and `Gmail::batch`, 8 tries).
 - **Today (W11):** `OpFailed` shows an error toast (`PigeonApp::show_error_toast()`): the danger tone from `theme.rs` with an alert icon, no Undo, `Role::Alert`. Success and Undo toasts are unchanged.
+- **Today (failure drills, sprint 2 W6, dev only):** With `PIGEON_DEV=1`, a file in the data folder makes the **next** Google write fail once and is then deleted: `simulate-refusal` answers 400 (`"Simulated refusal (drill)"`, Gmail's error shape), `simulate-conflict` answers 412 (`Precondition Failed`, as for a stale ETag). Only writes (POST, PUT, PATCH, DELETE, or a batch holding one) to `*.googleapis.com`, never reads, read-only batches or the sign-in's token calls. Each is logged as `drill: <file>: <call>` in `pigeon.log`. Inert without `PIGEON_DEV=1` (`drill()` in `src/backend/http.rs`, in `UreqTransport::send()` after the offline switch). Results, covered by tests: a thread action rolls back and toasts "Couldn't archive the conversation: Simulated refusal (drill)" (a batch: "Couldn't delete 2 conversations: Precondition Failed"); a send goes back to Drafts with "Not sent: …"; a calendar write reloads Google's version with "Google Calendar didn't take the change: Simulated refusal (drill)", or "Changed elsewhere; reloaded" for 412. No gaps found in the outbox's handling.
 - **Needs:** The rollback keeps the list position only as far as `update_threads()` does.
 
 #### STA-3 Offline mode and queued changes
@@ -1288,6 +1292,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 - **Today:** A sync that changes the open thread reloads it in place, keeping the selection (W3); drafts open in the composer aren't replaced. W11: the reader's expanded and focused messages are kept by message id across the reload (`open_messages()` / `restore_open_messages()` in `src/app/backend_events.rs`), so a new message doesn't shift them, and the message that was last stays open when a newer one arrives.
 - **Today (events, W7):** Event patches carry `If-Match`; a 412 reloads Google's version into the store and the view, drops the op, and shows "Changed elsewhere; reloaded" (checked on the real account with a stale ETag).
+- **Today (drill, sprint 2 W6):** With `PIGEON_DEV=1`, `touch <data dir>/simulate-conflict` makes the next Google write answer 412 once, so the conflict path can be checked on real data without a second client (see STA-2). Gmail thread actions have no ETags; a 412 there is handled as any refusal (rollback and toast).
 - **Needs:** Rules for drafts changed elsewhere. Links to DRF-6, LST-8.
 
 ---

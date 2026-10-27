@@ -879,6 +879,74 @@ mod tests {
         assert_eq!(sent[3].1, "/gmail/v1/users/me/threads/b");
     }
 
+    /// Gmail's copy of an Inbox thread `id`.
+    fn fresh(id: &str) -> String {
+        format!(
+            r#"{{"id":"{id}","historyId":"9","messages":[{{"id":"m-{id}","threadId":"{id}",
+            "labelIds":["INBOX"],"internalDate":"1793000000000","payload":{{"headers":[]}}}}]}}"#
+        )
+    }
+
+    // W6: what the failure drills' answers come to (STA-2, STA-5).
+
+    #[test]
+    fn a_refused_archive_rolls_back_with_gmails_reason() {
+        use crate::backend::http::REFUSAL_BODY;
+        let store = inbox(&["t"]);
+        let (gmail, _, _) = gmail(
+            FakeTransport::new()
+                .on("POST", &path("t", "modify"), &[], &[(400, REFUSAL_BODY)])
+                .on(
+                    "POST",
+                    BATCH,
+                    &[],
+                    &[(200, &batch_body(&[(200, &fresh("t"))]))],
+                ),
+        );
+        let op = MailOp::Modify {
+            threads: s(&["t"]),
+            add: vec![],
+            remove: s(&[gmail::INBOX]),
+        };
+        assert_eq!(
+            commit_threads(&gmail, &store, ACCOUNT, &op),
+            Outcome::Failed {
+                message: "Couldn't archive the conversation: Simulated refusal (drill)".into(),
+                changed: s(&["t"]),
+                removed: vec![],
+            }
+        );
+        assert_eq!(folder(&store, "t"), Folder::Inbox);
+    }
+
+    #[test]
+    fn a_conflict_on_a_batch_rolls_back_every_thread() {
+        use crate::backend::http::CONFLICT_BODY;
+        let store = inbox(&["a", "b"]);
+        let (gmail, _, _) = gmail(FakeTransport::new().on(
+            "POST",
+            BATCH,
+            &[],
+            &[
+                (412, CONFLICT_BODY),
+                (200, &batch_body(&[(200, &fresh("a")), (200, &fresh("b"))])),
+            ],
+        ));
+        let op = MailOp::Trash {
+            threads: s(&["a", "b"]),
+        };
+        assert_eq!(
+            commit_threads(&gmail, &store, ACCOUNT, &op),
+            Outcome::Failed {
+                message: "Couldn't delete 2 conversations: Precondition Failed".into(),
+                changed: s(&["a", "b"]),
+                removed: vec![],
+            }
+        );
+        assert_eq!(folder(&store, "a"), Folder::Inbox);
+        assert_eq!(folder(&store, "b"), Folder::Inbox);
+    }
+
     #[test]
     fn overlay_keeps_an_archived_thread_out_of_the_inbox_during_a_poll() {
         let store = inbox(&["t", "u"]);

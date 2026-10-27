@@ -434,17 +434,34 @@ impl PigeonApp {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let recipients = |prefix: &str, contacts: &[Contact]| {
-            (!contacts.is_empty()).then(|| {
-                let names: Vec<&str> = contacts.iter().map(|c| self.contact_name(c)).collect();
-                format!("{prefix} {}", names.join(", "))
-            })
-        };
-        let to_line = [recipients("to", &message.to), recipients("cc", &message.cc)]
+        // W6: each name opens its contact card (CON-5).
+        let mut to_line: Vec<AnyElement> = Vec::new();
+        for (group, (prefix, contacts)) in [("to", &message.to), ("cc", &message.cc)]
             .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" · ");
+            .filter(|(_, contacts)| !contacts.is_empty())
+            .enumerate()
+        {
+            if group > 0 {
+                to_line.push(div().mx(SPACE_XS).child("·").into_any_element());
+            }
+            to_line.push(div().mr(SPACE_XS).child(prefix).into_any_element());
+            for (n, contact) in contacts.iter().enumerate() {
+                let name = self.contact_name(contact).to_string();
+                let last = n + 1 == contacts.len();
+                to_line.push(
+                    self.contact_link(
+                        ("recipient", ix * 10_000 + group * 5_000 + n),
+                        contact,
+                        &name,
+                        theme,
+                        cx,
+                    )
+                    .child(if last { name } else { format!("{name},") })
+                    .when(!last, |d| d.mr(SPACE_XS))
+                    .into_any_element(),
+                );
+            }
+        }
 
         let body = self.html_cache.get(message.html());
         // The invite card above says when, where and who; the lines saying
@@ -527,7 +544,17 @@ impl PigeonApp {
             .flex()
             .items_start()
             .gap(SPACE_MD)
-            .child(self.sender_avatar(&message.from, px(34.), theme))
+            .child(
+                self.contact_link(
+                    ("sender-avatar", ix),
+                    &message.from,
+                    self.contact_name(&message.from),
+                    theme,
+                    cx,
+                )
+                .flex_none()
+                .child(self.sender_avatar(&message.from, px(34.), theme)),
+            )
             .child(
                 div()
                     .flex_1()
@@ -541,18 +568,24 @@ impl PigeonApp {
                             .items_baseline()
                             .gap(SPACE_SM)
                             .child(
-                                div()
-                                    .flex_none()
-                                    .text_size(TEXT_BASE)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(
-                                        Selectable::plain(
-                                            "sender-name",
-                                            self.contact_name(&message.from).to_string(),
-                                            theme.text_selection,
-                                        )
-                                        .order(order),
-                                    ),
+                                self.contact_link(
+                                    ("sender-name", ix),
+                                    &message.from,
+                                    self.contact_name(&message.from),
+                                    theme,
+                                    cx,
+                                )
+                                .flex_none()
+                                .text_size(TEXT_BASE)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(
+                                    Selectable::plain(
+                                        "sender-name",
+                                        self.contact_name(&message.from).to_string(),
+                                        theme.text_selection,
+                                    )
+                                    .order(order),
+                                ),
                             )
                             // Others' addresses on hover; never my own.
                             .when(!mine, |this| {
@@ -577,10 +610,12 @@ impl PigeonApp {
                     )
                     .child(
                         div()
-                            .truncate()
+                            .flex()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
                             .text_size(TEXT_SM)
                             .text_color(theme.text_muted)
-                            .child(to_line),
+                            .children(to_line),
                     ),
             )
             .child(
@@ -861,6 +896,32 @@ impl PigeonApp {
                     ),
             )
             .into_any_element()
+    }
+
+    /// W6: a name or avatar that opens `contact`'s card (CON-5); not when
+    /// the click ended selecting text.
+    fn contact_link(
+        &self,
+        id: impl Into<ElementId>,
+        contact: &Contact,
+        name: &str,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let contact = contact.clone();
+        div()
+            .id(id)
+            .role(gpui::Role::Button)
+            .aria_label(format!("Show contact: {name}"))
+            .cursor_pointer()
+            .rounded(RADIUS_SM)
+            .hover(|s| s.text_color(theme.text))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                if TextSelection::selected_text(window, cx).is_empty() {
+                    this.show_contact(contact.clone(), window, cx);
+                }
+            }))
     }
 
     fn contact_name<'a>(&self, contact: &'a Contact) -> &'a str {

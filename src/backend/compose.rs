@@ -675,6 +675,35 @@ mod tests {
     }
 
     #[test]
+    fn drilled_send_failures_go_back_to_drafts_with_the_reason() {
+        use crate::backend::http::{CONFLICT_BODY, REFUSAL_BODY};
+        for (status, body, toast) in [
+            (400, REFUSAL_BODY, "Not sent: Simulated refusal (drill)"),
+            (412, CONFLICT_BODY, "Not sent: Precondition Failed"),
+        ] {
+            let store = Store::open_in_memory().unwrap();
+            let (gmail, _) = gmail(FakeTransport::new().on(
+                "POST",
+                "/gmail/v1/users/me/messages/send",
+                &[],
+                &[(status, body)],
+            ));
+            let op = MailOp::Send {
+                draft: outgoing("Plan"),
+                local_id: None,
+                thread_id: "sent-local-3".into(),
+            };
+            let (result, events) = commit_compose(&gmail, &store, ME, &op);
+            assert_eq!(result.unwrap_err().to_string(), toast);
+            let BackendEvent::ThreadsChanged(ids) = &events[0] else {
+                panic!("{events:?}");
+            };
+            let t = &store.load_threads(ME, &ids[..1]).unwrap()[0];
+            assert_eq!(t.folder, Folder::Drafts);
+        }
+    }
+
+    #[test]
     fn an_offline_send_stays_queued_and_rolls_nothing_back() {
         let store = Store::open_in_memory().unwrap();
         let (gmail, _) = gmail(FakeTransport::new().on(

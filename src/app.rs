@@ -3,6 +3,7 @@
 mod attachments;
 mod backend_events;
 mod compose;
+mod contact_card;
 mod labels;
 mod mail;
 pub mod menu_bar;
@@ -207,6 +208,8 @@ pub struct PigeonApp {
     pub(crate) focus_handle: FocusHandle,
     palette: Option<(Entity<CommandPalette>, Subscription)>,
     pub help_open: bool,
+    /// W6: the contact card (CON-5), an overlay like the palette.
+    contact_card: Option<(Entity<ui::contact_card::ContactCardView>, Subscription)>,
     pub help_focus: FocusHandle,
     /// The open draft, with its event subscription.
     pub composer: Option<(Entity<Composer>, Subscription)>,
@@ -313,12 +316,22 @@ impl PigeonApp {
             this.backend.update(cx, |b, _| b.flush_settings());
             async {}
         });
-        let calendar_events = cx.subscribe(&calendar, |this, _, event, cx| match event {
-            CalendarEvent::Undoable { message, removal } => {
-                let undo = UndoAction::DeleteEvent(Box::new(removal.clone()));
-                this.show_toast(message.clone(), Some(undo), cx);
-            }
-        });
+        let calendar_events =
+            cx.subscribe_in(
+                &calendar,
+                window,
+                |this, _, event, window, cx| match event {
+                    CalendarEvent::Undoable { message, removal } => {
+                        let undo = UndoAction::DeleteEvent(removal.clone());
+                        this.show_toast(message.clone(), Some(undo), cx);
+                    }
+                    // W6 (CAL-22, CON-5).
+                    CalendarEvent::Refused(why) => this.show_toast(why.clone(), None, cx),
+                    CalendarEvent::ShowContact(contact) => {
+                        this.show_contact(contact.clone(), window, cx)
+                    }
+                },
+            );
 
         let mut this = Self {
             mode: Mode::Mail,
@@ -346,6 +359,7 @@ impl PigeonApp {
             focus_handle,
             palette: None,
             help_open: false,
+            contact_card: None,
             help_focus: cx.focus_handle(),
             composer: None,
             contact_book,
@@ -1482,6 +1496,7 @@ impl PigeonApp {
 
     pub(crate) fn close_overlays(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.palette = None;
+        self.contact_card = None;
         if self.help_open {
             self.help_filter
                 .update(cx, |input, cx| input.set_value("", window, cx));
@@ -1568,6 +1583,8 @@ impl PigeonApp {
         } else if self.help_open {
             ui::style::enter("help-enter", self.render_shortcuts_help(window, cx))
                 .into_any_element()
+        } else if let Some((card, _)) = &self.contact_card {
+            ui::style::enter("contact-card-enter", div().child(card.clone())).into_any_element()
         } else {
             return None;
         };
@@ -1767,6 +1784,7 @@ impl Render for PigeonApp {
             .map(|this| self.on_mail_actions(this, cx))
             .map(|this| self.on_label_actions(this, cx))
             .map(|this| self.on_attachment_actions(this, cx))
+            .map(|this| self.on_contact_actions(this, cx))
             .on_drag_move(cx.listener(Self::resize_pane))
             .relative()
             .size_full()

@@ -241,6 +241,57 @@ impl ContactBook {
     }
 }
 
+/// What the contacts sync keeps beyond names and addresses (CON-5), from
+/// the People API's `phoneNumbers` and `organizations`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ContactDetails {
+    #[serde(default)]
+    pub phones: Vec<Phone>,
+    #[serde(default)]
+    pub organization: String,
+    #[serde(default)]
+    pub title: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Phone {
+    pub number: String,
+    /// "mobile", "work"…; may be empty.
+    #[serde(default)]
+    pub label: String,
+}
+
+/// A conversation with someone, for their card.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CardThread {
+    pub id: String,
+    pub subject: String,
+    /// The newest message's internal date, ms.
+    pub last_date: i64,
+}
+
+/// The contact card (CON-5): what the local cache knows about someone.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ContactCard {
+    pub name: String,
+    /// The address it was opened for first.
+    pub emails: Vec<String>,
+    pub details: ContactDetails,
+    /// One of the user's contacts (not only an address seen in mail).
+    pub is_contact: bool,
+    /// Newest first.
+    pub threads: Vec<CardThread>,
+}
+
+impl ContactCard {
+    pub fn contact(&self) -> Contact {
+        Contact {
+            name: self.name.clone(),
+            email: self.emails.first().cloned().unwrap_or_default(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

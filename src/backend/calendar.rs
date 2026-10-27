@@ -937,6 +937,24 @@ pub fn access(event: &Event, role: AccessRole, me: &str) -> Access {
     }
 }
 
+/// Why the user can't change an event with `access` on a calendar named
+/// `calendar` with `role` (CAL-22): the panel's line, and the toast when a
+/// drag, an edit or a delete is refused. `None` when they can.
+pub fn refusal(access: Access, role: AccessRole, calendar: &str) -> Option<String> {
+    match access {
+        Access::Edit => None,
+        Access::Rsvp => Some("Only the organizer can change this event".into()),
+        Access::ReadOnly if !matches!(role, AccessRole::Owner | AccessRole::Writer) => {
+            Some(if calendar.trim().is_empty() {
+                "This calendar is read-only".into()
+            } else {
+                format!("“{}” is read-only", calendar.trim())
+            })
+        }
+        Access::ReadOnly => Some("You can't change this event".into()),
+    }
+}
+
 /// Guests besides the user and the organizer.
 pub fn has_guests(event: &Event, me: &str) -> bool {
     event.attendees.iter().any(|a| {
@@ -2820,6 +2838,31 @@ mod tests {
     }
 
     #[test]
+    fn refusals_say_why() {
+        let holidays = "Holidays in United Kingdom";
+        assert_eq!(refusal(Access::Edit, AccessRole::Owner, holidays), None);
+        for role in [AccessRole::Reader, AccessRole::FreeBusyReader] {
+            assert_eq!(
+                refusal(Access::ReadOnly, role, holidays).as_deref(),
+                Some("“Holidays in United Kingdom” is read-only")
+            );
+        }
+        assert_eq!(
+            refusal(Access::ReadOnly, AccessRole::Reader, "").as_deref(),
+            Some("This calendar is read-only")
+        );
+        assert_eq!(
+            refusal(Access::Rsvp, AccessRole::Owner, "Me").as_deref(),
+            Some("Only the organizer can change this event")
+        );
+        // A birthday on the user's own calendar.
+        assert_eq!(
+            refusal(Access::ReadOnly, AccessRole::Owner, "Me").as_deref(),
+            Some("You can't change this event")
+        );
+    }
+
+    #[test]
     fn insert_uses_the_client_id() {
         let store = seeded(&[]);
         let event = Event {
@@ -3166,6 +3209,38 @@ mod tests {
             (now_stored.title.as_str(), now_stored.etag.as_str()),
             ("Theirs", "\"2\"")
         );
+    }
+
+    #[test]
+    fn a_drilled_refusal_reloads_and_says_why() {
+        let store = seeded(&[SINGLE]);
+        let before = stored(&store, "e1");
+        let fake = FakeTransport::new()
+            .on(
+                "PATCH",
+                &format!("{CAL_PATH}/e1"),
+                &[],
+                &[(400, crate::backend::http::REFUSAL_BODY)],
+            )
+            .on("GET", &format!("{CAL_PATH}/e1"), &[], &[(200, SINGLE)]);
+        let op = CalOp::Patch {
+            id: "e1".into(),
+            before: before.clone(),
+            after: Event {
+                title: "Mine".into(),
+                ..before.clone()
+            },
+            scope: SeriesScope::All,
+            send_updates: SendUpdates::None,
+        };
+        let done = commit_at(&fake, &store, ME, &op, &zone(), now());
+        assert_eq!(
+            done.error.as_deref(),
+            Some("Google Calendar didn't take the change: Simulated refusal (drill)")
+        );
+        assert!(done.retry.is_none());
+        assert_eq!(done.changes.changed, ["e1"]);
+        assert_eq!(stored(&store, "e1").title, before.title);
     }
 
     #[test]

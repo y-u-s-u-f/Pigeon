@@ -215,3 +215,11 @@ CREATE TABLE draft_tombstones (
     revision INTEGER NOT NULL,
     PRIMARY KEY (account, local_id)
 );
+
+-- migration: 170
+-- Sprint 2 W6 (CON-5): a contact's phone numbers and organisation (JSON
+-- contacts::ContactDetails), for the contact card. The connections' field
+-- mask grew, and People only takes a sync token back with the mask it was
+-- made with, so their token goes once and the next sync lists them again.
+ALTER TABLE contacts ADD COLUMN details TEXT;
+DELETE FROM sync_state WHERE key = 'people_sync_token';

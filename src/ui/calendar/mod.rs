@@ -51,7 +51,7 @@ use crate::{
     actions::*,
     backend::{
         Backend, BackendEvent, CalOp, OpId, SendUpdates,
-        calendar::{Access, access, asks_guests, has_guests, instance_id, is_organizer},
+        calendar::{Access, access, asks_guests, has_guests, instance_id, is_organizer, refusal},
     },
     calendar::{
         CalendarData, Event, GoogleSettings, Occurrence, RsvpStatus, SeriesScope, occurrences,
@@ -279,7 +279,15 @@ pub struct Removal {
 
 pub enum CalendarEvent {
     /// A delete or a series split: the app shows a toast that can undo it.
-    Undoable { message: String, removal: Removal },
+    Undoable {
+        message: String,
+        removal: Box<Removal>,
+    },
+    /// W6: a drag, edit or delete of an event the user can't change was
+    /// refused; the toast says why (CAL-22).
+    Refused(String),
+    /// W6: a guest was clicked: their contact card (CON-5).
+    ShowContact(crate::data::Contact),
 }
 
 /// Calendar settings changed in Pigeon; `None` follows Google (CAL-41).
@@ -847,6 +855,23 @@ impl CalendarView {
             .is_some_and(|e| self.access_of(e) == Access::Edit)
     }
 
+    /// Why `event` can't be changed (CAL-22); `None` when it can.
+    pub fn refusal_of(&self, event: &Event) -> Option<String> {
+        let calendar = self.data.calendar(&event.calendar);
+        refusal(
+            self.access_of(event),
+            calendar.map(|c| c.access_role).unwrap_or_default(),
+            calendar.map_or("", |c| c.name.as_str()),
+        )
+    }
+
+    /// Say why the change to `id` didn't happen, in a toast.
+    pub(crate) fn refuse(&self, id: &str, cx: &mut Context<Self>) {
+        if let Some(why) = self.event(id).and_then(|e| self.refusal_of(e)) {
+            cx.emit(CalendarEvent::Refused(why));
+        }
+    }
+
     /// The event changed from `before`. The change settles, then goes as
     /// one patch (`flush_edit`); a change to another event first sends the
     /// one settling.
@@ -1177,6 +1202,9 @@ impl CalendarView {
             return;
         };
         if self.access_of(&before) != Access::Edit {
+            if (start, end) != (occurrence, occurrence + (before.end - before.start)) {
+                self.refuse(id, cx);
+            }
             self.sync_panel_times(window, cx);
             return;
         }
@@ -1336,7 +1364,10 @@ impl CalendarView {
         for op in ops {
             self.queue(with_send(op, send), cx);
         }
-        cx.emit(CalendarEvent::Undoable { message, removal });
+        cx.emit(CalendarEvent::Undoable {
+            message,
+            removal: Box::new(removal),
+        });
     }
 
     fn is_all_day(&self, id: &str) -> bool {
@@ -1410,6 +1441,7 @@ impl CalendarView {
             return;
         };
         if self.access_of(event) == Access::ReadOnly {
+            self.refuse(id, cx);
             return;
         }
         let me = self.me().to_string();
@@ -1527,7 +1559,10 @@ impl CalendarView {
                 cx,
             ));
         }
-        cx.emit(CalendarEvent::Undoable { message, removal });
+        cx.emit(CalendarEvent::Undoable {
+            message,
+            removal: Box::new(removal),
+        });
         cx.notify();
     }
 
@@ -1999,6 +2034,7 @@ impl CalendarView {
             .event(&id)
             .is_none_or(|e| self.access_of(e) == Access::ReadOnly)
         {
+            self.refuse(&id, cx);
             return;
         }
         if self.event(&id).is_some_and(|e| e.is_series()) {

@@ -18,6 +18,8 @@
 //!   list, inside `Mailbox`.
 //! - `Settings`: the settings page (⌘,), in place of `Mailbox` or
 //!   `Calendar` while it shows. Its search field adds `SettingsSearch`.
+//! - `ContactCard` (W6): the contact card overlay, a sibling of `Mailbox`
+//!   like the palette.
 //! - `Input`: gpui-component's text inputs. Single-letter shortcuts also
 //!   require `!Input`, so typing never triggers them.
 
@@ -33,7 +35,7 @@ use crate::{
             self, BulletedList, ClearFormatting, FormatBold, FormatCode, FormatItalic,
             FormatStrikethrough, FormatUnderline, InsertLink, NumberedList, QuoteLines,
         },
-        menu_bar, settings as settings_page,
+        contact_card, menu_bar, settings as settings_page,
     },
 };
 
@@ -165,6 +167,8 @@ actions!(
         ChangeFrom,
         ToggleSignature,
         MakeDefaultMailApp,
+        // W6: the contact card.
+        ShowContact,
     ]
 );
 
@@ -245,6 +249,7 @@ pub fn bind_keys(cx: &mut App) {
     const SET: &str = "Settings && !Input";
     const SET_INPUT: &str = "SettingsSearch > Input";
     const MENU_BAR: &str = menu_bar::MENU_BAR;
+    const CARD: &str = contact_card::CONTACT_CARD;
 
     cx.bind_keys([
         // Menu-bar shortcuts first: the menu shows an action's first binding.
@@ -526,6 +531,16 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("down", composer::FromNext, Some(FROM_PICKER)),
         KeyBinding::new("up", composer::FromPrev, Some(FROM_PICKER)),
         KeyBinding::new("escape", composer::FromDismiss, Some(FROM_PICKER)),
+        // W6: the contact card.
+        KeyBinding::new("shift-p", ShowContact, Some(MAIL)),
+        KeyBinding::new("down", contact_card::SelectNext, Some(CARD)),
+        KeyBinding::new("j", contact_card::SelectNext, Some(CARD)),
+        KeyBinding::new("up", contact_card::SelectPrev, Some(CARD)),
+        KeyBinding::new("k", contact_card::SelectPrev, Some(CARD)),
+        KeyBinding::new("enter", contact_card::Confirm, Some(CARD)),
+        KeyBinding::new("c", contact_card::ComposeTo, Some(CARD)),
+        KeyBinding::new("cmd-c", contact_card::CopyAddress, Some(CARD)),
+        KeyBinding::new("escape", contact_card::Dismiss, Some(CARD)),
     ]);
 }
 
@@ -806,4 +821,6 @@ pub const COMMANDS: &[Command] = commands! {
     Compose: "Change From…", User, ChangeFrom if FromChoice;
     Compose: "Add / Remove Signature", SquarePen, ToggleSignature if Draft;
     App: "Make Pigeon the Default Mail App", Mail, MakeDefaultMailApp;
+    // W6: the contact card.
+    Conversation: "Show Contact", User, ShowContact if Thread;
 };

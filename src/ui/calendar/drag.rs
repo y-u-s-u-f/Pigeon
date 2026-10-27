@@ -68,6 +68,8 @@ pub struct GridDrag {
     /// The times it would set, snapped.
     pub start: NaiveDateTime,
     pub end: NaiveDateTime,
+    /// The event can't be changed, and the user was told (CAL-22).
+    refused: bool,
 }
 
 impl GridDrag {
@@ -125,6 +127,7 @@ impl CalendarView {
             active: false,
             start,
             end,
+            refused: false,
         });
         self.prompt = None;
         self._autoscroll = Some(cx.spawn(async |this, cx| {
@@ -247,14 +250,19 @@ impl CalendarView {
     /// The times the drag would set with the mouse at `position`.
     fn update_drag(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
         let Some(drag) = &self.drag else { return };
-        // Events the user can't change stay put; the press is a click.
+        // Events the user can't change stay put, saying why once; the press
+        // is a click.
         if let Some(occurrence) = drag.occurrence()
-            && !self
-                .data
-                .events
-                .get(occurrence.event)
-                .is_some_and(|e| self.can_edit(&e.id))
+            && let Some(event) = self.data.events.get(occurrence.event)
+            && !self.can_edit(&event.id)
         {
+            if !drag.refused {
+                let id = event.id.clone();
+                if let Some(drag) = &mut self.drag {
+                    drag.refused = true;
+                }
+                self.refuse(&id, cx);
+            }
             return;
         }
         let Some((day, minutes)) = self.grid_time(position) else {
