@@ -18,7 +18,7 @@ To update: change the status cell in the area's table, then the counts below.
 | --- | --- | --- | --- | --- |
 | [Planned features](#3-planned-features-pln) | 3 | 0 | 0 | 3 |
 | [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 2 | 3 | 3 | 8 |
-| [Folders and labels](#51-folders-and-labels-fol) | 6 | 0 | 6 | 12 |
+| [Folders and labels](#51-folders-and-labels-fol) | 5 | 1 | 6 | 12 |
 | [Thread list](#52-thread-list-lst) | 0 | 0 | 9 | 9 |
 | [Reading pane](#53-reading-pane-rdr) | 1 | 0 | 7 | 8 |
 | [Message actions](#54-message-and-thread-actions-act) | 0 | 0 | 7 | 7 |
@@ -37,7 +37,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Storage and persistence](#81-storage-and-persistence-per) | 0 | 2 | 3 | 5 |
 | [Command palette](#82-command-palette-pal) | 0 | 0 | 3 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 3 | 3 | 7 |
-| **Overall** | **56** | **20** | **103** | **179** |
+| **Overall** | **55** | **21** | **103** | **179** |
 
 ## Contents
 
@@ -182,7 +182,7 @@ The user's own plans, not driven by Google's APIs.
 | FOL-8 | Empty Trash and permanent delete | ⚪ Not done | `threads.delete`, `messages.delete`, `messages.batchDelete` |
 | FOL-9 | Nested labels | ⚪ Not done | Label names with `/` |
 | FOL-10 | Label visibility | ⚪ Not done | Label `labelListVisibility`, `messageListVisibility` |
-| FOL-11 | Inbox categories | ⚪ Not done | Backend done (sprint 2 W4a): per-message categories, unread counts, `category:` view queries. Views pending (W4b) |
+| FOL-11 | Inbox categories | 🟡 Partially done | Backend done (sprint 2 W4a): per-message categories, unread counts, `category:` view queries. Views pending (W4b) |
 | FOL-12 | Important marker | ⚪ Not done | `IMPORTANT` label |
 
 #### FOL-1 System folders and go-to shortcuts
