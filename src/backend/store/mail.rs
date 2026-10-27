@@ -284,35 +284,8 @@ impl Store {
         remove: &[String],
     ) -> anyhow::Result<()> {
         let mut threads = self.load_threads(account, ids)?;
-        let moves = add
-            .iter()
-            .chain(remove)
-            .any(|l| gmail::FOLDER_LABELS.contains(&l.as_str()));
         for thread in &mut threads {
-            for message in &mut thread.messages {
-                message.label_ids.retain(|l| !remove.contains(l));
-                for label in add {
-                    if !message.label_ids.contains(label) {
-                        message.label_ids.push(label.clone());
-                    }
-                }
-            }
-            let has = |label: &str| {
-                thread
-                    .messages
-                    .iter()
-                    .any(|m| m.label_ids.iter().any(|l| l == label))
-            };
-            thread.unread = has(gmail::UNREAD);
-            thread.starred = has(gmail::STARRED);
-            if moves && thread.folder != Folder::Drafts {
-                let labels: Vec<Vec<String>> = thread
-                    .messages
-                    .iter()
-                    .map(|m| m.label_ids.clone())
-                    .collect();
-                thread.folder = gmail::derive_folder(&labels);
-            }
+            modify_thread(thread, add, remove);
         }
         self.put_threads(account, &threads)
     }
@@ -505,6 +478,41 @@ impl Store {
             params![account, local_id, draft_id],
         )?;
         Ok(())
+    }
+}
+
+/// Add and remove labels on every message of the thread, like
+/// `threads.modify`, and derive its flags, labels and folder again.
+pub fn modify_thread(thread: &mut Thread, add: &[String], remove: &[String]) {
+    let moves = add
+        .iter()
+        .chain(remove)
+        .any(|l| gmail::FOLDER_LABELS.contains(&l.as_str()));
+    for message in &mut thread.messages {
+        message.label_ids.retain(|l| !remove.contains(l));
+        for label in add {
+            if !message.label_ids.contains(label) {
+                message.label_ids.push(label.clone());
+            }
+        }
+    }
+    let labels: Vec<Vec<String>> = thread
+        .messages
+        .iter()
+        .map(|m| m.label_ids.clone())
+        .collect();
+    thread.label_ids = gmail::union_labels(&labels);
+    thread.labels = thread
+        .label_ids
+        .iter()
+        .filter(|l| !gmail::is_system_label(l))
+        .cloned()
+        .collect();
+    let has = |label: &str| thread.label_ids.iter().any(|l| l == label);
+    thread.unread = has(gmail::UNREAD);
+    thread.starred = has(gmail::STARRED);
+    if moves && thread.folder != Folder::Drafts {
+        thread.folder = gmail::derive_folder(&labels);
     }
 }
 

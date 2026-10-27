@@ -483,6 +483,7 @@ impl PigeonApp {
             moves
                 .iter()
                 .map(|(id, from)| (id.clone(), *from, destination)),
+            false,
             cx,
         );
         self.clear_checked();
@@ -520,10 +521,12 @@ impl PigeonApp {
     }
 
     /// Hand the backend the ops for threads moving (id, from, to), one
-    /// batch per pair of folders.
+    /// batch per pair of folders. They wait out the undo window unless
+    /// `at_once`.
     fn queue_moves(
         &mut self,
         moves: impl IntoIterator<Item = (String, Folder, Folder)>,
+        at_once: bool,
         cx: &mut Context<Self>,
     ) -> Vec<OpId> {
         let mut groups: Vec<(Folder, Folder, Vec<String>)> = Vec::new();
@@ -537,7 +540,13 @@ impl PigeonApp {
             groups
                 .into_iter()
                 .flat_map(|(from, to, ids)| MailOp::moves(ids, from, to))
-                .map(|op| b.mail(op, cx))
+                .map(|op| {
+                    if at_once {
+                        b.mail_now(op, cx)
+                    } else {
+                        b.mail(op, cx)
+                    }
+                })
                 .collect()
         })
     }
@@ -578,7 +587,8 @@ impl PigeonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Inside the undo window nothing went; past it, move them back.
+        // Inside the undo window nothing went; past it, move them back at
+        // once (for a delete: untrash, then back to the folder).
         let all_cancelled = self.backend.update(cx, |b, _| {
             // Every one, not just up to the first that already went.
             let cancelled: Vec<bool> = ops.iter().map(|&op| b.cancel(op)).collect();
@@ -592,7 +602,7 @@ impl PigeonApp {
             }
         }
         if !all_cancelled {
-            self.queue_moves(back, cx);
+            self.queue_moves(back, true, cx);
         }
         self.refresh_rows(true);
         // Back where it was, without marking it read.

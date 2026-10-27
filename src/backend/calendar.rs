@@ -19,10 +19,7 @@
 //! Writes (W7): `commit` sends one `CalOp` to Google, also off the main
 //! thread. See its block below.
 
-use std::{
-    collections::{BTreeSet, HashMap},
-    sync::Arc,
-};
+use std::collections::{BTreeSet, HashMap};
 
 use anyhow::{Context as _, anyhow};
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
@@ -31,7 +28,8 @@ use serde_json::{Map, Value, json};
 
 use super::{
     BackendEvent, CalOp, SendUpdates,
-    http::{GoogleTransport, Request, Response, Transport, TransportError},
+    http::{Request, Response, Transport, TransportError},
+    outbox::UserPriority,
     store::Store,
 };
 use crate::{
@@ -1127,14 +1125,14 @@ pub fn insert_body(event: &Event, zone: &LocalZone) -> Value {
     body
 }
 
-/// After a calendar write, sync soon, so what Google changed with it (the
-/// series' instances, the guests' copies) shows (2.6).
-const SYNC_AFTER_WRITE: std::time::Duration = std::time::Duration::from_secs(2);
-
 impl super::Backend {
+    /// After a calendar write, sync soon, so what Google changed with it
+    /// (the series' instances, the guests' copies) shows (2.6).
     pub(super) fn sync_calendar_soon(&mut self, cx: &mut gpui::Context<Self>) {
         cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(SYNC_AFTER_WRITE).await;
+            cx.background_executor()
+                .timer(super::SYNC_AFTER_WRITE)
+                .await;
             this.update(cx, |this, cx| {
                 this.sync.calendar_due = true;
                 this.run_sync(cx);
@@ -1163,8 +1161,9 @@ impl std::error::Error for Conflict {}
 pub struct Committed {
     pub changes: CalendarChanges,
     pub error: Option<String>,
-    /// It failed for want of a network or a sign-in; it may go later.
-    pub retry: bool,
+    /// It failed for want of a network or a sign-in; it goes again later,
+    /// with nothing rolled back.
+    pub retry: Option<TransportError>,
 }
 
 impl Committed {
@@ -1174,15 +1173,6 @@ impl Committed {
             Some(e) => Err(anyhow!("{e}")),
             None => Ok(()),
         }
-    }
-}
-
-/// Commits to Google ahead of sync (the quota's reserve for user actions).
-pub struct UserPriority(pub Arc<GoogleTransport>);
-
-impl Transport for UserPriority {
-    fn send(&self, request: &Request) -> Result<Response, TransportError> {
-        self.0.send_user(request)
     }
 }
 
@@ -1217,7 +1207,7 @@ fn commit_at(
     let mut touched = BTreeSet::new();
     let mut out = Committed::default();
     if let Err(e) = w.apply(op, &mut touched) {
-        out.retry = is_network(&e);
+        out.retry = e.downcast_ref::<TransportError>().cloned();
         out.error = Some(if e.is::<Conflict>() {
             Conflict.to_string()
         } else {
@@ -1225,6 +1215,7 @@ fn commit_at(
         });
         // Google's version back: the rollback.
         match op {
+            _ if out.retry.is_some() => {}
             CalOp::SetSelected { .. } => out.changes.calendars = true,
             CalOp::Insert { event, .. } => {
                 w.reload(&event.calendar, &event.id, &mut touched).ok();
@@ -2716,7 +2707,7 @@ mod tests {
         };
         let done = commit_at(&fake, &store, ME, &op, &zone(), now());
         assert_eq!(done.error.as_deref(), Some("Changed elsewhere; reloaded"));
-        assert!(!done.retry);
+        assert!(done.retry.is_none());
         assert!(done.result().is_err());
         assert_eq!(done.changes.changed, ["e1"]);
         assert_eq!(header(&fake.requests()[0], "If-Match"), Some("\"1\""));

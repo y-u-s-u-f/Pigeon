@@ -211,7 +211,7 @@ The user's own plans, not driven by Google's APIs.
 #### FOL-5 Apply and remove labels on a thread
 
 - **Today:** `l`, palette "Label…", Message › Label…, the toolbar "…" menu or a row's right-click toggle a label on the selected or checked threads (ACT-6). `l` opens the palette scoped to labels; applied ones say "Applied · ↵ removes it". The list shows up to three dots; the reader shows chips. `toggle_label()` and `open_label_palette()` in `src/app/mail.rs`: if every target has the label it's removed, otherwise added to all. No undo.
-- **Needs:** `threads.modify` with `addLabelIds` / `removeLabelIds` (IMAP: `UID COPY`/`MOVE`, or `STORE +X-GM-LABELS`). Optimistic update with rollback (STA-2).
+- **Needs:** Done for Gmail (W5): a `MailOp::Modify` that commits at once as `threads.modify` with `addLabelIds` / `removeLabelIds`, several threads in one HTTP batch, with rollback on failure (STA-2). IMAP: `UID COPY`/`MOVE`, or `STORE +X-GM-LABELS`.
 - **Notes:** Gmail labels are per message; `threads.modify` changes every message in the thread. See DAT-2.
 
 #### FOL-6 Create, rename, recolour and delete labels
@@ -223,7 +223,7 @@ The user's own plans, not driven by Google's APIs.
 #### FOL-7 Report spam and not spam
 
 - **Today:** Move to… › Spam (`v`, ACT-1a) puts a thread in Spam in memory; Archive (`e`) in Spam moves it to Inbox ("not spam"). No dedicated button or shortcut.
-- **Needs:** `threads.modify` adding `SPAM` (and removing `INBOX`), or removing `SPAM` and adding `INBOX`. IMAP: move to Junk.
+- **Needs:** Done for Gmail (W5): `threads.modify` adding `SPAM` and removing `INBOX`; out of Spam removes `SPAM` and adds `INBOX`. Both wait out the undo window. IMAP: move to Junk.
 - **Notes:** Mapping `SPAM` to the Spam folder is done at sync (FOL-1).
 
 #### FOL-8 Empty Trash and permanent delete
@@ -326,7 +326,7 @@ The user's own plans, not driven by Google's APIs.
 #### RDR-1 Opening a thread marks it read
 
 - **Today:** `select_thread()` (`src/app.rs`) sets `unread = false` at once, also while moving through the list with keys and for Drafts.
-- **Needs:** `threads.modify` removing `UNREAD` (IMAP: `STORE +FLAGS (\Seen)`). Skip for drafts.
+- **Needs:** Done for Gmail (W5): `select_thread()` queues a `Modify` removing `UNREAD`, committed at once as `threads.modify` at user priority. IMAP: `STORE +FLAGS (\Seen)`. Skip for drafts.
 - **Notes:** Consider a delay or a setting, as many clients do.
 
 #### RDR-2 Conversation view
@@ -383,42 +383,42 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 #### ACT-1 Archive and move to Inbox
 
 - **Today:** `e`, toolbar "Archive" (tooltip "Move to Inbox" for archived threads), palette. Selection advances (Settings › Mail › Auto-advance off clears it). `archive()`, `move_selected()` (`src/app.rs`); target from `Folder::archive_target()`: Inbox → Archive; Archive, Spam, Trash → Inbox; Sent and Drafts nothing (button hidden there). Follows each thread's own folder, also in Starred and label views.
-- **Needs:** `threads.modify` removing `INBOX`; back to Inbox adds it. Spam → Inbox is "not spam" (FOL-7); Trash → Inbox is `threads.untrash` plus adding `INBOX`. IMAP: `UID MOVE`.
+- **Needs:** Done for Gmail (W5): `threads.modify` removing `INBOX` (and `SPAM`); back to Inbox adds `INBOX`; Spam → Inbox is "not spam" (FOL-7); Trash → Inbox is `threads.untrash`, then the modify. Commits after the 5 s undo window. IMAP: `UID MOVE`.
 - **Notes:** Rollback on failure (STA-2).
 
 #### ACT-1a Move to a folder
 
 - **Today:** `v`, palette "Move to…", Message › Move to…, toolbar "…", right-click: Inbox, Archive, Spam or Trash (palette omits the current one). Undo toast. `move_to()`, `move_threads()`, `open_move_palette()` (`src/app/mail.rs`). Drafts are skipped; Sent can move.
-- **Needs:** The moves of ACT-1, ACT-2 and FOL-7.
+- **Needs:** Done for Gmail (W5): the moves of ACT-1, ACT-2 and FOL-7 (`MailOp::moves()`), committed by the outbox.
 
 #### ACT-2 Delete
 
 - **Today:** `delete`, `backspace`, `#`, toolbar, palette. Moves to Trash and selects the next thread, with Undo (UND-3). In Drafts it discards the draft (DRF-4); in Trash it does nothing (button hidden). `delete()` (`src/app.rs`).
-- **Needs:** `threads.trash` (IMAP: `UID MOVE` to Trash).
+- **Needs:** Done for Gmail (W5): `threads.trash` after the undo window; never a permanent delete. IMAP: `UID MOVE` to Trash.
 - **Notes:** Whether Delete in Trash means permanent delete is open (FOL-8).
 
 #### ACT-3 Star and unstar
 
 - **Today:** `s`, toolbar, palette; star on the row. Unstarring in Starred removes the row at once. `toggle_star()`; `Thread::starred`. Allowed in Spam and Trash; Starred hides those.
-- **Needs:** `threads.modify` adding or removing `STARRED` (IMAP: `\Flagged`).
+- **Needs:** Done for Gmail (W5): `threads.modify` adding or removing `STARRED`, at once. IMAP: `\Flagged`.
 - **Notes:** Gmail stars messages; removing `STARRED` from the thread unstars all of them.
 
 #### ACT-4 Mark as unread
 
 - **Today:** `shift-u`, toolbar, palette. Selection stays. `mark_unread()`.
-- **Needs:** Add `UNREAD`: to every message (`threads.modify`) or only the last (`messages.modify`); decide which. IMAP: remove `\Seen`.
+- **Needs:** Done for Gmail (W5): `threads.modify` adding `UNREAD` to the whole thread (decision 6.4 item 7), at once. IMAP: remove `\Seen`.
 - **Notes:** Opening the thread again marks it read (RDR-1).
 
 #### ACT-5 Mark as read
 
 - **Today:** `shift-i`, palette; no toolbar button. `mark_read()`.
-- **Needs:** `threads.modify` removing `UNREAD`.
+- **Needs:** Done for Gmail (W5): `threads.modify` removing `UNREAD`, at once.
 
 #### ACT-6 Bulk select and bulk actions
 
 - **Today:** `x` checks; `shift-j`/`shift-k` (or shift-arrows) extend; `cmd`-click toggles, `shift`-click ranges; row checkbox on hover; `Esc` clears. The reader shows "N conversations selected" with subjects and action buttons; all actions apply to all. No select-all. `PigeonApp::checked`; `render_selection_summary()` (`src/ui/reader.rs`).
-- **Needs:** `messages.batchModify` takes message IDs (up to 1,000), so expand threads to messages, or send one `threads.modify` per thread in an HTTP batch (SYN-7). IMAP: UID sets.
-- **Notes:** Partial failures must be handled by rollback (STA-2).
+- **Needs:** Done for Gmail (W5): one op per pair of folders, sent as one `threads.modify` / `trash` / `untrash` per thread in HTTP batches of 20 (`Gmail::batch`, which retries rate-limited calls). IMAP: UID sets.
+- **Notes:** A partial failure rolls back only the threads Gmail refused (STA-2).
 
 ### 5.5 Compose and sending (CMP)
 
@@ -531,7 +531,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 - **Today:** A changed draft is saved when closed (`Esc`, toolbar "Close and save draft", palette "Close Draft") or when the user moves elsewhere; toast "Saved to Drafts" (no Undo). Unchanged drafts aren't saved. `stash_composer()`, `save_draft()` (`src/app/compose.rs`), which also queues `MailOp::SaveDraft` (an `Outgoing`, `src/backend/mod.rs`); demo mode stores it in its in-memory store. Drafts are one-message `Thread`s with IDs `draft-local-<uuid>` (DAT-5).
 - **Needs:** A tester pass (T2b). IMAP: `APPEND` to Drafts and delete the old copy.
-- **Notes:** Quitting loses unsaved changes (PER-2). With Google (W6) `SaveDraft` stores the draft locally first, then `drafts.create` (or `drafts.update` with the stored draft id) with `X-Pigeon-Markdown: 1` and, for replies, `threadId` and threading headers; the local id stays, `drafts.draft_id` and the message id are stored so the drafts sync sees it unchanged. A failed save keeps the local text and toasts "Couldn't save the draft to Gmail: …"; there's no automatic retry yet.
+- **Notes:** Quitting loses unsaved changes (PER-2). With Google (W6) `SaveDraft` stores the draft locally first, then `drafts.create` (or `drafts.update` with the stored draft id) with `X-Pigeon-Markdown: 1` and, for replies, `threadId` and threading headers; the local id stays, `drafts.draft_id` and the message id are stored so the drafts sync sees it unchanged. A save Gmail refuses keeps the local text and toasts "Couldn't save the draft to Gmail: …"; one that can't reach Gmail stays queued and goes again (STA-3).
 
 #### DRF-2 Drafts list
 
@@ -584,7 +584,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 #### UND-3 Undo for other actions
 
 - **Today:** Archive, Delete and Move to (one or many) show "Archived" / "Moved 3 conversations to Trash" with Undo (`z`, `cmd-z`, button, palette) for 5 s; Undo restores folders and the selection. `UndoAction::Move`, `undo_move()` (`src/app/mail.rs`). Each move queues Gmail ops (`MailOp::moves()`) that wait out the window; Undo cancels them, or queues the moves back once they went. Star, read state and labels go at once and have no undo; there's no undo stack.
-- **Needs:** The ops committed to Gmail, with the inverse request after a commit (W5).
+- **Needs:** Done for Gmail (W5): Undo inside the window means no request at all; Undo after the commit (or while it's in flight) sends the inverse at once (`Backend::mail_now()`), e.g. `threads.untrash` + `addLabelIds INBOX` after a delete.
 
 ### 5.8 Search (SRC)
 
@@ -1218,15 +1218,16 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### STA-2 Action failure and rollback
 
-- **Today:** Every handler changes `data` and calls `cx.notify()` without checking anything.
+- **Today:** Every action (W5) changes `data` at once and queues an op. When Google refuses one (anything but 401 or no network), the op fails for good: thread actions apply what went to the store and read the refused threads again with `threads.get` (`outbox::commit_threads()`); sends go back to Drafts (CMP-12); calendar writes reload Google's version of the event. The backend emits what changed (`ThreadsChanged`, `EventsChanged`: the app reloads them, the rollback) and then `OpFailed`, whose toast reads e.g. "Couldn't archive 2 conversations: Invalid label". Retryable errors (429, 5xx, rate-limit 403) back off first (transport and `Gmail::batch`, 8 tries).
 - **Today (W11):** `OpFailed` shows an error toast (`PigeonApp::show_error_toast()`): the danger tone from `theme.rs` with an alert icon, no Undo, `Role::Alert`. Success and Undo toasts are unchanged.
-- **Needs:** Pending state per change, server confirmation, rollback of folder, flags and list position on failure (W5). Send failures: CMP-12.
+- **Needs:** The rollback keeps the list position only as far as `update_threads()` does.
 
 #### STA-3 Offline mode and queued changes
 
 - **Today (indicator, W11):** Offline shows within about 10 s of the network going away: a probe (TCP connect to `gmail.googleapis.com:443`, no request) runs every 8 s while the window is active (60 s in the background); two failures in a row are Offline, as are two network failures in a row in the transport. Offline, probes back off 15 s → 2 min; the first that connects, or a sync that succeeds, ends it and runs a sync and the queue at once. Once the transport is offline, a network error fails at once instead of retrying 8 times (`GoogleTransport::send_with()`); polls do the retrying. The line reads "Offline · N changes waiting" from the outbox's count, recounted when a change is queued.
 - **Today (dev switch, 6.4 item 6):** With `PIGEON_DEV=1`, every request fails as a network error while `<data dir>/simulate-offline` exists (`touch` it / `rm` it; `UreqTransport::send()` in `src/backend/http.rs`, and the probe). Never active without `PIGEON_DEV=1`.
-- **Needs:** A visible offline state; changes queued in the local store (PER-2) and sent when back online; reading from the cache (PER-1); sends held in the outbox; queue size and pending items shown.
+- **Today (queue, W5):** Any op that can't reach Google (a network error, or 401 / an expired sign-in), whether a thread action, a draft save or delete, a send or a calendar write, stays queued (`Outbox::retry_later()`, again after 15 s, `Outcome::Later`) with nothing rolled back and no error toast; the status goes Offline or "Sign in again". Thread changes still show as made through the overlay; a send stays out of Drafts and its "Message sent" toast comes when it goes; a deleted Gmail draft stays in the store until `drafts.delete` goes. Nothing goes while the sign-in needs renewing (STA-4).
+- **Needs:** A tester pass of offline actions, sends and calendar writes going once back online (T4). Reading from the cache (PER-1); the pending items listed, not only counted.
 
 #### STA-4 Expired sign-in
 
@@ -1258,8 +1259,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### PER-2 Outbox and drafts that survive quit
 
-- **Today:** Every `MailOp` and `CalOp` is a row in the store's `outbox` table (`src/backend/outbox.rs`) before it commits. Sends, discards, moves, deletes and event deletes wait out the 5 s undo window (`UNDO_WINDOW`); Undo inside it deletes the row (`Backend::cancel()`), past it the UI queues the inverse op. Consecutive label changes to the same threads merge; a newer save of a draft replaces an older one; ops on one thread, event or draft go one at a time. The worker (`Backend::schedule()`) commits due rows; demo mode commits by applying the op to its in-memory store (`Store::apply_mail_op()`, `apply_cal_op()`), so nothing survives a quit there. Quit (⌘Q, the menu, closing the last window) runs `Backend::flush_on_quit()` first (W11, `src/main.rs` `quit()`): sends still in their undo window become due at once (`Outbox::send_now()`), and Quit waits until nothing due is left to commit, at most 5 s (`health::QUIT_WAIT`); other queued rows stay for the next launch.
-- **Needs:** The Google commit, retries, rollback and pending-op overlay (W5); rows left at quit flushed on the next launch (the worker already picks them up). A tester pass of Quit inside a send's undo window (T4). Deviation from the plan: the store takes an op's change when it commits, not when it's queued, so Undo never has to revert the store; reads during the window come from the UI's view model and, after a sync, W5's overlay.
+- **Today:** Every `MailOp` and `CalOp` is a row in the store's `outbox` table (`src/backend/outbox.rs`) before it commits. Sends, discards, moves, deletes and event deletes wait out the 5 s undo window (`UNDO_WINDOW`); Undo inside it deletes the row (`Backend::cancel()`), past it the UI queues the inverse op (`Backend::mail_now()`). Consecutive label changes to the same threads merge; a newer save of a draft replaces an older one; ops on one thread, event or draft go one at a time, also across bulk ops. The worker (`Backend::schedule()`) commits due rows: thread ops through `outbox::commit_threads()` (W5), drafts and sends through `compose::commit_compose()` (W6), calendar writes through `calendar::commit()` (W7), all at the user's priority (`outbox::UserPriority`); a mail sync runs 2 s after a committed mail write, a calendar sync after a calendar write. Demo mode commits by applying the op to its in-memory store (`Store::apply_mail_op()`, `apply_cal_op()`), so nothing survives a quit there. Rows left pending or in flight at quit go on the next launch (`Outbox::new()` puts in-flight rows back), and `load_mail()` shows them as made. Quit (⌘Q, the menu, closing the last window) runs `Backend::flush_on_quit()` first (W11, `src/main.rs` `quit()`): sends still in their undo window become due at once (`Outbox::send_now()`), and Quit waits until nothing due is left to commit, at most 5 s (`health::QUIT_WAIT`); other queued rows stay for the next launch.
+- **Needs:** A tester pass of Quit inside a send's undo window (T4). Calendar writes waiting offline have no overlay: a calendar sync before they go can show the old event until they commit. Deviation from the plan: the store keeps the server's state and takes an op's change only when it commits, so Undo never reverts the store; reads (`load_mail()`, `load_threads()`) lay the queued thread ops over it (`Outbox::overlay()`): that is the pending-op overlay.
 
 #### PER-3 Persisted UI state and settings
 

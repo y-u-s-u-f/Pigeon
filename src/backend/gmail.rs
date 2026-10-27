@@ -292,6 +292,16 @@ impl GmailError {
     pub fn is_network(&self) -> bool {
         matches!(self, GmailError::Network(_))
     }
+
+    /// No network, or the sign-in stopped working: a write waits and goes
+    /// again later rather than failing.
+    pub fn later(&self) -> Option<TransportError> {
+        match self {
+            GmailError::Network(e) => Some(TransportError::Network(e.clone())),
+            GmailError::Status { status: 401, .. } => Some(TransportError::AuthExpired),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for GmailError {
@@ -699,6 +709,48 @@ impl Gmail {
     }
 }
 // end drafts and send (W6) -----------------------------------------------
+
+// writes (W5): thread actions. Each answers with the thread, which the
+// outbox ignores; the sync that follows reads it again.
+
+/// Quota units per write call.
+pub mod write_cost {
+    pub const THREADS_MODIFY: u32 = 10;
+    pub const THREADS_TRASH: u32 = 10;
+    pub const THREADS_UNTRASH: u32 = 10;
+}
+
+/// Labels on and off every message of the thread (read, star, labels,
+/// Inbox, Spam).
+pub fn thread_modify_request(id: &str, add: &[String], remove: &[String]) -> Request {
+    Request::json(
+        "POST",
+        format!("{API}/threads/{}/modify", enc(id)),
+        &serde_json::json!({ "addLabelIds": add, "removeLabelIds": remove }),
+        write_cost::THREADS_MODIFY,
+    )
+}
+
+/// To Trash. An empty JSON body, so the POST carries a length.
+pub fn thread_trash_request(id: &str) -> Request {
+    Request::json(
+        "POST",
+        format!("{API}/threads/{}/trash", enc(id)),
+        &serde_json::json!({}),
+        write_cost::THREADS_TRASH,
+    )
+}
+
+pub fn thread_untrash_request(id: &str) -> Request {
+    Request::json(
+        "POST",
+        format!("{API}/threads/{}/untrash", enc(id)),
+        &serde_json::json!({}),
+        write_cost::THREADS_UNTRASH,
+    )
+}
+
+// end writes (W5)
 
 // Gmail → model.
 

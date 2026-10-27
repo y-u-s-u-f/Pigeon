@@ -3,11 +3,13 @@
 //!
 //! - SaveDraft: the draft is stored here first, then `drafts.create` or
 //!   `drafts.update` (DRF-1). A failure keeps the local copy.
-//! - DeleteDraft: the local copy goes, then `drafts.delete` (UND-2).
+//! - DeleteDraft: `drafts.delete`, then the local copy goes (UND-2).
 //! - Send: `drafts.send` for a draft saved in Gmail, else `messages.send`
 //!   (CMP-8). The sent copy is stored under Gmail's ids, so the history
 //!   poll finds it already there (CMP-13). A failure puts the draft back in
 //!   Drafts with "Not sent: <reason>" (CMP-12).
+//! - No network or no sign-in: the error is the `TransportError`, and the
+//!   op stays queued with nothing rolled back (STA-3).
 //! - Opening a Gmail draft: `drafts.get format=raw`, the markdown recovered
 //!   from a draft written here (DRF-3, DRF-6).
 
@@ -19,21 +21,12 @@ use gpui::Context;
 use super::{
     Backend, BackendEvent, MailOp, Outgoing, Source,
     gmail::{self, DraftRef, GMessage, Gmail, GmailError},
-    http::{GoogleTransport, Request, Response, Transport, TransportError},
+    http::TransportError,
     mime,
+    outbox::UserPriority,
     store::Store,
 };
 use crate::data::{Body, DraftOrigin, Folder, Thread};
-
-/// Google's transport at the user's priority: ahead of sync, into the
-/// quota's reserve.
-pub struct UserCalls(pub Arc<GoogleTransport>);
-
-impl Transport for UserCalls {
-    fn send(&self, request: &Request) -> Result<Response, TransportError> {
-        self.0.send_user(request)
-    }
-}
 
 /// Whether `commit_compose` takes the op.
 pub fn handles(op: &MailOp) -> bool {
@@ -118,11 +111,13 @@ fn read_files(
             std::fs::read(&attachment.path).ok()
         } else if let Some(id) = draft_id {
             if saved.is_none() {
-                saved = gmail
-                    .call::<DraftRef>(&gmail::draft_get_raw_request(id))
-                    .ok()
-                    .and_then(|d| d.message.raw)
-                    .and_then(|raw| mime::decode_raw(&raw));
+                saved = match gmail.call::<DraftRef>(&gmail::draft_get_raw_request(id)) {
+                    Ok(d) => d.message.raw.and_then(|raw| mime::decode_raw(&raw)),
+                    Err(e) => match e.later() {
+                        Some(e) => return Err(e.into()),
+                        None => None,
+                    },
+                };
             }
             saved
                 .as_deref()
@@ -177,6 +172,21 @@ fn reason(e: &GmailError) -> String {
     }
 }
 
+/// `what` failed for `e`; no network or no sign-in comes back as the
+/// `TransportError`, which keeps the op queued.
+fn refused(what: &str, e: GmailError) -> anyhow::Error {
+    match e.later() {
+        Some(e) => e.into(),
+        None if what.is_empty() => anyhow!("{}", reason(&e)),
+        None => anyhow!("{what}: {}", reason(&e)),
+    }
+}
+
+/// Whether `e` is no network or no sign-in: the op goes again later.
+pub fn is_later(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<TransportError>().is_some()
+}
+
 fn save_draft(
     gmail: &Gmail,
     store: &Store,
@@ -203,7 +213,7 @@ fn save_draft(
     };
     let saved: DraftRef = gmail
         .call(&request)
-        .map_err(|e| anyhow!("Couldn't save the draft to Gmail: {}", reason(&e)))?;
+        .map_err(|e| refused("Couldn't save the draft to Gmail", e))?;
     store.put_threads(
         account,
         &[draft_thread(draft, local_id, Some(saved.message.id))],
@@ -214,13 +224,17 @@ fn save_draft(
 
 fn delete_draft(gmail: &Gmail, store: &Store, account: &str, local_id: &str) -> anyhow::Result<()> {
     let stored = stored_draft(store, account, local_id);
-    store.delete_threads(account, &[local_id.to_string()])?;
-    if let Some((id, _)) = stored {
-        gmail
+    let result = match stored {
+        Some((id, _)) => gmail
             .call_empty(&gmail::draft_delete_request(&id))
-            .map_err(|e| anyhow!("Couldn't delete the draft in Gmail: {}", reason(&e)))?;
+            .map_err(|e| refused("Couldn't delete the draft in Gmail", e)),
+        None => Ok(()),
+    };
+    // Kept while it waits to go again, so the retry knows the Gmail draft.
+    if !result.as_ref().is_err_and(is_later) {
+        store.delete_threads(account, &[local_id.to_string()])?;
     }
-    Ok(())
+    result
 }
 
 fn send(
@@ -233,22 +247,22 @@ fn send(
     events: &mut Vec<BackendEvent>,
 ) -> anyhow::Result<()> {
     let stored = local_id.and_then(|id| stored_draft(store, account, id));
-    let sent = read_files(gmail, draft, stored.as_ref().map(|s| s.0.as_str()))
-        .map_err(|e| e.to_string())
-        .and_then(|files| {
-            let (raw, message_id) = build(store, account, draft, false, files);
-            let joins = gmail_thread(draft.reply_to.as_deref());
-            let request = match &stored {
-                Some((id, _)) => gmail::draft_send_request(id, &raw, joins),
-                None => gmail::send_request(&raw, joins),
-            };
-            gmail
-                .call::<GMessage>(&request)
-                .map(|m| (m, message_id))
-                .map_err(|e| reason(&e))
-        });
+    let sent = read_files(gmail, draft, stored.as_ref().map(|s| s.0.as_str())).and_then(|files| {
+        let (raw, message_id) = build(store, account, draft, false, files);
+        let joins = gmail_thread(draft.reply_to.as_deref());
+        let request = match &stored {
+            Some((id, _)) => gmail::draft_send_request(id, &raw, joins),
+            None => gmail::send_request(&raw, joins),
+        };
+        gmail
+            .call::<GMessage>(&request)
+            .map(|m| (m, message_id))
+            .map_err(|e| refused("", e))
+    });
     let (sent, message_id) = match sent {
         Ok(sent) => sent,
+        // No network or no sign-in: it stays queued, still shown as sent.
+        Err(e) if is_later(&e) => return Err(e),
         Err(why) => {
             // Back to Drafts, and out of the conversation it was shown in.
             let id = local_id.map_or_else(
@@ -408,7 +422,7 @@ impl Backend {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let gmail = Gmail::new(Arc::new(UserCalls(transport)));
+                    let gmail = Gmail::new(Arc::new(UserPriority(transport)));
                     load_draft(&gmail, &store, &account, &tid, &draft_id)
                 })
                 .await;
@@ -430,7 +444,7 @@ mod tests {
     use super::*;
     use crate::{
         app::ComposeKind,
-        backend::http::FakeTransport,
+        backend::http::{FakeTransport, Request},
         data::{Contact, Message},
     };
 
@@ -597,6 +611,31 @@ mod tests {
         assert!(
             store
                 .load_threads(ME, &["sent-local-2".into()])
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn an_offline_send_stays_queued_and_rolls_nothing_back() {
+        let store = Store::open_in_memory().unwrap();
+        let (gmail, _) = gmail(FakeTransport::new().on(
+            "POST",
+            "/gmail/v1/users/me/messages/send",
+            &[],
+            &[(0, "")],
+        ));
+        let op = MailOp::Send {
+            draft: outgoing("Plan"),
+            local_id: Some("draft-local-9".into()),
+            thread_id: "sent-local-2".into(),
+        };
+        let (result, events) = commit_compose(&gmail, &store, ME, &op);
+        assert!(is_later(&result.unwrap_err()));
+        assert!(events.is_empty());
+        assert!(
+            store
+                .load_threads(ME, &["draft-local-9".into()])
                 .unwrap()
                 .is_empty()
         );

@@ -65,6 +65,9 @@ pub type OpId = i64;
 /// toast that offers the Undo.
 pub const UNDO_WINDOW: Duration = Duration::from_secs(5);
 
+/// How long after a committed write the sync reads it back (2.6).
+const SYNC_AFTER_WRITE: Duration = Duration::from_secs(2);
+
 /// How long settings changes settle before they're written.
 const SETTINGS_DEBOUNCE: Duration = Duration::from_millis(300);
 
@@ -492,6 +495,8 @@ pub struct Backend {
     /// Ops are going; the worker reschedules itself once they're done.
     committing: bool,
     _worker: Option<Task<()>>,
+    /// The sync that reads back a committed write.
+    _sync_soon: Option<Task<()>>,
     _save_settings: Option<Task<()>>,
     // Signing in (W2).
     /// The account as `accounts.json` has it, with its granted scopes.
@@ -527,6 +532,75 @@ pub fn demo_requested() -> bool {
 
 fn now_ms() -> i64 {
     Utc::now().timestamp_millis()
+}
+
+/// One op's commit, as the worker hands it back.
+struct Commit {
+    id: OpId,
+    outcome: outbox::Outcome,
+    events: Vec<BackendEvent>,
+    calendar: bool,
+}
+
+fn log_outbox(result: anyhow::Result<()>) {
+    if let Err(e) = result {
+        eprintln!("Pigeon: outbox: {e:#}");
+    }
+}
+
+/// Commit one op to Google, off the main thread: what became of it, and
+/// what it changed for the app to reload, reported before the outcome.
+/// Both `transport` (Calendar) and `gmail` send at the user's priority.
+/// No network or no sign-in, on any op, is `Later`: it stays queued.
+fn commit_google(
+    transport: &Arc<dyn Transport>,
+    gmail: &gmail::Gmail,
+    store: &Store,
+    account: &str,
+    op: &Op,
+) -> (outbox::Outcome, Vec<BackendEvent>) {
+    match op {
+        // Thread actions (W5).
+        Op::Mail(op @ (MailOp::Modify { .. } | MailOp::Trash { .. } | MailOp::Untrash { .. })) => (
+            outbox::commit_threads(gmail, store, account, op),
+            Vec::new(),
+        ),
+        // Drafts and sends (W6).
+        Op::Mail(op) => {
+            let (result, events) = compose::commit_compose(gmail, store, account, op);
+            let outcome = match result {
+                Ok(()) => outbox::Outcome::Committed,
+                Err(e) => match e.downcast::<TransportError>() {
+                    Ok(e) => outbox::Outcome::Later(e),
+                    Err(e) => outbox::Outcome::failed(e.to_string()),
+                },
+            };
+            (outcome, events)
+        }
+        // Calendar writes (W7).
+        Op::Calendar(op) => {
+            let committed = calendar::commit(&**transport, store, account, op);
+            let outcome = match (committed.retry, committed.error) {
+                (Some(e), _) => outbox::Outcome::Later(e),
+                (None, Some(message)) => outbox::Outcome::failed(message),
+                (None, None) => outbox::Outcome::Committed,
+            };
+            (outcome, committed.changes.backend_events())
+        }
+    }
+}
+
+/// Demo mode: the op applies to the in-memory store, and that's all.
+fn commit_demo(store: &Store, account: &str, op: &Op) -> (outbox::Outcome, Vec<BackendEvent>) {
+    let result = match op {
+        Op::Mail(op) => store.apply_mail_op(account, op),
+        Op::Calendar(op) => store.apply_cal_op(account, account, op),
+    };
+    let outcome = match result {
+        Ok(()) => outbox::Outcome::Committed,
+        Err(e) => outbox::Outcome::failed(e.to_string()),
+    };
+    (outcome, Vec::new())
 }
 
 impl Backend {
@@ -603,6 +677,7 @@ impl Backend {
             pending_settings: None,
             committing: false,
             _worker: None,
+            _sync_soon: None,
             _save_settings: None,
             record,
             google,
@@ -673,6 +748,8 @@ impl Backend {
                     Vec::new()
                 }),
         };
+        // Changes queued at the last quit show as made (PER-2).
+        self.outbox.overlay(&mut data.threads);
         data.sort_threads();
         data
     }
@@ -681,12 +758,14 @@ impl Backend {
         self.store.load_labels(self.email()).unwrap_or_default()
     }
 
-    /// The stored threads among `ids`; a missing one is gone.
+    /// The stored threads among `ids`, with the changes still queued for
+    /// them; a missing one is gone.
     pub fn load_threads(&self, ids: &[String]) -> Vec<Thread> {
         let mut threads = self
             .store
             .load_threads(self.email(), ids)
             .unwrap_or_default();
+        self.outbox.overlay(&mut threads);
         self.overlay_bodies(&mut threads);
         threads
     }
@@ -743,14 +822,28 @@ impl Backend {
         self.queue(Op::Calendar(op), cx)
     }
 
+    /// A change that goes at once even when it could wait for Undo: the
+    /// inverse of one that already went (Undo after the window).
+    pub fn mail_now(&mut self, op: MailOp, cx: &mut Context<Self>) -> OpId {
+        self.push(Op::Mail(op), 0, cx)
+    }
+
     fn queue(&mut self, op: Op, cx: &mut Context<Self>) -> OpId {
         let delay = if op.undoable() {
             UNDO_WINDOW.as_millis() as i64
         } else {
             0
         };
+        self.push(op, delay, cx)
+    }
+
+    fn push(&mut self, op: Op, delay: i64, cx: &mut Context<Self>) -> OpId {
         match self.outbox.push(op, delay, now_ms()) {
             Ok(id) => {
+                if let SyncStatus::Offline { .. } = self.status {
+                    let waiting = self.outbox.waiting();
+                    self.set_status(SyncStatus::Offline { waiting }, cx);
+                }
                 self.schedule(cx);
                 // W11: "Offline · N changes waiting" counts it.
                 self.refresh_status(cx);
@@ -769,106 +862,133 @@ impl Backend {
         self.outbox.cancel(op)
     }
 
-    /// Wake when the next op is due, and commit what's due then.
+    /// Wake when the next op is due, and commit what's due then. Nothing
+    /// goes to Google while its sign-in needs renewing (STA-4); the queue
+    /// waits for the next sign-in.
     fn schedule(&mut self, cx: &mut Context<Self>) {
         if self.committing {
             return;
         }
-        let Some(due) = self.outbox.next_due() else {
+        let can_commit = match self.source {
+            Source::Demo => true,
+            Source::Google => self.google.is_some() && self.status != SyncStatus::AuthExpired,
+            Source::SignedOut => false,
+        };
+        let Some(due) = self.outbox.next_due().filter(|_| can_commit) else {
             self._worker = None;
             return;
         };
         let wait = Duration::from_millis((due - now_ms()).max(0) as u64);
         self._worker = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(wait).await;
-            let Ok(Some((store, account, demo, due, transport))) = this.update(cx, |this, _| {
+            let Ok(Some((store, account, google, due))) = this.update(cx, |this, _| {
                 let due = this.outbox.take_due(now_ms()).ok()?;
                 this.committing = true;
-                Some((
-                    this.store.clone(),
-                    this.email().to_string(),
-                    this.is_demo(),
-                    due,
-                    this.transport(),
-                ))
+                let google = this.transport().map(|t| {
+                    let user: Arc<dyn Transport> = Arc::new(outbox::UserPriority(t));
+                    (user.clone(), gmail::Gmail::new(user))
+                });
+                Some((this.store.clone(), this.email().to_string(), google, due))
             }) else {
                 return;
             };
-            let me = account.clone();
             let results = cx
                 .background_executor()
                 .spawn(async move {
-                    // W6: drafts and sends, at the user's priority.
-                    let calendar_transport = transport.clone();
-                    let compose_gmail =
-                        transport.map(|t| gmail::Gmail::new(Arc::new(compose::UserCalls(t))));
                     due.into_iter()
                         .map(|(id, op)| {
-                            // W5: Google commits go through gmail.rs and
-                            // calendar.rs here.
-                            let mut calendar = false;
-                            let (result, events) = if demo {
-                                let result = match &op {
-                                    Op::Mail(op) => store.apply_mail_op(&account, op),
-                                    Op::Calendar(op) => store.apply_cal_op(&account, &me, op),
-                                };
-                                (result, Vec::new())
-                            } else if let (Op::Mail(op), Some(gmail)) = (&op, &compose_gmail)
-                                && compose::handles(op)
-                            {
-                                // W6: drafts and sends.
-                                compose::commit_compose(gmail, &store, &account, op)
-                            } else if let (Op::Calendar(op), Some(transport)) =
-                                (&op, &calendar_transport)
-                            {
-                                // W7: calendar writes.
-                                calendar = true;
-                                let committed = calendar::commit(
-                                    &calendar::UserPriority(transport.clone()),
-                                    &store,
-                                    &account,
-                                    op,
-                                );
-                                (committed.result(), committed.changes.backend_events())
-                            } else {
-                                (
-                                    Err(anyhow::anyhow!("not connected to Google yet")),
-                                    Vec::new(),
-                                )
+                            let calendar = matches!(op, Op::Calendar(_));
+                            let (outcome, events) = match &google {
+                                Some((transport, gmail)) => {
+                                    commit_google(transport, gmail, &store, &account, &op)
+                                }
+                                None => commit_demo(&store, &account, &op),
                             };
-                            (id, result, events, calendar)
+                            Commit {
+                                id,
+                                outcome,
+                                events,
+                                calendar,
+                            }
                         })
                         .collect::<Vec<_>>()
                 })
                 .await;
             this.update(cx, |this, cx| {
-                for (id, result, events, calendar) in results {
-                    // What the commit changed, before it's reported.
-                    for event in events {
-                        cx.emit(event);
-                    }
-                    // W7: a calendar sync shortly after a calendar write.
-                    if calendar {
-                        this.sync_calendar_soon(cx);
-                    }
-                    match result {
-                        Ok(()) => {
-                            this.outbox.finish(id).ok();
-                            cx.emit(BackendEvent::OpCommitted(id));
-                        }
-                        Err(e) => {
-                            this.outbox.fail(id, &e.to_string()).ok();
-                            cx.emit(BackendEvent::OpFailed {
-                                op: id,
-                                message: e.to_string(),
-                            });
-                        }
-                    }
-                }
+                this.committed(results, cx);
                 this.committing = false;
                 this.schedule(cx);
             })
             .ok();
+        }));
+    }
+
+    /// Put commit outcomes into effect: rows done, failed (with the
+    /// rollback already stored) or back in the queue.
+    fn committed(&mut self, results: Vec<Commit>, cx: &mut Context<Self>) {
+        let (mut mail, mut calendar) = (false, false);
+        for Commit {
+            id,
+            outcome,
+            events,
+            calendar: is_calendar,
+        } in results
+        {
+            // What the commit changed (W6, W7), before it's reported.
+            for event in events {
+                cx.emit(event);
+            }
+            match outcome {
+                outbox::Outcome::Committed => {
+                    log_outbox(self.outbox.finish(id));
+                    if is_calendar {
+                        calendar = true;
+                    } else {
+                        mail = true;
+                    }
+                    cx.emit(BackendEvent::OpCommitted(id));
+                }
+                outbox::Outcome::Failed {
+                    message,
+                    changed,
+                    removed,
+                } => {
+                    log_outbox(self.outbox.fail(id, &message));
+                    calendar |= is_calendar;
+                    if !changed.is_empty() {
+                        cx.emit(BackendEvent::ThreadsChanged(changed));
+                    }
+                    if !removed.is_empty() {
+                        cx.emit(BackendEvent::ThreadsRemoved(removed));
+                    }
+                    cx.emit(BackendEvent::OpFailed { op: id, message });
+                }
+                outbox::Outcome::Later(error) => {
+                    log_outbox(self.outbox.retry_later(
+                        id,
+                        now_ms() + outbox::RETRY_LATER_MS,
+                        &error.to_string(),
+                    ));
+                    self.note_error(&error, cx);
+                }
+            }
+        }
+        if self.source == Source::Google {
+            if mail {
+                self.sync_soon(cx);
+            }
+            // W7: a calendar sync shortly after a calendar write.
+            if calendar {
+                self.sync_calendar_soon(cx);
+            }
+        }
+    }
+
+    /// Read back what a write changed, once Gmail has it (2.6).
+    fn sync_soon(&mut self, cx: &mut Context<Self>) {
+        self._sync_soon = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SYNC_AFTER_WRITE).await;
+            this.update(cx, |this, cx| this.run_sync(cx)).ok();
         }));
     }
 

@@ -10,6 +10,7 @@ mod mail;
 mod outbox;
 
 pub use images::IMAGE_CACHE_CAP;
+pub use mail::modify_thread;
 
 use std::{
     path::Path,
