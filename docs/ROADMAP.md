@@ -18,26 +18,26 @@ To update: change the status cell in the area's table, then the counts below.
 | --- | --- | --- | --- | --- |
 | [Planned features](#3-planned-features-pln) | 3 | 0 | 0 | 3 |
 | [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 2 | 3 | 3 | 8 |
-| [Folders and labels](#51-folders-and-labels-fol) | 6 | 2 | 4 | 12 |
+| [Folders and labels](#51-folders-and-labels-fol) | 6 | 0 | 6 | 12 |
 | [Thread list](#52-thread-list-lst) | 0 | 3 | 6 | 9 |
-| [Reading pane](#53-reading-pane-rdr) | 1 | 3 | 4 | 8 |
-| [Message actions](#54-message-and-thread-actions-act) | 0 | 1 | 6 | 7 |
-| [Compose and sending](#55-compose-and-sending-cmp) | 0 | 3 | 10 | 13 |
-| [Drafts](#56-drafts-drf) | 1 | 1 | 4 | 6 |
-| [Undo](#57-undo-und) | 0 | 1 | 2 | 3 |
+| [Reading pane](#53-reading-pane-rdr) | 1 | 2 | 5 | 8 |
+| [Message actions](#54-message-and-thread-actions-act) | 0 | 0 | 7 | 7 |
+| [Compose and sending](#55-compose-and-sending-cmp) | 0 | 2 | 11 | 13 |
+| [Drafts](#56-drafts-drf) | 1 | 0 | 5 | 6 |
+| [Undo](#57-undo-und) | 0 | 0 | 3 | 3 |
 | [Search](#58-search-src) | 1 | 0 | 8 | 9 |
 | [Contacts](#59-contacts-con) | 6 | 0 | 2 | 8 |
 | [Images and attachments](#510-images-and-attachments-att) | 3 | 3 | 1 | 7 |
-| [Links](#511-links-lnk) | 2 | 1 | 0 | 3 |
+| [Links](#511-links-lnk) | 2 | 0 | 1 | 3 |
 | [Mail settings](#512-mail-settings-mst) | 10 | 0 | 0 | 10 |
 | [Calendar](#6-calendar-cal) | 18 | 7 | 17 | 42 |
-| [Sync and push](#71-sync-and-push-syn) | 2 | 5 | 0 | 7 |
+| [Sync and push](#71-sync-and-push-syn) | 2 | 1 | 4 | 7 |
 | [Notifications and background](#72-notifications-and-background-ntf) | 3 | 0 | 0 | 3 |
-| [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 0 | 5 | 0 | 5 |
-| [Storage and persistence](#81-storage-and-persistence-per) | 0 | 2 | 1 | 3 |
+| [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 0 | 4 | 1 | 5 |
+| [Storage and persistence](#81-storage-and-persistence-per) | 0 | 0 | 3 | 3 |
 | [Command palette](#82-command-palette-pal) | 0 | 2 | 1 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 6 | 0 | 7 |
-| **Overall** | **59** | **48** | **69** | **176** |
+| **Overall** | **59** | **33** | **84** | **176** |
 
 ## Contents
 
@@ -175,9 +175,9 @@ The user's own plans, not driven by Google's APIs.
 | FOL-2 | Sidebar counts | 🟢 Fully linked | `labels.get` (`threadsUnread`, `messagesUnread`) |
 | FOL-3 | Label list with colours | 🟢 Fully linked | `labels.list`, label `color` |
 | FOL-4 | Label views | 🟢 Fully linked | `threads.list` with `labelIds` |
-| FOL-5 | Apply and remove labels on a thread | 🟡 Partially done | `threads.modify` |
+| FOL-5 | Apply and remove labels on a thread | 🟢 Fully linked | `threads.modify` |
 | FOL-6 | Create, rename, recolour and delete labels | ⚪ Not done | `labels.create`, `labels.patch`, `labels.update`, `labels.delete` |
-| FOL-7 | Report spam and not spam | 🟡 Partially done | `threads.modify` (add or remove `SPAM`) |
+| FOL-7 | Report spam and not spam | 🟢 Fully linked | `threads.modify` (add or remove `SPAM`) |
 | FOL-8 | Empty Trash and permanent delete | ⚪ Not done | `threads.delete`, `messages.delete`, `messages.batchDelete` |
 | FOL-9 | Nested labels | ⚪ Not done | Label names with `/` |
 | FOL-10 | Label visibility | ⚪ Not done | Label `labelListVisibility`, `messageListVisibility` |
@@ -319,7 +319,7 @@ The user's own plans, not driven by Google's APIs.
 | RDR-3 | Expand and collapse older messages | 🟡 Partially done | Per-message `snippet` |
 | RDR-4 | Message header | 🟢 Fully linked | `messages.get` headers |
 | RDR-5 | Message body rendering | 🟢 Fully linked | `messages.get` `payload` parts |
-| RDR-6 | Fetch a message body on demand | 🟡 Partially done | `messages.get` (`format=full`) |
+| RDR-6 | Fetch a message body on demand | 🟢 Fully linked | `messages.get` (`format=full`) |
 | RDR-7 | Message navigation and reader focus | 🟡 Partially done | None |
 | RDR-8 | Show original (raw message) | ⚪ Not done | `messages.get` (`format=raw`) |
 
@@ -373,7 +373,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
 | ACT-1 | Archive and move to Inbox | 🟢 Fully linked | `threads.modify` (`INBOX`); `threads.untrash` |
-| ACT-1a | Move to a folder | 🟡 Partially done | `threads.modify`, `threads.trash` |
+| ACT-1a | Move to a folder | 🟢 Fully linked | `threads.modify`, `threads.trash` |
 | ACT-2 | Delete | 🟢 Fully linked | `threads.trash` |
 | ACT-3 | Star and unstar | 🟢 Fully linked | `threads.modify` (`STARRED`) |
 | ACT-4 | Mark as unread | 🟢 Fully linked | `threads.modify` / `messages.modify` (`UNREAD`) |
@@ -432,7 +432,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 | CMP-6 | Show Cc and Bcc | 🟡 Partially done | `raw` MIME; Gmail delivers Bcc |
 | CMP-7 | Subject and formatted body | 🟢 Fully linked | `raw` MIME (`multipart/alternative`) |
 | CMP-8 | Send | 🟢 Fully linked | `messages.send`, `drafts.send` |
-| CMP-9 | Send validation | 🟡 Partially done | Send errors |
+| CMP-9 | Send validation | 🟢 Fully linked | Send errors |
 | CMP-10 | Forward quote block | 🟢 Fully linked | `raw` MIME |
 | CMP-11 | Reply appends to the thread | 🟢 Fully linked | `threadId`, `In-Reply-To`, `References` |
 | CMP-12 | Send failure feedback | 🟡 Partially done | Send errors |
@@ -525,7 +525,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 | DRF-3 | Open and edit a draft | 🟢 Fully linked | `drafts.get` |
 | DRF-4 | Discard a draft | 🟢 Fully linked | `drafts.delete` |
 | DRF-5 | Save while typing | ⚪ Not done | `drafts.update` (debounced) |
-| DRF-6 | Sync drafts with the server | 🟡 Partially done | `drafts.list`, `history.list` |
+| DRF-6 | Sync drafts with the server | 🟢 Fully linked | `drafts.list`, `history.list` |
 
 #### DRF-1 Save on close or navigation
 
@@ -567,7 +567,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 | --- | --- | --- | --- |
 | UND-1 | Undo send | 🟢 Fully linked | Hold `messages.send` for the window |
 | UND-2 | Undo discard | 🟢 Fully linked | Delay `drafts.delete` |
-| UND-3 | Undo for other actions | 🟡 Partially done | Delay or invert `threads.modify` |
+| UND-3 | Undo for other actions | 🟢 Fully linked | Delay or invert `threads.modify` |
 
 #### UND-1 Undo send
 
@@ -755,7 +755,7 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| LNK-1 | Open a link in the browser | 🟡 Partially done | None |
+| LNK-1 | Open a link in the browser | 🟢 Fully linked | None |
 | LNK-2 | Link safety checks | ⚪ Not done | None (optional Safe Browsing API) |
 | LNK-3 | `mailto:` links | ⚪ Not done | None |
 
@@ -1139,13 +1139,13 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| SYN-1 | Gmail full sync | 🟡 Partially done | `threads.list` / `messages.list` + batched `get`; store `historyId` |
-| SYN-2 | Gmail partial sync | 🟡 Partially done | `history.list` (`startHistoryId`, `historyTypes`) |
+| SYN-1 | Gmail full sync | 🟢 Fully linked | `threads.list` / `messages.list` + batched `get`; store `historyId` |
+| SYN-2 | Gmail partial sync | 🟢 Fully linked | `history.list` (`startHistoryId`, `historyTypes`) |
 | SYN-3 | Gmail push | ⚪ Not done | `watch`, `stop`, Cloud Pub/Sub |
 | SYN-4 | Calendar incremental sync | 🟡 Partially done | `events.list` / `calendarList.list` with `syncToken` |
 | SYN-5 | Calendar push | ⚪ Not done | `events.watch`, `calendarList.watch`, `acl.watch`, `settings.watch`, `channels.stop` |
-| SYN-6 | Contacts sync | 🟡 Partially done | `people.connections.list`, `otherContacts.list` with `syncToken` |
-| SYN-7 | Batching, quotas and backoff | 🟡 Partially done | HTTP batch; `429` / `403 rateLimitExceeded` |
+| SYN-6 | Contacts sync | 🟢 Fully linked | `people.connections.list`, `otherContacts.list` with `syncToken` |
+| SYN-7 | Batching, quotas and backoff | 🟢 Fully linked | HTTP batch; `429` / `403 rateLimitExceeded` |
 
 #### SYN-1 Gmail full sync
 
@@ -1209,7 +1209,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | --- | --- | --- | --- |
 | STA-1 | Initial load and loading states | 🟡 Partially done | None |
 | STA-2 | Action failure and rollback | 🟡 Partially done | API error responses |
-| STA-3 | Offline mode and queued changes | 🟡 Partially done | None |
+| STA-3 | Offline mode and queued changes | 🟢 Fully linked | None |
 | STA-4 | Expired sign-in | 🟡 Partially done | OAuth `invalid_grant`, 401 |
 | STA-5 | Conflicts with server changes | 🟡 Partially done | ETags, `historyId`, `syncToken` |
 
@@ -1251,8 +1251,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| PER-1 | Local mailbox store | 🟡 Partially done | Holds SYN data |
-| PER-2 | Outbox and drafts that survive quit | 🟡 Partially done | None |
+| PER-1 | Local mailbox store | 🟢 Fully linked | Holds SYN data |
+| PER-2 | Outbox and drafts that survive quit | 🟢 Fully linked | None |
 | PER-3 | Persisted UI state and settings | 🟢 Fully linked | None |
 
 #### PER-1 Local mailbox store
