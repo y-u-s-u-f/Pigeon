@@ -24,6 +24,10 @@ A macOS email and calendar client in Rust + GPUI (`gpui-kit` 0.8, imported as `g
 
 Don't have one agent implement, test and fix in a loop. Subagents don't commit; the main agent does.
 
+## Roadmap
+
+`docs/ROADMAP.md` must always be current. Every change that adds, changes or removes a feature updates it in the same commit: the item's entry and status (⚪ Not done / 🟡 Partially done / 🟢 Fully linked), the section and overall counts, and new items for new features or plans the user mentions. Implementers update it with their change; the main agent checks it before committing.
+
 ## Running and testing
 
 - Run with `cargo run --release`. Agents running in parallel build with their own `CARGO_TARGET_DIR` in `/private/var/folders/sc/26v_9jsx0s9_fkjttv6jzjdh0000gn/T/opencode`.
