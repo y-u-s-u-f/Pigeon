@@ -7,8 +7,8 @@ One place for where the app stands and what comes next: every feature, its statu
 | Status | Meaning |
 | --- | --- |
 | ⚪ Not done | Nothing built. |
-| 🟡 Partially done | Built in the front end on placeholder data (or in memory), not linked to a real backend. Every feature that exists in the front end today has this status, including ones that need no backend, until the app runs end to end on real data. |
-| 🟢 Fully linked | Works end to end with the real backend. Nothing has this status yet. |
+| 🟡 Partially done | Built, but part of it isn't linked to the real backend yet or still waits on a check (a user check, or an account with a second address); its "Needs" line says what. |
+| 🟢 Fully linked | Works end to end with the real backend. |
 
 To update: change the status cell in the area's table, then the counts below.
 
@@ -18,26 +18,26 @@ To update: change the status cell in the area's table, then the counts below.
 | --- | --- | --- | --- | --- |
 | [Planned features](#3-planned-features-pln) | 3 | 0 | 0 | 3 |
 | [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 2 | 3 | 3 | 8 |
-| [Folders and labels](#51-folders-and-labels-fol) | 1 | 5 | 6 | 12 |
+| [Folders and labels](#51-folders-and-labels-fol) | 1 | 0 | 11 | 12 |
 | [Thread list](#52-thread-list-lst) | 0 | 0 | 9 | 9 |
-| [Reading pane](#53-reading-pane-rdr) | 0 | 1 | 7 | 8 |
+| [Reading pane](#53-reading-pane-rdr) | 0 | 0 | 8 | 8 |
 | [Message actions](#54-message-and-thread-actions-act) | 0 | 0 | 7 | 7 |
-| [Compose and sending](#55-compose-and-sending-cmp) | 0 | 1 | 12 | 13 |
-| [Drafts](#56-drafts-drf) | 0 | 1 | 5 | 6 |
+| [Compose and sending](#55-compose-and-sending-cmp) | 0 | 0 | 13 | 13 |
+| [Drafts](#56-drafts-drf) | 0 | 0 | 6 | 6 |
 | [Undo](#57-undo-und) | 0 | 0 | 3 | 3 |
-| [Search](#58-search-src) | 0 | 1 | 8 | 9 |
-| [Contacts](#59-contacts-con) | 5 | 1 | 2 | 8 |
-| [Images and attachments](#510-images-and-attachments-att) | 0 | 4 | 3 | 7 |
+| [Search](#58-search-src) | 0 | 0 | 9 | 9 |
+| [Contacts](#59-contacts-con) | 5 | 0 | 3 | 8 |
+| [Images and attachments](#510-images-and-attachments-att) | 0 | 1 | 6 | 7 |
 | [Links](#511-links-lnk) | 1 | 1 | 1 | 3 |
-| [Mail settings](#512-mail-settings-mst) | 8 | 2 | 0 | 10 |
-| [Calendar](#6-calendar-cal) | 12 | 10 | 20 | 42 |
+| [Mail settings](#512-mail-settings-mst) | 8 | 1 | 1 | 10 |
+| [Calendar](#6-calendar-cal) | 12 | 3 | 27 | 42 |
 | [Sync and push](#71-sync-and-push-syn) | 2 | 0 | 5 | 7 |
-| [Notifications and background](#72-notifications-and-background-ntf) | 0 | 6 | 0 | 6 |
-| [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 0 | 2 | 3 | 5 |
-| [Storage and persistence](#81-storage-and-persistence-per) | 0 | 2 | 3 | 5 |
+| [Notifications and background](#72-notifications-and-background-ntf) | 0 | 3 | 3 | 6 |
+| [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 0 | 0 | 5 | 5 |
+| [Storage and persistence](#81-storage-and-persistence-per) | 0 | 0 | 5 | 5 |
 | [Command palette](#82-command-palette-pal) | 0 | 0 | 3 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 3 | 3 | 7 |
-| **Overall** | **35** | **43** | **103** | **181** |
+| **Overall** | **35** | **15** | **131** | **181** |
 
 ## Contents
 
@@ -58,9 +58,9 @@ To update: change the status cell in the area's table, then the counts below.
 
 Principles are in [`AGENTS.md`](../AGENTS.md): blazing fast and light (no webviews, no heavy dependencies), keyboard-centric (every action has a shortcut and is in ⌘K), minimal and flat on translucent glass, YAGNI.
 
-**Current phase: linked to Google; demo mode on placeholder data.** Backend sprint 1 ([`BACKEND_SPRINT_1.md`](BACKEND_SPRINT_1.md)) is done: sign-in, Gmail read and write, compose and drafts, Calendar read and write, contacts, search and paging, invites, remote images, offline queueing and status are merged and tested on the real account. Items still 🟡 wait on checks only the user can do (sign-in flow, attaching a file, invites from a second address) or on rare server errors. `PIGEON_DEMO=1` runs on the placeholder data.
+**Current phase: linked to Google; demo mode on placeholder data.** Backend sprint 1 ([`BACKEND_SPRINT_1.md`](BACKEND_SPRINT_1.md)) linked sign-in, Gmail read and write, compose and drafts, Calendar read and write, contacts, search and paging, invites, remote images, offline queueing and status. Backend sprint 2, "Pigeon as a daily driver" ([`BACKEND_SPRINT_2.md`](BACKEND_SPRINT_2.md)), is complete: the app stays open with a menu bar panel, notifications and a Dock badge; attachments; Gmail categories; labels; aliases and signatures; repeat rules, reminders and Meet in the calendar. Everything a tester can drive passed real-account test rounds. `PIGEON_DEMO=1` runs on the placeholder data.
 
-**In progress: backend sprint 2, "Pigeon as a daily driver"** ([`BACKEND_SPRINT_2.md`](BACKEND_SPRINT_2.md)): staying open with a menu bar panel, notifications and a Dock badge; attachments; Gmail categories; labels; aliases and signatures; repeat rules, reminders and Meet in the calendar.
+**What's left:** items still 🟡 wait on checks only the user can do (allowing notifications, the menu bar status item and global shortcuts, making Pigeon the default mail app, open at login, the sign-in flow, attaching a file), an account with a second verified address (MST-1, ACC-2), or a part not built yet. The user signs in again around Nov 2, unless the Google app is published first. **Candidate next work:** multiple accounts (ACC-4) and the items still ⚪.
 
 - Data lives in a local SQLite cache (`src/backend/store/`), synced with Gmail, Calendar and People by polling (`src/backend/sync.rs`). Writes go through the outbox (`src/backend/outbox.rs`) with undo and rollback.
 - Demo mode seeds an in-memory store from `assets/mailbox.json` and `assets/calendar.json`; its changes are not sent anywhere.
@@ -177,13 +177,13 @@ The user's own plans, not driven by Google's APIs.
 | FOL-3 | Label list with colours | 🟢 Fully linked | `labels.list`, label `color` |
 | FOL-4 | Label views | 🟢 Fully linked | `threads.list` with `labelIds` |
 | FOL-5 | Apply and remove labels on a thread | 🟢 Fully linked | `threads.modify` |
-| FOL-6 | Create, rename, recolour and delete labels | 🟡 Partially done | `labels.create`, `labels.patch`, `labels.update`, `labels.delete` |
+| FOL-6 | Create, rename, recolour and delete labels | 🟢 Fully linked | `labels.create`, `labels.patch`, `labels.update`, `labels.delete` |
 | FOL-7 | Report spam and not spam | 🟢 Fully linked | `threads.modify` (add or remove `SPAM`) |
 | FOL-8 | Empty Trash and permanent delete | ⚪ Not done | `threads.delete`, `messages.delete`, `messages.batchDelete` |
-| FOL-9 | Nested labels | 🟡 Partially done | Label names with `/` |
-| FOL-10 | Label visibility | 🟡 Partially done | Label `labelListVisibility`, `messageListVisibility` |
-| FOL-11 | Inbox categories | 🟡 Partially done | Backend (W4a) and views (W4b): the Inbox shows Primary; Social, Promotions, Updates, Forums under it. Tester pass pending |
-| FOL-12 | Important marker | 🟡 Partially done | `IMPORTANT` label |
+| FOL-9 | Nested labels | 🟢 Fully linked | Label names with `/` |
+| FOL-10 | Label visibility | 🟢 Fully linked | Label `labelListVisibility`, `messageListVisibility` |
+| FOL-11 | Inbox categories | 🟢 Fully linked | Category labels (`CATEGORY_*`): the Inbox shows Primary; Social, Promotions, Updates, Forums under it |
+| FOL-12 | Important marker | 🟢 Fully linked | `IMPORTANT` label |
 
 #### FOL-1 System folders and go-to shortcuts
 
@@ -218,7 +218,7 @@ The user's own plans, not driven by Google's APIs.
 #### FOL-6 Create, rename, recolour and delete labels
 
 - **Today (sprint 2 W4b):** ⌘K "New Label…" (`L N`, also the sidebar's "+"), "Rename Label…" (`L R`), "Change Label Color…" (`L C`), "Delete Label…" (`L D`), also from a label's right-click menu in the sidebar. They act on the open label, else ask which one. The palette turns into a name field for new and renamed labels. Colours: nine curated pairs (`backend::labels::COLORS`), background and text both from Gmail's allowed palette (tested). Rename also renames every child (`Work/…`): names are checked for collisions first (`plan_rename`), the parent goes first; if a child fails, labels are read again (`labels.list`) and the toast names the ones not renamed. Delete asks first, offering "with its N sublabels" or "only this one", and never touches mail (Gmail takes the label off; the store does the same). The sidebar changes at once; on failure the labels reload from the store, which only changes once Gmail answered. A new label is stored as a shown user label even when Gmail's answer leaves out `type` and the visibilities; renames and other changes store what was asked, not Gmail's (possibly partial) answer. Demo mode changes the in-memory store. `src/backend/labels.rs`, `src/app/labels.rs`.
-- **Needs:** A tester pass on the real account (labels named `Pigeon Test …`). IMAP: `CREATE`, `RENAME`, `DELETE`.
+- **Needs:** Done; passed on the real account (sprint 2 T2a, after fix-5). IMAP: `CREATE`, `RENAME`, `DELETE`.
 - **Notes:** Label changes go to Gmail at once (`labels.create`, `labels.patch`, `labels.delete`, at the user's priority) rather than through the outbox: a new label needs Gmail's id first and a rename goes parent, then children. Offline they're refused with "Label changes need a connection" and nothing changes. Needs `gmail.modify`. New labels add palette entries (PAL-3).
 
 #### FOL-7 Report spam and not spam
@@ -236,24 +236,24 @@ The user's own plans, not driven by Google's APIs.
 #### FOL-9 Nested labels
 
 - **Today (sprint 2 W4b):** Labels nest by name (`Work/Clients` under `Work`, when `Work` exists; otherwise the whole name shows at the top), sorted by name at each level (`labels::label_tree`). The sidebar indents children and folds a parent with its chevron, the context menu, or ⌘K "Fold / Unfold Sublabels" (`L F`). The `l` picker lists the tree indented; a folded parent's children show once you type. Folded labels are kept with the settings (`collapsed_labels`), demo mode too.
-- **Needs:** A tester pass.
+- **Needs:** Done; passed on the real account (sprint 2 T2a).
 
 #### FOL-10 Label visibility
 
 - **Today (sprint 2 W4b):** The sidebar follows `labelListVisibility`: "show if unread" labels show while they have unread mail, hidden ones (and their children) don't, except the open one (unless it was just hidden while open, e.g. from its right-click menu: then it goes at once); a "N hidden" row (`L H`) lists them too. Rows show label dots only for labels whose `messageListVisibility` is "show"; the reader shows all. Change both from a label's right-click menu ("In Label List", "In Conversation List") or ⌘K "Label Visibility…" (`L V`), through `labels.patch`. Stored in the `labels` table (schema block 150); hidden labels are now loaded too, so the label picker and `label:` search see them.
-- **Needs:** A tester pass.
+- **Needs:** Done; passed on the real account (sprint 2 T2a, after fix-5).
 
 #### FOL-11 Inbox categories
 
 - **Needs:** Gmail's category labels (`CATEGORY_PERSONAL`, `CATEGORY_SOCIAL`, `CATEGORY_PROMOTIONS`, `CATEGORY_UPDATES`, `CATEGORY_FORUMS`) as Inbox tabs or filters, and the `category:` search operator (SRC-9).
 - **Built (backend, sprint 2 W4a):** `src/backend/categories.rs`. A message is Primary unless it carries `CATEGORY_SOCIAL`, `_PROMOTIONS`, `_UPDATES` or `_FORUMS` (`category_of`); a thread is in a category when any of its Inbox messages is (`in_category`). Unread Inbox threads per category (`Backend::category_counts`, `CountsChanged`) come from `threads.list labelIds=INBOX,UNREAD q=category:<x>` with ids only, up to 500 ("500+"): at launch and after a sync whose history touched the Inbox, 50 quota units per refresh; kept in `sync_state` so launch shows the last ones at once. Demo mode counts the store (some demo senders get categories in code). `ViewKey::Category` asks Gmail for `in:inbox category:<x>` for "Load older", and the full sync also lists Primary's first page that way.
 - **Views (sprint 2 W4b):** The Inbox shows Primary (`app::nav_holds`), its count and the rail's are Primary's unread (the Dock badge's number, moved at once by reads here until the next count). Social (`g o`), Promotions (`g p`), Updates (`g u`) and Forums (`g f`) are views under Inbox in the sidebar with their unread counts, and in ⌘K ("Go to …"); a category with no Inbox threads and no unread is left out. Their "Load older" pages ask `in:inbox category:<x>`, the Inbox's `category:primary`. Searching the Inbox, and `in:inbox`, still covers every category, as Gmail does.
-- **Needs:** A tester pass on the real account.
+- **Needs:** Done; passed on the real account (sprint 2 T2a).
 
 #### FOL-12 Important marker
 
 - **Today (sprint 2 W4b):** `Thread::important` comes from the `IMPORTANT` label. Rows show an amber marker; the reader's toolbar has a toggle. "Mark as Important / Not Important" in ⌘K, the thread menu and `=` (or `+`, as in Gmail) adds or takes off `IMPORTANT` with `threads.modify` through the outbox, at once like a star. `is:important` searches Gmail (SRC-9).
-- **Needs:** A tester pass.
+- **Needs:** Done; passed on the real account (sprint 2 T2a).
 
 ### 5.2 Thread list (LST)
 
@@ -328,7 +328,7 @@ The user's own plans, not driven by Google's APIs.
 | RDR-5 | Message body rendering | 🟢 Fully linked | `messages.get` `payload` parts |
 | RDR-6 | Fetch a message body on demand | 🟢 Fully linked | `messages.get` (`format=full`) |
 | RDR-7 | Message navigation and reader focus | 🟢 Fully linked | None |
-| RDR-8 | Show original (raw message) | 🟡 Partially done | `messages.get` (`format=raw`) |
+| RDR-8 | Show original (raw message) | 🟢 Fully linked | `messages.get` (`format=raw`) |
 
 #### RDR-1 Opening a thread marks it read
 
@@ -372,7 +372,7 @@ The user's own plans, not driven by Google's APIs.
 #### RDR-8 Show original
 
 - **Today (W2, sprint 2):** ⌘K "Show Original" (`cmd-alt-u`, again to close) shows the focused message's source (the newest unless `n`/`p` picked one) in place of the conversation: a read-only monospace view of its first 1 MB (`ORIGINAL_SHOWN`; a note says when there's more), long lines broken at 100 characters, in a `uniform_list` so big messages scroll smoothly. Toolbar: Copy (`cmd-c`, the shown text), Save as .eml (`cmd-alt-s`, also from ⌘K "Save Message as .eml…" without opening it; the whole message), Close (`Esc`). The source is fetched each time (`messages.get format=raw`, `Backend::raw_message()`); raw messages aren't kept. Demo mode makes one up from the placeholder message (`demo_raw()`). `Original`, `render_original()` (`src/ui/reader.rs`), `src/app/attachments.rs`, `src/backend/attachments.rs`.
-- **Needs:** A tester pass.
+- **Needs:** Done; passed on the real account (sprint 2 T1b).
 - **Notes:** Saving uses the save panel (starting in Downloads); the file gets the quarantine attribute. With `PIGEON_DEV=1` and `PIGEON_SAVE_DIR` set, saves go straight to that folder (numbered when the name is taken), so testers can check them.
 
 ### 5.4 Message and thread actions (ACT)
@@ -444,7 +444,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 | CMP-9 | Send validation | 🟢 Fully linked | Send errors |
 | CMP-10 | Forward quote block | 🟢 Fully linked | `raw` MIME |
 | CMP-11 | Reply appends to the thread | 🟢 Fully linked | `threadId`, `In-Reply-To`, `References` |
-| CMP-12 | Send failure feedback | 🟡 Partially done | Send errors |
+| CMP-12 | Send failure feedback | 🟢 Fully linked | Send errors |
 | CMP-13 | Sent copy on the server | 🟢 Fully linked | `SENT` label (automatic) |
 
 #### CMP-1 New message
@@ -519,7 +519,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 - **Today:** With Google (W6), a send Gmail turns down (after the transport's retries) goes back to Drafts as a draft (`draft-local-*`, or the draft it was sent from), leaves the conversation it was shown in, and shows the toast "Not sent: <Gmail's reason>" (for example "Not sent: Invalid To header", checked on the real account). `send()` in `src/backend/compose.rs`.
 - **Today (drills, sprint 2 W6):** With `PIGEON_DEV=1`, `touch <data dir>/simulate-refusal` makes the next Google write answer 400 with a Gmail-like body, so a send shows "Not sent: Simulated refusal (drill)" and goes back to Drafts on the real account (see STA-2).
-- **Needs:** A tester pass (T2b). No retry button; reopening the draft and sending again is the retry.
+- **Needs:** Done; passed with the refusal drill (sprint 2 T2c). No retry button; reopening the draft and sending again is the retry.
 
 #### CMP-13 Sent copy on the server
 
@@ -534,7 +534,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 | DRF-2 | Drafts list | 🟢 Fully linked | `drafts.list` |
 | DRF-3 | Open and edit a draft | 🟢 Fully linked | `drafts.get` |
 | DRF-4 | Discard a draft | 🟢 Fully linked | `drafts.delete` |
-| DRF-5 | Save while typing | 🟡 Partially done | `drafts.update` (debounced) |
+| DRF-5 | Save while typing | 🟢 Fully linked | `drafts.update` (debounced) |
 | DRF-6 | Sync drafts with the server | 🟢 Fully linked | `drafts.list`, `history.list` |
 
 #### DRF-1 Save on close or navigation
@@ -563,7 +563,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 #### DRF-5 Save while typing
 
 - **Today (sprint 2 W3):** 2 s after typing stops (`AUTOSAVE_DELAY`, `src/ui/composer.rs`) the draft is saved to the local store at once (`Backend::save_draft`, `compose::save_locally`) and a `SaveDraft` op is queued for Gmail: the first right away, then at most every 30 s (`REMOTE_SAVE_EVERY_MS`; a newer save replaces the waiting one), and at once when the draft closes. Footer: "Saving…" while edits wait, "Saved" once stored. A new message gets its stable `draft-local-*` id at its first save and shows in Drafts. Each save carries a revision (milliseconds, rising) of that id, stored in `drafts.revision` (schema 160): a save, or a Gmail answer, older than what's stored never overwrites newer text (it only records Gmail's draft and message ids). A send or a discard that commits leaves a tombstone at the last revision (`draft_tombstones`), so a late save never brings the draft back; a newer save (Undo after the window) does. A send waits behind its draft's saves (resource `send,<local id>`), and a save waiting out its 30 s goes at once when the draft is sent or discarded (`Outbox::hurry`). Crash recovery: the local copy reloads into Drafts at launch, and its queued save goes again.
-- **Needs:** A tester pass (T2b): type, wait 2 s, check "Saved"; quit without closing and relaunch; send right after typing.
+- **Needs:** Done; passed on the real account (sprint 2 T2b, after fix-6).
 - **Notes:** Typing never sends more than one `drafts.update` per 30 s per draft.
 
 #### DRF-6 Sync drafts with the server
@@ -611,7 +611,7 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 | SRC-6 | Result count | 🟢 Fully linked | `resultSizeEstimate` |
 | SRC-7 | Full-mailbox search | 🟢 Fully linked | `threads.list` with `q` |
 | SRC-8 | Live search while typing | 🟢 Fully linked | Debounced `threads.list` |
-| SRC-9 | More Gmail operators | 🟡 Partially done | Gmail `q` operators |
+| SRC-9 | More Gmail operators | 🟢 Fully linked | Gmail `q` operators |
 
 #### SRC-1 Search bar and keys
 
@@ -661,7 +661,7 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 #### SRC-9 More Gmail operators
 
 - **Today (sprint 2 W4b):** A query with `after:`/`before:`, `older_than:`/`newer_than:`, `larger:`/`smaller:`, `filename:`, `cc:`/`bcc:`, `list:`, `category:`, `is:important`, a `-` negation, `OR`, or parentheses/braces goes to Gmail as typed (`Query::gmail_only`); an `in:` folder still sets the scope, and a view's own terms follow the query in parentheses (a label, Starred, Sent, Spam, Trash and the Inbox by `labelIds`; the Inbox then means all its categories but not its archived threads; All mail adds nothing). Its results are Gmail's only, without local matches (they'd be false ones). Each operator shows as a chip ("not from:bob", "OR", "( … )"). Offline, or in demo mode, it says such searches need a connection. The suggestions offer `after:`, `older_than:`, `larger:`, `is:important`, `category:`.
-- **Needs:** A tester pass. `has:drive` and other operators pass through only alongside one of the above; alone they're matched locally as text.
+- **Needs:** Done; passed on the real account (sprint 2 T2a, after fix-5). `has:drive` and other operators pass through only alongside one of the above; alone they're matched locally as text.
 
 ### 5.9 Contacts (CON)
 
@@ -671,7 +671,7 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 | CON-2 | Typed name and address resolution | 🟢 Fully linked | As CON-1 |
 | CON-3 | Contact management | ⚪ Not done | `people.createContact`, `updateContact`, `deleteContact`, batch variants |
 | CON-4 | Contact photos | ⚪ Not done | `photos` person field; `updateContactPhoto`, `deleteContactPhoto` |
-| CON-5 | Contact card | 🟡 Partially done | `people.get`, `people.getBatchGet` |
+| CON-5 | Contact card | 🟢 Fully linked | `people.get`, `people.getBatchGet` |
 | CON-6 | Contact groups | ⚪ Not done | `contactGroups.*`, `contactGroups.members.modify` |
 | CON-7 | Workspace directory | ⚪ Not done | `people.listDirectoryPeople`, `searchDirectoryPeople` |
 | CON-8 | Save a frequent address as a contact | ⚪ Not done | `otherContacts.copyOtherContactToMyContactsGroup` |
@@ -700,7 +700,7 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 #### CON-5 Contact card
 
 - **Today (sprint 2 W6):** Clicking a sender (name or avatar) or a recipient in the reader, a guest or organizer in the event panel, or ⌘K "Show Contact" (`⇧P`, the focused message's sender, or the first other person on the user's own mail) opens a card over the panes (`src/ui/contact_card.rs`, `src/app/contact_card.rs`): initial avatar, name, title · organisation, every address of the contact, phone numbers with their type, Compose (`C`, a new message to them) and Copy Address (`⌘C`, with a toast), and up to 8 recent conversations with any of their addresses, newest first, Spam, Trash and Drafts left out (`↑`/`↓`, `↵` opens one). Esc or a click outside closes it. All from the store (`Store::contact_card()`, `Backend::contact_card()`); no People call. People who aren't contacts show the name the mail gives, the address, "Not in your contacts" and the conversations. The connections sync now asks `personFields=names,emailAddresses,phoneNumbers,organizations` and stores them per contact (`contacts.details`, schema 170); 170 also drops the connections' sync token once, since People only takes a token back with the field mask it was made with, so the next sync lists the contacts again. Other contacts keep `readMask=names,emailAddresses`. In demo mode the card works on the placeholder mail (no phones or organisations there).
-- **Needs:** A tester pass. Photos (CON-4). A live refresh (`people.get`) isn't planned while the cache is kept current by sync.
+- **Needs:** Done; passed on the real account (sprint 2 T2c, after fix-7). Photos (CON-4). A live refresh (`people.get`) isn't planned while the cache is kept current by sync.
 
 #### CON-6 Contact groups
 
@@ -719,12 +719,12 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
 | ATT-1 | Remote images | 🟢 Fully linked | None (HTTP fetch or proxy) |
-| ATT-2 | Inline (`cid:`) images | 🟡 Partially done | `payload.parts` `Content-ID`, `messages.attachments.get` |
+| ATT-2 | Inline (`cid:`) images | 🟢 Fully linked | `payload.parts` `Content-ID`, `messages.attachments.get` |
 | ATT-3 | Attachment list in messages | 🟢 Fully linked | `payload.parts` (`filename`, `body.attachmentId`) |
-| ATT-4 | Open and download an attachment | 🟡 Partially done | `messages.attachments.get` |
+| ATT-4 | Open and download an attachment | 🟢 Fully linked | `messages.attachments.get` |
 | ATT-5 | Attachment icon in the list | 🟢 Fully linked | `has:attachment`, `payload.parts` |
 | ATT-6 | Attach files to a new message | 🟡 Partially done | `messages.send` / `drafts.*` upload (`multipart` or `resumable`) |
-| ATT-7 | Forward keeps attachments | 🟡 Partially done | `messages.attachments.get` + re-attach |
+| ATT-7 | Forward keeps attachments | 🟢 Fully linked | `messages.attachments.get` + re-attach |
 
 #### ATT-1 Remote images
 
@@ -735,7 +735,7 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 #### ATT-2 Inline (`cid:`) images
 
 - **Today (W2, sprint 2):** When a body is parsed (`mime::parse_message()`), every image part with a `Content-ID` (PNG, JPEG, GIF, WebP by sniffing; 10 MB each) goes into the ATT-1 image cache under `cid:pigeon-<hash of its bytes>`, and the HTML's `cid:` references (percent-encoded or any case) are rewritten to that address, so no request fetches them and messages never share an id by accident (`inline_parts()`, `rewrite_cids()`, `Store::put_bodies()`). The reader shows them without the remote-image bar or consent, in demo mode too (`html_view::cid_images()`, `ShowImages`, `load_inline_images()`). One evicted from the cache, or in a body stored before this, comes back from the raw message once (`Backend::inline_images()`), which stores the body again.
-- **Needs:** A tester pass on real mail with inline images (signatures, newsletters). IMAP: `BODYSTRUCTURE` + `BODY[part]`.
+- **Needs:** Done; passed on real mail (sprint 2 T1b). IMAP: `BODYSTRUCTURE` + `BODY[part]`.
 - **Notes:** An inline image that's also an attachment (not marked inline) shows both in the body and as a chip. SVG and other types stay placeholders.
 
 #### ATT-3 Attachment list in messages
@@ -747,7 +747,7 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 #### ATT-4 Open and download an attachment
 
 - **Today (W2, sprint 2):** Clicking a chip (or Enter on it, as it's a tab stop) opens the file with the default app; its download button saves it through the save panel, which starts in Downloads. ⌘K "Open Attachment" (`shift-o`) and "Save Attachment…" (`cmd-shift-s`) act on the conversation's attachment, or the focused message's while the reader has focus; with several, a menu lists them (`OpenAttachmentAt`, `SaveAttachmentAt`). The bytes come from the raw message (`messages.get format=raw`) by the attachment's `part_id`, since there's no `attachmentId` (`mime::part_bytes()`); a draft read back from Gmail finds its files by name. Raw messages aren't kept; the file is, in a private cache: `<data dir>/attachments/cache/<generated key>/<sanitised name>` (no directories, control or direction-changing characters, leading dots; 200 bytes at most), with the `com.apple.quarantine` attribute, 256 MB in all, least recently used out first. Apps, installers, scripts and binaries (by extension, MIME type and magic bytes) are revealed in Finder instead of opened. Saved files are quarantined too. `src/backend/attachments.rs`, `src/app/attachments.rs`, chips in `render_message()`. Demo attachments have no bytes: opening or saving one says so in a toast.
-- **Needs:** A tester pass on real attachments. Quick Look, and progress for big files (a "Getting “name”…" toast is all; a 25 MB file arrives in one request).
+- **Needs:** Done; passed on real attachments (sprint 2 T1b). Still open: Quick Look, and progress for big files (a "Getting “name”…" toast is all; a 25 MB file arrives in one request).
 - **Notes:** With `PIGEON_DEV=1` and `PIGEON_SAVE_DIR` set, saves go straight to that folder without the panel (dev and testing only). The quarantine attribute is set with `/usr/bin/xattr`.
 
 #### ATT-5 Attachment icon in the list
@@ -765,7 +765,7 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 #### ATT-7 Forward keeps attachments
 
 - **Today (W2, sprint 2):** Forward starts with the original's attachments as removable chips (`forwarded_attachments()`, `src/app/compose.rs`): each points at the original by `Attachment::message_id` and `part_id`, and its bytes are taken from the original's raw message when the forward is saved or sent (one fetch per original, `read_files()` in `src/backend/compose.rs`), so they go in the outgoing `multipart/mixed` message. Files already in the ATT-4 cache are copied out to `<data dir>/attachments/held/` when the forward opens, so evicting the cache can't take them from a queued send; held copies go once the send went (those of chips removed from the composer too, `Outgoing::dropped_files`), when a discard can no longer be undone or a never-saved forward closes unchanged, or after 30 days. Over 25 MB in all shows "Attachments are over Gmail’s 25 MB limit" at once, and Send refuses until chips are removed. Offline, the send waits in the outbox as before.
-- **Needs:** A tester pass (T2b).
+- **Needs:** Done; passed on the real account (sprint 2 T1b, T2b; held copies fixed and retested).
 - **Notes:** Inline images of the original aren't attached, so the quote shows them as placeholders. Only the quoted (newest) message's files come along.
 
 ### 5.11 Links (LNK)
@@ -787,7 +787,7 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 #### LNK-3 `mailto:` links
 
 - **Today (sprint 2 W3):** `mailto:` links in messages (`html_view::open_link`) and from other apps (gpui `on_open_urls`, `Show::Compose(Some(Mailto))`) open Pigeon's composer as a new message with To, Cc, Bcc, Subject and Body filled in. `Mailto::parse` (`src/app/shell.rs`) follows RFC 6068: addresses before `?` and in `to=`, several per field, percent-decoded (UTF-8), `+` kept, CRLF in the body made newlines, unknown fields ignored. Settings › General › "Default mail app" shows whether Pigeon opens `mailto:` and offers "Make Default" (Launch Services `LSSetDefaultHandlerForURLScheme`, `src/native.rs`; only when running as the bundled app); also ⌘K "Make Pigeon the Default Mail App". The bundle's Info.plist declares the `mailto` scheme.
-- **Needs:** A user check: making Pigeon the default mail app, then clicking a `mailto:` link in another app. Picking the account once there are several (ACC-4).
+- **Needs:** `mailto:` links in messages passed (sprint 2 T2b). A user check left: making Pigeon the default mail app, then clicking a `mailto:` link in another app. Picking the account once there are several (ACC-4).
 
 ### 5.12 Mail settings (MST)
 
@@ -796,7 +796,7 @@ Gmail's `users.settings` resources. All need `gmail.settings.basic` unless noted
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
 | MST-1 | Send-as aliases and From picker | 🟡 Partially done | `settings.sendAs.list`, `get`, `patch`, `update` |
-| MST-2 | Signatures | 🟡 Partially done | `sendAs.signature` via `settings.sendAs.patch` |
+| MST-2 | Signatures | 🟢 Fully linked | `sendAs.signature` via `settings.sendAs.patch` |
 | MST-3 | Vacation responder | ⚪ Not done | `settings.getVacation`, `updateVacation` |
 | MST-4 | Filters | ⚪ Not done | `settings.filters.list`, `get`, `create`, `delete` |
 | MST-5 | Forwarding and auto-forwarding | ⚪ Not done | `settings.forwardingAddresses.list`, `get`; `settings.getAutoForwarding` |
@@ -809,13 +809,13 @@ Gmail's `users.settings` resources. All need `gmail.settings.basic` unless noted
 #### MST-1 Send-as aliases and From picker
 
 - **Today (sprint 2 W3):** `sendAs.list` (current `gmail.modify` scope) is read at each full sync's start, at the first partial sync of each launch (so accounts synced before W3 get it) and every 6 hours after (`Step::SendAs`, `SEND_AS_EVERY`), and kept whole: email, `displayName`, `replyToAddress`, `signature`, `isDefault`, `isPrimary`, pending verification (`data::SendAs`, sync state `gmail_send_as`, loaded on launch). A change reaches the app as `BackendEvent::AccountChanged`, and an open draft's From and signature follow it (`Composer::set_identities`). With two or more verified addresses the composer shows a From row above To (`Composer::render_from`): a button with a menu of the addresses (↑/↓, Enter or Space, Esc; first in the Tab order), ⌘⇧F or ⌘K "Change From…". It defaults to the `isDefault` address; replies, reply-all and forwards go from the address I sent the mail from, else the first of mine in its To, Cc or Bcc (`pick_from`). Sent mail and drafts use the alias's display name (or the account's name when it has none) and its Reply-To (`Outgoing::reply_to_address`, `mime::build_message`). A draft keeps its From locally and in Gmail (the message's From header). Demo mode has a second address, `alex@riverastudio.example`, with a name, a Reply-To and a signature.
-- **Needs:** A tester pass on an account with a second verified address (one address shows no From row). Editing names and Reply-To stays in Gmail's settings (`patch`/`update` need `gmail.settings.basic`).
+- **Needs:** The From picker passed in demo mode. The real account has one address (no From row), so sending from an alias needs an account with a second verified address. Editing names and Reply-To stays in Gmail's settings (`patch`/`update` need `gmail.settings.basic`).
 - **Notes:** Creating, deleting and verifying aliases (`create`, `delete`, `verify`) are only available to Workspace service accounts with domain-wide delegation; send users to Gmail settings for that.
 
 #### MST-2 Signatures
 
 - **Today (sprint 2 W3):** The From address's Gmail signature (HTML from `sendAs.list`) shows read-only under the body ("--", then the signature, with a remove button), apart from the markdown. It goes into the HTML part at send and draft save as Gmail web writes it (`<div class="gmail_signature">`, `mime::signature_block`) and as text after `-- ` in the plain-text part; drafts written here also carry `X-Pigeon-Signature: 1`. Changing From swaps it; an address without one shows none. ⌘⇧E or ⌘K "Add / Remove Signature" toggles it on one draft; Settings › Mail › Signatures turns it off for new drafts. Whether a draft carries it is kept (`DraftOrigin::signature`) here and across Gmail: reopening a draft written here takes the signature out of its text, and a draft written in Gmail web has its `gmail_signature` block removed before it becomes editor text (`mime::parse_draft`, `strip_signature`), so it never gets a second one.
-- **Needs:** A tester pass on an account with a signature set in Gmail. Editing signatures stays in Gmail's web settings (`sendAs.patch` needs `gmail.settings.basic`).
+- **Needs:** Done; passed on the real account (sprint 2 T2b, after fix-6). Editing signatures stays in Gmail's web settings (`sendAs.patch` needs `gmail.settings.basic`).
 - **Notes:** Signatures with images from the web show them only as the reader would (ATT-1).
 
 #### MST-3 Vacation responder
@@ -868,7 +868,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | CAL-4a | Go to a date | 🟢 Fully linked | None |
 | CAL-18 | Today and the now-line | 🟢 Fully linked | None |
 | CAL-19 | Event search in the palette | 🟢 Fully linked | `events.list` with `q` |
-| CAL-23 | Persisted calendar UI state | 🟡 Partially done | Local; `calendarList.selected` |
+| CAL-23 | Persisted calendar UI state | 🟢 Fully linked | Local; `calendarList.selected` |
 | **Events** | | | |
 | CAL-7 | Edit an event in the panel | 🟢 Fully linked | `events.patch` / `events.update` with ETag |
 | CAL-8 | Date, time and all-day editing | 🟢 Fully linked | `start`/`end` (`date` or `dateTime` + `timeZone`) |
@@ -880,18 +880,18 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | CAL-16 | Busy and free | 🟢 Fully linked | `transparency` |
 | CAL-17 | Video links | 🟢 Fully linked | `conferenceData.entryPoints`, `hangoutLink` |
 | CAL-21 | Drag to create, move and resize | 🟢 Fully linked | `events.insert`, `events.patch` |
-| CAL-22 | Organizer and read-only permissions | 🟡 Partially done | `accessRole`, `guestsCanModify`, `locked`, `organizer.self` |
+| CAL-22 | Organizer and read-only permissions | 🟢 Fully linked | `accessRole`, `guestsCanModify`, `locked`, `organizer.self` |
 | CAL-28 | Event colours and labels | ⚪ Not done | `colorId` + `colors.get`; `eventLabelId` + `calendars` `labelProperties` |
 | CAL-30 | Event attachments | ⚪ Not done | `attachments` (`supportsAttachments=true`) |
 | CAL-31 | Event visibility and guest permissions | ⚪ Not done | `visibility`, `guestsCanModify`, `guestsCanInviteOthers`, `guestsCanSeeOtherGuests` |
-| CAL-33 | Several reminders and default reminders | 🟡 Partially done | `reminders.overrides` (`popup`, `email`), `calendarList.defaultReminders` |
-| CAL-34 | Create Google Meet links | 🟡 Partially done | `conferenceData.createRequest` (`conferenceDataVersion=1`) |
-| CAL-39 | Quick add from text | 🟡 Partially done | `events.quickAdd` |
+| CAL-33 | Several reminders and default reminders | 🟢 Fully linked | `reminders.overrides` (`popup`, `email`), `calendarList.defaultReminders` |
+| CAL-34 | Create Google Meet links | 🟢 Fully linked | `conferenceData.createRequest` (`conferenceDataVersion=1`) |
+| CAL-39 | Quick add from text | 🟢 Fully linked | `events.quickAdd` |
 | CAL-40 | Move an event to another calendar | 🟢 Fully linked | `events.move` |
 | **Recurrence** | | | |
 | CAL-5 | Recurring events | 🟢 Fully linked | `recurrence` (RRULE, EXDATE), `events.instances`, `singleEvents` |
 | CAL-6 | This event or all events | 🟢 Fully linked | Instance `events.patch`; series split with `UNTIL` |
-| CAL-29 | Set and edit repeat rules | 🟡 Partially done | `recurrence` |
+| CAL-29 | Set and edit repeat rules | 🟢 Fully linked | `recurrence` |
 | **Invites and RSVP** | | | |
 | CAL-13 | Guests and invitations | 🟢 Fully linked | `attendees`, `sendUpdates` |
 | CAL-14 | My RSVP | 🟡 Partially done | `attendees[].responseStatus` (`self`) |
@@ -909,7 +909,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | **Free/busy** | | | |
 | CAL-27 | Free/busy and finding a time | ⚪ Not done | `freebusy.query` |
 | **Settings** | | | |
-| CAL-41 | Calendar settings from Google | 🟡 Partially done | `settings.list`, `settings.get` |
+| CAL-41 | Calendar settings from Google | 🟢 Fully linked | `settings.list`, `settings.get` |
 
 ### Views and navigation
 
@@ -955,7 +955,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 #### CAL-23 Persisted calendar UI state
 
 - **Today:** View and week numbers are saved with PER-3. Visibility changes queue `CalOp::SetSelected` (`calendarList.selected`), kept in demo mode's store until quit. W5: the day shown is saved too (`Saved::calendar_date`, written on every calendar change) and the calendar reopens on it (`CalendarView::apply_saved()`); `t` still goes to today.
-- **Needs:** A tester pass. Nothing for visibility (`calendarList.patch`, W7; CAL-2).
+- **Needs:** Done; passed on the real account (sprint 2 T1c). Nothing for visibility (`calendarList.patch`, W7; CAL-2).
 
 ### Events
 
@@ -1031,7 +1031,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 - **Today (W7):** `backend::calendar::access()` gives Edit, Rsvp or ReadOnly: a reader or free/busy calendar is read-only; on a writer/owner calendar the organizer (`organizer.self`, or the user's address, as in demo mode) or a guest with `guestsCanModify` edits; birthdays and events from Gmail don't; an invited user only answers. Read-only events show their fields read-only with a line saying why, no guest field, no resize edge, and can't be dragged; Delete is hidden. For an invite, Delete reads "Decline and remove" and declines it, then deletes the user's copy (CAL-10). The calendar picker (CAL-40) is only for the organizer of a whole event, and lists calendars the user can't write to faded. Applies in demo mode too.
 - **Today (sprint 2 W6):** A refused change now says why in a toast (`backend::calendar::refusal()`, `CalendarView::refuse()`): dragging or resizing a read-only event (once per drag, in the time grid, the all-day lane and the Month view: `press_read_only()`; it stays put and the release opens it), changing its times, all day or any field through the panel, and Delete / ⌫ on it. On a reader or free/busy calendar the toast and the panel's line read "“<calendar>” is read-only"; someone else's invite "Only the organizer can change this event"; birthdays and events from Gmail "You can't change this event".
-- **Needs:** A tester pass (T2c) on a subscribed read-only calendar (public holidays). `locked` and `privateCopy` aren't read.
+- **Needs:** Done; passed on a subscribed read-only calendar (sprint 2 T2c, after fix-7, and the user's check). `locked` and `privateCopy` aren't read.
 - **Notes:** Guests can usually change only their RSVP, reminders and, on their copy, busy/free.
 
 #### CAL-28 Event colours and labels
@@ -1050,18 +1050,18 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 #### CAL-33 Several reminders and default reminders
 
 - **Today (W5):** Events keep up to 5 reminders, each a notification or an email (`Event::reminders`, `set_reminders()`; `reminder_minutes` stays the earliest). Calendars keep all their `defaultReminders` (`Calendar::default_reminders`, schema block 130). The panel lists the reminders that apply (the calendar's marked "Default"; "Calendar default · none" when that calendar has none), each with a Notification/Email toggle and a remove button; "Add reminder" (`⇧A`) offers "Calendar default" and 0 min to 1 week. Written as `reminders.overrides` with their methods; "Calendar default" writes `useDefault: true` with an empty `overrides`, since a PATCH merges and Google refuses both at once. Refused calendar writes log Google's message. Popup reminders fire while Pigeon runs (`calendar::reminders`): never ones missed while asleep or before launch, recomputed after a wake or a clock change (the wall clock against `Instant`), each (calendar, event, occurrence, offset) once, kept in the store for a week (`fired_reminders`); Google's `remindOnRespondedEventsOnly` skips unanswered invites. Shared rules for W1 in `calendar::policy` (`reminders_for()`, `next_joinable()`, `video_link()`).
-- **Needs:** A tester pass. The notification (W1's `notify`; one marked call site). Editing a calendar's own `defaultReminders` (`calendarList.patch`). `notificationSettings` on `calendarList` controls Google's own emails.
+- **Needs:** Done; passed on the real account (sprint 2 T1c, after fix-2). Still open: editing a calendar's own `defaultReminders` (`calendarList.patch`). `notificationSettings` on `calendarList` controls Google's own emails.
 
 #### CAL-34 Create Google Meet links
 
 - **Today (W5):** "Add Meet" in the panel's video row (`⇧G`, ⌘K "Add Google Meet"), only on calendars whose `conferenceProperties.allowedConferenceSolutionTypes` has `hangoutsMeet` (in demo mode any writable calendar, which gets a made-up link at once). It sets `Event::meet_request`; the patch or insert carries `conferenceData.createRequest` (`requestId`, `hangoutsMeet`) with `conferenceDataVersion=1`, then reads the event again up to 8 times, a second apart, until `status.statusCode` is `success`. "failure" or no answer in time fails the op ("Couldn't add Google Meet: …"); the button then reads "Retry Meet" and sends the same request id. Other writes never send `conferenceData`, so Google keeps the conference. New events get a Meet when Google's `autoAddHangouts` is on (CAL-41).
-- **Needs:** A tester pass on the real account.
+- **Needs:** Done; passed on the real account (sprint 2 T1c).
 - **Notes:** Google may not retry a request id it already refused; a retry after "failure" may need a new id.
 
 #### CAL-39 Quick add from text
 
 - **Today (W5):** In ⌘K, "New event: Lunch with Sam Fri 1pm" (or "new event …") shows a row "New event: Lunch with Sam · Fri, Oct 30 · 1 – 2 PM"; enter opens the event in the panel with the title and times filled in, on that day. `⇧C` in Calendar opens ⌘K with "New event: " typed. ⌘K "New Event" and "New Event from Text…" are offered in Mail too; they switch to Calendar (`Show::NewEvent`, the quick add's own switch). Parsed locally (`calendar::quick_add`: dates and times as the panel reads them, ranges, "for 30 min", "all day"; a date without a time is all day, a time already past is tomorrow, "at 3" is 3 PM); no `events.quickAdd`.
-- **Needs:** A tester pass.
+- **Needs:** Done; passed on the real account (sprint 2 T1c).
 
 #### CAL-40 Move an event to another calendar
 
@@ -1087,7 +1087,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 #### CAL-29 Set and edit repeat rules
 
 - **Today (W5):** A Repeat row in the panel (`⇧R`, ⌘K "Repeat…", tab order after All day): "Does not repeat", every day, every weekday, weekly on the day, monthly on the nth (or last) weekday, monthly on the date, yearly, and "Custom…" (every N days/weeks/months/years, weekdays, monthly by date or weekday, ends never, on a date or after N times). `ui/calendar/repeat.rs` only makes rules the expander supports. Rules show in words with their end ("Every week on Tue, 10 times"), and custom RRULEs from Google are described. On a series, a repeat change offers only "This and following" or "All events". The write replaces the whole RRULE (only an end change keeps Google's RRULE with its end rewritten); EXDATE and RDATE lines stay; "Does not repeat" removes it and drops the occurrences changed on their own. "This and following" with a new rule (or none) starts the new series with it, and the panel, now on the new series, asks again at its next change; it's one op (`CalOp::Split`) that inserts the new series only after the old one was shortened. An event changed in the app and not yet committed keeps the app's copy: a sync or a commit doesn't replace it while the change settles, waits for its scope or guests answer, or sits in the outbox (`Outbox::queued_events`), so a change to the new series right after a split goes after the split, to its id, and isn't undone by the split's sync. Not offered on an occurrence changed on its own.
-- **Needs:** A tester pass on the real account.
+- **Needs:** Done; passed on the real account (sprint 2 T1c, after fix-4).
 
 ### Invites and RSVP
 
@@ -1159,7 +1159,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 #### CAL-41 Calendar settings from Google
 
 - **Today (W5):** `settings.list` is read at most every 6 hours during sync (`GoogleSettings`, kept in sync state; errors only logged): `weekStart` sets the week's first day, `format24HourTime` the clock, `defaultEventLength` a new event's length, `autoAddHangouts` Meet on new events (CAL-34), `remindOnRespondedEventsOnly` the reminders (CAL-33), `timezone` the zone notice (CAL-12). Settings → Calendar has "24-hour time" and "Default event length", which follow Google until changed in Pigeon (`Saved::time_24h`, `event_minutes`).
-- **Needs:** A tester pass. `settings.watch`; `hideWeekends`, `showDeclinedEvents`, `hideInvitations`, `locale`, `dateFieldOrder`, `useKeyboardShortcuts` aren't used.
+- **Needs:** Done; passed on the real account (sprint 2 T1c). Not used: `settings.watch`; `hideWeekends`, `showDeclinedEvents`, `hideInvitations`, `locale`, `dateFieldOrder`, `useKeyboardShortcuts` aren't used.
 
 ---
 
@@ -1216,9 +1216,9 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| NTF-1 | New mail notifications | 🟡 Partially done | From SYN-2 / SYN-3 |
-| NTF-2 | Unread badge | 🟡 Partially done | `labels.get` (`INBOX`) |
-| NTF-3 | Background sync when the window is closed | 🟡 Partially done | SYN loop |
+| NTF-1 | New mail notifications | 🟢 Fully linked | From SYN-2 / SYN-3 |
+| NTF-2 | Unread badge | 🟢 Fully linked | `labels.get` (`INBOX`) |
+| NTF-3 | Background sync when the window is closed | 🟢 Fully linked | SYN loop |
 | NTF-6 | Open at login | 🟡 Partially done | None |
 | NTF-4 | Menu bar panel | 🟡 Partially done | None (reads the cache) |
 | NTF-5 | Quick join | 🟡 Partially done | None |
@@ -1226,42 +1226,42 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 #### NTF-1 New mail notifications
 
 - **Today (sprint 2 W1):** gpui's own API (`cx.show_system_notification`, over `UNUserNotificationCenter`; it posts at once and reports no delivery result). `src/notify.rs` owns `notify(Notice, cx)`, `dismiss(tag, cx)` and the click routing (`on_system_notification_response` → `shell::show`, also for notices from before a relaunch, by tag); W5 and W7 use it. Every new Inbox mail, any category: the partial sync carries history's `messagesAdded` ids through the metadata fetch to its last step (`Step::SetHistory { history, added }`, `src/backend/sync.rs`), where each stored message is judged on its current labels and `internalDate` (`backend/new_mail.rs` `eligible()`: INBOX + UNREAD, not SPAM/TRASH/DRAFT, received by `gmail::received()` so self-mail and aliases count, within 15 min of the poll). Notified ids go in the store's `notified` table (migration 100, last 500 per account) in the same transaction as the history id, so a retry, crash, relaunch or offline gap neither repeats nor drops one. A full sync or a history reset never notifies. One notice per conversation (`mail-<thread id>`; title the sender, body subject and snippet); more than 3 at once become one summary under `mail-summary`, replaced by the next. Nothing for the conversation open in the frontmost window. A notice goes (by tag) once its conversations are read or out of the Inbox anywhere, seen in the next sync. Clicking opens the thread (the window opens if closed). Settings › Notifications: "New mail notifications" (on by default, saved as `notifications`) and "Send test notification", which also brings up macOS's permission prompt; ⌘K "Send Test Notification", "Turn New Mail Notifications On / Off". Each notice submitted is logged as `notify: tag=… title=…` in `<data dir>/pigeon.log`; clicks as `notify: clicked …`, dismissals as `notify: dismissed …`. In test-instance mode (`PIGEON_DEV=1`) tags start with `dev-`. Notifications only work when Pigeon runs from its bundle (PER-4).
-- **Needs:** User checks: a notice arriving, clicking it, the permission prompt. Respect Focus (macOS does); per-label mute if added. W4a's categories don't change which mail notifies (decision 4).
+- **Needs:** Done; submission passed on the real account (sprint 2 T1a). The user allows notifications once. Respect Focus (macOS does); per-label mute if added. W4a's categories don't change which mail notifies (decision 4).
 
 #### NTF-2 Unread badge
 
 - **Today (sprint 2 W1):** The Dock badge is the Inbox's unread conversation count from Gmail's `labels.get INBOX` (`Backend::inbox_unread()`; counted from the store on the placeholder data), set through `NSApp.dockTile.setBadgeLabel` (`native::set_dock_badge()`), none at zero. Updated app-wide on `CountsChanged`, thread changes and committed ops, with the window closed too (`app/shell.rs`); each change is logged as `badge: N`. Testers read it with `lsappinfo info -long <ASN> | grep StatusLabel`.
-- **Needs:** W4a switches it to Primary unread in the Inbox (sprint 2, 8.2).
+- **Needs:** Done; passed (sprint 2 T1a, T2a). It counts Primary unread in the Inbox since W4a (`Backend::inbox_unread()`).
 
 #### NTF-3 Background sync when the window is closed
 
 - **Today (sprint 2 W1):** Closing the window leaves Pigeon running in the Dock (gpui's macOS default; the quit on last window closed is gone); ⌘Q quits and flushes the outbox as before, from any state. `src/app/shell.rs`: `ensure_main_window(cx)` is the one way to the main window and `show(Show, cx)` the one way to put something in it (`Main`, `Thread`, `Event`, `Compose(Option<Mailto>)`, `NewEvent`, `Settings`), used by the Dock (`on_reopen`), notification clicks, a second launch, `mailto:`, the menu bar panel and the app-level handlers. `show` calls the views directly rather than re-dispatching actions (an unhandled action would fall back to the app-level handler and loop), and when the main window is mid-update (an action from it reached an app-level handler) it runs once that update is done, instead of taking the window for closed and opening another (fix for `n` in the menu bar panel hanging Pigeon). App-level handlers run Compose, New Event, Open Thread, Settings, Sync Now and the W1 commands with no window open; ⌘O / Window › Pigeon (`ShowMainWindow`) reopens it. Settings are app-owned (`settings::AppSettings`, a gpui global every save goes through), so a reopened window has the latest appearance, layout and preferences. Closing the window saves an open composer to Drafts, writes the settings and drops the window's state and timers (`PigeonApp::before_close()`). Sync goes on with the window closed: Gmail every 60 s and Calendar every 2 min while notifications are on (5 min otherwise), and at once on wake (`NSWorkspaceDidWakeNotification`, logged `wake: syncing now`).
-- **Needs:** User checks: the Dock reopen and idle CPU with the window closed (T3). Calendar reminders now fire app-wide through `notify` (CAL-15, W7b).
+- **Needs:** Done; passed (sprint 2 T1a, T1a-2). ⌘O with no window open can't be driven without the Dock; a user check. Calendar reminders now fire app-wide through `notify` (CAL-15, W7b).
 
 #### NTF-6 Open at login
 
 - **Today (sprint 2 W1):** Settings › General › Open at login registers `SMAppService.mainApp` through small runtime bindings to ServiceManagement (`native::login_item()`, `set_login_item()`; the framework is linked, no crate). Off by default; only offered when Pigeon runs from `/Applications` and not in test-instance mode, otherwise the row says why. The "Login item" row shows macOS's real status: on, off, needs approval in System Settings › General › Login Items (which turning it on opens), or the error macOS gave. ⌘K "Turn Open at Login On / Off".
-- **Needs:** A user check on the installed copy.
+- **Needs:** A user check: turning Open at login on in the installed copy and logging in again.
 
 #### NTF-4 Menu bar panel
 
 - **Today (sprint 2 W7b):** A status item with Pigeon's bird (SF Symbol `bird`, a template image, so it follows the menu bar's light or dark), with a dot while there's unread Primary mail newer than what the panel showed when last opened. Beside it, by default, the next meeting from `policy::next_joinable`: "Design review in 12m" from three hours before, "Join · Design review" while it runs, the title cut at 20 characters; redrawn at minute boundaries only. Clicking it (on mouse down, on the screen clicked) opens a panel under it, design A "Agenda first" (`docs/design/menubar.html`, `src/ui/menu_bar.rs`): the date and sync status; a card for the next meeting (countdown chip, time, title, video service and guests, Join `j`, Details opens it in the calendar); "Later today" (time, calendar colour, title, location; all-day events first; up to 6, then "N more today"); tomorrow's first event when nothing timed is left today; "Recent mail", the 4 newest Primary Inbox conversations (unread dot, sender, subject, time); a footer with Compose `c`, Event `n` and Open Pigeon ⌘O. ↑/↓ move through the card, events and mail; Enter opens the selected one in the main window (opening it if closed); `e` archives and ⇧I marks read the selected conversation with the same outbox ops as the main app (archive waits out the undo window; "Undo `z`" in the panel cancels it, or moves it back once it went); Esc, a click elsewhere, or the item again close it. The panel grows with its content up to 640 pt and scrolls past that. All of it from an app-level model (`src/app/today.rs`), reloaded from the store when the backend reports changes, so it works with the window closed. Native side in `src/native/menu_bar.rs`: one gpui pop-up window (a non-activating `NSPanel` on every Space and over full-screen apps), opened hidden and made key once at launch while see-through (so the first open renders as fast as the rest), then only shown and hidden natively; click-away through a global mouse monitor and losing key, with a 300 ms guard so the click that closed it doesn't reopen it. ⌃⌥⌘Space (Settings › Menu Bar: ⌃⌥⌘Space, ⌃⌥⌘P or off) opens it from any app, under the item when it's on the pointer's screen, else at the top of that screen, right of centre; Carbon `RegisterEventHotKey`, so no Accessibility permission. Settings › Menu Bar: show menu bar icon, show next meeting, the two shortcuts and whether macOS gave them (a taken one says so). ⌘K "Open Menu Bar Panel". Logged: `menu-bar: <source> → ordered front in X ms` and `menu-bar: shown in X ms`. In test-instance mode (`PIGEON_DEV=1`) no global shortcuts unless `PIGEON_HOTKEY=1`; `PIGEON_MENU_BAR_SELFTEST=1` there opens and closes it three times at launch. Measured on the placeholder data (release): 2–4 ms from open to rendered, the first open included.
-- **Needs:** User checks: the status item and its dot, clicking it on each screen and over a full-screen app, the global shortcut, click-away, light and dark. A tester pass of the panel's keys and layout through ⌘K.
+- **Needs:** The panel's layout, keys and actions passed through ⌘K (sprint 2 T1d, after fix-3). User checks left: the status item itself and its dot, clicking it on each screen and over a full-screen app, click-away, and the global shortcut.
 
 #### NTF-5 Quick join
 
 - **Today (sprint 2 W7b):** ⌃⌥⌘J (Settings › Menu Bar: ⌃⌥⌘J, ⌃⌥⌘M or off) and ⌘K "Join Next Meeting" open the video link (Meet, Zoom, Teams, Webex; CAL-17) of the meeting under way or starting within 10 minutes (`today::quick_join()`); with none, the panel opens and says "No meeting to join in the next 10 minutes." The panel's `j` joins its card's meeting. In test-instance mode every join is a dry run that only logs `quick-join: <url>`.
-- **Needs:** A user check of the global shortcut and the link opening.
+- **Needs:** The join dry run passed (sprint 2 T1d). User checks left: the global shortcut and actually opening the link.
 
 ### 7.3 Loading, error and offline states (STA)
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
 | STA-1 | Initial load and loading states | 🟢 Fully linked | None |
-| STA-2 | Action failure and rollback | 🟡 Partially done | API error responses |
+| STA-2 | Action failure and rollback | 🟢 Fully linked | API error responses |
 | STA-3 | Offline mode and queued changes | 🟢 Fully linked | None |
 | STA-4 | Expired sign-in | 🟢 Fully linked | OAuth `invalid_grant`, 401 |
-| STA-5 | Conflicts with server changes | 🟡 Partially done | ETags, `historyId`, `syncToken` |
+| STA-5 | Conflicts with server changes | 🟢 Fully linked | ETags, `historyId`, `syncToken` |
 
 #### STA-1 Initial load and loading states
 
@@ -1306,13 +1306,13 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | PER-1 | Local mailbox store | 🟢 Fully linked | Holds SYN data |
 | PER-2 | Outbox and drafts that survive quit | 🟢 Fully linked | None |
 | PER-3 | Persisted UI state and settings | 🟢 Fully linked | None |
-| PER-4 | App bundle and install | 🟡 Partially done | None |
-| PER-5 | Single instance | 🟡 Partially done | None |
+| PER-4 | App bundle and install | 🟢 Fully linked | None |
+| PER-5 | Single instance | 🟢 Fully linked | None |
 
 #### PER-4 App bundle and install
 
 - **Today (sprint 2 W1):** `scripts/bundle.sh` builds `Pigeon.app` in the target dir (`release/Pigeon.app`): `packaging/Info.plist` (bundle id `com.pigeon.dev`, `mailto:` URL type, not `LSUIElement`), a placeholder icon drawn by `packaging/make_icon.py` (standard library, then `sips` and `iconutil`), signed with the "Pigeon Dev" identity like before (ad hoc, with a warning, without it). `scripts/run.sh` builds the bundle and runs its binary directly, so the environment and terminal output pass through and notifications work in dev. `scripts/install.sh` quits the installed copy, copies the bundle to `/Applications` and registers it with Launch Services. Logs go to `<data dir>/pigeon.log` (`src/logging.rs`): stderr when launched from the Dock, plus gpui's `log` warnings and notification lines; capped at 2 MB, then moved to `pigeon.log.1`.
-- **Needs:** The user installs after each merge; making Pigeon the default mail app is a user check (W3, LNK-3).
+- **Needs:** Done; passed (sprint 2 T1a). The user installs after each merge; making Pigeon the default mail app is a user check (LNK-3).
 
 #### PER-5 Single instance
 

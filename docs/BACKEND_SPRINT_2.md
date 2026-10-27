@@ -275,3 +275,45 @@ The owning stream is the only one that edits a file. Shared files are edited onl
 ### 8.5 Before each merge
 
 The main agent rebases the branch onto `main` and runs `cargo fmt --check`, `cargo build`, `cargo clippy --all-targets` (no new warnings) and `cargo test`. After merging, it runs them again on `main`, updates the roadmap's statuses and counts, and commits.
+
+## 9. Outcome
+
+**Status:** done. Every workstream merged (W1, W4a, W2, W5, W7b, W4b, W3, W6), plus fix rounds fix-1 to fix-7. 345 tests pass; clippy is clean. The roadmap has 131 of 181 items 🟢: all of section 1's target except MST-1, LNK-3 and ACC-2, which wait on a user check or a second verified address, and NTF-4, NTF-5, NTF-6, which wait on user checks.
+
+**Testing:** GUI testing moved from Cua Driver to Codex (`codex exec -m gpt-6.1-terra`, with its built-in computer use) during the sprint. The rounds:
+
+- T1a and T1a-2, app shell: pass. ⌘O with no window open can't be tested without the Dock.
+- T1b, attachments: pass.
+- T1c, calendar: pass after fix-2 and fix-4.
+- T1d, menu bar: pass after fix-3 (the New Event freeze).
+- T2a, labels and Inbox views: pass after fix-5.
+- T2b, compose: pass after fix-6 (signature fetch, discard on quit).
+- T2c, contact card, drills and read-only calendars: pass after fix-7.
+- R2 to R4, retests: pass.
+- The user's own final check of the rollback, read-only drag and labels: pass.
+
+**Bugs found and fixed:**
+
+- Calendar-default reminders were refused with a 400 (CAL-33).
+- After a split, the scope wasn't asked; then an edit was lost to the split's sync (CAL-29).
+- Held forward copies were left behind (ATT-7).
+- New Event from the menu bar panel looped and kept opening windows.
+- Gmail-only search ignored the Inbox scope.
+- New labels and visibility changes didn't show until relaunch.
+- Send-as addresses and signatures were only read on a full sync.
+- A discarded draft came back after quitting during Undo.
+- The open event panel kept a rejected title after a rollback.
+- Dragging a read-only all-day or Month event showed no toast.
+- The read-only toast used the success style.
+- ⌘K in the composer body opened the link dialog; links are now ⇧⌘K, so ⌘K is always the palette.
+
+**Known limits:** gpui stops drawing while the window is fully covered. That's normal; testers working in the background saw stale pixels. The rest are the user checks in the roadmap.
+
+**User checks left:**
+
+- Allow notifications.
+- The menu bar status item and the global shortcuts.
+- Make Pigeon the default mail app and click a `mailto:` link in another app.
+- Open at login.
+- Sign in again around Nov 2, or publish the Google app first.
+- Sprint 1 leftovers: ATT-6, CAL-14 and CAL-20, ACC-3 and ACC-7.
