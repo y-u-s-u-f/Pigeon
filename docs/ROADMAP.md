@@ -32,12 +32,12 @@ To update: change the status cell in the area's table, then the counts below.
 | [Mail settings](#512-mail-settings-mst) | 10 | 0 | 0 | 10 |
 | [Calendar](#6-calendar-cal) | 12 | 10 | 20 | 42 |
 | [Sync and push](#71-sync-and-push-syn) | 2 | 0 | 5 | 7 |
-| [Notifications and background](#72-notifications-and-background-ntf) | 0 | 4 | 0 | 4 |
+| [Notifications and background](#72-notifications-and-background-ntf) | 0 | 6 | 0 | 6 |
 | [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 0 | 2 | 3 | 5 |
 | [Storage and persistence](#81-storage-and-persistence-per) | 0 | 2 | 3 | 5 |
 | [Command palette](#82-command-palette-pal) | 0 | 0 | 3 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 3 | 3 | 7 |
-| **Overall** | **45** | **31** | **103** | **179** |
+| **Overall** | **45** | **33** | **103** | **181** |
 
 ## Contents
 
@@ -1210,8 +1210,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | NTF-2 | Unread badge | 🟡 Partially done | `labels.get` (`INBOX`) |
 | NTF-3 | Background sync when the window is closed | 🟡 Partially done | SYN loop |
 | NTF-6 | Open at login | 🟡 Partially done | None |
-| NTF-4 | Menu bar panel | ⚪ Not done | None (reads the cache) |
-| NTF-5 | Quick join | ⚪ Not done | None |
+| NTF-4 | Menu bar panel | 🟡 Partially done | None (reads the cache) |
+| NTF-5 | Quick join | 🟡 Partially done | None |
 
 #### NTF-1 New mail notifications
 
