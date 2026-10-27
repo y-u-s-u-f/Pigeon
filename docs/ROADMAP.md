@@ -18,12 +18,12 @@ To update: change the status cell in the area's table, then the counts below.
 | --- | --- | --- | --- | --- |
 | [Planned features](#3-planned-features-pln) | 3 | 0 | 0 | 3 |
 | [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 2 | 5 | 1 | 8 |
-| [Folders and labels](#51-folders-and-labels-fol) | 6 | 6 | 0 | 12 |
-| [Thread list](#52-thread-list-lst) | 1 | 8 | 0 | 9 |
-| [Reading pane](#53-reading-pane-rdr) | 1 | 7 | 0 | 8 |
+| [Folders and labels](#51-folders-and-labels-fol) | 6 | 2 | 4 | 12 |
+| [Thread list](#52-thread-list-lst) | 1 | 3 | 5 | 9 |
+| [Reading pane](#53-reading-pane-rdr) | 1 | 4 | 3 | 8 |
 | [Message actions](#54-message-and-thread-actions-act) | 0 | 7 | 0 | 7 |
 | [Compose and sending](#55-compose-and-sending-cmp) | 1 | 12 | 0 | 13 |
-| [Drafts](#56-drafts-drf) | 2 | 4 | 0 | 6 |
+| [Drafts](#56-drafts-drf) | 2 | 3 | 1 | 6 |
 | [Undo](#57-undo-und) | 0 | 3 | 0 | 3 |
 | [Search](#58-search-src) | 1 | 8 | 0 | 9 |
 | [Contacts](#59-contacts-con) | 6 | 2 | 0 | 8 |
@@ -37,7 +37,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Storage and persistence](#81-storage-and-persistence-per) | 1 | 1 | 1 | 3 |
 | [Command palette](#82-command-palette-pal) | 0 | 3 | 0 | 3 |
 | [Data model](#83-data-model-dat) | 2 | 5 | 0 | 7 |
-| **Overall** | **69** | **99** | **8** | **176** |
+| **Overall** | **69** | **86** | **21** | **176** |
 
 ## Contents
 
@@ -170,10 +170,10 @@ The user's own plans, not driven by Google's APIs.
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| FOL-1 | System folders and go-to shortcuts | 🟡 Partially done | System labels `INBOX`, `SENT`, `DRAFT`, `SPAM`, `TRASH`, `STARRED`, `UNREAD` |
-| FOL-2 | Sidebar counts | 🟡 Partially done | `labels.get` (`threadsUnread`, `messagesUnread`) |
-| FOL-3 | Label list with colours | 🟡 Partially done | `labels.list`, label `color` |
-| FOL-4 | Label views | 🟡 Partially done | `threads.list` with `labelIds` |
+| FOL-1 | System folders and go-to shortcuts | 🟢 Fully linked | System labels `INBOX`, `SENT`, `DRAFT`, `SPAM`, `TRASH`, `STARRED`, `UNREAD` |
+| FOL-2 | Sidebar counts | 🟢 Fully linked | `labels.get` (`threadsUnread`, `messagesUnread`) |
+| FOL-3 | Label list with colours | 🟢 Fully linked | `labels.list`, label `color` |
+| FOL-4 | Label views | 🟢 Fully linked | `threads.list` with `labelIds` |
 | FOL-5 | Apply and remove labels on a thread | 🟡 Partially done | `threads.modify` |
 | FOL-6 | Create, rename, recolour and delete labels | ⚪ Not done | `labels.create`, `labels.patch`, `labels.update`, `labels.delete` |
 | FOL-7 | Report spam and not spam | 🟡 Partially done | `threads.modify` (add or remove `SPAM`) |
@@ -251,12 +251,12 @@ The user's own plans, not driven by Google's APIs.
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| LST-1 | Thread rows | 🟡 Partially done | `threads.list` + `threads.get` (`format=metadata`) |
-| LST-2 | Unread styling | 🟡 Partially done | `UNREAD` label |
-| LST-3 | Sort order | 🟡 Partially done | `threads.list` order |
+| LST-1 | Thread rows | 🟢 Fully linked | `threads.list` + `threads.get` (`format=metadata`) |
+| LST-2 | Unread styling | 🟢 Fully linked | `UNREAD` label |
+| LST-3 | Sort order | 🟢 Fully linked | `threads.list` order |
 | LST-4 | Archived section in the Inbox | 🟡 Partially done | `threads.list` (`q=-in:inbox`) |
-| LST-5 | Keyboard list navigation | 🟡 Partially done | `threads.get` on demand |
-| LST-6 | Unread count in the list header | 🟡 Partially done | `labels.get` |
+| LST-5 | Keyboard list navigation | 🟢 Fully linked | `threads.get` on demand |
+| LST-6 | Unread count in the list header | 🟢 Fully linked | `labels.get` |
 | LST-7 | Pagination and lazy loading | ⚪ Not done | `pageToken`, `maxResults` |
 | LST-8 | Live refresh and new mail in the list | 🟡 Partially done | `history.list` (SYN-2) |
 | LST-9 | Empty-result text | 🟡 Partially done | None |
@@ -314,10 +314,10 @@ The user's own plans, not driven by Google's APIs.
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
 | RDR-1 | Opening a thread marks it read | 🟡 Partially done | `threads.modify` (remove `UNREAD`) |
-| RDR-2 | Conversation view | 🟡 Partially done | `threads.get` (`format=full`) |
+| RDR-2 | Conversation view | 🟢 Fully linked | `threads.get` (`format=full`) |
 | RDR-3 | Expand and collapse older messages | 🟡 Partially done | Per-message `snippet` |
-| RDR-4 | Message header | 🟡 Partially done | `messages.get` headers |
-| RDR-5 | Message body rendering | 🟡 Partially done | `messages.get` `payload` parts |
+| RDR-4 | Message header | 🟢 Fully linked | `messages.get` headers |
+| RDR-5 | Message body rendering | 🟢 Fully linked | `messages.get` `payload` parts |
 | RDR-6 | Fetch a message body on demand | 🟡 Partially done | `messages.get` (`format=full`) |
 | RDR-7 | Message navigation and reader focus | 🟡 Partially done | None |
 | RDR-8 | Show original (raw message) | ⚪ Not done | `messages.get` (`format=raw`) |
@@ -513,7 +513,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
 | DRF-1 | Save on close or navigation | 🟡 Partially done | `drafts.create`, `drafts.update` |
-| DRF-2 | Drafts list | 🟡 Partially done | `drafts.list` |
+| DRF-2 | Drafts list | 🟢 Fully linked | `drafts.list` |
 | DRF-3 | Open and edit a draft | 🟡 Partially done | `drafts.get` |
 | DRF-4 | Discard a draft | 🟡 Partially done | `drafts.delete` |
 | DRF-5 | Save while typing | ⚪ Not done | `drafts.update` (debounced) |
