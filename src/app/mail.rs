@@ -11,6 +11,7 @@ use super::{Mode, Nav, PigeonApp, Row, UndoAction};
 use crate::{
     actions::*,
     assets::Icon,
+    backend::{MailOp, OpId, gmail},
     data::{Folder, InviteMethod, Thread},
     search::{NextSuggestion, PrevSuggestion},
     ui::command_palette::{Leading, PaletteCommand, PaletteItem},
@@ -370,6 +371,11 @@ impl PigeonApp {
                 }
                 let selected = self.selected.map(|ix| self.data.threads[ix].id.clone());
                 self.data.threads.retain(|t| !ids.contains(&t.id));
+                self.backend.update(cx, |b, cx| {
+                    for local_id in ids.iter().cloned() {
+                        b.mail(MailOp::DeleteDraft { local_id }, cx);
+                    }
+                });
                 self.selected = selected.and_then(|id| self.data.thread_ix(&id));
                 self.checked.retain(|id| !ids.contains(id));
                 self.refresh_rows(true);
@@ -473,6 +479,12 @@ impl PigeonApp {
             .thread_ix(&moves[0].0)
             .map(|ix| self.data.threads[ix].folder)
             .expect("just moved");
+        let ops = self.queue_moves(
+            moves
+                .iter()
+                .map(|(id, from)| (id.clone(), *from, destination)),
+            cx,
+        );
         self.clear_checked();
         self.refresh_rows(true);
         if selected_goes {
@@ -495,8 +507,66 @@ impl PigeonApp {
             Folder::Trash => format!("Moved{what} to Trash"),
             folder => format!("Moved{what} to {}", folder.title()),
         };
-        self.show_toast(message, Some(UndoAction::Move { moves, selected }), cx);
+        self.show_toast(
+            message,
+            Some(UndoAction::Move {
+                moves,
+                selected,
+                ops,
+            }),
+            cx,
+        );
         cx.notify();
+    }
+
+    /// Hand the backend the ops for threads moving (id, from, to), one
+    /// batch per pair of folders.
+    fn queue_moves(
+        &mut self,
+        moves: impl IntoIterator<Item = (String, Folder, Folder)>,
+        cx: &mut Context<Self>,
+    ) -> Vec<OpId> {
+        let mut groups: Vec<(Folder, Folder, Vec<String>)> = Vec::new();
+        for (id, from, to) in moves {
+            match groups.iter_mut().find(|(f, t, _)| *f == from && *t == to) {
+                Some((_, _, ids)) => ids.push(id),
+                None => groups.push((from, to, vec![id])),
+            }
+        }
+        self.backend.update(cx, |b, cx| {
+            groups
+                .into_iter()
+                .flat_map(|(from, to, ids)| MailOp::moves(ids, from, to))
+                .map(|op| b.mail(op, cx))
+                .collect()
+        })
+    }
+
+    /// Add and remove labels on threads (by index), at once.
+    fn queue_labels(
+        &mut self,
+        targets: &[usize],
+        add: Vec<String>,
+        remove: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if targets.is_empty() {
+            return;
+        }
+        let threads = targets
+            .iter()
+            .map(|&ix| self.data.threads[ix].id.clone())
+            .collect();
+        self.backend.update(cx, |b, cx| {
+            b.mail(
+                MailOp::Modify {
+                    threads,
+                    add,
+                    remove,
+                },
+                cx,
+            )
+        });
     }
 
     /// Put moved threads back, and the selection where it was.
@@ -504,13 +574,25 @@ impl PigeonApp {
         &mut self,
         moves: Vec<(String, Folder)>,
         selected: Option<String>,
+        ops: Vec<OpId>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Inside the undo window nothing went; past it, move them back.
+        let all_cancelled = self.backend.update(cx, |b, _| {
+            // Every one, not just up to the first that already went.
+            let cancelled: Vec<bool> = ops.iter().map(|&op| b.cancel(op)).collect();
+            cancelled.into_iter().all(|c| c)
+        });
+        let mut back = Vec::new();
         for (id, folder) in moves {
             if let Some(ix) = self.data.thread_ix(&id) {
+                back.push((id, self.data.threads[ix].folder, folder));
                 self.data.threads[ix].folder = folder;
             }
+        }
+        if !all_cancelled {
+            self.queue_moves(back, cx);
         }
         self.refresh_rows(true);
         // Back where it was, without marking it read.
@@ -528,8 +610,14 @@ impl PigeonApp {
 
     pub(crate) fn star_threads(&mut self, targets: Vec<usize>, cx: &mut Context<Self>) {
         let star = targets.iter().any(|&ix| !self.data.threads[ix].starred);
-        for ix in targets {
+        for &ix in &targets {
             self.data.threads[ix].starred = star;
+        }
+        let label = vec![gmail::STARRED.to_string()];
+        if star {
+            self.queue_labels(&targets, label, Vec::new(), cx);
+        } else {
+            self.queue_labels(&targets, Vec::new(), label, cx);
         }
         if self.nav == Nav::Starred {
             self.refresh_rows(true);
@@ -538,8 +626,14 @@ impl PigeonApp {
     }
 
     pub(crate) fn set_unread(&mut self, targets: Vec<usize>, unread: bool, cx: &mut Context<Self>) {
-        for ix in targets {
+        for &ix in &targets {
             self.data.threads[ix].unread = unread;
+        }
+        let label = vec![gmail::UNREAD.to_string()];
+        if unread {
+            self.queue_labels(&targets, label, Vec::new(), cx);
+        } else {
+            self.queue_labels(&targets, Vec::new(), label, cx);
         }
         cx.notify();
     }
@@ -563,6 +657,11 @@ impl PigeonApp {
             } else if !labels.contains(&id) {
                 labels.push(id.clone());
             }
+        }
+        if remove {
+            self.queue_labels(&targets, Vec::new(), vec![id], cx);
+        } else {
+            self.queue_labels(&targets, vec![id], Vec::new(), cx);
         }
         if matches!(self.nav, Nav::Label(_)) {
             self.refresh_rows(true);

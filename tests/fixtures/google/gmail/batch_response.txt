@@ -1,0 +1,44 @@
+--batch_fixture
+Content-Type: application/http
+Content-ID: <response-item-2>
+
+HTTP/1.1 404 Not Found
+Content-Type: application/json; charset=UTF-8
+
+{
+  "error": {
+    "code": 404,
+    "message": "Requested entity was not found.",
+    "status": "NOT_FOUND"
+  }
+}
+
+--batch_fixture
+Content-Type: application/http
+Content-ID: <response-item-1>
+
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=UTF-8
+Vary: Origin
+
+{
+  "id": "thread-a1",
+  "historyId": "4211",
+  "messages": [
+    {
+      "id": "msg-a1",
+      "threadId": "thread-a1",
+      "labelIds": ["INBOX", "UNREAD"],
+      "snippet": "Lunch on Thursday?",
+      "internalDate": "1792000000000",
+      "payload": {
+        "headers": [
+          { "name": "From", "value": "Ada Example <ada@example.com>" },
+          { "name": "Subject", "value": "Lunch" }
+        ]
+      }
+    }
+  ]
+}
+
+--batch_fixture--

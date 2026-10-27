@@ -1,17 +1,19 @@
 //! The settings page's table: every setting with the words it is found by,
 //! and the search over them. The values live where the app already keeps
 //! them (`PigeonApp`, the calendar, `Settings`); `ui/settings.rs` reads and
-//! changes them there, so shortcuts and menus stay in step.
+//! changes them there, so shortcuts and menus stay in step. `Saved` is all
+//! of them at once, as the store keeps them (PER-3).
 
 use std::ops::Range;
+
+use serde::{Deserialize, Serialize};
 
 use crate::{
     actions::{COMMANDS, Group},
     assets::Icon,
 };
 
-/// Preferences that have no other home. In memory, like the rest of the
-/// app's state (see PER-3 in `docs/ROADMAP.md`).
+/// Preferences that have no other home.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub appearance: Appearance,
@@ -35,11 +37,104 @@ impl Default for Settings {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Appearance {
     System,
     Light,
     Dark,
+}
+
+/// Whether messages load their remote images (ATT-1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteImages {
+    #[default]
+    Ask,
+    Always,
+    Never,
+}
+
+/// Every setting the app keeps across launches, wherever it lives while
+/// running. Saved to the store's `settings` table one key per field, so a
+/// key added later just takes its default.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Saved {
+    pub appearance: Appearance,
+    pub reduce_motion: bool,
+    pub auto_advance: bool,
+    pub search_all_mail: bool,
+    pub compact_list: bool,
+    pub text_scale: f32,
+    pub sidebar_open: bool,
+    pub sidebar_width: f32,
+    pub list_width: f32,
+    pub archived_expanded: bool,
+    /// "day", "week" or "month".
+    pub calendar_view: CalendarViewSetting,
+    pub week_numbers: bool,
+    pub remote_images: RemoteImages,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CalendarViewSetting {
+    Day,
+    #[default]
+    Week,
+    Month,
+}
+
+impl Default for Saved {
+    fn default() -> Self {
+        let settings = Settings::default();
+        Self {
+            appearance: settings.appearance,
+            reduce_motion: settings.reduce_motion,
+            auto_advance: settings.auto_advance,
+            search_all_mail: settings.search_all_mail,
+            compact_list: false,
+            text_scale: 1.,
+            sidebar_open: true,
+            // `app::SIDEBAR_DEFAULT` and `LIST_DEFAULT`.
+            sidebar_width: 236.,
+            list_width: 400.,
+            archived_expanded: false,
+            calendar_view: CalendarViewSetting::Week,
+            week_numbers: false,
+            remote_images: RemoteImages::Ask,
+        }
+    }
+}
+
+impl Saved {
+    /// From the store's rows; unknown or broken keys take their defaults.
+    pub fn from_map(map: serde_json::Map<String, serde_json::Value>) -> Self {
+        let mut saved = serde_json::to_value(Saved::default()).expect("settings serialize");
+        if let Some(fields) = saved.as_object_mut() {
+            for (key, value) in map {
+                // One bad value mustn't lose the others.
+                if let Some(field) = fields.get_mut(&key) {
+                    let old = std::mem::replace(field, value);
+                    let fits =
+                        serde_json::from_value::<Saved>(serde_json::Value::Object(fields.clone()))
+                            .is_ok();
+                    if !fits {
+                        fields.insert(key, old);
+                    }
+                }
+            }
+        }
+        serde_json::from_value(saved).unwrap_or_default()
+    }
+
+    pub fn to_map(self) -> serde_json::Map<String, serde_json::Value> {
+        match serde_json::to_value(self) {
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -336,6 +431,24 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn saved_settings_round_trip() {
+        let saved = Saved {
+            appearance: Appearance::Dark,
+            text_scale: 1.2,
+            calendar_view: CalendarViewSetting::Month,
+            remote_images: RemoteImages::Never,
+            ..Saved::default()
+        };
+        assert_eq!(Saved::from_map(saved.to_map()), saved);
+        // Unknown keys go, bad values take their default, the rest stay.
+        let mut map = saved.to_map();
+        map.insert("gone".into(), true.into());
+        map.insert("week_numbers".into(), "yes".into());
+        assert_eq!(Saved::from_map(map), saved);
+        assert_eq!(Saved::from_map(Default::default()), Saved::default());
     }
 
     #[test]

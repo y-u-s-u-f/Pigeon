@@ -1,0 +1,192 @@
+//! What the backend reports, put into effect. One arm per `BackendEvent`
+//! variant, each calling its own function below, so workstreams change only
+//! theirs: mail (W3, W5, W6), calendar (W4, W7), contacts (W8), status and
+//! sign-in (W2, W11). Demo mode sends only `OpCommitted` and `Status`.
+
+use std::rc::Rc;
+
+use gpui::{Context, Entity};
+
+use super::{Nav, PigeonApp};
+use crate::{
+    backend::{Backend, BackendEvent, OpId, SyncStatus},
+    contacts::ContactBook,
+};
+
+impl PigeonApp {
+    pub(super) fn on_backend_event(
+        &mut self,
+        _: Entity<Backend>,
+        event: &BackendEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            BackendEvent::ThreadsChanged(ids) => self.on_threads_changed(ids, cx),
+            BackendEvent::ThreadsRemoved(ids) => self.on_threads_removed(ids, cx),
+            BackendEvent::IdReplaced { old, new } => self.on_id_replaced(old, new, cx),
+            BackendEvent::LabelsChanged => self.on_labels_changed(cx),
+            BackendEvent::CountsChanged => self.on_counts_changed(cx),
+            BackendEvent::EventsChanged(ids) => self.on_events_changed(ids, cx),
+            BackendEvent::EventsRemoved(ids) => self.on_events_removed(ids, cx),
+            BackendEvent::CalendarsChanged => self.on_calendars_changed(cx),
+            BackendEvent::ContactsChanged => self.on_contacts_changed(cx),
+            BackendEvent::Status(status) => self.on_status(status, cx),
+            BackendEvent::OpCommitted(op) => self.on_op_committed(*op, cx),
+            BackendEvent::OpFailed { op, message } => self.on_op_failed(*op, message, cx),
+            BackendEvent::SignedIn => self.on_signed_in(cx),
+            BackendEvent::SignedOut => self.on_signed_out(cx),
+        }
+    }
+
+    // Mail.
+
+    /// Reload the threads from the store, in place; new ones join the list.
+    /// The selection stays on its thread.
+    fn on_threads_changed(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        let threads = self.backend.read(cx).load_threads(ids);
+        let gone: Vec<String> = ids
+            .iter()
+            .filter(|id| !threads.iter().any(|t| &t.id == *id))
+            .cloned()
+            .collect();
+        self.update_threads(|data| {
+            for thread in threads {
+                match data.thread_ix(&thread.id) {
+                    Some(ix) => data.threads[ix] = thread,
+                    None => data.threads.push(thread),
+                }
+            }
+        });
+        if !gone.is_empty() {
+            self.on_threads_removed(&gone, cx);
+        }
+        cx.notify();
+    }
+
+    fn on_threads_removed(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        let selected_goes = self
+            .selected
+            .is_some_and(|ix| ids.contains(&self.data.threads[ix].id));
+        if selected_goes {
+            self.selected = None;
+        }
+        self.update_threads(|data| data.threads.retain(|t| !ids.contains(&t.id)));
+        self.checked.retain(|id| !ids.contains(id));
+        cx.notify();
+    }
+
+    /// A local id the server replaced: the thread, and whatever points at
+    /// it, take the new one.
+    fn on_id_replaced(&mut self, old: &str, new: &str, cx: &mut Context<Self>) {
+        if let Some(ix) = self.data.thread_ix(old) {
+            self.data.threads[ix].id = new.to_string();
+        }
+        for thread in &mut self.data.threads {
+            if let Some(origin) = &mut thread.origin
+                && origin.reply_to.as_deref() == Some(old)
+            {
+                origin.reply_to = Some(new.to_string());
+            }
+        }
+        if self.checked.remove(old) {
+            self.checked.insert(new.to_string());
+        }
+        if let Some((composer, _)) = &self.composer {
+            composer.update(cx, |c, _| {
+                for id in [&mut c.draft_id, &mut c.reply_to].into_iter().flatten() {
+                    if id == old {
+                        *id = new.to_string();
+                    }
+                }
+            });
+        }
+        cx.notify();
+    }
+
+    fn on_labels_changed(&mut self, cx: &mut Context<Self>) {
+        let labels = self.backend.read(cx).load_labels();
+        // A label view stays on its label, by id.
+        let nav_label = match self.nav {
+            Nav::Label(ix) => self.data.labels.get(ix).map(|l| l.id.clone()),
+            _ => None,
+        };
+        self.data.labels = labels;
+        if let Some(id) = nav_label {
+            match self.data.labels.iter().position(|l| l.id == id) {
+                Some(ix) => self.nav = Nav::Label(ix),
+                None => self.set_nav(Nav::Folder(crate::data::Folder::Inbox), cx),
+            }
+        }
+        cx.notify();
+    }
+
+    fn on_counts_changed(&mut self, cx: &mut Context<Self>) {
+        cx.notify();
+    }
+
+    // Calendar.
+
+    fn on_events_changed(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        let events = self.backend.read(cx).load_events(ids);
+        self.calendar.update(cx, |calendar, cx| {
+            for event in events {
+                match calendar.data.event_ix(&event.id) {
+                    Some(ix) => calendar.data.events[ix] = event,
+                    None => calendar.data.events.push(event),
+                }
+            }
+            cx.notify();
+        });
+    }
+
+    fn on_events_removed(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        self.calendar.update(cx, |calendar, cx| {
+            calendar.data.events.retain(|e| !ids.contains(&e.id));
+            if calendar
+                .selected
+                .as_ref()
+                .is_some_and(|s| ids.contains(&s.event_id))
+            {
+                calendar.selected = None;
+            }
+            cx.notify();
+        });
+    }
+
+    fn on_calendars_changed(&mut self, cx: &mut Context<Self>) {
+        let calendars = self.backend.read(cx).load_calendar().calendars;
+        self.calendar.update(cx, |calendar, cx| {
+            calendar.data.calendars = calendars;
+            cx.notify();
+        });
+    }
+
+    // Contacts. Open composers keep the book they opened with (W8: CON-1).
+
+    fn on_contacts_changed(&mut self, cx: &mut Context<Self>) {
+        let contacts = self.backend.read(cx).contacts();
+        self.contact_book = Rc::new(ContactBook::new(contacts));
+    }
+
+    // Status, the outbox and signing in.
+
+    fn on_status(&mut self, _status: &SyncStatus, cx: &mut Context<Self>) {
+        cx.notify();
+    }
+
+    fn on_op_committed(&mut self, _op: OpId, _cx: &mut Context<Self>) {}
+
+    /// The backend put the server's state back already (as `ThreadsChanged`
+    /// or `EventsChanged`); say why.
+    fn on_op_failed(&mut self, _op: OpId, message: &str, cx: &mut Context<Self>) {
+        self.show_toast(message.to_string(), None, cx);
+    }
+
+    fn on_signed_in(&mut self, cx: &mut Context<Self>) {
+        cx.notify();
+    }
+
+    fn on_signed_out(&mut self, cx: &mut Context<Self>) {
+        cx.notify();
+    }
+}

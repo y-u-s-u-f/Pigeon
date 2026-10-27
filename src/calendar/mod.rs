@@ -1,4 +1,5 @@
-//! Calendar model, loaded from the bundled placeholder data, plus the pure
+//! Calendar model, built from the store by the backend (demo mode seeds it
+//! from the bundled placeholder data, which it also deserializes), plus the pure
 //! logic the views run on: recurrence expansion (`recurrence`), overlap
 //! layout (`layout`) and date math and parsing (`time`).
 //!
@@ -12,14 +13,14 @@ pub mod time;
 
 use chrono::{DateTime, Duration, FixedOffset, NaiveDateTime};
 use gpui::Hsla;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::data::{Contact, hex_color};
 
-pub use recurrence::{Occurrence, occurrences};
+pub use recurrence::{Occurrence, Rule, occurrences};
 
 /// Which occurrences of a series a change or a delete applies to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SeriesScope {
     This,
     Following,
@@ -39,34 +40,62 @@ pub struct Calendar {
     pub name: String,
     #[serde(deserialize_with = "hex_color")]
     pub color: Hsla,
+    /// Google's `calendarList.selected`.
     pub visible: bool,
+    #[serde(default)]
+    pub access_role: AccessRole,
+    #[serde(default)]
+    pub primary: bool,
+    /// The calendar's IANA zone.
+    #[serde(default)]
+    pub time_zone: Option<String>,
+    /// Minutes before, for events that use the calendar's default.
+    #[serde(default)]
+    pub default_reminder: Option<u32>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Recurrence {
-    Daily,
-    Weekdays,
-    Weekly,
-    Biweekly,
-    Monthly,
-    Yearly,
+/// What the user may do with a calendar's events (Google's `accessRole`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AccessRole {
+    FreeBusyReader,
+    Reader,
+    Writer,
+    #[default]
+    Owner,
 }
 
-impl Recurrence {
-    pub fn label(self) -> &'static str {
+impl AccessRole {
+    pub fn key(self) -> &'static str {
         match self {
-            Recurrence::Daily => "Every day",
-            Recurrence::Weekdays => "Every weekday",
-            Recurrence::Weekly => "Every week",
-            Recurrence::Biweekly => "Every 2 weeks",
-            Recurrence::Monthly => "Every month",
-            Recurrence::Yearly => "Every year",
+            AccessRole::FreeBusyReader => "freeBusyReader",
+            AccessRole::Reader => "reader",
+            AccessRole::Writer => "writer",
+            AccessRole::Owner => "owner",
+        }
+    }
+
+    pub fn from_key(key: &str) -> AccessRole {
+        match key {
+            "freeBusyReader" => AccessRole::FreeBusyReader,
+            "reader" => AccessRole::Reader,
+            "writer" => AccessRole::Writer,
+            _ => AccessRole::Owner,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+/// Google's event `status`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EventStatus {
+    #[default]
+    Confirmed,
+    Tentative,
+    Cancelled,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RsvpStatus {
     Accepted,
@@ -75,7 +104,7 @@ pub enum RsvpStatus {
     NeedsAction,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attendee {
     pub name: String,
     pub email: String,
@@ -91,7 +120,7 @@ impl Attendee {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Event {
     /// Stable across edits and deletes, unlike the event's index.
     pub id: String,
@@ -111,7 +140,10 @@ pub struct Event {
     pub description: String,
     pub attendees: Vec<Attendee>,
     pub organizer: Contact,
-    pub recurrence: Option<Recurrence>,
+    /// The series' rule; its `until` is the series' end. The placeholder
+    /// data writes it as a keyword ("weekly").
+    #[serde(default, deserialize_with = "recurrence::rule_or_keyword")]
+    pub recurrence: Option<Rule>,
     pub reminder_minutes: Option<u32>,
     #[serde(deserialize_with = "or_empty")]
     pub video_link: String,
@@ -121,15 +153,39 @@ pub struct Event {
     /// of their own then points back with `recurring_event_id`).
     #[serde(default)]
     pub exceptions: Vec<NaiveDateTime>,
-    /// A series' end: no occurrence starts at or after it.
-    #[serde(default)]
-    pub until: Option<NaiveDateTime>,
     /// One occurrence of a series changed on its own: the series' id.
     #[serde(default)]
     pub recurring_event_id: Option<String>,
     /// With `recurring_event_id`: where the rule put this occurrence.
     #[serde(default)]
     pub original_start: Option<NaiveDateTime>,
+    // From Google; empty in demo mode.
+    #[serde(default)]
+    pub etag: String,
+    #[serde(default)]
+    pub ical_uid: String,
+    #[serde(default)]
+    pub status: EventStatus,
+    /// The event's own IANA zone, kept for writes (CAL-12).
+    #[serde(default)]
+    pub time_zone: Option<String>,
+    #[serde(default)]
+    pub html_link: String,
+    #[serde(default)]
+    pub organizer_self: bool,
+    #[serde(default)]
+    pub guests_can_modify: bool,
+    /// Google left the guest list out, so it mustn't be written back.
+    #[serde(default)]
+    pub attendees_omitted: bool,
+    /// Google's `eventType`: "default", "outOfOffice", "birthday" and so on.
+    #[serde(default)]
+    pub event_type: String,
+    /// The Join link from Google's `conferenceData` (CAL-17); read-only.
+    #[serde(default)]
+    pub conference_uri: String,
+    #[serde(default)]
+    pub reminder_use_default: bool,
 }
 
 impl Event {
@@ -167,9 +223,13 @@ impl Event {
     }
 }
 
-/// The time as written, without its offset.
+/// The time as written, without its offset. The store writes it without one.
 fn wall_time<'de, D: Deserializer<'de>>(d: D) -> Result<NaiveDateTime, D::Error> {
-    Ok(DateTime::<FixedOffset>::deserialize(d)?.naive_local())
+    let s = String::deserialize(d)?;
+    DateTime::<FixedOffset>::parse_from_rfc3339(&s)
+        .map(|t| t.naive_local())
+        .or_else(|_| s.parse::<NaiveDateTime>())
+        .map_err(serde::de::Error::custom)
 }
 
 fn or_empty<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
@@ -177,12 +237,6 @@ fn or_empty<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
 }
 
 impl CalendarData {
-    pub fn load() -> anyhow::Result<Self> {
-        Ok(serde_json::from_str(include_str!(
-            "../../assets/calendar.json"
-        ))?)
-    }
-
     pub fn calendar(&self, id: &str) -> Option<&Calendar> {
         self.calendars.iter().find(|c| c.id == id)
     }
@@ -219,11 +273,11 @@ mod tests {
 
     #[test]
     fn bundled_calendar_loads() {
-        let data = CalendarData::load().unwrap();
+        let data = crate::backend::demo::calendar_data();
         assert_eq!(data.calendars.len(), 8);
         assert_eq!(data.events.len(), 167);
         let standup = &data.events[1];
-        assert_eq!(standup.recurrence, Some(Recurrence::Weekdays));
+        assert_eq!(standup.recurrence, Some(Rule::weekdays()));
         assert_eq!(standup.start.format("%H:%M").to_string(), "09:30");
         assert!(standup.description.is_empty());
     }

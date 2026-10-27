@@ -253,7 +253,7 @@ impl PigeonApp {
             .gap(SPACE_SM)
             .child(detail(
                 Icon::Clock,
-                match event.recurrence {
+                match &event.recurrence {
                     Some(r) => format!("{when} · {}", r.label()),
                     None => when,
                 },

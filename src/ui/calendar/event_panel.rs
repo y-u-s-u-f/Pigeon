@@ -398,12 +398,16 @@ impl CalendarView {
                 return;
             };
             // The copy takes the series as edited; the series goes back.
-            let Some(id) = self.detach(&series_id, origin, start, start + duration) else {
+            let Some(id) = self.detach(&series_id, origin, start, start + duration, cx) else {
                 return;
             };
+            let before = self.event(&series_id).cloned();
             if let Some(series) = self.event_mut(&series_id) {
                 *series = snapshot;
                 series.exceptions.push(origin);
+            }
+            if let Some(before) = before {
+                self.patched(before, cx);
             }
             if let Some(panel) = &mut self.panel {
                 panel.event_id = id.clone();
@@ -421,8 +425,12 @@ impl CalendarView {
         let Some(id) = self.panel.as_ref().map(|p| p.event_id.clone()) else {
             return;
         };
+        let Some(before) = self.event(&id).cloned() else {
+            return;
+        };
         if let Some(event) = self.event_mut(&id) {
             f(event);
+            self.patched(before, cx);
             cx.notify();
         }
     }
@@ -822,8 +830,12 @@ impl CalendarView {
             (start, start + Duration::hours(1))
         };
         self.before_panel_edit();
+        let before = self.event(&id).cloned();
         if let Some(event) = self.event_mut(&id) {
             event.all_day = all_day;
+        }
+        if let Some(before) = before {
+            self.patched(before, cx);
         }
         self.retime_occurrence(&id, start, new_start, new_end, window, cx);
     }
@@ -1119,11 +1131,14 @@ impl CalendarView {
     /// "Repeats every week", or for an occurrence changed on its own, the
     /// series it belongs to.
     fn repeat_line(&self, event: &Event) -> Option<String> {
-        if let Some(recurrence) = event.recurrence {
-            return Some(recurrence.label().to_string());
+        if let Some(recurrence) = &event.recurrence {
+            return Some(recurrence.label());
         }
         let series = self.event(event.recurring_event_id.as_deref()?)?;
-        let label = series.recurrence.map_or("Repeating", |r| r.label());
+        let label = series
+            .recurrence
+            .as_ref()
+            .map_or_else(|| "Repeating".to_string(), |r| r.label());
         Some(format!("{label} · this one changed separately"))
     }
 

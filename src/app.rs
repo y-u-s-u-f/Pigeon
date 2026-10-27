@@ -1,5 +1,7 @@
 //! The root view. It owns all app state; the panes in `ui/` render from it.
 
+mod backend_events;
+mod compose;
 mod mail;
 pub use mail::{Density, SearchSuggestion};
 
@@ -9,7 +11,6 @@ use std::{
     time::Duration,
 };
 
-use chrono::Local;
 use gpui::{
     AppContext as _, Context, DragMoveEvent, Entity, FocusHandle, Focusable as _,
     InteractiveElement, IntoElement, KeyContext, ListAlignment, ListState, MouseButton,
@@ -25,23 +26,24 @@ use crate::ui::style::*;
 use crate::{
     actions::*,
     assets::Icon,
-    calendar::CalendarData,
-    data::{Contact, DraftOrigin, Folder, MailData, Message, Quote, Thread, full_date},
-    html,
+    backend::{Backend, MailOp, OpId, UNDO_WINDOW, ViewKey, gmail},
+    contacts::ContactBook,
+    data::{Folder, MailData, Thread},
     search::{FocusResults, Query},
-    settings::Settings,
+    settings::{CalendarViewSetting, Saved, Settings},
     theme::Theme,
     ui::{
         self, PaneResize,
-        calendar::{CalendarEvent, CalendarView, Removal},
+        calendar::{CalendarEvent, CalendarView, Removal, ViewKind},
         command_palette::{CommandPalette, Leading, PaletteCommand, PaletteEvent, PaletteItem},
-        composer::{Composer, ComposerEvent, ContactBook, DraftContent, Quoted},
+        composer::Composer,
         settings::SettingsPage,
     },
 };
 
-/// How long the "Sent" toast, and its Undo, stays up.
-const TOAST_DURATION: Duration = Duration::from_secs(5);
+/// How long the "Sent" toast, and its Undo, stays up: as long as the
+/// backend holds an undoable op back.
+const TOAST_DURATION: Duration = UNDO_WINDOW;
 
 /// Wide enough to hold the traffic lights above its icons.
 pub const RAIL_WIDTH: Pixels = px(80.);
@@ -88,8 +90,9 @@ pub enum Row {
     ArchivedHeader { count: usize },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ComposeKind {
+    #[default]
     New,
     Reply,
     ReplyAll,
@@ -114,10 +117,13 @@ pub enum UndoAction {
         /// The Drafts thread sending removed.
         removed_draft: Option<Thread>,
         composer: Entity<Composer>,
+        op: OpId,
     },
     Discard {
         removed_draft: Option<Thread>,
         composer: Entity<Composer>,
+        /// Deleting the saved draft, if there was one.
+        op: Option<OpId>,
     },
     /// Put deleted calendar events (or occurrences) back.
     DeleteEvent(Box<Removal>),
@@ -125,11 +131,14 @@ pub enum UndoAction {
     Move {
         moves: Vec<(String, Folder)>,
         selected: Option<String>,
+        ops: Vec<OpId>,
     },
 }
 
 pub struct PigeonApp {
     pub mode: Mode,
+    /// Where the data comes from and changes go (`backend`).
+    pub backend: Entity<Backend>,
     /// The calendar keeps its own state, so switching to Mail and back
     /// loses nothing on either side.
     pub calendar: Entity<CalendarView>,
@@ -173,7 +182,6 @@ pub struct PigeonApp {
     /// The message `n` and `p` move between, in the selected thread.
     pub focused_message: Option<usize>,
     pub toast: Option<Toast>,
-    next_id: usize,
     // Mail lists and search; see `app/mail.rs`.
     /// Threads picked for a bulk action, by id. While any are, the reader
     /// shows the bulk actions instead of a conversation.
@@ -203,16 +211,23 @@ pub struct PigeonApp {
     pub settings_page: SettingsPage,
     /// The system's Reduce Motion, from before the setting overrode it.
     pub(crate) system_reduce_motion: bool,
+    /// The settings as last handed to the backend to save.
+    saved: Saved,
     _subscriptions: Vec<Subscription>,
 }
 
 impl PigeonApp {
+    /// The app on `backend`'s data, with the settings `saved` applied.
     pub fn new(
-        data: MailData,
-        calendar: CalendarData,
+        backend: Entity<Backend>,
+        saved: Saved,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let (data, calendar, contacts) = {
+            let b = backend.read(cx);
+            (b.load_mail(), b.load_calendar(), b.contacts())
+        };
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
         let appearance = cx.observe_window_appearance(window, |this, window, cx| {
@@ -237,8 +252,19 @@ impl PigeonApp {
             }
         });
         let (settings_page, settings_events) = SettingsPage::new(window, cx);
-        let contact_book = Rc::new(ContactBook::new(data.contacts()));
-        let calendar = cx.new(|cx| CalendarView::new(calendar, contact_book.clone(), window, cx));
+        let contact_book = Rc::new(ContactBook::new(contacts));
+        let calendar = cx.new(|cx| {
+            CalendarView::new(calendar, contact_book.clone(), backend.clone(), window, cx)
+        });
+        let backend_events = cx.subscribe(&backend, Self::on_backend_event);
+        // Settings are saved whenever they change, here or in the calendar.
+        let settings_changed = cx.observe_self(|this, cx| this.save_settings(cx));
+        let calendar_changed = cx.observe(&calendar, |this, _, cx| this.save_settings(cx));
+        let quit = cx.on_app_quit(|this, cx| {
+            this.save_settings(cx);
+            this.backend.update(cx, |b, _| b.flush_settings());
+            async {}
+        });
         let calendar_events = cx.subscribe(&calendar, |this, _, event, cx| match event {
             CalendarEvent::Deleted { message, removal } => {
                 let undo = UndoAction::DeleteEvent(Box::new(removal.clone()));
@@ -248,6 +274,7 @@ impl PigeonApp {
 
         let mut this = Self {
             mode: Mode::Mail,
+            backend,
             calendar,
             data,
             nav: Nav::Folder(Folder::Inbox),
@@ -276,7 +303,6 @@ impl PigeonApp {
             search_query: Query::default(),
             focused_message: None,
             toast: None,
-            next_id: 0,
             checked: HashSet::new(),
             select_anchor: None,
             hovered_thread: None,
@@ -292,6 +318,7 @@ impl PigeonApp {
             settings: Settings::default(),
             settings_page,
             system_reduce_motion: false,
+            saved,
             _subscriptions: vec![
                 settings_events,
                 appearance,
@@ -299,10 +326,78 @@ impl PigeonApp {
                 search_events,
                 calendar_events,
                 help_events,
+                backend_events,
+                settings_changed,
+                calendar_changed,
+                quit,
             ],
         };
+        this.apply_settings(saved, window, cx);
         this.refresh_rows(false);
         this
+    }
+
+    /// Put saved settings into effect: at startup, before the first frame.
+    fn apply_settings(&mut self, saved: Saved, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings.auto_advance = saved.auto_advance;
+        self.settings.search_all_mail = saved.search_all_mail;
+        self.search_all = saved.search_all_mail;
+        self.density = if saved.compact_list {
+            Density::Compact
+        } else {
+            Density::Comfortable
+        };
+        self.set_text_scale(saved.text_scale, cx);
+        self.sidebar_open = saved.sidebar_open;
+        self.sidebar_width = px(saved.sidebar_width).clamp(SIDEBAR_WIDTH.0, SIDEBAR_WIDTH.1);
+        self.list_width = px(saved.list_width).clamp(LIST_WIDTH.0, LIST_WIDTH.1);
+        self.archived_expanded = saved.archived_expanded;
+        self.set_appearance(saved.appearance, window, cx);
+        if saved.reduce_motion {
+            self.set_reduce_motion(true, cx);
+        }
+        self.calendar.update(cx, |c, _| {
+            c.view = match saved.calendar_view {
+                CalendarViewSetting::Day => ViewKind::Day,
+                CalendarViewSetting::Week => ViewKind::Week,
+                CalendarViewSetting::Month => ViewKind::Month,
+            };
+            c.show_week_numbers = saved.week_numbers;
+        });
+    }
+
+    /// The settings as they are now, wherever they live.
+    fn current_settings(&self, cx: &gpui::App) -> Saved {
+        let calendar = self.calendar.read(cx);
+        Saved {
+            appearance: self.settings.appearance,
+            reduce_motion: self.settings.reduce_motion,
+            auto_advance: self.settings.auto_advance,
+            search_all_mail: self.settings.search_all_mail,
+            compact_list: self.density == Density::Compact,
+            text_scale: self.text_scale,
+            sidebar_open: self.sidebar_open,
+            sidebar_width: f32::from(self.sidebar_width),
+            list_width: f32::from(self.list_width),
+            archived_expanded: self.archived_expanded,
+            calendar_view: match calendar.view {
+                ViewKind::Day => CalendarViewSetting::Day,
+                ViewKind::Week => CalendarViewSetting::Week,
+                ViewKind::Month => CalendarViewSetting::Month,
+            },
+            week_numbers: calendar.show_week_numbers,
+            remote_images: self.saved.remote_images,
+        }
+    }
+
+    /// Hand the settings to the backend to save, when they changed (PER-3).
+    fn save_settings(&mut self, cx: &mut Context<Self>) {
+        let now = self.current_settings(cx);
+        if now != self.saved {
+            self.saved = now;
+            self.backend
+                .update(cx, |b, cx| b.save_settings(now.to_map(), cx));
+        }
     }
 
     pub fn nav_contains(&self, nav: Nav, thread: &Thread) -> bool {
@@ -405,7 +500,19 @@ impl PigeonApp {
             self.reader_scroll.set_offset(point(px(0.), px(0.)));
         }
         self.selected = Some(ix);
-        self.data.threads[ix].unread = false;
+        if std::mem::take(&mut self.data.threads[ix].unread) {
+            let threads = vec![id.clone()];
+            self.backend.update(cx, |b, cx| {
+                b.mail(
+                    MailOp::Modify {
+                        threads,
+                        add: Vec::new(),
+                        remove: vec![gmail::UNREAD.into()],
+                    },
+                    cx,
+                )
+            });
+        }
         self.reveal_selected();
         if self.data.threads[ix].folder == Folder::Drafts && !already_open {
             self.open_draft(ix, false, window, cx);
@@ -556,6 +663,72 @@ impl PigeonApp {
         self.show_toast(format!("Pigeon {version} · mail and calendar"), None, cx);
     }
 
+    // The account and the backend. Demo data has no server, so these only
+    // say so there.
+
+    fn sync_now(&mut self, _: &SyncNow, _: &mut Window, cx: &mut Context<Self>) {
+        let demo = self.backend.read(cx).is_demo();
+        self.backend.update(cx, |b, cx| b.sync_now(cx));
+        if demo {
+            self.show_toast("Demo data is always up to date", None, cx);
+        }
+    }
+
+    fn sign_in(&mut self, _: &SignIn, _: &mut Window, cx: &mut Context<Self>) {
+        let demo = self.backend.read(cx).is_demo();
+        self.backend.update(cx, |b, cx| b.sign_in(cx));
+        if demo {
+            self.show_toast("Signing in with Google isn't available yet", None, cx);
+        }
+    }
+
+    fn sign_out(&mut self, _: &SignOut, _: &mut Window, cx: &mut Context<Self>) {
+        let demo = self.backend.read(cx).is_demo();
+        self.backend.update(cx, |b, cx| b.sign_out(cx));
+        if demo {
+            self.show_toast("Demo data has no account to sign out of", None, cx);
+        }
+    }
+
+    fn use_demo_data(&mut self, _: &UseDemoData, _: &mut Window, cx: &mut Context<Self>) {
+        // W2: from the sign-in screen, switch the backend to demo mode.
+        if self.backend.read(cx).is_demo() {
+            self.show_toast("Already showing demo data", None, cx);
+        }
+    }
+
+    fn retry_loading_message(
+        &mut self,
+        _: &RetryLoadingMessage,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.selected.map(|ix| self.data.threads[ix].id.clone()) else {
+            return;
+        };
+        self.backend.update(cx, |b, cx| b.fetch_body(&id, cx));
+    }
+
+    fn load_images(&mut self, _: &LoadImages, _: &mut Window, cx: &mut Context<Self>) {
+        // W10 (ATT-1): load the selected message's remote images.
+        if self.backend.read(cx).is_demo() {
+            self.show_toast("Loading remote images isn't available yet", None, cx);
+        }
+    }
+
+    fn load_older(&mut self, _: &LoadOlderConversations, _: &mut Window, cx: &mut Context<Self>) {
+        let view = match self.nav {
+            Nav::Folder(folder) => ViewKey::Folder(folder),
+            Nav::Starred => ViewKey::Starred,
+            Nav::Label(ix) => ViewKey::Label(self.data.labels[ix].id.clone()),
+        };
+        let demo = self.backend.read(cx).is_demo();
+        self.backend.update(cx, |b, cx| b.load_older(view, cx));
+        if demo {
+            self.show_toast("That's all the demo mail", None, cx);
+        }
+    }
+
     fn close_window(&mut self, _: &CloseWindow, window: &mut Window, _: &mut Context<Self>) {
         window.remove_window();
     }
@@ -654,21 +827,6 @@ impl PigeonApp {
         self.delete_threads(self.targets(), window, cx);
     }
 
-    /// Delete in Drafts discards the draft, like the discard button, then
-    /// moves to the neighbor.
-    fn discard_selected_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(ix) = self.selected else { return };
-        let next = self
-            .next_after_selected()
-            .filter(|_| self.settings.auto_advance)
-            .map(|next| self.data.threads[next].id.clone());
-        self.select_thread(ix, window, cx);
-        self.discard_draft(&DiscardDraft, window, cx);
-        if let Some(ix) = next.and_then(|id| self.data.thread_ix(&id)) {
-            self.select_thread(ix, window, cx);
-        }
-    }
-
     fn toggle_star(&mut self, _: &ToggleStar, _: &mut Window, cx: &mut Context<Self>) {
         self.star_threads(self.targets(), cx);
     }
@@ -681,232 +839,13 @@ impl PigeonApp {
         self.set_unread(self.targets(), false, cx);
     }
 
-    fn compose_new(&mut self, _: &Compose, window: &mut Window, cx: &mut Context<Self>) {
-        // From the menu while the calendar shows.
-        self.set_mode(Mode::Mail, window, cx);
-        self.compose(ComposeKind::New, window, cx);
-    }
-
-    fn reply(&mut self, _: &Reply, window: &mut Window, cx: &mut Context<Self>) {
-        self.compose(ComposeKind::Reply, window, cx);
-    }
-
-    fn reply_all(&mut self, _: &ReplyAll, window: &mut Window, cx: &mut Context<Self>) {
-        self.compose(ComposeKind::ReplyAll, window, cx);
-    }
-
-    fn forward(&mut self, _: &Forward, window: &mut Window, cx: &mut Context<Self>) {
-        self.compose(ComposeKind::Forward, window, cx);
-    }
-
-    /// Open a draft: alone in the reading pane for a new message, under the
-    /// conversation for a reply or forward.
-    fn compose(&mut self, kind: ComposeKind, window: &mut Window, cx: &mut Context<Self>) {
-        self.stash_composer(cx);
-        if kind != ComposeKind::New && !self.checked.is_empty() {
-            return;
-        }
-        // One draft per conversation: answering again reopens it.
-        if matches!(kind, ComposeKind::Reply | ComposeKind::ReplyAll)
-            && let Some(ix) = self.selected
-            && let Some(draft) = self.reply_draft_of(&self.data.threads[ix].id)
-        {
-            self.open_draft(draft, true, window, cx);
-            if let Some((composer, _)) = &self.composer {
-                composer.update(cx, |c, cx| c.focus_first(window, cx));
-            }
-            self.reader_focused = true;
-            self.reader_scroll.scroll_to_bottom();
-            cx.notify();
-            return;
-        }
-        let thread = self.selected.map(|ix| &self.data.threads[ix]);
-        let (content, reply_to, quoted) = match (kind, thread) {
-            (ComposeKind::New, _) => (DraftContent::default(), None, None),
-            (_, None) => return,
-            (_, Some(thread)) if thread.folder == Folder::Drafts => return,
-            (kind, Some(thread)) => {
-                let (content, quoted) = self.reply_content(kind, thread);
-                // A forward starts a new thread, so it answers nothing.
-                let reply_to = (kind != ComposeKind::Forward).then(|| thread.id.clone());
-                (content, reply_to, quoted)
-            }
-        };
-        let composer = cx.new(|cx| {
-            Composer::new(
-                kind,
-                content,
-                reply_to.clone(),
-                None,
-                quoted,
-                reply_to.is_some(),
-                self.contact_book.clone(),
-                window,
-                cx,
-            )
-        });
-        self.set_composer(composer.clone(), cx);
-        composer.update(cx, |c, cx| c.focus_first(window, cx));
-        self.reader_focused = reply_to.is_some();
-        if reply_to.is_some() {
-            self.reader_scroll.scroll_to_bottom();
-        } else {
-            self.reader_scroll.set_offset(point(px(0.), px(0.)));
-        }
-        cx.notify();
-    }
-
-    fn reply_content(&self, kind: ComposeKind, thread: &Thread) -> (DraftContent, Option<Quoted>) {
-        let last = thread.last_message();
-        let mine = self.data.is_me(&last.from);
-        let mut to: Vec<Contact> = Vec::new();
-        let mut cc: Vec<Contact> = Vec::new();
-        let add = |list: &mut Vec<Contact>, contact: &Contact, all: &[Contact]| {
-            let taken = all
-                .iter()
-                .chain(list.iter())
-                .any(|c| c.email.eq_ignore_ascii_case(&contact.email));
-            if !self.data.is_me(contact) && !taken {
-                list.push(contact.clone());
-            }
-        };
-        match kind {
-            ComposeKind::Reply if mine => last.to.iter().for_each(|c| add(&mut to, c, &[])),
-            ComposeKind::Reply => add(&mut to, &last.from, &[]),
-            ComposeKind::ReplyAll => {
-                for c in [&last.from].into_iter().chain(&last.to) {
-                    add(&mut to, c, &[]);
-                }
-                for c in &last.cc {
-                    add(&mut cc, c, &to);
-                }
-            }
-            ComposeKind::Forward | ComposeKind::New => {}
-        }
-
-        let subject = &thread.subject;
-        let lower = subject.to_lowercase();
-        let subject = match kind {
-            ComposeKind::Forward if lower.starts_with("fwd:") || lower.starts_with("fw:") => {
-                subject.clone()
-            }
-            ComposeKind::Forward => format!("Fwd: {subject}"),
-            _ if lower.starts_with("re:") => subject.clone(),
-            _ => format!("Re: {subject}"),
-        };
-
-        let quoted = (kind == ComposeKind::Forward).then(|| {
-            let address = |c: &Contact| {
-                if c.name.is_empty() {
-                    c.email.clone()
-                } else {
-                    format!("{} <{}>", c.name, c.email)
-                }
-            };
-            let to = last.to.iter().map(address).collect::<Vec<_>>().join(", ");
-            Quoted::new(
-                vec![
-                    ("From", address(&last.from)),
-                    ("Date", full_date(&last.date)),
-                    ("Subject", thread.subject.clone()),
-                    ("To", to),
-                ],
-                last.html.clone(),
-            )
-        });
-
-        let content = DraftContent {
-            to,
-            cc,
-            bcc: Vec::new(),
-            subject,
-            body: String::new(),
-            attachments: Vec::new(),
-        };
-        (content, quoted)
-    }
-
-    /// The Drafts thread that answers the thread `id`, if there is one.
-    fn reply_draft_of(&self, id: &str) -> Option<usize> {
-        self.data.threads.iter().position(|t| {
-            t.folder == Folder::Drafts
-                && t.origin
-                    .as_ref()
-                    .is_some_and(|o| o.reply_to.as_deref() == Some(id))
-        })
-    }
-
-    /// Show a Drafts thread in the composer, without taking focus from the
-    /// list: alone, or `inline` under the conversation it answers.
-    fn open_draft(&mut self, ix: usize, inline: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let thread = &self.data.threads[ix];
-        let message = thread.last_message();
-        let content = DraftContent {
-            to: message.to.clone(),
-            cc: message.cc.clone(),
-            bcc: message.bcc.clone(),
-            subject: thread.subject.clone(),
-            // As typed, when it was written here; otherwise its text.
-            body: thread
-                .origin
-                .as_ref()
-                .map(|o| o.markdown.clone())
-                .unwrap_or_else(|| html::plain_text(&html::parse(&message.html))),
-            attachments: message.attachments.clone(),
-        };
-        let origin = thread.origin.as_ref();
-        let kind = origin.map_or(ComposeKind::New, |o| o.kind);
-        let reply_to = origin.and_then(|o| o.reply_to.clone());
-        let quoted = origin
-            .and_then(|o| o.quoted.as_ref())
-            .map(|q| Quoted::new(q.header.clone(), q.html.clone()));
-        let draft_id = Some(thread.id.clone());
-        let book = self.contact_book.clone();
-        let composer = cx.new(|cx| {
-            Composer::new(
-                kind, content, reply_to, draft_id, quoted, inline, book, window, cx,
-            )
-        });
-        self.set_composer(composer, cx);
-    }
-
-    fn set_composer(&mut self, composer: Entity<Composer>, cx: &mut Context<Self>) {
-        let reader_scroll = self.reader_scroll.clone();
-        composer.update(cx, |composer, _| {
-            composer.outer_scroll = Some(reader_scroll)
-        });
-        let events = cx.subscribe(&composer, |this, composer, event, cx| match event {
-            ComposerEvent::Edited { at_end } => {
-                if *at_end && composer.read(cx).quoted.is_none() {
-                    this.reader_scroll.scroll_to_bottom();
-                }
-            }
-        });
-        self.composer = Some((composer, events));
-        cx.notify();
-    }
-
-    /// Whether the composer shows under the selected conversation, rather than
-    /// alone in the reading pane.
-    pub fn composer_inline(&self, cx: &gpui::App) -> bool {
-        let Some((composer, _)) = &self.composer else {
-            return false;
-        };
-        let composer = composer.read(cx);
-        composer.inline
-            && composer.reply_to.is_some()
-            && self.selected.map(|ix| &self.data.threads[ix].id) == composer.reply_to.as_ref()
-    }
-
     /// Put a change to the threads into effect: newest first again, with the
     /// selection kept on the same thread.
     fn update_threads<R>(&mut self, f: impl FnOnce(&mut MailData) -> R) -> R {
         let selected = self.selected.map(|ix| self.data.threads[ix].id.clone());
         let old_ids: Vec<String> = self.data.threads.iter().map(|t| t.id.clone()).collect();
         let result = f(&mut self.data);
-        self.data
-            .threads
-            .sort_by_key(|t| std::cmp::Reverse(t.last_message().date));
+        self.data.sort_threads();
         self.selected = selected.and_then(|id| self.data.thread_ix(&id));
         // Point the old rows at where their threads are now, so a new or
         // re-sorted thread only splices its own row and the list stays put.
@@ -927,88 +866,6 @@ impl PigeonApp {
         }
         self.refresh_rows(true);
         result
-    }
-
-    fn new_id(&mut self, prefix: &str) -> String {
-        self.next_id += 1;
-        format!("{prefix}-local-{}", self.next_id)
-    }
-
-    fn message_from(&self, content: &DraftContent, html: String) -> Message {
-        // From the text as shown, without the markdown's syntax.
-        let snippet: String = html::plain_text(&html::parse(&content.body_html()))
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .chars()
-            .take(140)
-            .collect();
-        Message {
-            from: self.data.me(),
-            to: content.to.clone(),
-            cc: content.cc.clone(),
-            bcc: content.bcc.clone(),
-            date: Local::now().fixed_offset(),
-            snippet,
-            html,
-            attachments: content.attachments.clone(),
-            invite: None,
-        }
-    }
-
-    /// Save the draft to Drafts, replacing the thread it was opened from.
-    fn save_draft(&mut self, composer: &Entity<Composer>, cx: &mut Context<Self>) {
-        let c = composer.read(cx);
-        let content = c.content(cx);
-        // The quote is kept on the origin, so the body holds only the note.
-        let message = self.message_from(&content, content.body_html());
-        let origin = DraftOrigin {
-            kind: c.kind,
-            markdown: content.body.clone(),
-            reply_to: c.reply_to.clone(),
-            quoted: c.quoted.as_ref().map(|q| Quote {
-                header: q.header.clone(),
-                html: q.html.clone(),
-            }),
-        };
-        let id = c.draft_id.clone().unwrap_or_else(|| self.new_id("draft"));
-        self.update_threads(|data| match data.thread_ix(&id) {
-            Some(ix) => {
-                let thread = &mut data.threads[ix];
-                thread.subject = content.subject.clone();
-                thread.messages = vec![message];
-                thread.origin = Some(origin);
-                thread.reindex();
-            }
-            None => {
-                let mut thread = Thread {
-                    id,
-                    subject: content.subject.clone(),
-                    folder: Folder::Drafts,
-                    labels: Vec::new(),
-                    starred: false,
-                    unread: false,
-                    messages: vec![message],
-                    search: Default::default(),
-                    origin: Some(origin),
-                };
-                thread.reindex();
-                data.threads.push(thread);
-            }
-        });
-    }
-
-    /// Close the composer without losing anything: a changed draft goes to
-    /// Drafts.
-    fn stash_composer(&mut self, cx: &mut Context<Self>) {
-        let Some((composer, _)) = self.composer.take() else {
-            return;
-        };
-        if !composer.read(cx).is_pristine(cx) {
-            self.save_draft(&composer, cx);
-            self.show_toast("Saved to Drafts", None, cx);
-        }
-        cx.notify();
     }
 
     fn show_toast(
@@ -1032,197 +889,6 @@ impl PigeonApp {
             serial,
             _timer: timer,
         });
-        cx.notify();
-    }
-
-    fn close_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.composer = None;
-        window.focus(&self.focus_handle, cx);
-        cx.notify();
-    }
-
-    fn send_message(&mut self, _: &SendMessage, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((composer, _)) = &self.composer else {
-            return;
-        };
-        let composer = composer.clone();
-        if !composer.update(cx, |c, cx| c.validate(window, cx)) {
-            return;
-        }
-        let c = composer.read(cx);
-        let content = c.content(cx);
-        if !content.has_recipients() {
-            composer.update(cx, |c, cx| {
-                c.set_error("Add at least one recipient", cx);
-                c.focus_to(window, cx);
-            });
-            return;
-        }
-        let message = self.message_from(&content, c.html(cx));
-        let reply_to = c
-            .reply_to
-            .clone()
-            .filter(|id| self.data.thread_ix(id).is_some());
-        let draft_id = c.draft_id.clone();
-        let new_id = self.new_id("sent");
-
-        let (thread_id, appended, removed_draft) = self.update_threads(|data| {
-            let removed_draft = draft_id
-                .and_then(|id| data.thread_ix(&id))
-                .map(|ix| data.threads.remove(ix));
-            let (thread_id, appended) = match reply_to {
-                Some(id) => {
-                    let ix = data.thread_ix(&id).expect("checked above");
-                    let thread = &mut data.threads[ix];
-                    thread.messages.push(message);
-                    thread.reindex();
-                    (id, true)
-                }
-                None => {
-                    let mut thread = Thread {
-                        id: new_id.clone(),
-                        subject: content.subject.clone(),
-                        folder: Folder::Sent,
-                        labels: Vec::new(),
-                        starred: false,
-                        unread: false,
-                        messages: vec![message],
-                        search: Default::default(),
-                        origin: None,
-                    };
-                    thread.reindex();
-                    data.threads.push(thread);
-                    (new_id, false)
-                }
-            };
-            (thread_id, appended, removed_draft)
-        });
-
-        // A reply stays in view, ending with the message just sent.
-        if appended {
-            if let Some(ix) = self.data.thread_ix(&thread_id) {
-                if self.selected != Some(ix) {
-                    self.reveal_thread(ix, window, cx);
-                }
-                self.reader_scroll.scroll_to_bottom();
-            }
-        } else if removed_draft.is_some() {
-            self.selected = None;
-        }
-        self.close_composer(window, cx);
-        self.show_toast(
-            "Message sent",
-            Some(UndoAction::Send {
-                thread_id,
-                appended,
-                removed_draft,
-                composer,
-            }),
-            cx,
-        );
-    }
-
-    /// Escape: close the draft, keeping it in Drafts if it says anything.
-    fn close_draft(&mut self, _: &CloseDraft, window: &mut Window, cx: &mut Context<Self>) {
-        if self.composer.is_none() {
-            return cx.propagate();
-        }
-        let was_inline = self.composer_inline(cx);
-        self.stash_composer(cx);
-        self.reader_focused = was_inline;
-        window.focus(&self.focus_handle, cx);
-    }
-
-    fn discard_draft(&mut self, _: &DiscardDraft, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((composer, _)) = &self.composer else {
-            return;
-        };
-        let composer = composer.clone();
-        let c = composer.read(cx);
-        let pristine = c.is_pristine(cx) && c.draft_id.is_none();
-        let draft_id = c.draft_id.clone();
-        let removed_draft = self.update_threads(|data| {
-            draft_id
-                .and_then(|id| data.thread_ix(&id))
-                .map(|ix| data.threads.remove(ix))
-        });
-        if removed_draft.is_some() {
-            self.selected = None;
-        }
-        self.close_composer(window, cx);
-        if !pristine {
-            self.show_toast(
-                "Draft discarded",
-                Some(UndoAction::Discard {
-                    removed_draft,
-                    composer,
-                }),
-                cx,
-            );
-        }
-    }
-
-    fn show_cc_bcc(&mut self, _: &ShowCcBcc, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some((composer, _)) = &self.composer {
-            composer.update(cx, |c, cx| c.show_cc_bcc(window, cx));
-        }
-    }
-
-    fn undo(&mut self, _: &Undo, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(undo) = self.toast.take().and_then(|t| t.undo) else {
-            return;
-        };
-        let (composer, removed_draft) = match undo {
-            UndoAction::DeleteEvent(removal) => {
-                self.calendar
-                    .update(cx, |c, cx| c.restore(*removal, window, cx));
-                // Undone from an invite card: focus stays with the mail.
-                if self.mode == Mode::Mail {
-                    window.focus(&self.focus_handle, cx);
-                }
-                cx.notify();
-                return;
-            }
-            UndoAction::Send {
-                thread_id,
-                appended,
-                removed_draft,
-                composer,
-            } => {
-                self.update_threads(|data| {
-                    if let Some(ix) = data.thread_ix(&thread_id) {
-                        if appended {
-                            let thread = &mut data.threads[ix];
-                            thread.messages.pop();
-                            thread.reindex();
-                        } else {
-                            data.threads.remove(ix);
-                        }
-                    }
-                });
-                (composer, removed_draft)
-            }
-            UndoAction::Discard {
-                removed_draft,
-                composer,
-            } => (composer, removed_draft),
-            UndoAction::Move { moves, selected } => {
-                return self.undo_move(moves, selected, window, cx);
-            }
-        };
-        let draft_id = removed_draft.as_ref().map(|t| t.id.clone());
-        if let Some(thread) = removed_draft {
-            self.update_threads(|data| data.threads.push(thread));
-        }
-        // Back to where the draft was, then the draft itself.
-        let home = draft_id.or_else(|| composer.read(cx).reply_to.clone());
-        if let Some(ix) = home.and_then(|id| self.data.thread_ix(&id)) {
-            self.reveal_thread(ix, window, cx);
-        }
-        self.composer = None;
-        self.set_composer(composer.clone(), cx);
-        self.reader_focused = self.composer_inline(cx);
-        composer.update(cx, |c, cx| c.focus_first(window, cx));
         cx.notify();
     }
 
@@ -1533,7 +1199,7 @@ impl PigeonApp {
                 PaletteItem {
                     command: PaletteCommand::Event(ix),
                     title: event.display_title().to_string().into(),
-                    subtitle: Some(match event.recurrence {
+                    subtitle: Some(match &event.recurrence {
                         Some(r) => r.label().into(),
                         None => when.into(),
                     }),
@@ -1901,6 +1567,13 @@ impl Render for PigeonApp {
             .on_action(cx.listener(Self::close_window))
             .on_action(cx.listener(Self::minimize))
             .on_action(cx.listener(Self::zoom_window))
+            .on_action(cx.listener(Self::sync_now))
+            .on_action(cx.listener(Self::sign_in))
+            .on_action(cx.listener(Self::sign_out))
+            .on_action(cx.listener(Self::use_demo_data))
+            .on_action(cx.listener(Self::retry_loading_message))
+            .on_action(cx.listener(Self::load_images))
+            .on_action(cx.listener(Self::load_older))
             .map(|this| self.on_mail_actions(this, cx))
             .on_drag_move(cx.listener(Self::resize_pane))
             .relative()

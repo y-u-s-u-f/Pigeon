@@ -913,11 +913,11 @@ mod tests {
 
     #[test]
     fn parses_all_bundled_mail_quickly() {
-        let data = crate::data::MailData::load().unwrap();
+        let data = crate::backend::demo::mail_data();
         let start = std::time::Instant::now();
         let mut count = 0;
         for message in data.threads.iter().flat_map(|t| &t.messages) {
-            assert!(!parse(&message.html).blocks.is_empty());
+            assert!(!parse(message.html()).blocks.is_empty());
             count += 1;
         }
         eprintln!("parsed {count} messages in {:?}", start.elapsed());

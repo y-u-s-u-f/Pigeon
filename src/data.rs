@@ -1,8 +1,10 @@
-//! Mailbox model, loaded from the bundled placeholder data.
+//! Mailbox model. The backend builds it from the store (`backend::store`);
+//! demo mode seeds the store from the bundled placeholder data, which these
+//! types also deserialize from.
 
 use chrono::{DateTime, Datelike, FixedOffset, Local};
 use gpui::{Hsla, Rgba};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::app::ComposeKind;
 
@@ -13,10 +15,13 @@ pub struct MailData {
     pub threads: Vec<Thread>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct Account {
     pub name: String,
     pub email: String,
+    /// Other addresses the user sends as (Gmail's `sendAs`), for `is_me`.
+    #[serde(default)]
+    pub aliases: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -27,7 +32,7 @@ pub struct Label {
     pub color: Hsla,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Folder {
     Inbox,
@@ -60,6 +65,22 @@ impl Folder {
         }
     }
 
+    /// The folder's name in the store.
+    pub fn key(self) -> &'static str {
+        match self {
+            Folder::Inbox => "inbox",
+            Folder::Archive => "archive",
+            Folder::Sent => "sent",
+            Folder::Drafts => "drafts",
+            Folder::Spam => "spam",
+            Folder::Trash => "trash",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Folder> {
+        Folder::ALL.into_iter().find(|f| f.key() == key)
+    }
+
     /// Where archive moves a thread in this folder, or `None` when archive
     /// does nothing there.
     pub fn archive_target(self) -> Option<Folder> {
@@ -73,15 +94,27 @@ impl Folder {
 
 #[derive(Debug, Deserialize)]
 pub struct Thread {
-    /// Stable across reordering, unlike the thread's index.
+    /// Gmail's `threadId`; `draft-local-<uuid>` or `sent-local-<uuid>` until
+    /// the server answers with one (`BackendEvent::IdReplaced`).
     pub id: String,
     pub subject: String,
     pub folder: Folder,
+    /// User labels, by id.
     pub labels: Vec<String>,
     pub starred: bool,
     pub unread: bool,
     /// Oldest first.
     pub messages: Vec<Message>,
+    /// Every Gmail label on the thread as last stored, system ones too (the
+    /// union over its messages). `folder`, `unread`, `starred` and `labels`
+    /// come from it when the thread is loaded; the UI changes those directly
+    /// and leaves this as it was.
+    #[serde(default)]
+    pub label_ids: Vec<String>,
+    #[serde(default)]
+    pub history_id: Option<u64>,
+    #[serde(skip)]
+    pub loaded: Loaded,
     #[serde(skip)]
     pub search: SearchIndex,
     /// For a draft: how it was started, so reopening restores it.
@@ -89,9 +122,17 @@ pub struct Thread {
     pub origin: Option<DraftOrigin>,
 }
 
+/// How much of a thread the store has: headers only, or bodies too.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Loaded {
+    Metadata,
+    #[default]
+    Full,
+}
+
 /// How a draft was started. Kept apart from its body, which holds only what
 /// the user wrote.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DraftOrigin {
     pub kind: ComposeKind,
     /// The body as typed, in markdown; the message holds it as HTML.
@@ -102,9 +143,9 @@ pub struct DraftOrigin {
 }
 
 /// A forwarded message: its header lines and HTML body.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Quote {
-    pub header: Vec<(&'static str, String)>,
+    pub header: Vec<(String, String)>,
     pub html: String,
 }
 
@@ -121,31 +162,113 @@ pub struct SearchIndex {
 
 #[derive(Debug, Deserialize)]
 pub struct Message {
+    /// Gmail's message id; `local-<uuid>` for one written here.
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub label_ids: Vec<String>,
     pub from: Contact,
     pub to: Vec<Contact>,
     #[serde(default)]
     pub cc: Vec<Contact>,
     #[serde(default)]
     pub bcc: Vec<Contact>,
+    /// The Date header, for showing.
     pub date: DateTime<FixedOffset>,
+    /// Gmail's `internalDate` in Unix milliseconds: the sort key.
+    #[serde(default)]
+    pub internal_date: i64,
     pub snippet: String,
-    pub html: String,
+    #[serde(rename = "html", deserialize_with = "loaded_body")]
+    pub body: Body,
     #[serde(default)]
     pub attachments: Vec<Attachment>,
     /// A calendar invitation (or its cancellation) this message carries.
     #[serde(default)]
     pub invite: Option<Invite>,
+    // Threading headers (DAT-4).
+    #[serde(default)]
+    pub message_id: String,
+    #[serde(default)]
+    pub in_reply_to: String,
+    #[serde(default)]
+    pub references: Vec<String>,
+    #[serde(default)]
+    pub reply_to: Vec<Contact>,
+    #[serde(default)]
+    pub size_estimate: u64,
+}
+
+/// A message's body: fetched on demand (RDR-6).
+#[allow(dead_code)] // Loading and Failed come with W3.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Body {
+    NotLoaded,
+    Loading,
+    Loaded { html: String },
+    Failed(String),
+}
+
+fn loaded_body<'de, D: Deserializer<'de>>(d: D) -> Result<Body, D::Error> {
+    Ok(Body::Loaded {
+        html: String::deserialize(d)?,
+    })
+}
+
+impl Body {
+    /// The HTML, or nothing until it's loaded.
+    pub fn html(&self) -> &str {
+        match self {
+            Body::Loaded { html } => html,
+            _ => "",
+        }
+    }
+}
+
+impl Message {
+    /// An empty message from `from`, dated now, with a local id.
+    pub fn new(from: Contact) -> Self {
+        let now = Local::now();
+        Self {
+            id: format!("local-{}", uuid::Uuid::new_v4().simple()),
+            label_ids: Vec::new(),
+            from,
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            date: now.fixed_offset(),
+            internal_date: now.timestamp_millis(),
+            snippet: String::new(),
+            body: Body::Loaded {
+                html: String::new(),
+            },
+            attachments: Vec::new(),
+            invite: None,
+            message_id: String::new(),
+            in_reply_to: String::new(),
+            references: Vec::new(),
+            reply_to: Vec::new(),
+            size_estimate: 0,
+        }
+    }
+
+    pub fn html(&self) -> &str {
+        self.body.html()
+    }
 }
 
 /// An invitation email's link to its event in the calendar.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Invite {
-    /// `Event::id`.
+    /// `Event::id`, resolved from `ical_uid`.
     pub event_id: String,
     pub method: InviteMethod,
+    /// The `text/calendar` part's UID.
+    #[serde(default)]
+    pub ical_uid: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum InviteMethod {
     /// Asks the user to come.
@@ -154,17 +277,22 @@ pub enum InviteMethod {
     Cancel,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Contact {
     pub name: String,
     pub email: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attachment {
     pub name: String,
     pub size_bytes: u64,
     pub mime: String,
+    /// Gmail's ids for fetching it; empty for a file picked here.
+    #[serde(default)]
+    pub attachment_id: String,
+    #[serde(default)]
+    pub part_id: String,
 }
 
 /// What an attachment is, for its icon.
@@ -239,39 +367,42 @@ impl Attachment {
             name,
             size_bytes,
             mime: mime.into(),
+            attachment_id: String::new(),
+            part_id: String::new(),
         }
     }
 }
 
 pub(crate) fn hex_color<'de, D: Deserializer<'de>>(d: D) -> Result<Hsla, D::Error> {
     let s = String::deserialize(d)?;
-    let v = u32::from_str_radix(s.trim_start_matches('#'), 16).map_err(serde::de::Error::custom)?;
-    Ok(Rgba {
-        r: ((v >> 16) & 0xff) as f32 / 255.,
-        g: ((v >> 8) & 0xff) as f32 / 255.,
-        b: (v & 0xff) as f32 / 255.,
-        a: 1.,
-    }
-    .into())
+    from_hex(&s).ok_or_else(|| serde::de::Error::custom(format!("not a color: {s}")))
+}
+
+/// `#rrggbb`, for the store.
+pub fn to_hex(color: Hsla) -> String {
+    let c = Rgba::from(color);
+    let byte = |v: f32| (v.clamp(0., 1.) * 255.).round() as u32;
+    format!("#{:02x}{:02x}{:02x}", byte(c.r), byte(c.g), byte(c.b))
+}
+
+pub fn from_hex(s: &str) -> Option<Hsla> {
+    let v = u32::from_str_radix(s.trim_start_matches('#'), 16).ok()?;
+    Some(
+        Rgba {
+            r: ((v >> 16) & 0xff) as f32 / 255.,
+            g: ((v >> 8) & 0xff) as f32 / 255.,
+            b: (v & 0xff) as f32 / 255.,
+            a: 1.,
+        }
+        .into(),
+    )
 }
 
 impl MailData {
-    pub fn load() -> anyhow::Result<Self> {
-        let mut data: MailData = serde_json::from_str(include_str!("../assets/mailbox.json"))?;
-        for thread in &mut data.threads {
-            thread.messages.sort_by_key(|m| m.date);
-        }
-        data.threads.retain(|t| !t.messages.is_empty());
-        for thread in &mut data.threads {
-            for message in &mut thread.messages {
-                message.snippet = clean_snippet(message);
-            }
-            thread.reindex();
-        }
-        // Newest first; every view is a filter over this order.
-        data.threads
-            .sort_by_key(|t| std::cmp::Reverse(t.last_message().date));
-        Ok(data)
+    /// Newest first; every view is a filter over this order.
+    pub fn sort_threads(&mut self) {
+        self.threads
+            .sort_by_key(|t| std::cmp::Reverse(t.last_message().internal_date));
     }
 
     pub fn label(&self, id: &str) -> Option<&Label> {
@@ -279,7 +410,7 @@ impl MailData {
     }
 
     pub fn is_me(&self, contact: &Contact) -> bool {
-        contact.email.eq_ignore_ascii_case(&self.account.email)
+        self.account.is_me(&contact.email)
     }
 
     pub fn me(&self) -> Contact {
@@ -294,38 +425,84 @@ impl MailData {
     }
 
     /// Everyone in the mailbox but me and spam senders, most frequent
-    /// first, for recipient suggestions.
+    /// first: what the store's `contacts` gives, for its test.
+    #[cfg(test)]
     pub fn contacts(&self) -> Vec<Contact> {
-        let mut seen: Vec<(Contact, usize)> = Vec::new();
         // Spam senders aren't people to write to.
         let messages = self
             .threads
             .iter()
             .filter(|t| t.folder != Folder::Spam)
             .flat_map(|t| &t.messages);
-        for contact in messages.flat_map(|m| [&m.from].into_iter().chain(&m.to).chain(&m.cc)) {
-            if self.is_me(contact) {
-                continue;
-            }
-            match seen
-                .iter_mut()
-                .find(|(c, _)| c.email.eq_ignore_ascii_case(&contact.email))
-            {
-                Some((known, count)) => {
-                    *count += 1;
-                    if known.name.is_empty() {
-                        known.name = contact.name.clone();
-                    }
-                }
-                None => seen.push((contact.clone(), 1)),
-            }
+        rank_contacts(
+            messages.flat_map(|m| [&m.from].into_iter().chain(&m.to).chain(&m.cc)),
+            |c| self.is_me(c),
+        )
+    }
+}
+
+/// The contacts seen, once each, most frequent first, leaving out `me`.
+pub fn rank_contacts<'a>(
+    seen_in_mail: impl IntoIterator<Item = &'a Contact>,
+    me: impl Fn(&Contact) -> bool,
+) -> Vec<Contact> {
+    let mut seen: Vec<(Contact, usize)> = Vec::new();
+    for contact in seen_in_mail {
+        if me(contact) {
+            continue;
         }
-        seen.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
-        seen.into_iter().map(|(c, _)| c).collect()
+        match seen
+            .iter_mut()
+            .find(|(c, _)| c.email.eq_ignore_ascii_case(&contact.email))
+        {
+            Some((known, count)) => {
+                *count += 1;
+                if known.name.is_empty() {
+                    known.name = contact.name.clone();
+                }
+            }
+            None => seen.push((contact.clone(), 1)),
+        }
+    }
+    seen.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    seen.into_iter().map(|(c, _)| c).collect()
+}
+
+impl Account {
+    /// The address is the user's own or one of their aliases (ACC-2).
+    pub fn is_me(&self, email: &str) -> bool {
+        email.eq_ignore_ascii_case(&self.email)
+            || self.aliases.iter().any(|a| a.eq_ignore_ascii_case(email))
     }
 }
 
 impl Thread {
+    /// A thread written here: a draft, or a message sent in a new thread.
+    pub fn local(
+        id: String,
+        subject: String,
+        folder: Folder,
+        messages: Vec<Message>,
+        origin: Option<DraftOrigin>,
+    ) -> Self {
+        let mut thread = Thread {
+            id,
+            subject,
+            folder,
+            labels: Vec::new(),
+            starred: false,
+            unread: false,
+            messages,
+            label_ids: Vec::new(),
+            history_id: None,
+            loaded: Loaded::Full,
+            search: SearchIndex::default(),
+            origin,
+        };
+        thread.reindex();
+        thread
+    }
+
     pub fn last_message(&self) -> &Message {
         self.messages.last().expect("threads always have messages")
     }
@@ -336,6 +513,43 @@ impl Thread {
 
     /// Rebuild `search`; call after changing the thread's messages.
     pub fn reindex(&mut self) {
+        let all = self.search_text();
+        self.set_search(all);
+    }
+
+    /// Everything a search looks through, lowercased: what the store keeps
+    /// as `threads.search_text`, so loading doesn't parse HTML (DAT-6).
+    pub fn search_text(&self) -> String {
+        let (from, to, subject) = self.people_index();
+        let mut all = format!("{subject}\n{from}{to}");
+        for message in &self.messages {
+            all.push_str(&message.snippet.to_lowercase());
+            all.push('\n');
+            all.push_str(
+                &crate::html::plain_text(&crate::html::parse(message.html())).to_lowercase(),
+            );
+            all.push('\n');
+            for attachment in &message.attachments {
+                all.push_str(&attachment.name.to_lowercase());
+                all.push('\n');
+            }
+        }
+        all
+    }
+
+    /// `search` from a stored `search_text`.
+    pub fn set_search(&mut self, all: String) {
+        let (from, to, subject) = self.people_index();
+        self.search = SearchIndex {
+            all,
+            from,
+            to,
+            subject,
+        };
+    }
+
+    /// The lowercased senders, recipients and subject.
+    fn people_index(&self) -> (String, String, String) {
         let people = |contacts: &mut dyn Iterator<Item = &Contact>| {
             let mut out = String::new();
             for c in contacts {
@@ -353,26 +567,7 @@ impl Thread {
                 .iter()
                 .flat_map(|m| m.to.iter().chain(&m.cc).chain(&m.bcc)),
         );
-        let subject = self.subject.to_lowercase();
-        let mut all = format!("{subject}\n{from}{to}");
-        for message in &self.messages {
-            all.push_str(&message.snippet.to_lowercase());
-            all.push('\n');
-            all.push_str(
-                &crate::html::plain_text(&crate::html::parse(&message.html)).to_lowercase(),
-            );
-            all.push('\n');
-            for attachment in &message.attachments {
-                all.push_str(&attachment.name.to_lowercase());
-                all.push('\n');
-            }
-        }
-        self.search = SearchIndex {
-            all,
-            from,
-            to,
-            subject,
-        };
+        (from, to, self.subject.to_lowercase())
     }
 
     /// Spam and trash stay out of Starred and label views, like Gmail.
@@ -406,10 +601,10 @@ impl Contact {
 /// sender's brand ("Skyline Air", "Stripe payout", a bold "Harbor Bank
 /// Alert"), which the row already shows. Inline tags also leave a space
 /// before punctuation ("the doc ."); that goes too.
-fn clean_snippet(message: &Message) -> String {
+pub(crate) fn clean_snippet(message: &Message) -> String {
     use crate::html::{Block, TextKind};
     let mut snippet = message.snippet.trim();
-    let doc = crate::html::parse(&message.html);
+    let doc = crate::html::parse(message.html());
     if let Some(Block::Text { text, kind, .. }) = doc.blocks.first() {
         let bold = text.spans.len() == 1
             && text.spans[0].0 == (0..text.text.len())
@@ -499,14 +694,9 @@ mod tests {
                 name: name.into(),
                 email: "x@example.com".into(),
             },
-            to: Vec::new(),
-            cc: Vec::new(),
-            bcc: Vec::new(),
-            date: chrono::DateTime::parse_from_rfc3339("2026-10-01T09:00:00Z").unwrap(),
             snippet: snippet.into(),
-            html: html.into(),
-            attachments: Vec::new(),
-            invite: None,
+            body: Body::Loaded { html: html.into() },
+            ..Message::new(Contact::default())
         };
         let m = message(
             "Skyline Air",
@@ -543,9 +733,8 @@ mod tests {
     #[test]
     fn attachment_kinds() {
         let a = |name: &str, mime: &str| Attachment {
-            name: name.into(),
-            size_bytes: 1,
             mime: mime.into(),
+            ..Attachment::from_file(name.into(), 1)
         };
         assert_eq!(a("x.pdf", "application/pdf").kind(), FileKind::Pdf);
         assert_eq!(a("x.png", "image/png").kind(), FileKind::Image);

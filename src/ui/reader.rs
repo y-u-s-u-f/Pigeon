@@ -407,7 +407,7 @@ impl PigeonApp {
             .collect::<Vec<_>>()
             .join(" · ");
 
-        let body = self.html_cache.get(&message.html);
+        let body = self.html_cache.get(message.html());
         // The invite card above says when, where and who; the lines saying
         // it again in the body fold away.
         let has_card = message.invite.as_ref().is_some_and(|invite| {

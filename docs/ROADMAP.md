@@ -124,7 +124,7 @@ The user's own plans, not driven by Google's APIs.
 
 #### ACC-2 Identity of "me"
 
-- **Today:** `MailData::is_me()` and `me()` (`src/data.rs`) compare against the single `account.email`, ignoring case. The reader shows "me"; replies skip the user; Sent and Drafts rows show "To:".
+- **Today:** `MailData::is_me()` and `me()` (`src/data.rs`) compare against `account.email` and `Account::aliases` (empty until W3 reads `sendAs`), ignoring case (`Account::is_me()`). The reader shows "me"; replies skip the user; Sent and Drafts rows show "To:".
 - **Needs:** Every address the user sends from: Gmail `settings.sendAs.list` (includes the primary). Check each message's `from` against all of them.
 - **Notes:** Aliases show as other people today. See MST-1.
 
@@ -437,13 +437,13 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 #### CMP-1 New message
 
-- **Today:** `c` or palette "Compose New Message" opens an empty draft in the reading pane ("New Message"). `compose()` (`src/app.rs`), `Composer` (`src/ui/composer.rs`). In memory until saved (DRF-1).
+- **Today:** `c` or palette "Compose New Message" opens an empty draft in the reading pane ("New Message"). `compose()` (`src/app/compose.rs`), `Composer` (`src/ui/composer.rs`). In memory until saved (DRF-1).
 - **Needs:** A server draft on first save (DRF-6); account choice when there are several (ACC-4); From alias choice (MST-1).
 - **Notes:** No signature (MST-2).
 
 #### CMP-2 Reply
 
-- **Today:** `r`, toolbar, palette. Draft opens under the conversation; subject "Re: …" unless it already starts with "re:". `reply_content()` (`src/app.rs`): if the last message is from the user, reply to its recipients, else to its sender. `reply_to` links the thread.
+- **Today:** `r`, toolbar, palette. Draft opens under the conversation; subject "Re: …" unless it already starts with "re:". `reply_content()` (`src/app/compose.rs`): if the last message is from the user, reply to its recipients, else to its sender. `reply_to` links the thread.
 - **Needs:** `messages.send` with `threadId`, `In-Reply-To` and `References` headers, and a matching `Subject` (Gmail's threading rules). See DAT-4.
 - **Notes:** Earlier participants are ignored.
 
@@ -477,7 +477,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 #### CMP-8 Send
 
-- **Today:** `cmd-enter` anywhere in the draft or list, Send button, palette. The draft closes, the message goes to Sent (or the thread), toast "Message sent" with Undo for 5 s (UND-1). `send_message()`, `message_from()` (`src/app.rs`): `date` from the local clock, `snippet` from the first 140 characters of the HTML's text. Nothing leaves the app.
+- **Today:** `cmd-enter` anywhere in the draft or list, Send button, palette. The draft closes, the message goes to Sent (or the thread), toast "Message sent" with Undo for 5 s (UND-1). `send_message()` (`src/app/compose.rs`), `Outgoing::to_message()` (`src/backend/mod.rs`): `date` from the local clock, `snippet` from the first 140 characters of the body's text. It queues `MailOp::Send`, which demo mode applies to its in-memory store after the undo window. Nothing leaves the app.
 - **Needs:** `messages.send` with `raw` (or `drafts.send` for a saved draft); use the upload endpoint for large messages. Show "sent" only after Gmail accepts it. Hold the send for the undo window (UND-1). Take `date` and `snippet` from the server response.
 
 #### CMP-9 Send validation
@@ -519,7 +519,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 #### DRF-1 Save on close or navigation
 
-- **Today:** A changed draft is saved when closed (`Esc`, toolbar "Close and save draft", palette "Close Draft") or when the user moves elsewhere; toast "Saved to Drafts" (no Undo). Unchanged drafts aren't saved. `stash_composer()`, `save_draft()` (`src/app.rs`). Drafts are one-message `Thread`s with IDs `draft-local-N` (DAT-5).
+- **Today:** A changed draft is saved when closed (`Esc`, toolbar "Close and save draft", palette "Close Draft") or when the user moves elsewhere; toast "Saved to Drafts" (no Undo). Unchanged drafts aren't saved. `stash_composer()`, `save_draft()` (`src/app/compose.rs`), which also queues `MailOp::SaveDraft` (an `Outgoing`, `src/backend/mod.rs`); demo mode stores it in its in-memory store. Drafts are one-message `Thread`s with IDs `draft-local-<uuid>` (DAT-5).
 - **Needs:** `drafts.create`, then `drafts.update` with the stored draft ID (IMAP: `APPEND` to Drafts and delete the old copy).
 - **Notes:** Quitting loses unsaved changes (PER-2).
 
@@ -560,19 +560,19 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 #### UND-1 Undo send
 
-- **Today:** Toast "Message sent" with Undo (`cmd-z`, `z`, palette) for 5 s (`TOAST_DURATION`). Undo removes the message from Sent or the thread, restores the draft and reopens the composer. `UndoAction::Send` in `src/app.rs`.
-- **Needs:** An outbox that holds the message at least as long as the window, then sends. Gmail's own "undo send" isn't in the API, so the hold is ours.
+- **Today:** Toast "Message sent" with Undo (`cmd-z`, `z`, palette) for 5 s (`TOAST_DURATION`). Undo removes the message from Sent or the thread, restores the draft and reopens the composer. `UndoAction::Send` (`src/app.rs`), `undo()` (`src/app/compose.rs`). The send is a `MailOp::Send` the outbox holds for the 5 s (PER-2); Undo cancels it, or says "Already sent" if it went.
+- **Needs:** The outbox's Google commit (W6). Gmail's own "undo send" isn't in the API, so the hold is ours.
 - **Notes:** Once sent it can't be recalled.
 
 #### UND-2 Undo discard
 
-- **Today:** Toast "Draft discarded" with Undo for 5 s; Undo puts the draft back and reopens it. `UndoAction::Discard`.
-- **Needs:** Delay `drafts.delete` until the window ends, or recreate the draft on Undo. A never-saved draft only needs the composer back.
+- **Today:** Toast "Draft discarded" with Undo for 5 s; Undo puts the draft back and reopens it. `UndoAction::Discard`. Discarding a saved draft queues a delayed `MailOp::DeleteDraft`; Undo cancels it, or saves the draft again if it already went.
+- **Needs:** The delayed `drafts.delete` committed to Gmail (W6). A never-saved draft only needs the composer back.
 
 #### UND-3 Undo for other actions
 
-- **Today:** Archive, Delete and Move to (one or many) show "Archived" / "Moved 3 conversations to Trash" with Undo (`z`, `cmd-z`, button, palette) for 5 s; Undo restores folders and the selection. `UndoAction::Move`, `undo_move()` (`src/app/mail.rs`). Star, read state and labels have no undo; there's no undo stack.
-- **Needs:** A reversible action log: each change keeps its inverse until the window passes; the server call is queued or inverted.
+- **Today:** Archive, Delete and Move to (one or many) show "Archived" / "Moved 3 conversations to Trash" with Undo (`z`, `cmd-z`, button, palette) for 5 s; Undo restores folders and the selection. `UndoAction::Move`, `undo_move()` (`src/app/mail.rs`). Each move queues Gmail ops (`MailOp::moves()`) that wait out the window; Undo cancels them, or queues the moves back once they went. Star, read state and labels go at once and have no undo; there's no undo stack.
+- **Needs:** The ops committed to Gmail, with the inverse request after a commit (W5).
 
 ### 5.8 Search (SRC)
 
@@ -651,7 +651,7 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 #### CON-1 Recipient suggestions
 
-- **Today:** Recipient fields and the event panel's "Add guests" show up to six suggestions: prefix matches first, then word-prefix ("ch" finds Sarah Chen), then substring for 3+ letters, fuzzy only when nothing else matches. Automated senders (no-reply, notification, newsletter, alerts, receipts…) and spam senders are never suggested; added recipients are excluded. Arrows, `Ctrl-n`/`Ctrl-p`, Enter or click, Escape. The book is built once at startup from every non-Spam sender and recipient in the JSON, sorted by frequency (`MailData::contacts()`, `ContactBook::new()` in `PigeonApp::new()`); ranking in `ContactBook::suggest()` and `is_automated()` (`src/ui/composer.rs`). Shared as `Rc<ContactBook>` with every composer and the calendar.
+- **Today:** Recipient fields and the event panel's "Add guests" show up to six suggestions: prefix matches first, then word-prefix ("ch" finds Sarah Chen), then substring for 3+ letters, fuzzy only when nothing else matches. Automated senders (no-reply, notification, newsletter, alerts, receipts…) and spam senders are never suggested; added recipients are excluded. Arrows, `Ctrl-n`/`Ctrl-p`, Enter or click, Escape. The book is built once at startup from the store: synced contacts (none yet), then every non-Spam sender and recipient in the cached mail by frequency (`Backend::contacts()`, `Store::contacts()` in `src/backend/store/contacts.rs`, `ContactBook::new()` in `PigeonApp::new()`); ranking in `ContactBook::suggest()` and `is_automated()` (`src/contacts.rs`). Shared as `Rc<ContactBook>` with every composer and the calendar.
 - **Needs:** A local cache filled from People `people.connections.list` (My Contacts) and `otherContacts.list` (addresses the user has mailed), kept fresh with their sync tokens (SYN-6), searched locally. For live lookups, `people.searchContacts` and `otherContacts.search` (send an empty warm-up query first, as Google advises). Add new addresses after each send (today they appear only after restart); changes must reach open composers.
 - **Notes:** Other Contacts tells us who the user has written to, a better signal than guessing "automated" from the local part.
 
@@ -918,8 +918,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-23 Persisted calendar UI state
 
-- **Today:** View, date, week numbers and visibility reset on launch (`CalendarView::new()`).
-- **Needs:** Save with PER-3; visibility may live on the server (`calendarList.selected`).
+- **Today:** View and week numbers are saved with PER-3. Visibility changes queue `CalOp::SetSelected` (`calendarList.selected`), kept in demo mode's store until quit. The date resets on launch.
+- **Needs:** `calendarList.patch` for visibility (W7).
 
 ### Events
 
@@ -942,18 +942,18 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-10 Delete an event and undo
 
-- **Today:** `delete`/`backspace` or the panel's Delete; toast with Undo. `delete_occurrence()` / `delete_event()` emit `CalendarEvent::Deleted`; `UndoAction::DeleteEvent` → `restore()`. Series ask first (CAL-6).
+- **Today:** `delete`/`backspace` or the panel's Delete; toast with Undo. `delete_occurrence()` / `delete_event()` queue a delayed `CalOp::Delete` and emit `CalendarEvent::Deleted`; `UndoAction::DeleteEvent` → `restore()`, which cancels the op, or re-inserts the events once it went. Series ask first (CAL-6). Every other calendar change queues a `CalOp` too (`CalendarView::queue()`, `patched()`).
 - **Needs:** `events.delete` after the toast ends (or delete + re-insert on Undo), with `sendUpdates` so guests get a cancellation; maybe ask first.
 - **Notes:** For an event someone else organizes, "delete" should mean decline and hide (CAL-22).
 
 #### CAL-11 IDs for new events
 
-- **Today:** `e-local-N` from a counter that restarts each launch (`CalendarView::new_id()`).
+- **Today:** A UUID's 32 hex digits (`CalendarView::new_id()`), valid as a client-chosen Google event id.
 - **Needs:** Server IDs, or a local UUID until the first insert (Google accepts client-chosen IDs in base32hex). A stable `iCalUID` so invite mail can find the event (CAL-20).
 
 #### CAL-12 Time zones
 
-- **Today:** Wall-clock times: `wall_time()` drops the JSON's UTC offset (`naive_local()`); the model uses `NaiveDateTime`. The placeholder data uses Eastern offsets for San Francisco places, so converting would move every event.
+- **Today:** Wall-clock times: `wall_time()` drops the JSON's UTC offset (`naive_local()`), and also reads the offset-less times the store writes; the model uses `NaiveDateTime`. `Event::time_zone` and `Calendar::time_zone` exist for writes, empty in demo mode. The placeholder data uses Eastern offsets for San Francisco places, so converting would move every event.
 - **Needs:** Keep each event's `timeZone`, show in the user's zone (Google's `timezone` setting or macOS), write back with a zone. All-day events have none. Expand recurrences in the event's zone so they hold across DST.
 - **Notes:** No zone picker or "shown in another zone" hint yet.
 
@@ -979,7 +979,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-22 Organizer and read-only permissions
 
-- **Today:** Not built: every event is editable, including others' and shared ones.
+- **Today:** Not built: every event is editable, including others' and shared ones. The model has what the rules need: `Calendar::access_role` (`AccessRole`), `Event::organizer_self` (set in demo mode), `guests_can_modify`, `attendees_omitted`, `event_type`.
 - **Needs:** The calendar's `accessRole` (`freeBusyReader`, `reader`, `writer`, `owner`), and per event `organizer.self`, `guestsCanModify`, `locked`, `privateCopy`. Make the panel read-only where Google would refuse.
 - **Notes:** Guests can usually change only their RSVP, reminders and, on their copy, busy/free.
 
@@ -1017,7 +1017,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-5 Recurring events
 
-- **Today:** `recurrence` is one keyword (`daily`, `weekdays`, `weekly`, `biweekly`, `monthly`, `yearly`). A series can carry `exceptions` (like `EXDATE`) and `until`, set by CAL-6; a changed occurrence is its own event with `recurring_event_id` and `original_start` (like `RECURRENCE-ID`). `recurrence::occurrences()` expands only the visible range.
+- **Today:** `recurrence` is a `Rule` (`src/calendar/recurrence.rs`): `freq`, `interval`, `by_day` (with optional ordinals), `by_month_day`, `count`, `until` (the series' end, set by CAL-6). The placeholder data's keywords (`daily`, `weekdays`, `weekly`, `biweekly`, `monthly`, `yearly`) become constructors; `Rule::label()` says "Every weekday", "Every 2 weeks", "Every week on Mon, Wed". Expansion covers `FREQ`, `INTERVAL`, `BYDAY` without ordinals and `UNTIL`; ordinals, `BYMONTHDAY` and `COUNT` are kept but not applied yet. A series can carry `exceptions` (like `EXDATE`); a changed occurrence is its own event with `recurring_event_id` and `original_start` (like `RECURRENCE-ID`). `recurrence::occurrences()` expands only the visible range.
 - **Needs:** Full RRULE (`FREQ`, `INTERVAL`, `BYDAY`, `BYMONTHDAY`, `UNTIL`, `COUNT`), `EXDATE`, `RDATE`, and exceptions (`recurringEventId` + `originalStartTime`). Either expand on Google (`singleEvents=true`, or `events.instances` for one series) keeping the series ID, or expand locally from the RRULE.
 - **Notes:** The UI can't set a rule (CAL-29); new events never repeat.
 
@@ -1213,18 +1213,18 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### PER-1 Local mailbox store
 
-- **Today:** `MailData` (`src/data.rs`) is the only copy, in memory; every launch reads the bundled JSON.
-- **Needs:** A local database (for example SQLite) for threads, messages, labels, drafts, events, contacts, the outbox and sync state (`historyId`, sync tokens). Keep the search index (SRC-5) and parsed bodies (`HtmlCache`) beside it; bodies compressed, attachment bytes separate.
+- **Today:** SQLite (`rusqlite`, bundled) in `src/backend/store/`: `Store` (one connection behind a mutex, WAL, file 0600 in a 0700 folder), the full schema as migration block 001 in `schema.sql` (settings, labels, threads, messages, bodies, drafts, calendars, events, contacts, sync_state, outbox, images; account-scoped tables keyed by `account`), and reads and writes for mail (`store/mail.rs`), calendar (`store/calendar.rs`, events kept whole as JSON in `model`), contacts (`store/contacts.rs`) and the outbox (`store/outbox.rs`). Demo mode uses an in-memory store seeded from the JSON (`backend/demo.rs`); the UI's `MailData` and `CalendarData` are built from the store at launch (`Backend::load_mail()`, `load_calendar()`).
+- **Needs:** Google mode on the file store at `~/Library/Application Support/Pigeon/pigeon.sqlite` (or `$PIGEON_DATA_DIR`) once W2 signs in; syncs writing to it (SYN-1/2/4/6); body eviction (300 MB LRU) and the image cache (ATT-1). Later migrations go in their reserved blocks (`docs/BACKEND_SPRINT_1.md`, 4.2).
 
 #### PER-2 Outbox and drafts that survive quit
 
-- **Today:** `Quit` (`src/actions.rs`) calls `cx.quit()` with no save step.
-- **Needs:** A durable outbox (sends, draft saves, flag and event changes) written before the UI reports success and flushed on next launch. Quit waits for pending writes or warns.
+- **Today:** Every `MailOp` and `CalOp` is a row in the store's `outbox` table (`src/backend/outbox.rs`) before it commits. Sends, discards, moves, deletes and event deletes wait out the 5 s undo window (`UNDO_WINDOW`); Undo inside it deletes the row (`Backend::cancel()`), past it the UI queues the inverse op. Consecutive label changes to the same threads merge; a newer save of a draft replaces an older one; ops on one thread, event or draft go one at a time. The worker (`Backend::schedule()`) commits due rows; demo mode commits by applying the op to its in-memory store (`Store::apply_mail_op()`, `apply_cal_op()`), so nothing survives a quit there. `Quit` still calls `cx.quit()` with no flush.
+- **Needs:** The Google commit, retries, rollback and pending-op overlay (W5); rows left at quit flushed on the next launch (the worker already picks them up); Quit sending due sends at once and waiting up to 5 s for rows in flight (W11). Deviation from the plan: the store takes an op's change when it commits, not when it's queued, so Undo never has to revert the store; reads during the window come from the UI's view model and, after a sync, W5's overlay.
 
 #### PER-3 Persisted UI state and settings
 
-- **Today:** In memory on `PigeonApp`: `nav`, `sidebar_open`, `sidebar_width`, `list_width`, `archived_expanded`, `expanded_messages`, list density, `text_scale`, recent searches, recent palette commands, and `PigeonApp::settings` (`Settings` in `src/settings.rs`: appearance System/Light/Dark, Reduce motion override, auto-advance, default search scope). Calendar view and week numbers are on `CalendarView` (CAL-23). The settings page (⌘,, `src/ui/settings.rs`) changes all of these; its Accounts row shows `MailData::me()` only. All reset on launch.
-- **Needs:** A local settings file applied at launch: appearance via `App::set_window_appearance` before the first frame, Reduce motion via `App::set_reduce_motion`. Not server data.
+- **Today:** Saved to the `settings` table (one row per key, JSON values) of the on-disk store, in demo mode too: appearance, Reduce motion, auto-advance, default search scope, list density, text size, sidebar shown, sidebar and list widths, Archived expanded, calendar view, week numbers, and remote images (Ask/Always/Never, for ATT-1). `Saved` (`src/settings.rs`) is the snapshot; `PigeonApp::save_settings()` hands it to `Backend::save_settings()` whenever the app or the calendar notifies and it changed (written 300 ms after it settles, and on quit); `main()` loads it and `PigeonApp::apply_settings()` applies it before the first frame. Unknown keys are ignored and bad values take their default. The file is `~/Library/Application Support/Pigeon/pigeon.sqlite`, or `$PIGEON_DATA_DIR/pigeon.sqlite`. Still in memory: `nav`, `expanded_messages`, recent searches, recent palette commands, the window's size.
+- **Needs:** Nothing from the server. The Mail › Images row in Settings (W10/W11).
 - **Notes:** `expanded_messages` is per thread; keep it or accept the reset.
 
 ### 8.2 Command palette (PAL)
@@ -1239,6 +1239,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 - **Today:** `cmd-k` or `cmd-shift-p` lists every command in `COMMANDS` (`src/actions.rs`) with its shortcut and runs the same handlers. `open_palette()`, `palette_items()`, `on_palette_event()` (`src/app.rs`). Unavailable commands are left out (`When`, `command_available()` in `src/app/mail.rs`). Recent commands first on an empty query (in memory, PER-3). Each `Group` has a `scope()` (Mail, Calendar, Global); the palette and `?` sheet list the current mode's commands plus global ones. `v` and `l` open it scoped to folders or labels.
 - **Needs:** Each command inherits its action's needs: ACT-1–6, CMP-1–4, CMP-8, DRF-1, DRF-4, UND-1–3, ACT-1a, FOL-5, CAL-9, CAL-10. Navigation, view and app commands need none.
+- **Notes:** The backend's commands are in already, doing nothing (or saying so in a toast) until their workstream lands: Sync Now (`cmd-r`, also File › Sync Now; SYN-2), Sign In with Google and Sign Out (ACC-3, ACC-7), Use Demo Data (W2), Retry Loading Message (RDR-6), Load Images (`cmd-shift-i`, ATT-1), Load Older Conversations (LST-7).
 
 #### PAL-2 Thread search in the palette
 
@@ -1264,19 +1265,19 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### DAT-1 JSON as the data source
 
-- **Today:** `assets/mailbox.json` via `include_str!` in `MailData::load()`; messages sorted by date, empty threads dropped. Message IDs in the JSON (`m-0001`) are dropped; only thread IDs are read.
-- **Needs:** Replace with backend data; keep the JSON as a test fixture.
+- **Today:** The UI reads only from the backend's store. The JSON (`include_str!` in `backend::demo`) seeds the in-memory store of demo mode, which every launch is until sign-in lands (W2); `PIGEON_DEMO=1` will keep forcing it. `demo::mail_data()` makes it look like a Gmail sync: message ids `<thread>-m<N>` (the JSON's own message ids are still dropped), `internal_date` from the date, Gmail label ids per message from the thread's folder and flags, snippets cleaned. `MailData::load()` and `CalendarData::load()` are gone.
+- **Needs:** Google data in the store (W3, W4); the JSON stays as demo data and test fixture.
 
 #### DAT-2 Thread model: one folder per thread
 
-- **Today:** Each `Thread` (`src/data.rs`) has one `folder` and a `labels` list; starred and unread are thread flags.
-- **Needs:** A mapping decision. Gmail is label-based and per message: a thread can be in several labels, Archive is "no `INBOX`", and its messages can differ (one in `INBOX`, one in `SENT`). Derive one folder per thread (for example Trash > Spam > Inbox > Drafts > Sent > Archive) and define what thread-level unread and starred mean.
+- **Today:** Decided and implemented: `gmail::derive_folder()` (`src/backend/gmail.rs`) takes each message's labels (drafts left out): any `TRASH` → Trash, any `SPAM` → Spam, any `INBOX` → Inbox, only `SENT` messages → Sent, else Archive. Drafts are one-message threads with `folder = Drafts`. `Thread::label_ids` is the union over messages; `labels` (user labels), `unread` (any `UNREAD`) and `starred` (any `STARRED`) are derived from it when the store loads a thread. The store applies `MailOp::Modify`/`Trash`/`Untrash` to every message like `threads.modify` and derives the folder again when a folder label changed. UI moves map to Gmail ops in `MailOp::moves()`.
+- **Needs:** Decision 6.4/5 of the sprint plan: the Sent view lists every thread with a message the user sent (W3, `nav_contains`).
 - **Notes:** The most important data-model decision; it touches FOL, LST and ACT.
 
 #### DAT-3 Message model: missing fields
 
-- **Today:** `Message` has from, to, cc, bcc (empty in JSON), date, snippet, html, attachments.
-- **Needs:** Server message `id`, `threadId`, `labelIds` (read, starred, labels per message), `internalDate`, `historyId`, plain-text body, the part tree (ATT-2, ATT-4), `sizeEstimate`.
+- **Today:** `Message` (`src/data.rs`) has `id`, `label_ids`, from/to/cc/bcc, `date` (shown) and `internal_date` (the sort key), snippet, `body: Body` (`NotLoaded | Loading | Loaded { html } | Failed`; `Message::html()` is empty until loaded), attachments (now with `attachment_id`, `part_id`), invite (now with `ical_uid`), `message_id`, `in_reply_to`, `references`, `reply_to`, `size_estimate`. `Thread` adds `label_ids`, `history_id`, `loaded` (`Metadata | Full`). `Account` adds `aliases`; `is_me()` checks them (ACC-2). `Event` and `Calendar` gained Google's fields (see CAL-12, CAL-22); `Recurrence` became `Rule` (CAL-5).
+- **Needs:** Filling them from Gmail (W3); the plain-text body and the part tree (ATT-2, ATT-4).
 
 #### DAT-4 Threading headers
 
@@ -1285,13 +1286,13 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### DAT-5 Local IDs for drafts and sent messages
 
-- **Today:** `draft-local-N` / `sent-local-N` from `PigeonApp::next_id` (`new_id()`), restarting at 0 each launch.
-- **Needs:** Server IDs, or stored UUIDs until the first save; a counter would reuse IDs once data persists.
+- **Today:** `draft-local-<uuid>` / `sent-local-<uuid>` (`new_id()` in `src/app/compose.rs`), messages `local-<uuid>`, new events a bare UUID (32 hex digits, valid as a client-chosen Google event id, CAL-11). `BackendEvent::IdReplaced` swaps a thread's id in the view model, the draft origin, the selection and an open composer (`on_id_replaced()`, `src/app/backend_events.rs`); `Store::replace_thread_id()` does it in the store.
+- **Needs:** The server answering with ids: `drafts.create`, `messages.send` (W6).
 
 #### DAT-6 Search index rebuild cost
 
-- **Today:** `Thread::reindex()` calls `html::parse()` for every message on load and on each save or send; `update_threads()` re-sorts everything.
-- **Needs:** Index once when a body is stored and keep it in PER-1.
+- **Today:** The index is built once when a thread is stored (`Thread::search_text()`) and kept in `threads.search_text`; loading takes it from there (`Thread::set_search()`), so launch parses no HTML for search. Saves and sends still rebuild that thread's index; `update_threads()` re-sorts everything.
+- **Needs:** Bodies fetched later (RDR-6) re-index their thread when stored (W3).
 
 #### DAT-7 Import and insert messages
 

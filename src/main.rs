@@ -1,7 +1,9 @@
 mod actions;
 mod app;
 mod assets;
+mod backend;
 mod calendar;
+mod contacts;
 mod data;
 mod html;
 mod markdown;
@@ -18,8 +20,8 @@ use gpui::{
 use crate::{
     actions::*,
     app::{PigeonApp, RAIL_WIDTH},
-    calendar::CalendarData,
-    data::MailData,
+    backend::Backend,
+    settings::Saved,
     theme::Theme,
 };
 
@@ -43,6 +45,8 @@ fn menus() -> Vec<Menu> {
         Menu::new("File").items([
             MenuItem::action("New Message", Compose),
             MenuItem::action("New Event", NewEvent),
+            MenuItem::separator(),
+            MenuItem::action("Sync Now", SyncNow),
             MenuItem::separator(),
             MenuItem::action("Close Window", CloseWindow),
         ]),
@@ -114,9 +118,6 @@ fn menus() -> Vec<Menu> {
 }
 
 fn main() {
-    let data = MailData::load().expect("bundled mailbox.json should parse");
-    let calendar = CalendarData::load().expect("bundled calendar.json should parse");
-
     gpui::application()
         .with_assets(assets::Assets)
         .run(move |cx: &mut App| {
@@ -133,6 +134,9 @@ fn main() {
                 }
             })
             .detach();
+
+            let backend = Backend::open(cx);
+            let saved = Saved::from_map(backend.read(cx).load_settings());
 
             let bounds = Bounds::centered(None, size(px(1360.), px(860.)), cx);
             // The traffic lights (60pt wide on macOS 26) sit centered in the
@@ -154,7 +158,7 @@ fn main() {
 
             gpui::open_window(options, cx, |window, cx| {
                 Theme::sync(window, cx);
-                cx.new(|cx| PigeonApp::new(data, calendar, window, cx))
+                cx.new(|cx| PigeonApp::new(backend, saved, window, cx))
             })
             .expect("failed to open the main window");
             cx.activate(true);

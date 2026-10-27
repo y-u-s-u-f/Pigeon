@@ -9,6 +9,8 @@
 //!   pass the series' `start` as the occurrence to set the series itself).
 //! - `set_rsvp` answers an invite for the user.
 //!
+//! Every change also goes to the backend as a `CalOp` (`queue`, `patched`).
+//!
 //! A repeating event changes as a whole series unless the user picks "This
 //! event": the occurrence then becomes an event of its own and the series
 //! lists it as an exception (`detach`). Drags and deletes of an occurrence
@@ -40,12 +42,14 @@ use self::{drag::GridDrag, event_panel::EventPanel};
 use crate::ui::style::*;
 use crate::{
     actions::*,
+    backend::{Backend, CalOp, OpId, SendUpdates},
     calendar::{
         CalendarData, Event, Occurrence, RsvpStatus, SeriesScope, occurrences,
         time::{self, add_months, month_grid, next_half_hour, week_start},
     },
+    contacts::ContactBook,
     theme::Theme,
-    ui::{composer::ContactBook, keycap, popover_shadow},
+    ui::{keycap, popover_shadow},
 };
 
 actions!(
@@ -149,6 +153,8 @@ pub struct Removal {
     /// removing it (an exception, or an earlier end).
     series_before: Option<Event>,
     select: Option<Selection>,
+    /// The delete, while the backend holds it back.
+    op: Option<OpId>,
 }
 
 pub enum CalendarEvent {
@@ -181,7 +187,7 @@ pub struct CalendarView {
     mini_month: Option<NaiveDate>,
     date_input: Entity<InputState>,
     book: Rc<ContactBook>,
-    next_id: usize,
+    backend: Entity<Backend>,
     /// The event made last, while it's open and may still be dropped for
     /// having no title.
     new_event: Option<String>,
@@ -226,6 +232,7 @@ impl CalendarView {
     pub fn new(
         data: CalendarData,
         book: Rc<ContactBook>,
+        backend: Entity<Backend>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -260,7 +267,7 @@ impl CalendarView {
             mini_month: None,
             date_input,
             book,
-            next_id: 0,
+            backend,
             new_event: None,
             _tick: tick,
             _closing: None,
@@ -580,6 +587,15 @@ impl CalendarView {
         let untitled = self.event(&id).is_some_and(|e| e.title.trim().is_empty());
         if untitled && let Some(ix) = self.data.event_ix(&id) {
             self.data.events.remove(ix);
+            self.queue(
+                CalOp::Delete {
+                    id: id.clone(),
+                    occurrence: None,
+                    scope: SeriesScope::All,
+                    send_updates: SendUpdates::None,
+                },
+                cx,
+            );
             if self.selected.as_ref().is_some_and(|s| s.event_id == id) {
                 self.selected = None;
             }
@@ -617,9 +633,44 @@ impl CalendarView {
 
     // Changing events.
 
+    /// 32 hex digits, which Google takes as an event id (CAL-11).
     fn new_id(&mut self) -> String {
-        self.next_id += 1;
-        format!("e-local-{}", self.next_id)
+        uuid::Uuid::new_v4().simple().to_string()
+    }
+
+    /// Hand the backend a change.
+    pub(crate) fn queue(&self, op: CalOp, cx: &mut Context<Self>) -> OpId {
+        self.backend.update(cx, |b, cx| b.calendar(op, cx))
+    }
+
+    /// The event changed from `before`: patch it, moving it first if its
+    /// calendar changed.
+    pub(crate) fn patched(&self, before: Event, cx: &mut Context<Self>) {
+        let Some(after) = self.event(&before.id).cloned() else {
+            return;
+        };
+        if after == before {
+            return;
+        }
+        if after.calendar != before.calendar {
+            self.queue(
+                CalOp::Move {
+                    id: after.id.clone(),
+                    to_calendar: after.calendar.clone(),
+                },
+                cx,
+            );
+        }
+        self.queue(
+            CalOp::Patch {
+                id: after.id.clone(),
+                before,
+                after,
+                scope: SeriesScope::All,
+                send_updates: SendUpdates::None,
+            },
+            cx,
+        );
     }
 
     /// Make an event over `[start, end)` and open it with its title focused.
@@ -651,26 +702,26 @@ impl CalendarView {
             (start, end.max(start + Duration::minutes(15)))
         };
         let id = self.new_id();
-        self.data.events.push(Event {
+        let event = Event {
             id: id.clone(),
             calendar,
-            title: String::new(),
             start,
             end,
             all_day,
-            location: String::new(),
-            description: String::new(),
-            attendees: Vec::new(),
             organizer: self.data.me(),
-            recurrence: None,
+            organizer_self: true,
             reminder_minutes: Some(10),
-            video_link: String::new(),
             busy: true,
-            exceptions: Vec::new(),
-            until: None,
-            recurring_event_id: None,
-            original_start: None,
-        });
+            ..Event::default()
+        };
+        self.data.events.push(event.clone());
+        self.queue(
+            CalOp::Insert {
+                event,
+                send_updates: SendUpdates::None,
+            },
+            cx,
+        );
         if !all_day && self.view != ViewKind::Month {
             let day = start.date();
             self.reveal_minutes(
@@ -702,9 +753,10 @@ impl CalendarView {
     ) {
         let end =
             end.max(start + Duration::minutes(if self.is_all_day(id) { 24 * 60 } else { 15 }));
-        let Some(event) = self.event_mut(id) else {
+        let Some(before) = self.event(id).cloned() else {
             return;
         };
+        let event = self.event_mut(id).expect("checked above");
         let shift = start - occurrence;
         event.start += shift;
         event.end = event.start + (end - start);
@@ -712,9 +764,10 @@ impl CalendarView {
         for exception in &mut event.exceptions {
             *exception += shift;
         }
-        if let Some(until) = &mut event.until {
+        if let Some(until) = event.recurrence.as_mut().and_then(|r| r.until.as_mut()) {
             *until += shift;
         }
+        self.patched(before, cx);
         if let Some(selected) = &mut self.selected
             && selected.event_id == id
             && selected.start == occurrence
@@ -739,8 +792,10 @@ impl CalendarView {
         occurrence: NaiveDateTime,
         start: NaiveDateTime,
         end: NaiveDateTime,
+        cx: &mut Context<Self>,
     ) -> Option<String> {
         let id = self.new_id();
+        let before = self.event(series_id)?.clone();
         let series = self.event_mut(series_id)?;
         series.exceptions.push(occurrence);
         let exception = Event {
@@ -749,12 +804,19 @@ impl CalendarView {
             end,
             recurrence: None,
             exceptions: Vec::new(),
-            until: None,
             recurring_event_id: Some(series_id.to_string()),
             original_start: Some(occurrence),
             ..series.clone()
         };
-        self.data.events.push(exception);
+        self.data.events.push(exception.clone());
+        self.patched(before, cx);
+        self.queue(
+            CalOp::Insert {
+                event: exception,
+                send_updates: SendUpdates::None,
+            },
+            cx,
+        );
         Some(id)
     }
 
@@ -773,6 +835,13 @@ impl CalendarView {
                 .find(|a| a.email.eq_ignore_ascii_case(&me))
         {
             attendee.status = status;
+            self.queue(
+                CalOp::Rsvp {
+                    id: id.to_string(),
+                    status,
+                },
+                cx,
+            );
             cx.notify();
         }
     }
@@ -833,8 +902,8 @@ impl CalendarView {
             removal.series_before = Some(series.clone());
             if scope == SeriesScope::This {
                 series.exceptions.push(occurrence);
-            } else {
-                series.until = Some(occurrence);
+            } else if let Some(rule) = &mut series.recurrence {
+                rule.until = Some(occurrence);
             }
         }
         let mut ix = 0;
@@ -873,6 +942,15 @@ impl CalendarView {
             self.new_event = None;
         }
         self.prompt = None;
+        removal.op = Some(self.queue(
+            CalOp::Delete {
+                id: id.to_string(),
+                occurrence: Some(occurrence),
+                scope,
+                send_updates: SendUpdates::None,
+            },
+            cx,
+        ));
         cx.emit(CalendarEvent::Deleted { message, removal });
         cx.notify();
     }
@@ -880,6 +958,36 @@ impl CalendarView {
     /// Undo a delete: the events and the series come back as they were,
     /// the occurrence selected.
     pub fn restore(&mut self, removal: Removal, window: &mut Window, cx: &mut Context<Self>) {
+        // Inside the undo window the delete never went; past it, put the
+        // events back.
+        let cancelled = removal
+            .op
+            .is_some_and(|op| self.backend.update(cx, |b, _| b.cancel(op)));
+        if !cancelled {
+            for (_, event) in &removal.removed {
+                self.queue(
+                    CalOp::Insert {
+                        event: event.clone(),
+                        send_updates: SendUpdates::None,
+                    },
+                    cx,
+                );
+            }
+            if let Some(before) = &removal.series_before
+                && let Some(now) = self.event(&before.id).cloned()
+            {
+                self.queue(
+                    CalOp::Patch {
+                        id: before.id.clone(),
+                        before: now,
+                        after: before.clone(),
+                        scope: SeriesScope::All,
+                        send_updates: SendUpdates::None,
+                    },
+                    cx,
+                );
+            }
+        }
         if let Some(before) = removal.series_before
             && let Some(series) = self.event_mut(&before.id)
         {
@@ -900,6 +1008,11 @@ impl CalendarView {
     pub fn toggle_calendar(&mut self, ix: usize, cx: &mut Context<Self>) {
         if let Some(calendar) = self.data.calendars.get_mut(ix) {
             calendar.visible = !calendar.visible;
+            let op = CalOp::SetSelected {
+                calendar: calendar.id.clone(),
+                selected: calendar.visible,
+            };
+            self.queue(op, cx);
             cx.notify();
         }
     }
@@ -918,6 +1031,11 @@ impl CalendarView {
             .filter(|&c| !self.data.calendars[c].visible)
         {
             self.data.calendars[calendar].visible = true;
+            let op = CalOp::SetSelected {
+                calendar: self.data.calendars[calendar].id.clone(),
+                selected: true,
+            };
+            self.queue(op, cx);
         }
         self.anchor = start.date();
         if self.view == ViewKind::Month {
@@ -961,7 +1079,7 @@ impl CalendarView {
         match prompt.kind {
             PromptKind::Delete => self.delete_occurrence(id, prompt.occurrence, scope, window, cx),
             PromptKind::Move { start, end } if scope == SeriesScope::This => {
-                let Some(new_id) = self.detach(id, prompt.occurrence, start, end) else {
+                let Some(new_id) = self.detach(id, prompt.occurrence, start, end, cx) else {
                     return;
                 };
                 let selection = Selection {

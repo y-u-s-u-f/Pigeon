@@ -18,6 +18,23 @@ markup5ever_rcdom = "0.3"
 nucleo-matcher = "0.3"
 # Already built for gpui-component's markdown view; turns drafts into HTML.
 markdown = "1"
+# The backend (docs/BACKEND_SPRINT_1.md, 2.1). Blocking HTTP over the rustls
+# and ring GPUI already builds; no async runtime.
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
+# The local cache. Bundled, so it doesn't depend on the system's SQLite.
+rusqlite = { version = "0.41", features = ["bundled"] }
+# Keychain and SecRandom (PKCE). Already in the lock file.
+security-framework = "3.7"
+# MIME in and out. Pure Rust.
+mail-parser = "1"
+mail-builder = "2"
+# base64url and the PKCE S256 challenge. Already in the lock file.
+base64 = "0.22"
+sha2 = "0.10"
+# Local ids and client-chosen event ids. Already in the lock file.
+uuid = { version = "1", features = ["v4"] }
+# The local IANA zone for event writes. Already pulled in by chrono's clock.
+iana-time-zone = "0.1"
 
 [profile.release]
 opt-level = 3

@@ -120,6 +120,14 @@ actions!(
         MoveTo,
         ApplyLabel,
         ToggleDensity,
+        // The account and the backend (docs/BACKEND_SPRINT_1.md, 2.11).
+        SignIn,
+        SignOut,
+        SyncNow,
+        RetryLoadingMessage,
+        LoadImages,
+        LoadOlderConversations,
+        UseDemoData,
     ]
 );
 
@@ -197,6 +205,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-\\", ToggleSidebar, Some(CONTEXT)),
         KeyBinding::new("cmd-1", GoToMail, Some(CONTEXT)),
         KeyBinding::new("cmd-2", GoToCalendar, Some(CONTEXT)),
+        KeyBinding::new("cmd-r", SyncNow, Some(CONTEXT)),
+        KeyBinding::new("cmd-shift-i", LoadImages, Some(MAILBOX)),
         // Moving through the list.
         KeyBinding::new("down", SelectNextThread, Some(LIST)),
         KeyBinding::new("up", SelectPrevThread, Some(LIST)),
@@ -587,11 +597,14 @@ pub const COMMANDS: &[Command] = commands! {
     Navigation: "Next Message in Conversation", ChevronDown, NextMessage if Messages;
     Navigation: "Previous Message in Conversation", ChevronUp, PrevMessage if Messages;
     Conversation: "Select Message Text", Text, SelectMessageText if Thread;
+    Conversation: "Retry Loading Message", Repeat, RetryLoadingMessage if Thread;
+    Conversation: "Load Images", Image, LoadImages if Thread;
     Navigation: "Scroll Conversation Down", ChevronDown, ScrollReaderDown, help_only;
     Navigation: "Scroll Conversation Up", ChevronUp, ScrollReaderUp, help_only;
     Navigation: "Search Mail", Search, ToggleSearch;
     Navigation: "Clear Search", X, CloseSearch if Searching;
     Navigation: "Compact / Comfortable List", Rows, ToggleDensity;
+    Navigation: "Load Older Conversations", ChevronDown, LoadOlderConversations;
     GoTo: "Go to Inbox", Inbox, GoToInbox;
     GoTo: "Go to Starred", Star, GoToStarred;
     GoTo: "Go to Sent", Send, GoToSent;
@@ -625,5 +638,9 @@ pub const COMMANDS: &[Command] = commands! {
     App: "Command Palette", Command, ToggleCommandPalette, help_only;
     App: "Keyboard Shortcuts", Keyboard, ToggleShortcutsHelp;
     App: "Settings…", Settings, OpenSettings;
+    App: "Sync Now", Repeat, SyncNow;
+    App: "Sign In with Google", User, SignIn;
+    App: "Sign Out", User, SignOut;
+    App: "Use Demo Data", Layers, UseDemoData;
     App: "Quit Pigeon", Command, Quit;
 };

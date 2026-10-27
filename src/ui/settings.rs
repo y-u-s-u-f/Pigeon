@@ -547,7 +547,7 @@ impl PigeonApp {
     }
 
     /// On: reduce motion whatever the system says. Off: follow it again.
-    fn set_reduce_motion(&mut self, on: bool, cx: &mut Context<Self>) {
+    pub(crate) fn set_reduce_motion(&mut self, on: bool, cx: &mut Context<Self>) {
         if on {
             self.system_reduce_motion = cx.reduce_motion();
             cx.set_reduce_motion(true);
