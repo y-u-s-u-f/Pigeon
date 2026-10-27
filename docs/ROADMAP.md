@@ -58,7 +58,7 @@ To update: change the status cell in the area's table, then the counts below.
 
 Principles are in [`AGENTS.md`](../AGENTS.md): blazing fast and light (no webviews, no heavy dependencies), keyboard-centric (every action has a shortcut and is in ⌘K), minimal and flat on translucent glass, YAGNI.
 
-**Current phase: linked to Google; demo mode on placeholder data.** Backend sprint 1 ([`BACKEND_SPRINT_1.md`](BACKEND_SPRINT_1.md)) is under way: Phases 0–1 (foundation, sign-in, Gmail read, Calendar read) are merged; write actions, compose, contacts, search and states come next. `PIGEON_DEMO=1` runs on the placeholder data.
+**Current phase: linked to Google; demo mode on placeholder data.** Backend sprint 1 ([`BACKEND_SPRINT_1.md`](BACKEND_SPRINT_1.md)) is done: sign-in, Gmail read and write, compose and drafts, Calendar read and write, contacts, search and paging, invites, remote images, offline queueing and status are merged and tested on the real account. Items still 🟡 wait on checks only the user can do (sign-in flow, attaching a file, invites from a second address) or on rare server errors. `PIGEON_DEMO=1` runs on the placeholder data.
 
 - Mail comes from `assets/mailbox.json`, loaded once by `MailData::load()` (`src/data.rs`). Calendar comes from `assets/calendar.json`, loaded by `CalendarData::load()` (`src/calendar/mod.rs`). Both are called from `main()`.
 - There is no network, sync, sending or storage code in `src/`.
