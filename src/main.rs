@@ -6,6 +6,7 @@ mod data;
 mod html;
 mod markdown;
 mod search;
+mod settings;
 mod theme;
 mod ui;
 
@@ -29,7 +30,7 @@ fn menus() -> Vec<Menu> {
         Menu::new("Pigeon").items([
             MenuItem::action("About Pigeon", About),
             MenuItem::separator(),
-            MenuItem::action("Settings…", OpenSettings).disabled(true),
+            MenuItem::action("Settings…", OpenSettings),
             MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),

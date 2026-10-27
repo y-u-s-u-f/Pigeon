@@ -249,7 +249,7 @@ Each of these acts on the checked threads when any are checked (ACT-6), otherwis
 
 ### ACT-1 Archive and move to Inbox
 
-- **Feature:** Shortcut `e`. Toolbar button "Archive" (its tooltip changes to "Move to Inbox" for archived threads). Palette "Archive". Moves the selected thread to Archive, or back to Inbox if it is already in Archive. The selection moves to the next thread, or the previous one if there is none after it.
+- **Feature:** Shortcut `e`. Toolbar button "Archive" (its tooltip changes to "Move to Inbox" for archived threads). Palette "Archive". Moves the selected thread to Archive, or back to Inbox if it is already in Archive. The selection moves to the next thread, or the previous one if there is none after it (unless Settings › Mail › Auto-advance is off, then nothing stays selected).
 - **Today:** In memory. `archive()` and `move_selected()` in `src/app.rs`. The target comes from `Folder::archive_target()` in `src/data.rs`: Inbox goes to Archive; Archive, Spam and Trash go to Inbox; Sent and Drafts do nothing. The toolbar hides the Archive button in Sent and Drafts. The rule follows each thread's own folder, so it also applies in Starred and label views.
 - **Backend needs:** Move the thread to Archive. Gmail: `threads.modify` with `removeLabelIds: ["INBOX"]`. IMAP: `UID MOVE` to the Archive folder. Moving back: `UID MOVE` to INBOX. Spam to Inbox is the "not spam" action (FOL-7), and Trash to Inbox is a restore.
 - **Notes:** Rollback is needed if the server rejects the change (STA-2).
@@ -479,7 +479,7 @@ Search is in memory. Each thread gets a `SearchIndex` from `Thread::reindex()` i
 
 ### SRC-2 Default search scope
 
-- **Feature:** Without `in:`, a search covers the current view. In the Inbox it also covers archived threads.
+- **Feature:** Without `in:`, a search covers the current view (or all mail, when Settings › Mail › Search scope says so). In the Inbox it also covers archived threads.
 - **Today:** In memory. `refresh_rows()` in `src/app.rs` uses `nav_contains()` and the Inbox+Archive rule.
 - **Backend needs:** Search scoped to a folder or label, with the Inbox scope including Archive.
 - **Notes:** A search in Sent, Drafts, Spam or Trash uses that folder only.
@@ -914,10 +914,11 @@ These are the states the UI must show once the backend exists. None exists today
 
 ### PER-3 Persisted UI state
 
-- **Feature:** UI not built yet. Window and layout state is reset on each launch.
-- **Today:** In memory only, in `PigeonApp`: `nav`, `sidebar_open`, `sidebar_width`, `list_width`, `archived_expanded`, `expanded_messages`, the list density, recent searches and recently run palette commands. All reset on launch (`PigeonApp::new()`).
-- **Backend needs:** Save these to a local settings file. This is not server data, but it is needed to keep the same layout after restart.
+- **Feature:** UI not built yet. Window and layout state is reset on each launch. The settings page (⌘,, `src/ui/settings.rs`) changes preferences that are lost on quit too.
+- **Today:** In memory only, in `PigeonApp`: `nav`, `sidebar_open`, `sidebar_width`, `list_width`, `archived_expanded`, `expanded_messages`, the list density, `text_scale`, recent searches and recently run palette commands, plus `PigeonApp::settings` (`Settings` in `src/settings.rs`: appearance System/Light/Dark, Reduce motion override, auto-advance, default search scope). The calendar's view and week numbers are on `CalendarView` (see CAL-23). All reset on launch (`PigeonApp::new()`).
+- **Backend needs:** Save these to a local settings file and apply them at launch (the appearance through `App::set_window_appearance`, Reduce motion through `App::set_reduce_motion`). This is not server data, but it is needed to keep the same layout and preferences after restart.
 - **Notes:** `expanded_messages` is per thread. Keep it, or accept the reset.
+- **Settings page (⌘,):** `src/ui/settings.rs` shows and changes, all in memory: appearance (System/Light/Dark), text scale, Reduce Motion override, auto-advance and default search scope (`Settings` in `src/settings.rs`), plus the density, sidebar, `archived_expanded`, the calendar's view and week numbers where the app already keeps them. All of these need saving with the rest of PER-3 and restoring at launch (appearance must be applied before the first frame). The Account row shows `MailData::me()` only; signing in and switching accounts is ACC.
 
 ---
 
@@ -975,7 +976,8 @@ These are real features that do not depend on the backend. They are listed so th
 - Sidebar show and hide (`cmd-\`, `toggle_sidebar()`).
 - Keyboard shortcuts sheet (`?`), built from the live keymap in `src/ui/shortcuts_help.rs`. Like the palette, it shows only the current mode's commands plus the global ones.
 - Calendar views, navigation and keyboard selection (`d`/`w`/`m`, `t`, `j`/`k`, arrows, `tab`), see CAL-4.
-- Light and dark theme that follows the system (`Theme::sync()` in `src/theme.rs`).
+- Light and dark theme that follows the system (`Theme::sync()` in `src/theme.rs`), or the Appearance setting.
+- The settings page (⌘,, `src/ui/settings.rs`), apart from persisting its values (PER-3).
 - Keyboard focus between list, reader, composer and search.
 - Window title bar and drag area (`window_drag_area()` in `src/ui/mod.rs`).
 - Quit (`cmd-q`).
@@ -1005,7 +1007,7 @@ These are gaps the backend will need to support once the UI is built. Each one h
 - **Contact management**: see CON-3.
 - **Calendar**: series edits (CAL-6), invite cards in mail (CAL-20), drag to create and move (CAL-21), permissions (CAL-22).
 
-Signatures and a settings screen are not built and are not listed as features here, because nothing in the UI refers to them.
+Signatures are not built and are not listed as features here, because nothing in the UI refers to them. The settings page exists but only shows preferences the app already has; its Accounts section is display only (ACC-1).
 
 ---
 

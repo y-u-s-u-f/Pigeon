@@ -255,7 +255,11 @@ fn render_group(group: Group, rows: &[HelpRow], theme: &Theme) -> AnyElement {
 
 /// The action's bindings in the scope's contexts (see `lookup_contexts`),
 /// highest precedence first, without duplicates.
-fn live_bindings(action: &dyn gpui::Action, scope: Scope, window: &Window) -> Vec<KeyBinding> {
+pub(crate) fn live_bindings(
+    action: &dyn gpui::Action,
+    scope: Scope,
+    window: &Window,
+) -> Vec<KeyBinding> {
     let mut bindings: Vec<KeyBinding> = Vec::new();
     for context in lookup_contexts(scope, false) {
         for binding in window

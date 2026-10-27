@@ -81,12 +81,7 @@ impl PigeonApp {
                 cx.listener(|this, action: &ToggleLabel, _, cx| this.toggle_label(action.0, cx)),
             )
             .on_action(cx.listener(|this, _: &ToggleDensity, _, cx| {
-                this.density = match this.density {
-                    Density::Comfortable => Density::Compact,
-                    Density::Compact => Density::Comfortable,
-                };
-                this.list_state.remeasure();
-                this.reveal_selected();
+                this.toggle_density();
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &NextSuggestion, window, cx| {
@@ -111,6 +106,15 @@ impl PigeonApp {
                     }
                 })
             })
+    }
+
+    pub(crate) fn toggle_density(&mut self) {
+        self.density = match self.density {
+            Density::Comfortable => Density::Compact,
+            Density::Compact => Density::Comfortable,
+        };
+        self.list_state.remeasure();
+        self.reveal_selected();
     }
 
     /// Unread threads in the Inbox, for the rail.
@@ -472,7 +476,10 @@ impl PigeonApp {
         self.clear_checked();
         self.refresh_rows(true);
         if selected_goes {
-            match next.and_then(|id| self.data.thread_ix(&id)) {
+            match next
+                .filter(|_| self.settings.auto_advance)
+                .and_then(|id| self.data.thread_ix(&id))
+            {
                 Some(ix) => self.select_thread(ix, window, cx),
                 None => self.selected = None,
             }
@@ -914,6 +921,17 @@ impl PigeonApp {
         self.recent_searches.retain(|q| *q != query);
         self.recent_searches.insert(0, query);
         self.recent_searches.truncate(RECENT_SEARCHES);
+    }
+
+    /// The Search scope setting: where a new search looks. The open
+    /// search takes it too.
+    pub(crate) fn set_default_search_scope(&mut self, all: bool, cx: &mut Context<Self>) {
+        self.settings.search_all_mail = all;
+        self.search_all = all;
+        if self.is_searching() {
+            self.refresh_rows(false);
+        }
+        cx.notify();
     }
 
     /// The scope chip: search this view, or all mail.

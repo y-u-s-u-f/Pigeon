@@ -38,6 +38,12 @@ pub struct Theme {
     pub card_focused_bg: Hsla,
     pub chip_bg: Hsla,
     pub search_bg: Hsla,
+    /// An off switch's track, and the well of a segmented control.
+    pub control_track: Hsla,
+    /// A switch's knob.
+    pub control_knob: Hsla,
+    /// The chosen segment of a segmented control.
+    pub segment_bg: Hsla,
 
     pub icon: Hsla,
     pub icon_active: Hsla,
@@ -115,6 +121,9 @@ impl Theme {
             card_focused_bg: hex(0xffffff0d),
             chip_bg: hex(0xffffff12),
             search_bg: hex(0xffffff14),
+            control_track: hex(0xffffff1f),
+            control_knob: hex(0xf4f4f7ff),
+            segment_bg: hex(0xffffff2b),
 
             icon: hex(0xadadb7ff),
             icon_active: hex(0xf2f2f5ff),
@@ -171,6 +180,9 @@ impl Theme {
             card_focused_bg: hex(0x00000008),
             chip_bg: hex(0x0000000d),
             search_bg: hex(0x0000000a),
+            control_track: hex(0x0000001c),
+            control_knob: hex(0xffffffff),
+            segment_bg: hex(0xffffffff),
 
             icon: hex(0x55555dff),
             icon_active: hex(0x1c1c1fff),
@@ -297,7 +309,12 @@ impl Theme {
     /// gpui-component's theme (scrollbars, resize handles, future inputs) in step
     /// with it.
     pub fn sync(window: &mut Window, cx: &mut App) {
-        let appearance = window.appearance();
+        Self::apply(window.appearance(), window, cx);
+    }
+
+    /// Install the theme for `appearance`, which the user may have chosen
+    /// over the window's.
+    pub fn apply(appearance: WindowAppearance, window: &mut Window, cx: &mut App) {
         let theme = Self::for_appearance(appearance);
         let (border, muted) = (theme.border, theme.text_muted);
         cx.set_global(theme);

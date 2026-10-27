@@ -1,4 +1,5 @@
-//! The activity rail on the far left: Mail and Calendar.
+//! The activity rail on the far left: Mail and Calendar, and Settings at
+//! the bottom.
 
 use gpui::{
     Action, InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString,
@@ -9,18 +10,19 @@ use gpui::{
 use super::{HEADER_HEIGHT, icon, window_drag_area};
 use crate::ui::style::*;
 use crate::{
-    actions::{GoToCalendar, GoToMail},
+    actions::{GoToCalendar, GoToMail, OpenSettings},
     app::{Mode, RAIL_WIDTH},
     assets::Icon,
     theme::Theme,
 };
 
-/// `unread`: unread threads in the Inbox, shown as a dot on Mail so new
-/// mail is visible from Calendar too.
-pub fn render(mode: Mode, unread: usize, theme: &Theme) -> impl IntoElement {
+/// `mode`: the app showing, none while Settings is. `unread`: unread
+/// threads in the Inbox, shown as a dot on Mail so new mail is visible from
+/// Calendar too.
+pub fn render(mode: Option<Mode>, unread: usize, theme: &Theme) -> impl IntoElement {
     let item = |id: &'static str,
                 glyph: Icon,
-                item_mode: Mode,
+                item_mode: Option<Mode>,
                 tooltip: SharedString,
                 action: Box<dyn Action>| {
         let active = mode == item_mode;
@@ -82,7 +84,7 @@ pub fn render(mode: Mode, unread: usize, theme: &Theme) -> impl IntoElement {
         item(
             "rail-mail",
             Icon::Mail,
-            Mode::Mail,
+            Some(Mode::Mail),
             match unread {
                 0 => "Mail".into(),
                 n => format!("Mail · {n} unread").into(),
@@ -105,8 +107,16 @@ pub fn render(mode: Mode, unread: usize, theme: &Theme) -> impl IntoElement {
     .child(item(
         "rail-calendar",
         Icon::Calendar,
-        Mode::Calendar,
+        Some(Mode::Calendar),
         "Calendar".into(),
         Box::new(GoToCalendar),
     ))
+    .child(div().flex_1())
+    .child(div().pb(SPACE_LG).child(item(
+        "rail-settings",
+        Icon::Settings,
+        None,
+        "Settings".into(),
+        Box::new(OpenSettings),
+    )))
 }

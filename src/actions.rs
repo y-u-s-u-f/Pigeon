@@ -16,6 +16,8 @@
 //! - `Composer`: the draft in the reading pane, inside `Mailbox`; its
 //!   recipient fields add `Recipients`. `SearchBar`: the search field above the
 //!   list, inside `Mailbox`.
+//! - `Settings`: the settings page (⌘,), in place of `Mailbox` or
+//!   `Calendar` while it shows. Its search field adds `SettingsSearch`.
 //! - `Input`: gpui-component's text inputs. Single-letter shortcuts also
 //!   require `!Input`, so typing never triggers them.
 
@@ -31,6 +33,7 @@ use crate::{
             self, BulletedList, ClearFormatting, FormatBold, FormatCode, FormatItalic,
             FormatStrikethrough, FormatUnderline, InsertLink, NumberedList, QuoteLines,
         },
+        settings as settings_page,
     },
 };
 
@@ -167,6 +170,8 @@ pub fn bind_keys(cx: &mut App) {
     const DATE_INPUT: &str = "DateField > Input";
     const TIME_INPUT: &str = "TimeField > Input";
     const GUESTS_INPUT: &str = "Guests > Input";
+    const SET: &str = "Settings && !Input";
+    const SET_INPUT: &str = "SettingsSearch > Input";
 
     cx.bind_keys([
         // Menu-bar shortcuts first: the menu shows an action's first binding.
@@ -343,6 +348,33 @@ pub fn bind_keys(cx: &mut App) {
             composer::RemoveLastRecipient,
             Some(GUESTS_INPUT),
         ),
+        // The settings page.
+        KeyBinding::new("down", settings_page::SelectNext, Some(SET)),
+        KeyBinding::new("j", settings_page::SelectNext, Some(SET)),
+        KeyBinding::new("up", settings_page::SelectPrev, Some(SET)),
+        KeyBinding::new("k", settings_page::SelectPrev, Some(SET)),
+        KeyBinding::new("tab", settings_page::EnterRows, Some(SET)),
+        KeyBinding::new("shift-tab", settings_page::LeaveRows, Some(SET)),
+        KeyBinding::new("enter", settings_page::Activate, Some(SET)),
+        KeyBinding::new("space", settings_page::Activate, Some(SET)),
+        KeyBinding::new("right", settings_page::Increase, Some(SET)),
+        KeyBinding::new("left", settings_page::Decrease, Some(SET)),
+        KeyBinding::new("/", settings_page::FocusSearch, Some(SET)),
+        KeyBinding::new(
+            "cmd-f",
+            settings_page::FocusSearch,
+            Some(settings_page::SETTINGS),
+        ),
+        KeyBinding::new("?", ToggleShortcutsHelp, Some(SET)),
+        // Inputs pass escape on, so this clears the search from it too.
+        KeyBinding::new(
+            "escape",
+            settings_page::Close,
+            Some(settings_page::SETTINGS),
+        ),
+        KeyBinding::new("down", settings_page::SelectNext, Some(SET_INPUT)),
+        KeyBinding::new("up", settings_page::SelectPrev, Some(SET_INPUT)),
+        KeyBinding::new("tab", settings_page::EnterRows, Some(SET_INPUT)),
         // Overlays.
         KeyBinding::new("escape", ToggleShortcutsHelp, Some(HELP)),
         KeyBinding::new("?", ToggleShortcutsHelp, Some(HELP)),
@@ -577,5 +609,6 @@ pub const COMMANDS: &[Command] = commands! {
     App: "Go to Calendar", Calendar, GoToCalendar;
     App: "Command Palette", Command, ToggleCommandPalette, help_only;
     App: "Keyboard Shortcuts", Keyboard, ToggleShortcutsHelp;
+    App: "Settings…", Settings, OpenSettings;
     App: "Quit Pigeon", Command, Quit;
 };

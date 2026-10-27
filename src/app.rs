@@ -29,12 +29,14 @@ use crate::{
     data::{Contact, DraftOrigin, Folder, MailData, Message, Quote, Thread, full_date},
     html,
     search::{FocusResults, Query},
+    settings::Settings,
     theme::Theme,
     ui::{
         self, PaneResize,
         calendar::{CalendarEvent, CalendarView, Removal},
         command_palette::{CommandPalette, Leading, PaletteCommand, PaletteEvent, PaletteItem},
         composer::{Composer, ComposerEvent, ContactBook, DraftContent, Quoted},
+        settings::SettingsPage,
     },
 };
 
@@ -193,6 +195,12 @@ pub struct PigeonApp {
     pub help_filter: Entity<InputState>,
     /// A reveal waiting for the list's next layout.
     reveal_pending: bool,
+    /// The preferences with no other home; the settings page shows these
+    /// and the state above.
+    pub settings: Settings,
+    pub settings_page: SettingsPage,
+    /// The system's Reduce Motion, from before the setting overrode it.
+    pub(crate) system_reduce_motion: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -205,14 +213,14 @@ impl PigeonApp {
     ) -> Self {
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
-        let appearance = cx.observe_window_appearance(window, |_, window, cx| {
-            Theme::sync(window, cx);
+        let appearance = cx.observe_window_appearance(window, |this, window, cx| {
+            this.sync_theme(window, cx);
             cx.notify();
         });
         // Reduce Motion is read at startup; this catches a change made while
         // Pigeon was in the background.
-        let activation = cx.observe_window_activation(window, |_, window, cx| {
-            if window.is_window_active() {
+        let activation = cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() && !this.settings.reduce_motion {
                 gpui::base::apply_system_reduce_motion(cx);
             }
         });
@@ -226,6 +234,7 @@ impl PigeonApp {
                 cx.notify();
             }
         });
+        let (settings_page, settings_events) = SettingsPage::new(window, cx);
         let contact_book = Rc::new(ContactBook::new(data.contacts()));
         let calendar = cx.new(|cx| CalendarView::new(calendar, contact_book.clone(), window, cx));
         let calendar_events = cx.subscribe(&calendar, |this, _, event, cx| match event {
@@ -277,7 +286,11 @@ impl PigeonApp {
             invite_details_open: false,
             help_filter,
             reveal_pending: false,
+            settings: Settings::default(),
+            settings_page,
+            system_reduce_motion: false,
             _subscriptions: vec![
+                settings_events,
                 appearance,
                 activation,
                 search_events,
@@ -472,7 +485,12 @@ impl PigeonApp {
         width - RAIL_WIDTH - READER_MIN - self.sidebar_width >= LIST_WIDTH.0
     }
 
-    fn toggle_sidebar(&mut self, _: &ToggleSidebar, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_sidebar(
+        &mut self,
+        _: &ToggleSidebar,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let shown = self.pane_layout(window.viewport_size().width).sidebar > px(0.);
         if shown {
             self.sidebar_open = false;
@@ -484,7 +502,7 @@ impl PigeonApp {
         cx.notify();
     }
 
-    fn set_text_scale(&mut self, scale: f32, cx: &mut Context<Self>) {
+    pub(crate) fn set_text_scale(&mut self, scale: f32, cx: &mut Context<Self>) {
         let (min, max) = ui::style::TEXT_SCALE_RANGE;
         // Rounded, so repeated steps land back on 1.
         self.text_scale = ((scale * 10.).round() / 10.).clamp(min, max);
@@ -548,6 +566,9 @@ impl PigeonApp {
 
     /// Opens the search bar, or returns to it, and focuses it.
     fn toggle_search(&mut self, _: &ToggleSearch, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_page.open {
+            return self.focus_settings_search(window, cx);
+        }
         self.search_open = true;
         self.search_input
             .update(cx, |input, cx| input.focus(window, cx));
@@ -559,7 +580,7 @@ impl PigeonApp {
             return cx.propagate();
         }
         self.search_open = false;
-        self.search_all = false;
+        self.search_all = self.settings.search_all_mail;
         self.search_query = Query::default();
         self.search_input
             .update(cx, |input, cx| input.set_value("", window, cx));
@@ -602,7 +623,7 @@ impl PigeonApp {
         cx.notify();
     }
 
-    fn toggle_archived_section(
+    pub(crate) fn toggle_archived_section(
         &mut self,
         _: &ToggleArchivedSection,
         _: &mut Window,
@@ -635,6 +656,7 @@ impl PigeonApp {
         let Some(ix) = self.selected else { return };
         let next = self
             .next_after_selected()
+            .filter(|_| self.settings.auto_advance)
             .map(|next| self.data.threads[next].id.clone());
         self.select_thread(ix, window, cx);
         self.discard_draft(&DiscardDraft, window, cx);
@@ -1279,7 +1301,11 @@ impl PigeonApp {
     // Switching between Mail and Calendar.
 
     pub fn set_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
-        if self.mode != mode {
+        let leaving_settings = std::mem::replace(&mut self.settings_page.open, false);
+        if leaving_settings {
+            self.clear_settings_search(window, cx);
+        }
+        if self.mode != mode || leaving_settings {
             self.mode = mode;
             self.palette = None;
             self.help_open = false;
@@ -1289,7 +1315,10 @@ impl PigeonApp {
     }
 
     /// The focus of the panes of the current app.
-    fn pane_focus(&self, cx: &gpui::App) -> FocusHandle {
+    pub(crate) fn pane_focus(&self, cx: &gpui::App) -> FocusHandle {
+        if self.settings_page.open {
+            return self.settings_page.focus.clone();
+        }
         match self.mode {
             Mode::Mail => self.focus_handle.clone(),
             Mode::Calendar => self.calendar.read(cx).focus_handle.clone(),
@@ -1537,6 +1566,31 @@ impl PigeonApp {
         let PaletteEvent::Run(command) = event else {
             return;
         };
+        // A Mail or Calendar command run from Settings goes back to its app
+        // first; the action waits for the panes to be drawn.
+        if self.settings_page.open {
+            let global = match *command {
+                PaletteCommand::Action(action) => {
+                    let name = action().name();
+                    COMMANDS
+                        .iter()
+                        .find(|c| (c.action)().name() == name)
+                        .is_none_or(|c| c.group.scope() == Scope::Global)
+                }
+                _ => false,
+            };
+            if !global {
+                self.set_mode(self.mode, window, cx);
+                if let PaletteCommand::Action(action) = *command {
+                    self.recent_commands.retain(|n| *n != action().name());
+                    self.recent_commands.insert(0, action().name());
+                    cx.on_next_frame(window, move |_, window, cx| {
+                        window.dispatch_action(action(), cx)
+                    });
+                    return;
+                }
+            }
+        }
         match *command {
             // Dispatched from the panes, which now have focus, exactly as if
             // its shortcut had been pressed there.
@@ -1576,7 +1630,7 @@ impl PigeonApp {
         }
     }
 
-    fn close_overlays(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn close_overlays(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.palette = None;
         if self.help_open {
             self.help_filter
@@ -1756,6 +1810,7 @@ impl Render for PigeonApp {
             cx,
         );
         let sidebar_shown = sidebar_width * sidebar_open;
+        let settings_open = self.settings_page.open;
         let entity = cx.entity();
         let reset = move |kind| {
             let entity = entity.clone();
@@ -1819,6 +1874,7 @@ impl Render for PigeonApp {
             .on_action(cx.listener(Self::focus_prev_control))
             .on_action(cx.listener(Self::focus_panes))
             .on_action(cx.listener(Self::about))
+            .on_action(cx.listener(Self::toggle_settings))
             .on_action(cx.listener(Self::close_window))
             .on_action(cx.listener(Self::minimize))
             .on_action(cx.listener(Self::zoom_window))
@@ -1828,17 +1884,31 @@ impl Render for PigeonApp {
             .size_full()
             .overflow_hidden()
             .text_color(theme.text)
-            .when(self.mode == Mode::Calendar, |this| {
+            .when(settings_open, |this| {
                 this.child(
                     div()
                         .size_full()
                         .flex()
                         .flex_row()
-                        .child(ui::rail::render(self.mode, self.inbox_unread(), &theme))
+                        .child(ui::rail::render(None, self.inbox_unread(), &theme))
+                        .child(self.render_settings(window, cx)),
+                )
+            })
+            .when(!settings_open && self.mode == Mode::Calendar, |this| {
+                this.child(
+                    div()
+                        .size_full()
+                        .flex()
+                        .flex_row()
+                        .child(ui::rail::render(
+                            Some(self.mode),
+                            self.inbox_unread(),
+                            &theme,
+                        ))
                         .child(self.calendar.clone()),
                 )
             })
-            .when(self.mode == Mode::Mail, |this| {
+            .when(!settings_open && self.mode == Mode::Mail, |this| {
                 this.child(
                     div()
                         .key_context(self.mailbox_key_context())
@@ -1847,7 +1917,11 @@ impl Render for PigeonApp {
                         .size_full()
                         .flex()
                         .flex_row()
-                        .child(ui::rail::render(self.mode, self.inbox_unread(), &theme))
+                        .child(ui::rail::render(
+                            Some(self.mode),
+                            self.inbox_unread(),
+                            &theme,
+                        ))
                         .when(sidebar_open > 0., |this| {
                             this.child(
                                 div()
