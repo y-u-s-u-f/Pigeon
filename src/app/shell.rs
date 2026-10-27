@@ -11,9 +11,8 @@ use std::cell::RefCell;
 
 use chrono::NaiveDateTime;
 use gpui::{
-    Action, AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, Global,
-    TitlebarOptions, WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowOptions,
-    point, px, size,
+    AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, Global, TitlebarOptions,
+    WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowOptions, point, px, size,
 };
 
 use super::{Mode, PigeonApp, RAIL_WIDTH};
@@ -111,6 +110,7 @@ pub enum Show {
     },
     Compose(Option<Mailto>),
     NewEvent,
+    Settings,
 }
 
 /// The main window: its handle, and its view while it's open.
@@ -185,7 +185,7 @@ pub fn init(backend: Entity<Backend>, cx: &mut App) {
     cx.on_action(|_: &NewEvent, cx| show(Show::NewEvent, cx));
     cx.on_action(|_: &OpenThread, cx| show(Show::Main, cx));
     cx.on_action(|_: &ShowMainWindow, cx| show(Show::Main, cx));
-    cx.on_action(|_: &OpenSettings, cx| dispatch_in_main(OpenSettings.boxed_clone(), cx));
+    cx.on_action(|_: &OpenSettings, cx| show(Show::Settings, cx));
     cx.on_action(|_: &SyncNow, cx| {
         backend_of(cx).update(cx, |b, cx| b.sync_now(cx));
     });
@@ -262,11 +262,13 @@ fn open_mailto(urls: Vec<String>, cx: &mut App) {
 pub fn ensure_main_window(cx: &mut App) -> MainWindow {
     if let Some(main) = cx.global::<Shell>().main.clone()
         && main.app.upgrade().is_some()
-        && main
-            .window
-            .update(cx, |_, window, _| window.activate_window())
-            .is_ok()
+        && cx.windows().contains(&main.window)
     {
+        // Fails while the window is mid-update (an action from it reached an
+        // app-level handler); it's open all the same, so no second one.
+        main.window
+            .update(cx, |_, window, _| window.activate_window())
+            .ok();
         return main;
     }
     let backend = backend_of(cx);
@@ -292,20 +294,32 @@ pub fn ensure_main_window(cx: &mut App) -> MainWindow {
 
 /// Bring `what` up in the main window, opening it if need be.
 pub fn show(what: Show, cx: &mut App) {
-    let main = ensure_main_window(cx);
-    cx.activate(true);
-    main.update(cx, |this, window, cx| this.show(what, window, cx));
+    if let Err(what) = show_now(what, cx) {
+        // The main window is mid-update: once it's done.
+        cx.defer(move |cx| {
+            if show_now(what, cx).is_err() {
+                logging::info("window: couldn't reach the main window");
+            }
+        });
+    }
 }
 
-/// Run `action` in the main window, once it has drawn.
-fn dispatch_in_main(action: Box<dyn Action>, cx: &mut App) {
+/// Calls into the main window's views directly: an action dispatched there
+/// that nothing takes falls through to the app-level handlers in `init`,
+/// which would come back here.
+fn show_now(what: Show, cx: &mut App) -> Result<(), Show> {
     let main = ensure_main_window(cx);
     cx.activate(true);
-    main.update(cx, |_, window, cx| {
-        cx.on_next_frame(window, move |_, window, cx| {
-            window.dispatch_action(action, cx)
-        });
+    let mut what = Some(what);
+    main.update(cx, |this, window, cx| {
+        if let Some(what) = what.take() {
+            this.show(what, window, cx);
+        }
     });
+    match what {
+        Some(what) => Err(what),
+        None => Ok(()),
+    }
 }
 
 fn window_options(cx: &mut App) -> WindowOptions {
@@ -512,9 +526,15 @@ impl PigeonApp {
             Show::Compose(Some(mailto)) => self.compose_mailto(mailto, window, cx),
             Show::NewEvent => {
                 self.set_mode(Mode::Calendar, window, cx);
-                cx.on_next_frame(window, |_, window, cx| {
-                    window.dispatch_action(Box::new(NewEvent), cx)
+                cx.on_next_frame(window, |this, window, cx| {
+                    this.calendar
+                        .update(cx, |c, cx| c.new_event(&NewEvent, window, cx));
                 });
+            }
+            Show::Settings => {
+                if !self.settings_page.open {
+                    self.toggle_settings(&OpenSettings, window, cx);
+                }
             }
         }
     }

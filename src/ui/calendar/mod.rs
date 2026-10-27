@@ -1988,7 +1988,7 @@ impl CalendarView {
 
     /// `c`: an hour from the next half hour today, or from 9 on another
     /// selected day.
-    fn new_event(&mut self, _: &NewEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn new_event(&mut self, _: &NewEvent, window: &mut Window, cx: &mut Context<Self>) {
         let today = today();
         let day = self.anchor;
         let start = if day == today {
