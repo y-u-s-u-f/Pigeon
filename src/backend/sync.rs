@@ -74,6 +74,10 @@ pub struct SyncState {
     calendar_running: bool,
     pub(super) calendar_due: bool,
     _calendar: Option<Task<()>>,
+    /// The contacts pass (W8): when it last ran, and whether one runs now.
+    contacts_last: Option<Instant>,
+    contacts_running: bool,
+    _contacts: Option<Task<()>>,
 }
 
 /// One step of a mail sync plan.
@@ -758,6 +762,8 @@ impl Backend {
 
         // calendar pass (W4): replace `sync_calendar` below.
         self.sync_calendar(cx);
+        // contacts pass (W8).
+        self.sync_contacts(cx);
 
         if self.sync.again {
             return self.run_sync(cx);
@@ -817,6 +823,77 @@ impl Backend {
         }));
     }
     // end calendar pass (W4) ------------------------------------------
+
+    // contacts pass (W8) ----------------------------------------------
+    /// The contacts' sync (SYN-6), run after each mail pass: on launch,
+    /// then every 30 minutes.
+    fn sync_contacts(&mut self, cx: &mut Context<Self>) {
+        const INTERVAL: Duration = Duration::from_secs(30 * 60);
+        use super::people::{self, Source};
+        let sources: Vec<Source> = [
+            (Source::Connection, super::auth::CONTACTS_SCOPE),
+            (Source::Other, people::OTHER_CONTACTS_SCOPE),
+        ]
+        .into_iter()
+        .filter(|(_, scope)| self.has_scope(scope))
+        .map(|(source, _)| source)
+        .collect();
+        let due = self
+            .sync
+            .contacts_last
+            .is_none_or(|last| last.elapsed() >= INTERVAL);
+        if self.sync.contacts_running || sources.is_empty() || !due {
+            return;
+        }
+        let Some(transport) = self.transport() else {
+            return;
+        };
+        self.sync.contacts_running = true;
+        let store = self.store.clone();
+        let email = self.email().to_string();
+        self.sync._contacts = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { people::sync_pass(&*transport, &store, &email, &sources) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.sync.contacts_running = false;
+                match result {
+                    Ok(changed) => {
+                        this.sync.contacts_last = Some(Instant::now());
+                        if changed {
+                            cx.emit(BackendEvent::ContactsChanged);
+                        }
+                    }
+                    // Offline: try again after the next mail pass.
+                    Err(e) if people::is_network(&e) => {}
+                    Err(e) => {
+                        this.sync.contacts_last = Some(Instant::now());
+                        eprintln!("Pigeon: contacts sync stopped: {e:#}");
+                    }
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// Who a message is sent to joins the book at once, in demo mode too.
+    pub(super) fn note_recipients(&mut self, draft: &super::Outgoing, cx: &mut Context<Self>) {
+        let recipients: Vec<_> = [&draft.to, &draft.cc, &draft.bcc]
+            .into_iter()
+            .flatten()
+            .filter(|c| !self.account.as_ref().is_some_and(|a| a.is_me(&c.email)))
+            .cloned()
+            .collect();
+        if recipients.is_empty() {
+            return;
+        }
+        match self.store.add_sent_recipients(self.email(), &recipients) {
+            Ok(()) => cx.emit(BackendEvent::ContactsChanged),
+            Err(e) => eprintln!("Pigeon: couldn't add recipients to contacts: {e:#}"),
+        }
+    }
+    // end contacts pass (W8) ------------------------------------------
 
     // Bodies (RDR-6).
 

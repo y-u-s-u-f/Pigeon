@@ -124,9 +124,9 @@ The user's own plans, not driven by Google's APIs.
 
 #### ACC-2 Identity of "me"
 
-- **Today:** `MailData::is_me()` and `me()` (`src/data.rs`) compare against `account.email` and `Account::aliases` (empty until W3 reads `sendAs`), ignoring case (`Account::is_me()`). The reader shows "me"; replies skip the user; Sent and Drafts rows show "To:".
-- **Needs:** Every address the user sends from: Gmail `settings.sendAs.list` (includes the primary). Check each message's `from` against all of them.
-- **Notes:** Aliases show as other people today. See MST-1.
+- **Today:** `MailData::is_me()` and `me()` (`src/data.rs`) compare against `account.email` and `Account::aliases`, ignoring case (`Account::is_me()`). The aliases come from Gmail `settings.sendAs.list` at the start of each full sync, kept in `sync_state` (`gmail_aliases`) and loaded on launch (`src/backend/sync.rs`). Mail from an alias shows as "me" in the reader, replies and reply-all skip every alias, Sent and Drafts rows show "To:", and aliases are never suggested as recipients (`Store::contacts()`).
+- **Needs:** Nothing more for "me". Replying from the alias a mail was sent to needs the From picker (see the sendAs item).
+- **Notes:** The calendar's guest list still compares against the primary address only. See MST-1.
 
 #### ACC-3 Add, sign in to and remove accounts
 
@@ -653,14 +653,14 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 #### CON-1 Recipient suggestions
 
-- **Today:** Recipient fields and the event panel's "Add guests" show up to six suggestions: prefix matches first, then word-prefix ("ch" finds Sarah Chen), then substring for 3+ letters, fuzzy only when nothing else matches. Automated senders (no-reply, notification, newsletter, alerts, receipts…) and spam senders are never suggested; added recipients are excluded. Arrows, `Ctrl-n`/`Ctrl-p`, Enter or click, Escape. The book is built once at startup from the store: synced contacts (none yet), then every non-Spam sender and recipient in the cached mail by frequency (`Backend::contacts()`, `Store::contacts()` in `src/backend/store/contacts.rs`, `ContactBook::new()` in `PigeonApp::new()`); ranking in `ContactBook::suggest()` and `is_automated()` (`src/contacts.rs`). Shared as `Rc<ContactBook>` with every composer and the calendar.
-- **Needs:** A local cache filled from People `people.connections.list` (My Contacts) and `otherContacts.list` (addresses the user has mailed), kept fresh with their sync tokens (SYN-6), searched locally. For live lookups, `people.searchContacts` and `otherContacts.search` (send an empty warm-up query first, as Google advises). Add new addresses after each send (today they appear only after restart); changes must reach open composers.
+- **Today:** Recipient fields and the event panel's "Add guests" show up to six suggestions: prefix matches first, then word-prefix ("ch" finds Sarah Chen), then substring for 3+ letters, fuzzy only when nothing else matches. Automated senders (no-reply, notification, newsletter, alerts, receipts…) and spam senders are never suggested; added recipients are excluded. Arrows, `Ctrl-n`/`Ctrl-p`, Enter or click, Escape. The book comes from the store: My Contacts first, then Other Contacts (both synced from People, SYN-6) and people sent to from here, each group by how often the address appears in the cached mail; then every other non-Spam sender and recipient in the mail by frequency (`Backend::contacts()`, `Store::contacts()` and `rank()` in `src/backend/store/contacts.rs`). Ranking in `ContactBook::suggest()` and `is_automated()` (`src/contacts.rs`). One `SharedContactBook` (`Rc<RefCell<ContactBook>>`) is shared with every composer and the calendar; `BackendEvent::ContactsChanged` updates it in place (`ContactBook::update()`, contacts keep their index so open suggestion lists stay right), so open composers see new contacts on the next keystroke. Recipients of a sent message join at once (`Backend::note_recipients()`, stored as `source = 'sent'` rows), in demo mode too.
+- **Needs:** Nothing for this sprint (6.4 item 4: no live People search). Later, maybe `people.searchContacts` / `otherContacts.search` or `searchDirectoryPeople` for addresses not in the cache.
 - **Notes:** Other Contacts tells us who the user has written to, a better signal than guessing "automated" from the local part.
 
 #### CON-2 Typed name and address resolution
 
-- **Today:** A typed address is used as is. A name followed by comma or semicolon takes `ContactBook::best()`; after a comma an unmatched name is dropped silently. On Enter, the highlighted suggestion is used if the text has no `@` or the user moved through the list; otherwise the typed address, or the error. `resolve()`, `commit()`.
-- **Needs:** Lookup via CON-1. Don't drop unmatched names silently: show an error or leave the text.
+- **Today:** A typed address is used as is. A name followed by comma or semicolon takes `ContactBook::best()` over the synced book (CON-1). A name that matches no one stays in the field as text, with "No contact named “x”" under it (an invalid address: "“x” isn’t an email address"); `on_recipient_event()` in `src/ui/composer.rs`. On Enter, the highlighted suggestion is used if the text has no `@` or the user moved through the list; otherwise the typed address, or the error. `resolve()`, `commit()`.
+- **Needs:** Nothing more from the backend.
 
 #### CON-3 Contact management
 
@@ -1146,7 +1146,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### SYN-6 Contacts sync
 
-- **Needs:** `people.connections.list` and `otherContacts.list` with `requestSyncToken=true`, then `syncToken` for changes; resync when the token expires. Feeds CON-1.
+- **Today:** `src/backend/people.rs`: `people.connections.list personFields=names,emailAddresses` and `otherContacts.list readMask=names,emailAddresses`, both `requestSyncToken=true`, paged by 1,000, then by `syncToken` (deleted people go, changed ones are replaced). An expired token (400 `EXPIRED_SYNC_TOKEN` or 410) lists everything again. Stored per address in `contacts` with the tokens in `sync_state` (`people_sync_token`, `other_contacts_sync_token`), in one transaction (`Store::put_people()`). Run on launch, then every 30 minutes after a mail pass (`sync_contacts()` in `src/backend/sync.rs`); each list only when its scope (`contacts.readonly`, `contacts.other.readonly`) was granted. Emits `ContactsChanged` when anything changed. Read-only.
+- **Needs:** Nothing more for this sprint.
 
 #### SYN-7 Batching, quotas and backoff
 

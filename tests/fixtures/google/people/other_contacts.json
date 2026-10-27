@@ -1,0 +1,23 @@
+{
+  "otherContacts": [
+    {
+      "resourceName": "otherContacts/o1",
+      "etag": "%EgUBAgMuNxoEAQIFByIMbWF0ZW8=",
+      "names": [{ "displayName": "Mateo Ruiz" }],
+      "emailAddresses": [{ "metadata": { "primary": true, "source": { "type": "OTHER_CONTACT", "id": "o1" } }, "value": "mateo@example.com" }]
+    },
+    {
+      "resourceName": "otherContacts/o2",
+      "etag": "%EgUBAgMuNxoEAQIFByIMbGVuYQ==",
+      "emailAddresses": [{ "value": "lena@example.com" }]
+    },
+    {
+      "resourceName": "otherContacts/o3",
+      "etag": "%EgUBAgMuNxoEAQIFByIMcmFodWwy",
+      "names": [{ "displayName": "rahul" }],
+      "emailAddresses": [{ "value": "Rahul@example.com" }]
+    }
+  ],
+  "nextSyncToken": "other-token-1",
+  "totalSize": 3
+}

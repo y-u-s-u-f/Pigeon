@@ -7,7 +7,6 @@ pub use mail::{Density, SearchSuggestion};
 
 use std::{
     collections::{HashMap, HashSet},
-    rc::Rc,
     time::Duration,
 };
 
@@ -27,7 +26,7 @@ use crate::{
     actions::*,
     assets::Icon,
     backend::{Backend, MailOp, OpId, Source, UNDO_WINDOW, ViewKey, auth::CALENDAR_SCOPE, gmail},
-    contacts::ContactBook,
+    contacts::{ContactBook, SharedContactBook},
     data::{Folder, MailData, Thread},
     search::{FocusResults, Query},
     settings::{CalendarViewSetting, Saved, Settings},
@@ -176,7 +175,7 @@ pub struct PigeonApp {
     pub help_focus: FocusHandle,
     /// The open draft, with its event subscription.
     pub composer: Option<(Entity<Composer>, Subscription)>,
-    contact_book: Rc<ContactBook>,
+    contact_book: SharedContactBook,
     pub search_input: Entity<InputState>,
     pub search_query: Query,
     /// The message `n` and `p` move between, in the selected thread.
@@ -258,7 +257,7 @@ impl PigeonApp {
             }
         });
         let (settings_page, settings_events) = SettingsPage::new(window, cx);
-        let contact_book = Rc::new(ContactBook::new(contacts));
+        let contact_book = ContactBook::shared(contacts);
         let calendar = cx.new(|cx| {
             CalendarView::new(calendar, contact_book.clone(), backend.clone(), window, cx)
         });

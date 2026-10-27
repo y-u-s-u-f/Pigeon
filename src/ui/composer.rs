@@ -36,7 +36,7 @@ use crate::{
     actions::{COMPOSER, DiscardDraft, RECIPIENTS, SendMessage, ShowCcBcc},
     app::ComposeKind,
     assets::Icon,
-    contacts::ContactBook,
+    contacts::SharedContactBook,
     data::{Attachment, Contact, file_size},
     html::{self, Document},
     markdown::{self, Edit, Inline, LineKind},
@@ -253,7 +253,7 @@ pub struct Composer {
     /// Frames left to bring the caret into view; layout can lag an edit.
     reveal_tries: u8,
     initial: DraftContent,
-    book: Rc<ContactBook>,
+    book: SharedContactBook,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -268,7 +268,7 @@ impl Composer {
         draft_id: Option<String>,
         quoted: Option<Quoted>,
         inline: bool,
-        book: Rc<ContactBook>,
+        book: SharedContactBook,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -468,7 +468,7 @@ impl Composer {
                         .find(|part| {
                             !part.is_empty()
                                 && parse_address(part).is_none()
-                                && self.book.best(part).is_none()
+                                && self.book.borrow().best(part).is_none()
                         })
                         .map(str::to_string)
                 });
@@ -491,7 +491,7 @@ impl Composer {
             for part in pending.split([',', ';']).map(str::trim) {
                 let contact = parse_address(part).or_else(|| {
                     (!part.is_empty() && !part.contains('@'))
-                        .then(|| self.book.best(part).cloned())
+                        .then(|| self.book.borrow().best(part).cloned())
                         .flatten()
                 });
                 chips.extend(contact);
@@ -702,12 +702,28 @@ impl Composer {
                 if value.contains([',', ';']) {
                     // Everything before the last separator is finished.
                     let (done, rest) = value.rsplit_once([',', ';']).unwrap_or_default();
-                    for part in done.split([',', ';']) {
-                        if let Some(contact) = self.resolve(ix, part, false) {
-                            self.recipients[ix].chips.push(contact);
+                    // What matches no one stays as text, with why (CON-2).
+                    let mut unmatched: Vec<&str> = Vec::new();
+                    for part in done.split([',', ';']).map(str::trim) {
+                        match self.resolve(ix, part, false) {
+                            Some(contact) => self.recipients[ix].chips.push(contact),
+                            None if !part.is_empty() => unmatched.push(part),
+                            None => {}
                         }
                     }
-                    let rest = rest.trim_start().to_string();
+                    if let Some(first) = unmatched.first() {
+                        let error = if first.contains('@') {
+                            format!("“{first}” isn’t an email address")
+                        } else {
+                            format!("No contact named “{first}”")
+                        };
+                        self.error = Some((field, error.into()));
+                    }
+                    let rest = rest.trim_start();
+                    if !rest.is_empty() {
+                        unmatched.push(rest);
+                    }
+                    let rest = unmatched.join(", ");
                     let input = self.recipients[ix].input.clone();
                     input.update(cx, |input, cx| input.set_value(rest, window, cx));
                 }
@@ -737,7 +753,7 @@ impl Composer {
                 .flat_map(|r| &r.chips)
                 .any(|chip| chip.email.eq_ignore_ascii_case(&c.email))
         };
-        let suggestions = self.book.suggest(&query, taken);
+        let suggestions = self.book.borrow().suggest(&query, taken);
         let field = &mut self.recipients[ix];
         field.suggestions = suggestions;
         field.highlighted = 0;
@@ -754,20 +770,17 @@ impl Composer {
             return None;
         }
         let field = &self.recipients[ix];
-        let book = &self.book.contacts;
-        let exact = book
-            .iter()
-            .find(|c| c.email.eq_ignore_ascii_case(text))
-            .cloned();
+        let book = self.book.borrow();
+        let exact = book.find(text).cloned();
         if use_highlight
             && (field.navigated || !text.contains('@'))
             && let Some(&contact_ix) = field.suggestions.get(field.highlighted)
         {
-            return Some(book[contact_ix].clone());
+            return Some(book.contact(contact_ix).clone());
         }
         if !use_highlight && !text.contains('@') {
             // Committed with a comma: take the best match for the name.
-            return self.book.best(text).cloned();
+            return book.best(text).cloned();
         }
         exact.or_else(|| parse_address(text))
     }
@@ -967,7 +980,7 @@ impl Composer {
                 .iter()
                 .enumerate()
                 .map(|(row, &contact_ix)| {
-                    let contact = &self.book.contacts[contact_ix];
+                    let contact = self.book.borrow().contact(contact_ix).clone();
                     let highlighted = row == field.highlighted;
                     div()
                         .id(("suggestion", row))

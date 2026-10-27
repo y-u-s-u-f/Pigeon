@@ -23,6 +23,7 @@ pub mod gmail;
 pub mod http;
 pub mod mime;
 pub mod outbox;
+pub mod people;
 pub mod store;
 pub mod sync;
 
@@ -719,6 +720,9 @@ impl Backend {
     // Writes.
 
     pub fn mail(&mut self, op: MailOp, cx: &mut Context<Self>) -> OpId {
+        if let MailOp::Send { draft, .. } = &op {
+            self.note_recipients(draft, cx);
+        }
         self.queue(Op::Mail(op), cx)
     }
 

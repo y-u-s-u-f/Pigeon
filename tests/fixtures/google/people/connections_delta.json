@@ -1,0 +1,22 @@
+{
+  "connections": [
+    {
+      "resourceName": "people/c2",
+      "etag": "%EgUBAgMuNxoEAQIFByIMcmFodWwz",
+      "metadata": { "deleted": true }
+    },
+    {
+      "resourceName": "people/c1",
+      "etag": "%EgUBAgMuNxoEAQIFByIMc2FyYWgy",
+      "names": [{ "displayName": "Sarah Chen" }],
+      "emailAddresses": [{ "value": "sarah.chen@example.com" }]
+    },
+    {
+      "resourceName": "people/c4",
+      "etag": "%EgUBAgMuNxoEAQIFByIMYW5h",
+      "names": [{ "displayName": "Ana Souza" }],
+      "emailAddresses": [{ "value": "ana@example.com" }]
+    }
+  ],
+  "nextSyncToken": "conn-token-2"
+}

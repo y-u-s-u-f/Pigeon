@@ -1,0 +1,18 @@
+{
+  "connections": [
+    {
+      "resourceName": "people/c2",
+      "etag": "%EgUBAgMuNxoEAQIFByIMcmFodWw=",
+      "names": [{ "displayName": "Rahul Mehta", "givenName": "Rahul" }],
+      "emailAddresses": [{ "value": "rahul@example.com" }]
+    },
+    {
+      "resourceName": "people/c3",
+      "etag": "%EgUBAgMuNxoEAQIFByIMbm9lbWFpbA==",
+      "names": [{ "displayName": "Plumber" }]
+    }
+  ],
+  "nextSyncToken": "conn-token-1",
+  "totalPeople": 4,
+  "totalItems": 4
+}

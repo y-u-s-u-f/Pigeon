@@ -855,7 +855,9 @@ impl CalendarView {
         taken.push(event.organizer.email.to_lowercase());
         let book = self.book.clone();
         let panel = self.panel.as_mut().unwrap();
-        panel.suggestions = book.suggest(&query, |c| taken.contains(&c.email.to_lowercase()));
+        panel.suggestions = book
+            .borrow()
+            .suggest(&query, |c| taken.contains(&c.email.to_lowercase()));
         panel.highlighted = 0;
         panel.navigated = false;
         cx.notify();
@@ -892,10 +894,11 @@ impl CalendarView {
         }
         let contact = match panel.suggestions.get(panel.highlighted) {
             Some(&ix) if panel.navigated || !text.contains('@') => {
-                Some(self.book.contact(ix).clone())
+                Some(self.book.borrow().contact(ix).clone())
             }
             _ => self
                 .book
+                .borrow()
                 .find(&text)
                 .cloned()
                 .or_else(|| parse_address(&text)),
@@ -1843,7 +1846,7 @@ impl CalendarView {
         let focused = panel.is_focused(Field::Guests, window, cx);
         let suggestions = (focused && !panel.suggestions.is_empty()).then(|| {
             let rows = panel.suggestions.iter().enumerate().map(|(row, &ix)| {
-                let contact = self.book.contact(ix);
+                let contact = self.book.borrow().contact(ix).clone();
                 div()
                     .id(("guest-suggestion", row))
                     .h(px(40.))
@@ -1882,7 +1885,7 @@ impl CalendarView {
                     )
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        let contact = this.book.contact(ix).clone();
+                        let contact = this.book.borrow().contact(ix).clone();
                         this.add_guest(contact, window, cx);
                     }))
             });

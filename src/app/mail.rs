@@ -921,12 +921,12 @@ impl PigeonApp {
         if query.is_empty() || query.contains('@') {
             return Vec::new();
         }
-        self.contact_book
-            .suggest(query, |_| false)
+        let book = self.contact_book.borrow();
+        book.suggest(query, |_| false)
             .into_iter()
             .take(5)
             .map(|ix| {
-                let contact = self.contact_book.contact(ix);
+                let contact = book.contact(ix);
                 SearchSuggestion::Contact {
                     operator,
                     name: contact.display_name().to_string(),

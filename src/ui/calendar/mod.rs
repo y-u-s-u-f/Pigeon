@@ -47,7 +47,7 @@ use crate::{
         CalendarData, Event, Occurrence, RsvpStatus, SeriesScope, occurrences,
         time::{self, add_months, month_grid, next_half_hour, week_start},
     },
-    contacts::ContactBook,
+    contacts::SharedContactBook,
     theme::Theme,
     ui::{keycap, popover_shadow},
 };
@@ -186,7 +186,7 @@ pub struct CalendarView {
     /// from the selected day's.
     mini_month: Option<NaiveDate>,
     date_input: Entity<InputState>,
-    book: Rc<ContactBook>,
+    book: SharedContactBook,
     backend: Entity<Backend>,
     /// The event made last, while it's open and may still be dropped for
     /// having no title.
@@ -231,7 +231,7 @@ pub fn now() -> NaiveDateTime {
 impl CalendarView {
     pub fn new(
         data: CalendarData,
-        book: Rc<ContactBook>,
+        book: SharedContactBook,
         backend: Entity<Backend>,
         window: &mut Window,
         cx: &mut Context<Self>,

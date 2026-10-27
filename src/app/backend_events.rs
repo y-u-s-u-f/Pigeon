@@ -3,15 +3,10 @@
 //! theirs: mail (W3, W5, W6), calendar (W4, W7), contacts (W8), status and
 //! sign-in (W2, W11). Demo mode sends only `OpCommitted` and `Status`.
 
-use std::rc::Rc;
-
 use gpui::{Context, Entity};
 
 use super::{Nav, PigeonApp};
-use crate::{
-    backend::{Backend, BackendEvent, OpId, SyncStatus},
-    contacts::ContactBook,
-};
+use crate::backend::{Backend, BackendEvent, OpId, SyncStatus};
 
 impl PigeonApp {
     pub(super) fn on_backend_event(
@@ -181,11 +176,12 @@ impl PigeonApp {
         });
     }
 
-    // Contacts. Open composers keep the book they opened with (W8: CON-1).
+    // Contacts. Composers and the event panel share the book, so open
+    // ones see the change at once (CON-1).
 
     fn on_contacts_changed(&mut self, cx: &mut Context<Self>) {
         let contacts = self.backend.read(cx).contacts();
-        self.contact_book = Rc::new(ContactBook::new(contacts));
+        self.contact_book.borrow_mut().update(contacts);
     }
 
     // Status, the outbox and signing in.
@@ -237,7 +233,7 @@ impl PigeonApp {
             view.selected = None;
             cx.notify();
         });
-        self.contact_book = Rc::new(ContactBook::new(contacts));
+        self.contact_book.borrow_mut().update(contacts);
         self.refresh_rows(false);
         cx.notify();
     }

@@ -1,0 +1,25 @@
+{
+  "connections": [
+    {
+      "resourceName": "people/c1",
+      "etag": "%EgUBAgMuNxoEAQIFByIMR0xxbEVGS1Z0U2s9",
+      "names": [
+        { "metadata": { "primary": true, "source": { "type": "CONTACT", "id": "1" } }, "displayName": "Sarah Chen", "familyName": "Chen", "givenName": "Sarah" }
+      ],
+      "emailAddresses": [
+        { "metadata": { "primary": true, "source": { "type": "CONTACT", "id": "1" } }, "value": "sarah.chen@example.com", "type": "work" },
+        { "metadata": { "source": { "type": "CONTACT", "id": "1" } }, "value": "sarah@home.example.com", "type": "home" },
+        { "metadata": { "source": { "type": "CONTACT", "id": "1" } }, "value": "SARAH.CHEN@example.com" }
+      ]
+    },
+    {
+      "resourceName": "people/c0",
+      "etag": "%EgUBAgMuNxoEAQIFByIMbWVhbGlhcw==",
+      "names": [{ "displayName": "Me (work)" }],
+      "emailAddresses": [{ "value": "alias@example.com" }]
+    }
+  ],
+  "nextPageToken": "p2",
+  "totalPeople": 4,
+  "totalItems": 4
+}
