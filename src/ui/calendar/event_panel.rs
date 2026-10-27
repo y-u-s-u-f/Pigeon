@@ -491,6 +491,8 @@ impl CalendarView {
         };
         if scope == SeriesScope::This {
             let (series_id, start) = (panel.event_id.clone(), panel.occurrence);
+            // What's typed, even if a sync replaced the series meanwhile.
+            self.read_panel_text(cx);
             let Some(edited) = self.event(&series_id).cloned() else {
                 return;
             };

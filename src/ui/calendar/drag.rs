@@ -301,7 +301,13 @@ impl CalendarView {
             (DragKind::Create { .. }, true) => {
                 self.create_event(drag.start, drag.end, false, window, cx);
             }
-            (DragKind::Create { .. }, false) => {}
+            // A click away from a change waiting for its scope: as Escape,
+            // it's taken back and the panel closes.
+            (DragKind::Create { .. }, false) => {
+                if self.asking_scope() {
+                    self.close_panel(window, cx);
+                }
+            }
             (DragKind::Move { occurrence, .. } | DragKind::Resize { occurrence, .. }, false) => {
                 self.click_occurrence(occurrence, window, cx)
             }

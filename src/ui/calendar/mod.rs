@@ -806,6 +806,12 @@ impl CalendarView {
     pub(crate) fn flush_edit(&mut self, cx: &mut Context<Self>) {
         self.drop_unscoped_edit(cx);
         self.read_panel_text(cx);
+        self.send_edit(cx);
+    }
+
+    /// `flush_edit` without reading the panel's text: for when the panel's
+    /// text belongs to another event than the one settling.
+    fn send_edit(&mut self, cx: &mut Context<Self>) {
         self._edit_timer = None;
         let unsent = self
             .unsent
@@ -1122,7 +1128,9 @@ impl CalendarView {
         self.data.events.push(occurrence_of(&edited, start, end));
         self.event_mut(series_id)?.exceptions.push(occurrence);
         self.patched(before, cx);
-        self.flush_edit(cx);
+        // The panel may still show the series as edited: that's the
+        // occurrence's now, not the series'.
+        self.send_edit(cx);
         self.pending = Some(PendingEdit {
             id: id.clone(),
             before: as_was,
