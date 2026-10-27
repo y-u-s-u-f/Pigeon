@@ -17,7 +17,7 @@ To update: change the status cell in the area's table, then the counts below.
 | Section | ⚪ Not done | 🟡 Partially done | 🟢 Fully linked | Total |
 | --- | --- | --- | --- | --- |
 | [Planned features](#3-planned-features-pln) | 3 | 0 | 0 | 3 |
-| [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 2 | 5 | 1 | 8 |
+| [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 2 | 3 | 3 | 8 |
 | [Folders and labels](#51-folders-and-labels-fol) | 6 | 2 | 4 | 12 |
 | [Thread list](#52-thread-list-lst) | 1 | 3 | 5 | 9 |
 | [Reading pane](#53-reading-pane-rdr) | 1 | 4 | 3 | 8 |
@@ -27,7 +27,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Undo](#57-undo-und) | 0 | 1 | 2 | 3 |
 | [Search](#58-search-src) | 1 | 8 | 0 | 9 |
 | [Contacts](#59-contacts-con) | 6 | 0 | 2 | 8 |
-| [Images and attachments](#510-images-and-attachments-att) | 3 | 4 | 0 | 7 |
+| [Images and attachments](#510-images-and-attachments-att) | 3 | 3 | 1 | 7 |
 | [Links](#511-links-lnk) | 2 | 1 | 0 | 3 |
 | [Mail settings](#512-mail-settings-mst) | 10 | 0 | 0 | 10 |
 | [Calendar](#6-calendar-cal) | 18 | 7 | 17 | 42 |
@@ -37,7 +37,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Storage and persistence](#81-storage-and-persistence-per) | 1 | 1 | 1 | 3 |
 | [Command palette](#82-command-palette-pal) | 0 | 3 | 0 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 6 | 0 | 7 |
-| **Overall** | **61** | **66** | **49** | **176** |
+| **Overall** | **61** | **63** | **52** | **176** |
 
 ## Contents
 
@@ -112,8 +112,8 @@ The user's own plans, not driven by Google's APIs.
 | ACC-2 | Identity of "me" | 🟡 Partially done | Gmail `settings.sendAs.list` |
 | ACC-3 | Add, sign in to and remove accounts | 🟡 Partially done | OAuth 2.0 for desktop apps (loopback + PKCE) |
 | ACC-4 | Account switcher and multiple accounts | ⚪ Not done | One OAuth grant per account |
-| ACC-5 | Per-account sync status | 🟡 Partially done | Sync state from SYN |
-| ACC-6 | Scopes and consent | 🟡 Partially done | OAuth scopes, incremental and granular consent |
+| ACC-5 | Per-account sync status | 🟢 Fully linked | Sync state from SYN |
+| ACC-6 | Scopes and consent | 🟢 Fully linked | OAuth scopes, incremental and granular consent |
 | ACC-7 | Token refresh, revoke and sign out | 🟡 Partially done | OAuth token and revoke endpoints |
 | ACC-8 | Google Cloud project and app verification | ⚪ Not done | OAuth consent screen, scope verification |
 
@@ -702,7 +702,7 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| ATT-1 | Remote images | 🟡 Partially done | None (HTTP fetch or proxy) |
+| ATT-1 | Remote images | 🟢 Fully linked | None (HTTP fetch or proxy) |
 | ATT-2 | Inline (`cid:`) images | ⚪ Not done | `payload.parts` `Content-ID`, `messages.attachments.get` |
 | ATT-3 | Attachment list in messages | 🟡 Partially done | `payload.parts` (`filename`, `body.attachmentId`) |
 | ATT-4 | Open and download an attachment | ⚪ Not done | `messages.attachments.get` |
