@@ -30,7 +30,7 @@ Don't have one agent implement, test and fix in a loop. Subagents don't commit; 
 
 ## Running and testing
 
-- Run with `cargo run --release`. Agents running in parallel build with their own `CARGO_TARGET_DIR` in `/private/var/folders/sc/26v_9jsx0s9_fkjttv6jzjdh0000gn/T/opencode`.
+- Run with `scripts/run.sh` (release build, signed with the local `Pigeon Dev` identity so the Keychain keeps trusting it across rebuilds; plain `cargo run --release` works but the Keychain asks again after every build). `PIGEON_DEMO=1` runs on the placeholder data. Agents running in parallel build with their own `CARGO_TARGET_DIR` in `/private/var/folders/sc/26v_9jsx0s9_fkjttv6jzjdh0000gn/T/opencode`.
 - GUI testing uses Cua Driver only, scoped to Pigeon's pid and window. Never send input to other apps. Never change system appearance or wallpaper; test dark mode in a scratch copy.
 
 ## Questions to the user
