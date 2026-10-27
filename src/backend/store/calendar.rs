@@ -323,6 +323,21 @@ impl Store {
         Ok(out)
     }
 
+    /// The occurrences of `series` changed on their own from `from` on go
+    /// (its end moved before them).
+    pub fn drop_instances_from(
+        &self,
+        account: &str,
+        series: &str,
+        from: NaiveDateTime,
+    ) -> anyhow::Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        drop_instances_from(&tx, account, series, from)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// The shown instances of `series` (cancelled ones stay); returns
     /// their ids.
     pub fn delete_instances(
@@ -353,8 +368,20 @@ impl Store {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         match op {
-            CalOp::Insert { event, .. } | CalOp::Patch { after: event, .. } => {
-                write_event(&tx, account, event)?
+            CalOp::Insert { event, .. } => write_event(&tx, account, event)?,
+            CalOp::Patch {
+                after: event,
+                scope,
+                ..
+            } => {
+                write_event(&tx, account, event)?;
+                // "This and following" for a change: the series ends, and
+                // its occurrences changed on their own from there on go.
+                if *scope == SeriesScope::Following
+                    && let Some(until) = event.recurrence.as_ref().and_then(|r| r.until)
+                {
+                    drop_instances_from(&tx, account, &event.id, until)?;
+                }
             }
             CalOp::Delete {
                 id,
@@ -385,17 +412,12 @@ impl Store {
                     )?;
                 }
                 // Occurrences changed on their own go with the ones deleted.
-                let original = occurrence.to_string();
                 match scope {
                     SeriesScope::All => tx.execute(
                         "DELETE FROM events WHERE account = ?1 AND recurring_event_id = ?2",
                         params![account, id],
                     )?,
-                    SeriesScope::Following => tx.execute(
-                        "DELETE FROM events WHERE account = ?1 AND recurring_event_id = ?2
-                            AND original_start >= ?3",
-                        params![account, id, original],
-                    )?,
+                    SeriesScope::Following => drop_instances_from(&tx, account, id, occurrence)?,
                     SeriesScope::This => 0,
                 };
             }
@@ -443,6 +465,21 @@ fn read_event(tx: &Transaction, account: &str, id: &str) -> anyhow::Result<Optio
         Some(model) => Some(serde_json::from_str(&model)?),
         None => None,
     })
+}
+
+/// Deletes the occurrences of `series` changed on their own whose rule
+/// time is `from` or later.
+fn drop_instances_from(
+    tx: &Transaction,
+    account: &str,
+    series: &str,
+    from: NaiveDateTime,
+) -> anyhow::Result<usize> {
+    Ok(tx.execute(
+        "DELETE FROM events WHERE account = ?1 AND recurring_event_id = ?2
+            AND original_start >= ?3",
+        params![account, series, from.to_string()],
+    )?)
 }
 
 fn write_event(tx: &Transaction, account: &str, event: &Event) -> anyhow::Result<()> {

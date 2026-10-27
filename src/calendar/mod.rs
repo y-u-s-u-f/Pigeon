@@ -211,6 +211,58 @@ impl Event {
         }
     }
 
+    /// "This and following" for a change (CAL-6): this series ends just
+    /// before the occurrence its rule puts at `origin`, and a new series
+    /// (`new_id`) starts at `start` with `edited`'s fields and rule, a COUNT
+    /// counting only what's left. Returns both. Occurrences changed on their
+    /// own from `origin` on belong to neither. `None` from the first
+    /// occurrence, where "This and following" is the whole series.
+    pub fn split(
+        &self,
+        origin: NaiveDateTime,
+        start: NaiveDateTime,
+        edited: &Event,
+        new_id: String,
+    ) -> Option<(Event, Event)> {
+        let rule = self.recurrence.as_ref()?;
+        if origin <= self.start {
+            return None;
+        }
+        let mut old = self.clone();
+        let old_rule = old.recurrence.as_mut()?;
+        old_rule.until = Some(origin);
+        old_rule.count = None;
+        old.exceptions.retain(|&e| e < origin);
+        let mut new_rule = edited.recurrence.clone().unwrap_or_else(|| rule.clone());
+        if let Some(count) = rule.count {
+            // COUNT counts the occurrences skipped too.
+            let plain = Event {
+                exceptions: Vec::new(),
+                ..self.clone()
+            };
+            let before = occurrences(std::slice::from_ref(&plain), |_| true, self.start, origin)
+                .iter()
+                .filter(|o| o.start < origin)
+                .count() as u32;
+            new_rule.count = Some(count.saturating_sub(before).max(1));
+            new_rule.until = None;
+        }
+        let new = Event {
+            id: new_id,
+            start,
+            end: start + edited.duration(),
+            recurrence: Some(new_rule),
+            exceptions: Vec::new(),
+            recurring_event_id: None,
+            original_start: None,
+            etag: String::new(),
+            ical_uid: String::new(),
+            html_link: String::new(),
+            ..edited.clone()
+        };
+        Some((old, new))
+    }
+
     /// My answer to an invite, when someone else organizes it.
     pub fn my_status(&self, me: &str) -> Option<RsvpStatus> {
         if self.organizer.email.eq_ignore_ascii_case(me) {
@@ -280,5 +332,68 @@ mod tests {
         assert_eq!(standup.recurrence, Some(Rule::weekdays()));
         assert_eq!(standup.start.format("%H:%M").to_string(), "09:30");
         assert!(standup.description.is_empty());
+    }
+
+    fn monday(n: u32) -> NaiveDateTime {
+        time::at(chrono::NaiveDate::from_ymd_opt(2026, 11, n).unwrap(), 9, 0)
+    }
+
+    /// Weekly on Mondays from Nov 2, with the Nov 9 and Nov 23 ones changed
+    /// or skipped.
+    fn weekly() -> Event {
+        Event {
+            id: "s1".into(),
+            title: "Sync".into(),
+            start: monday(2),
+            end: monday(2) + Duration::minutes(30),
+            recurrence: Some(Rule::weekly()),
+            exceptions: vec![monday(9), monday(23)],
+            etag: "\"s\"".into(),
+            ..Event::default()
+        }
+    }
+
+    #[test]
+    fn split_ends_the_series_before_the_occurrence_and_starts_a_new_one() {
+        let series = weekly();
+        let edited = Event {
+            title: "Sync (new room)".into(),
+            ..series.clone()
+        };
+        let at = monday(16) + Duration::hours(1);
+        let (old, new) = series.split(monday(16), at, &edited, "n1".into()).unwrap();
+        assert_eq!(old.recurrence.as_ref().unwrap().until, Some(monday(16)));
+        assert_eq!(old.title, "Sync");
+        assert_eq!(old.exceptions, [monday(9)]);
+        assert_eq!(new.id, "n1");
+        assert_eq!(new.title, "Sync (new room)");
+        assert_eq!((new.start, new.end), (at, at + Duration::minutes(30)));
+        assert_eq!(new.recurrence, Some(Rule::weekly()));
+        assert!(new.exceptions.is_empty() && new.etag.is_empty());
+        assert!(new.recurring_event_id.is_none());
+    }
+
+    #[test]
+    fn split_counts_only_the_occurrences_left() {
+        let mut series = weekly();
+        series.recurrence.as_mut().unwrap().count = Some(6);
+        let (old, new) = series
+            .split(monday(16), monday(16), &series, "n1".into())
+            .unwrap();
+        // Nov 2 and 9 (skipped, still counted) came before.
+        let old_rule = old.recurrence.unwrap();
+        assert_eq!((old_rule.until, old_rule.count), (Some(monday(16)), None));
+        let new_rule = new.recurrence.unwrap();
+        assert_eq!((new_rule.count, new_rule.until), (Some(4), None));
+    }
+
+    #[test]
+    fn split_at_the_first_occurrence_is_the_whole_series() {
+        let series = weekly();
+        assert!(
+            series
+                .split(monday(2), monday(2), &series, "n1".into())
+                .is_none()
+        );
     }
 }

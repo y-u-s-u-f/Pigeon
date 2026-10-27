@@ -1441,9 +1441,9 @@ impl Writer<'_> {
                 id,
                 before,
                 after,
+                scope,
                 send_updates,
-                ..
-            } => self.patch(id, before, after, *send_updates, touched),
+            } => self.patch(id, before, after, *scope, *send_updates, touched),
             CalOp::Delete {
                 id,
                 occurrence,
@@ -1575,6 +1575,7 @@ impl Writer<'_> {
         id: &str,
         before: &Event,
         after: &Event,
+        scope: SeriesScope,
         send: SendUpdates,
         touched: &mut BTreeSet<String>,
     ) -> anyhow::Result<()> {
@@ -1605,6 +1606,13 @@ impl Writer<'_> {
             etag.or(Some(after.etag.as_str())),
             &[],
         )?;
+        // "This and following" (CAL-6): the series' occurrences changed on
+        // their own past its new end go, as a delete of the following does.
+        if scope == SeriesScope::Following
+            && let Some(until) = after.recurrence.as_ref().and_then(|r| r.until)
+        {
+            self.store.drop_instances_from(self.account, id, until)?;
+        }
         let mut seen = BTreeSet::new();
         self.store_raw(&current.calendar, &response.json()?, &mut seen)
     }
@@ -2703,6 +2711,76 @@ mod tests {
             Some(at(d(2026, 11, 4), 10, 0))
         );
         assert!(done.changes.changed.contains(&"s1".to_string()));
+    }
+
+    #[test]
+    fn split_patches_the_series_end_then_inserts_the_new_series() {
+        let store = seeded(&[SERIES]);
+        let before = stored(&store, "s1");
+        let origin = at(d(2026, 11, 4), 10, 0);
+        // An occurrence changed on its own after the split goes.
+        let moved = Event {
+            id: "s1_20261109T180000Z".into(),
+            recurrence: None,
+            exceptions: Vec::new(),
+            recurring_event_id: Some("s1".into()),
+            original_start: Some(at(d(2026, 11, 9), 10, 0)),
+            ..before.clone()
+        };
+        store.put_events(ME, std::slice::from_ref(&moved)).unwrap();
+        let edited = Event {
+            title: "Standup (new room)".into(),
+            ..before.clone()
+        };
+        let (old, new) = before.split(origin, origin, &edited, "n1".into()).unwrap();
+        let answer = r#"{"id":"s1","etag":"\"s2\"","status":"confirmed","summary":"Standup",
+            "organizer":{"email":"me@example.com","self":true},
+            "start":{"dateTime":"2026-10-26T10:00:00-07:00","timeZone":"America/Los_Angeles"},
+            "end":{"dateTime":"2026-10-26T10:30:00-07:00","timeZone":"America/Los_Angeles"},
+            "recurrence":["RRULE:FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20261104T165959Z",
+                          "EXDATE;TZID=America/Los_Angeles:20261102T100000"]}"#;
+        let inserted = r#"{"id":"n1","etag":"\"n\"","status":"confirmed","summary":"Standup (new room)",
+            "organizer":{"email":"me@example.com","self":true},
+            "start":{"dateTime":"2026-11-04T10:00:00-08:00","timeZone":"America/Los_Angeles"},
+            "end":{"dateTime":"2026-11-04T10:30:00-08:00","timeZone":"America/Los_Angeles"},
+            "recurrence":["RRULE:FREQ=WEEKLY;BYDAY=MO,WE"]}"#;
+        let fake = FakeTransport::new()
+            .on("PATCH", &format!("{CAL_PATH}/s1"), &[], &[(200, answer)])
+            .on("POST", CAL_PATH, &[], &[(200, inserted)]);
+        let patch = CalOp::Patch {
+            id: "s1".into(),
+            before: before.clone(),
+            after: old,
+            scope: SeriesScope::Following,
+            send_updates: SendUpdates::None,
+        };
+        let insert = CalOp::Insert {
+            event: new,
+            send_updates: SendUpdates::None,
+        };
+        for op in [&patch, &insert] {
+            assert_eq!(commit_at(&fake, &store, ME, op, &zone(), now()).error, None);
+        }
+        let requests = fake.requests();
+        assert_eq!(header(&requests[0], "If-Match"), Some("\"s\""));
+        assert_eq!(
+            body(&requests[0]),
+            json!({"recurrence":["RRULE:FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20261104T165959Z",
+                                 "EXDATE;TZID=America/Los_Angeles:20261102T100000"]})
+        );
+        assert_eq!(requests[1].method, "POST");
+        let sent = body(&requests[1]);
+        assert_eq!(sent["id"], "n1");
+        assert_eq!(sent["summary"], "Standup (new room)");
+        assert_eq!(sent["start"]["dateTime"], "2026-11-04T17:00:00Z");
+        assert_eq!(sent["recurrence"][0], "RRULE:FREQ=WEEKLY;BYDAY=MO,WE");
+        assert!(
+            store
+                .load_events(ME, std::slice::from_ref(&moved.id))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(stored(&store, "n1").etag, "\"n\"");
     }
 
     #[test]

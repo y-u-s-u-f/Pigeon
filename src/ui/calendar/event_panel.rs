@@ -100,8 +100,8 @@ impl Field {
     }
 }
 
-/// A panel edit to a repeating event waits for "This event" or "All
-/// events" (CAL-6). Until the answer nothing of it goes to the backend, and
+/// A panel edit to a repeating event waits for "This event", "This and
+/// following" or "All events" (CAL-6). Until the answer nothing of it goes to the backend, and
 /// leaving the panel without one takes it back.
 #[derive(Clone, Debug, Default)]
 pub struct EditScope {
@@ -482,14 +482,34 @@ impl CalendarView {
     }
 
     /// "This event": the occurrence, as edited, becomes an event of its own
-    /// and the series goes back to how it was. "All events": the change
-    /// stays on the series.
+    /// and the series goes back to how it was. "This and following": the
+    /// series, as it was, ends before the occurrence and a new one, as
+    /// edited, starts there. "All events": the change stays on the series.
     fn choose_edit_scope(&mut self, scope: SeriesScope, cx: &mut Context<Self>) {
         let Some(panel) = &mut self.panel else { return };
         let Some((snapshot, origin)) = panel.edit_scope.choose(scope) else {
             return;
         };
-        if scope == SeriesScope::This {
+        if scope == SeriesScope::Following {
+            let (series_id, start) = (panel.event_id.clone(), panel.occurrence);
+            self.read_panel_text(cx);
+            let Some(edited) = self.event(&series_id).cloned() else {
+                return;
+            };
+            match self.split_series(snapshot, origin, start, edited, cx) {
+                Some(id) => {
+                    if let Some(panel) = &mut self.panel {
+                        panel.event_id = id.clone();
+                    }
+                    self.selected = Some(super::Selection {
+                        event_id: id,
+                        start,
+                    });
+                }
+                // The first occurrence: all events.
+                None => self.settle_edit(cx),
+            }
+        } else if scope == SeriesScope::This {
             let (series_id, start) = (panel.event_id.clone(), panel.occurrence);
             // What's typed, even if a sync replaced the series meanwhile.
             self.read_panel_text(cx);
@@ -1200,6 +1220,7 @@ impl CalendarView {
                         .child(self.render_scope_buttons(
                             &[
                                 (SeriesScope::This, "This event"),
+                                (SeriesScope::Following, "This and following"),
                                 (SeriesScope::All, "All events"),
                             ],
                             false,

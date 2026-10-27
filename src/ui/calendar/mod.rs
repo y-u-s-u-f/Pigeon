@@ -17,8 +17,10 @@
 //!
 //! A repeating event changes as a whole series unless the user picks "This
 //! event": the occurrence then becomes an event of its own and the series
-//! lists it as an exception (`detach`). Drags and deletes of an occurrence
-//! ask first (`SeriesPrompt`); the panel asks after the first edit.
+//! lists it as an exception (`detach`). "This and following" ends the series
+//! before the occurrence and starts a new one there (`split_series`). Drags
+//! and deletes of an occurrence ask first (`SeriesPrompt`); the panel asks
+//! after the first edit.
 
 pub mod agenda;
 pub mod drag;
@@ -146,6 +148,7 @@ impl PromptKind {
                 "Move repeating event",
                 &[
                     (SeriesScope::This, "This event"),
+                    (SeriesScope::Following, "This and following"),
                     (SeriesScope::All, "All events"),
                 ],
             ),
@@ -181,13 +184,20 @@ pub enum GuestAsk {
         occurrence: NaiveDateTime,
         scope: SeriesScope,
     },
+    /// "This and following": the ops to queue, and what to put back on
+    /// Cancel (or Undo, with the toast's message, once they went).
+    Split {
+        ops: Vec<CalOp>,
+        removal: Removal,
+        message: String,
+    },
 }
 
 impl GuestPrompt {
     fn question(&self) -> &'static str {
         match self.kind {
             GuestAsk::Save { before: None, .. } => "Send invitations to guests?",
-            GuestAsk::Save { .. } => "Send updates to guests?",
+            GuestAsk::Save { .. } | GuestAsk::Split { .. } => "Send updates to guests?",
             GuestAsk::Delete { .. } => "Send cancellation to guests?",
         }
     }
@@ -222,22 +232,42 @@ fn with_send(op: CalOp, send: SendUpdates) -> CalOp {
     }
 }
 
-/// What a delete took out, to put back on undo.
+/// "This and following" as Google takes it, in order: the series ends
+/// (`If-Match` on its etag), then the new series goes in (CAL-11 id).
+fn split_ops(before: &Event, old: &Event, new: &Event) -> Vec<CalOp> {
+    vec![
+        CalOp::Patch {
+            id: old.id.clone(),
+            before: before.clone(),
+            after: old.clone(),
+            scope: SeriesScope::Following,
+            send_updates: SendUpdates::None,
+        },
+        CalOp::Insert {
+            event: new.clone(),
+            send_updates: SendUpdates::None,
+        },
+    ]
+}
+
+/// What a delete or a series split took out, to put back on undo.
 #[derive(Clone, Debug, Default)]
 pub struct Removal {
     /// Events removed, each with the index it had, by index.
     removed: Vec<(usize, Event)>,
-    /// The series as it was, when the delete changed it rather than
-    /// removing it (an exception, or an earlier end).
+    /// The series as it was, when the change kept it rather than removing
+    /// it (an exception, or an earlier end).
     series_before: Option<Event>,
+    /// Events the change made (a split's new series), which undo deletes.
+    added: Vec<String>,
     select: Option<Selection>,
     /// The delete, while the backend holds it back.
     op: Option<OpId>,
 }
 
 pub enum CalendarEvent {
-    /// The app shows a toast that can undo it.
-    Deleted { message: String, removal: Removal },
+    /// A delete or a series split: the app shows a toast that can undo it.
+    Undoable { message: String, removal: Removal },
 }
 
 pub struct CalendarView {
@@ -905,14 +935,18 @@ impl CalendarView {
     /// Ask about emailing the guests. A question still open (about an
     /// earlier change) is answered "Don't send".
     fn ask_guests(&mut self, prompt: GuestPrompt, cx: &mut Context<Self>) {
-        if let Some(GuestPrompt {
-            kind: GuestAsk::Save { ops, .. },
-            ..
-        }) = self.guest_prompt.take()
-        {
-            for op in ops {
-                self.queue(op, cx);
+        match self.guest_prompt.take().map(|p| p.kind) {
+            Some(GuestAsk::Save { ops, .. }) => {
+                for op in ops {
+                    self.queue(op, cx);
+                }
             }
+            Some(GuestAsk::Split {
+                ops,
+                removal,
+                message,
+            }) => self.commit_split(ops, removal, message, SendUpdates::None, cx),
+            _ => {}
         }
         self.guest_prompt = Some(prompt);
         cx.notify();
@@ -971,6 +1005,16 @@ impl CalendarView {
                 self.delete_with(&id, occurrence, scope, Some(send), window, cx);
             }
             (GuestAsk::Delete { .. }, None) => {}
+            (
+                GuestAsk::Split {
+                    ops,
+                    removal,
+                    message,
+                },
+                Some(send),
+            ) => self.commit_split(ops, removal, message, send, cx),
+            // Nothing went: the series as it was, the new one gone.
+            (GuestAsk::Split { removal, .. }, None) => self.put_back(removal, false, window, cx),
         }
         window.focus(&self.focus_handle, cx);
         cx.notify();
@@ -1137,6 +1181,94 @@ impl CalendarView {
         });
         self.settle_edit(cx);
         Some(id)
+    }
+
+    /// "This and following" (CAL-6): the series as it was (`before`) ends
+    /// just before the occurrence its rule put at `origin`, and a new series
+    /// starts at `start` with `edited`'s fields and rule; its occurrences
+    /// changed on their own from `origin` on go. Undo puts it all back.
+    /// Returns the new series' id; `None` (nothing done) at the series'
+    /// first occurrence or for someone else's series, where it's "All
+    /// events".
+    fn split_series(
+        &mut self,
+        before: Event,
+        origin: NaiveDateTime,
+        start: NaiveDateTime,
+        edited: Event,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        if !is_organizer(&before, self.me()) {
+            return None;
+        }
+        let new_id = self.new_id();
+        let (old, new) = before.split(origin, start, &edited, new_id.clone())?;
+        let id = before.id.clone();
+        // What was settling for the series is this change.
+        if self.pending.as_ref().is_some_and(|p| p.id == id) {
+            self.pending = None;
+            self._edit_timer = None;
+        }
+        *self.event_mut(&id)? = old.clone();
+        let mut removal = Removal {
+            series_before: Some(before.clone()),
+            added: vec![new_id.clone()],
+            select: Some(Selection {
+                event_id: id.clone(),
+                start: origin,
+            }),
+            ..Removal::default()
+        };
+        let mut ix = 0;
+        while ix < self.data.events.len() {
+            let event = &self.data.events[ix];
+            if event.recurring_event_id.as_deref() == Some(id.as_str())
+                && event.original_start >= Some(origin)
+            {
+                removal
+                    .removed
+                    .push((ix + removal.removed.len(), self.data.events.remove(ix)));
+            } else {
+                ix += 1;
+            }
+        }
+        self.data.events.push(new.clone());
+        let ops = split_ops(&before, &old, &new);
+        let day = time::date_label(origin.date(), today());
+        let message = format!("Changed “{}” from {day} on", new.display_title());
+        if asks_guests(Some(&before), &edited, self.me()) {
+            let kind = GuestAsk::Split {
+                ops,
+                removal,
+                message,
+            };
+            self.ask_guests(
+                GuestPrompt {
+                    event_id: new_id.clone(),
+                    kind,
+                },
+                cx,
+            );
+        } else {
+            self.commit_split(ops, removal, message, SendUpdates::None, cx);
+        }
+        cx.notify();
+        Some(new_id)
+    }
+
+    /// Queue a split's ops and offer Undo.
+    fn commit_split(
+        &mut self,
+        ops: Vec<CalOp>,
+        removal: Removal,
+        message: String,
+        send: SendUpdates,
+        cx: &mut Context<Self>,
+    ) {
+        for op in ops {
+            self.queue(with_send(op, send), cx);
+        }
+        cx.emit(CalendarEvent::Undoable { message, removal });
     }
 
     fn is_all_day(&self, id: &str) -> bool {
@@ -1330,31 +1462,33 @@ impl CalendarView {
                 cx,
             ));
         }
-        cx.emit(CalendarEvent::Deleted { message, removal });
+        cx.emit(CalendarEvent::Undoable { message, removal });
         cx.notify();
     }
 
     /// Undo a delete: the events and the series come back as they were,
     /// the occurrence selected.
     pub fn restore(&mut self, removal: Removal, window: &mut Window, cx: &mut Context<Self>) {
+        self.put_back(removal, true, window, cx);
+    }
+
+    /// `restore`; with `queue` false, only here, as nothing went yet.
+    fn put_back(
+        &mut self,
+        removal: Removal,
+        queue: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // Inside the undo window the delete never went; past it, put the
         // events back.
-        let cancelled = removal
-            .op
-            .is_some_and(|op| self.backend.update(cx, |b, _| b.cancel(op)));
+        let cancelled = !queue
+            || removal
+                .op
+                .is_some_and(|op| self.backend.update(cx, |b, _| b.cancel(op)));
         if !cancelled {
-            // Someone else's event was only declined; it can't be made
-            // again here.
-            let me = self.me().to_string();
-            for (_, event) in removal.removed.iter().filter(|(_, e)| is_organizer(e, &me)) {
-                self.queue(
-                    CalOp::Insert {
-                        event: event.clone(),
-                        send_updates: SendUpdates::None,
-                    },
-                    cx,
-                );
-            }
+            // The series first: the occurrences changed on their own are
+            // found among its instances.
             if let Some(before) = &removal.series_before
                 && let Some(now) = self.event(&before.id).cloned()
             {
@@ -1369,15 +1503,53 @@ impl CalendarView {
                     cx,
                 );
             }
+            for id in &removal.added {
+                self.queue(
+                    CalOp::Delete {
+                        id: id.clone(),
+                        occurrence: None,
+                        scope: SeriesScope::All,
+                        send_updates: SendUpdates::None,
+                    },
+                    cx,
+                );
+            }
+            // Someone else's event was only declined; it can't be made
+            // again here.
+            let me = self.me().to_string();
+            for (_, event) in removal.removed.iter().filter(|(_, e)| is_organizer(e, &me)) {
+                self.queue(
+                    CalOp::Insert {
+                        event: event.clone(),
+                        send_updates: SendUpdates::None,
+                    },
+                    cx,
+                );
+            }
         }
-        if let Some(before) = removal.series_before
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|p| removal.added.contains(&p.id))
+        {
+            self.pending = None;
+        }
+        self.data.events.retain(|e| !removal.added.contains(&e.id));
+        if let Some(before) = &removal.series_before
             && let Some(series) = self.event_mut(&before.id)
         {
-            *series = before;
+            *series = before.clone();
         }
         for (index, event) in removal.removed {
             let index = index.min(self.data.events.len());
             self.data.events.insert(index, event);
+        }
+        // A panel on the new series shows the old one again.
+        if let (Some(panel), Some(before), Some(select)) =
+            (&self.panel, &removal.series_before, &removal.select)
+            && removal.added.contains(&panel.event_id)
+        {
+            self.panel = Some(EventPanel::new(before, select.start, window, cx));
         }
         if let Some(select) = removal.select {
             self.select_day_in_view(select.start.date());
@@ -1486,13 +1658,30 @@ impl CalendarView {
                 self.selected = Some(selection);
             }
             PromptKind::Move { start, end } => {
-                self.retime_occurrence(id, prompt.occurrence, start, end, window, cx);
-                self.flush_edit(cx);
+                let split = match scope {
+                    SeriesScope::Following => self.event(id).cloned().and_then(|series| {
+                        let edited = Event {
+                            start,
+                            end,
+                            ..series.clone()
+                        };
+                        self.split_series(series, prompt.occurrence, start, edited, cx)
+                    }),
+                    _ => None,
+                };
+                let id = match split {
+                    Some(new_id) => new_id,
+                    None => {
+                        self.retime_occurrence(id, prompt.occurrence, start, end, window, cx);
+                        self.flush_edit(cx);
+                        id.to_string()
+                    }
+                };
                 if self.panel.is_some() {
-                    self.open_event(id, start, false, window, cx);
+                    self.open_event(&id, start, false, window, cx);
                 }
                 self.selected = Some(Selection {
-                    event_id: id.to_string(),
+                    event_id: id,
                     start,
                 });
             }
@@ -1686,6 +1875,12 @@ impl CalendarView {
             }
             cx.notify();
         } else if self.dismiss_panel_popup(cx) {
+            cx.notify();
+        } else if self.asking_scope() {
+            // From any field: the change waiting for its scope is taken
+            // back, and the panel stays on the event as it was.
+            self.cancel_unscoped_edit(window, cx);
+            window.focus(&self.focus_handle, cx);
             cx.notify();
         } else if self.panel.is_some() {
             self.close_panel(window, cx);
@@ -2113,5 +2308,51 @@ impl Render for CalendarView {
             .when(self.drag.is_some(), |this| {
                 this.child(self.render_drag_layer(window, cx))
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::calendar::Rule;
+
+    #[test]
+    fn a_split_ends_the_series_then_inserts_the_new_one() {
+        let day = |n| time::at(NaiveDate::from_ymd_opt(2026, 11, n).unwrap(), 9, 0);
+        let before = Event {
+            id: "s1".into(),
+            title: "Sync".into(),
+            start: day(2),
+            end: day(2) + Duration::minutes(30),
+            recurrence: Some(Rule::weekly()),
+            ..Event::default()
+        };
+        let edited = Event {
+            title: "Sync (moved)".into(),
+            ..before.clone()
+        };
+        let (old, new) = before
+            .split(day(16), day(17), &edited, "n1".into())
+            .unwrap();
+        let ops: Vec<CalOp> = split_ops(&before, &old, &new)
+            .into_iter()
+            .map(|op| with_send(op, SendUpdates::All))
+            .collect();
+        assert_eq!(
+            ops,
+            [
+                CalOp::Patch {
+                    id: "s1".into(),
+                    before,
+                    after: old,
+                    scope: SeriesScope::Following,
+                    send_updates: SendUpdates::All,
+                },
+                CalOp::Insert {
+                    event: new,
+                    send_updates: SendUpdates::All,
+                },
+            ]
+        );
     }
 }

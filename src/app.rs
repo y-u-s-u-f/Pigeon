@@ -129,7 +129,8 @@ pub enum UndoAction {
         /// Deleting the saved draft, if there was one.
         op: Option<OpId>,
     },
-    /// Put deleted calendar events (or occurrences) back.
+    /// Put deleted calendar events (or occurrences) back, or a split series
+    /// together again.
     DeleteEvent(Box<Removal>),
     /// Put moved threads back in their folders: (thread id, old folder).
     Move {
@@ -284,7 +285,7 @@ impl PigeonApp {
             async {}
         });
         let calendar_events = cx.subscribe(&calendar, |this, _, event, cx| match event {
-            CalendarEvent::Deleted { message, removal } => {
+            CalendarEvent::Undoable { message, removal } => {
                 let undo = UndoAction::DeleteEvent(Box::new(removal.clone()));
                 this.show_toast(message.clone(), Some(undo), cx);
             }
