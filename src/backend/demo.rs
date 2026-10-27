@@ -55,7 +55,47 @@ fn demo_labels(thread: &Thread, message: &Message, last: bool, me: &Account) -> 
         labels.push(gmail::STARRED.into());
     }
     labels.extend(thread.labels.iter().cloned());
+    // W4a: the placeholder data has no categories; Gmail would sort these.
+    if !me.is_me(&message.from.email)
+        && let Some(category) = demo_category(&message.from.email)
+    {
+        labels.push(category.into());
+    }
     labels
+}
+
+/// Gmail's category for mail from these senders; the rest is Primary.
+fn demo_category(from: &str) -> Option<&'static str> {
+    const PROMOTIONS: &[&str] = &[
+        "hello@makersmail.com",
+        "news@sketchwave.app",
+        "orders@ferroandfinch.com",
+    ];
+    const UPDATES: &[&str] = &[
+        "updates@parcelway.com",
+        "receipts@stripe.com",
+        "bookings@skylineair.com",
+        "no-reply@aws.amazon.com",
+        "noreply@uber.com",
+        "shipment-tracking@amazon.com",
+        "renewals@harbormutual.com",
+        "billing@cwu-city.gov",
+        "drive-shares-noreply@google.com",
+        "tickets@eastsideconcerts.org",
+        "reservations@riversidehotel.pt",
+    ];
+    const FORUMS: &[&str] = &["noreply@github.com", "newsletter@rustacean-weekly.dev"];
+    let from = from.to_ascii_lowercase();
+    let is = |list: &[&str]| list.contains(&from.as_str());
+    if is(PROMOTIONS) {
+        Some("CATEGORY_PROMOTIONS")
+    } else if is(UPDATES) {
+        Some("CATEGORY_UPDATES")
+    } else if is(FORUMS) {
+        Some("CATEGORY_FORUMS")
+    } else {
+        None
+    }
 }
 
 /// The placeholder calendars and events.

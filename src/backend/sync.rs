@@ -22,6 +22,7 @@ use gpui::{Context, Task};
 
 use super::{
     Backend, BackendEvent, SyncStatus, ViewKey,
+    categories::{self, Category},
     gmail::{self, Gmail, GmailError},
     http::Transport,
     mime,
@@ -114,6 +115,8 @@ enum Step {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum ListKind {
     Label(&'static str, usize),
+    /// W4a: a search's first page.
+    Query(&'static str, usize),
     Backfill,
 }
 
@@ -126,6 +129,12 @@ fn full_plan() -> Vec<Step> {
     vec![
         Step::Start,
         list(gmail::INBOX, 100),
+        // W4a: Primary's first page, however many promotions came first.
+        Step::List {
+            kind: ListKind::Query(Category::Primary.view_query(), 50),
+            page: None,
+            seen: 0,
+        },
         Step::Loaded(Folder::Inbox),
         Step::Drafts,
         Step::Loaded(Folder::Drafts),
@@ -154,6 +163,8 @@ struct Outcome {
     aliases: Option<Vec<String>>,
     loaded: Option<Folder>,
     full_done: bool,
+    /// W4a: history touched the Inbox, so its category counts are stale.
+    inbox: bool,
     /// Threads queued to fetch, and fetched.
     queued: usize,
     fetched: usize,
@@ -302,6 +313,9 @@ impl MailSync {
         let request = match kind {
             ListKind::Label(label, max) => {
                 gmail::threads_list_request(Some(label), None, max, page.as_deref())
+            }
+            ListKind::Query(q, max) => {
+                gmail::threads_list_request(None, Some(q), max, page.as_deref())
             }
             ListKind::Backfill => {
                 gmail::threads_list_request(None, Some(BACKFILL_QUERY), 100, page.as_deref())
@@ -586,6 +600,7 @@ fn partial_plan(history: &[gmail::History], latest: u64) -> Outcome {
     });
     Outcome {
         queued: touched.len(),
+        inbox: categories::touches_inbox(history),
         next,
         ..Default::default()
     }
@@ -629,6 +644,7 @@ impl Backend {
         self.source != super::Source::Google
             || self.sync.full_done
             || matches!(view, ViewKey::Folder(folder) if self.sync.loaded.contains(folder))
+            || matches!(view, ViewKey::Category(_) if self.sync.loaded.contains(&Folder::Inbox))
     }
 
     /// Why the last sync failed, while nothing loaded (STA-1).
@@ -721,6 +737,9 @@ impl Backend {
             // Shows the view's empty state, if it is empty.
             cx.emit(BackendEvent::CountsChanged);
         }
+        if outcome.inbox || outcome.full_done {
+            self.inbox_touched();
+        }
         if outcome.full_done {
             self.sync.full_done = true;
             cx.emit(BackendEvent::CountsChanged);
@@ -752,6 +771,8 @@ impl Backend {
                     .set_sync_state(&email, LAST_SYNC_KEY, &at.to_string())
                     .ok();
                 self.set_status(SyncStatus::Synced { at }, cx);
+                // W4a: Inbox category counts, if the Inbox changed.
+                self.refresh_category_counts(cx);
                 None
             }
             Some(GmailError::Status { status: 401, .. }) => {
@@ -1178,6 +1199,18 @@ mod tests {
     }
 
     #[test]
+    fn only_inbox_history_makes_the_category_counts_stale() {
+        let history: gmail::HistoryList = serde_json::from_str(include_str!(
+            "../../tests/fixtures/google/gmail/history.json"
+        ))
+        .unwrap();
+        assert!(partial_plan(&history.history, 2000).inbox);
+        // A draft deleted and a star added: the Inbox didn't change.
+        assert!(!partial_plan(&history.history[2..], 2000).inbox);
+        assert!(!partial_plan(&[], 2000).inbox);
+    }
+
+    #[test]
     fn quiet_history_only_moves_on() {
         let outcome = partial_plan(&[], 77);
         assert_eq!(
@@ -1384,6 +1417,11 @@ mod tests {
             .filter(|r| r.path() == BATCH && r.cost == 40)
             .count();
         assert_eq!(fetches, 1);
+        // W4a: Primary's first page is asked for by category.
+        assert!(fake.requests().iter().any(|r| {
+            r.query()
+                .contains(&("q", "in%3Ainbox%20category%3Aprimary"))
+        }));
     }
 
     #[test]

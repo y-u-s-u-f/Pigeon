@@ -182,7 +182,7 @@ The user's own plans, not driven by Google's APIs.
 | FOL-8 | Empty Trash and permanent delete | ⚪ Not done | `threads.delete`, `messages.delete`, `messages.batchDelete` |
 | FOL-9 | Nested labels | ⚪ Not done | Label names with `/` |
 | FOL-10 | Label visibility | ⚪ Not done | Label `labelListVisibility`, `messageListVisibility` |
-| FOL-11 | Inbox categories | ⚪ Not done | `CATEGORY_PERSONAL`, `_SOCIAL`, `_PROMOTIONS`, `_UPDATES`, `_FORUMS` |
+| FOL-11 | Inbox categories | ⚪ Not done | Backend done (sprint 2 W4a): per-message categories, unread counts, `category:` view queries. Views pending (W4b) |
 | FOL-12 | Important marker | ⚪ Not done | `IMPORTANT` label |
 
 #### FOL-1 System folders and go-to shortcuts
@@ -244,6 +244,8 @@ The user's own plans, not driven by Google's APIs.
 #### FOL-11 Inbox categories
 
 - **Needs:** Gmail's category labels (`CATEGORY_PERSONAL`, `CATEGORY_SOCIAL`, `CATEGORY_PROMOTIONS`, `CATEGORY_UPDATES`, `CATEGORY_FORUMS`) as Inbox tabs or filters, and the `category:` search operator (SRC-9).
+- **Built (backend, sprint 2 W4a):** `src/backend/categories.rs`. A message is Primary unless it carries `CATEGORY_SOCIAL`, `_PROMOTIONS`, `_UPDATES` or `_FORUMS` (`category_of`); a thread is in a category when any of its Inbox messages is (`in_category`). Unread Inbox threads per category (`Backend::category_counts`, `CountsChanged`) come from `threads.list labelIds=INBOX,UNREAD q=category:<x>` with ids only, up to 500 ("500+"): at launch and after a sync whose history touched the Inbox, 50 quota units per refresh; kept in `sync_state` so launch shows the last ones at once. Demo mode counts the store (some demo senders get categories in code). `ViewKey::Category` asks Gmail for `in:inbox category:<x>` for "Load older", and the full sync also lists Primary's first page that way.
+- **Still to do (W4b):** the Inbox shows Primary; Social, Promotions, Updates and Forums as views under Inbox with the counts, `g` chords and ⌘K entries.
 
 #### FOL-12 Important marker
 

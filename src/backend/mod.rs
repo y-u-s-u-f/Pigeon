@@ -18,6 +18,7 @@
 
 pub mod auth;
 pub mod calendar;
+pub mod categories;
 pub mod compose;
 pub mod demo;
 pub mod gmail;
@@ -481,6 +482,8 @@ pub enum ViewKey {
     Starred,
     /// By label id.
     Label(String),
+    /// W4a: an Inbox category (FOL-11).
+    Category(categories::Category),
 }
 
 /// What a server search found (SRC-7): threads by id, newest first, and
@@ -549,6 +552,8 @@ pub struct Backend {
     health: health::Health,
     /// W9: each view's older pages (LST-7).
     older: Vec<(ViewKey, OlderPages)>,
+    /// W4a: Inbox category counts (FOL-11).
+    categories: categories::CategoryState,
 }
 
 impl EventEmitter<BackendEvent> for Backend {}
@@ -739,7 +744,9 @@ impl Backend {
             _profile: None,
             sync: Default::default(),
             older: Vec::new(),
+            categories: Default::default(),
         };
+        this.start_categories();
         // Whatever was left queued at the last quit goes now.
         this.schedule(cx);
         this.check_profile(cx);
@@ -1024,6 +1031,10 @@ impl Backend {
                     self.note_error(&error, cx);
                 }
             }
+        }
+        // W4a: demo counts follow its commits.
+        if mail && self.source == Source::Demo {
+            self.refresh_category_counts(cx);
         }
         if self.source == Source::Google {
             if mail {

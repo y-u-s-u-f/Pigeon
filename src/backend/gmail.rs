@@ -238,6 +238,9 @@ pub struct History {
 #[derive(Debug, Default, Deserialize)]
 pub struct HistoryMessage {
     pub message: GMessage,
+    /// `labelsAdded` / `labelsRemoved`: the labels that changed.
+    #[serde(default, rename = "labelIds")]
+    pub label_ids: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -412,6 +415,16 @@ pub fn threads_list_request(
         url.push_str(&format!("&pageToken={}", enc(page)));
     }
     Request::get(url, cost::THREADS_LIST)
+}
+
+/// W4a (FOL-11): a page of unread Inbox thread ids matching `q`, ids only.
+pub fn unread_inbox_ids_request(q: &str, max: usize, page: Option<&str>) -> Request {
+    let mut request = threads_list_request(Some(INBOX), Some(q), max, page);
+    request.url.push_str(&format!(
+        "&labelIds={UNREAD}&fields={}",
+        enc("threads/id,nextPageToken")
+    ));
+    request
 }
 
 fn metadata_query() -> String {

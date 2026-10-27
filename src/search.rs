@@ -257,6 +257,10 @@ impl GmailQuery {
             ViewKey::Folder(folder) => Self::folder(*folder),
             ViewKey::Starred => Some(Self::label(gmail::STARRED, false)),
             ViewKey::Label(id) => Some(Self::label(id, false)),
+            ViewKey::Category(category) => Some(Self {
+                q: category.view_query().into(),
+                ..Default::default()
+            }),
         }
     }
 }
