@@ -26,7 +26,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Drafts](#56-drafts-drf) | 0 | 1 | 5 | 6 |
 | [Undo](#57-undo-und) | 0 | 0 | 3 | 3 |
 | [Search](#58-search-src) | 0 | 1 | 8 | 9 |
-| [Contacts](#59-contacts-con) | 6 | 0 | 2 | 8 |
+| [Contacts](#59-contacts-con) | 5 | 1 | 2 | 8 |
 | [Images and attachments](#510-images-and-attachments-att) | 0 | 4 | 3 | 7 |
 | [Links](#511-links-lnk) | 1 | 1 | 1 | 3 |
 | [Mail settings](#512-mail-settings-mst) | 8 | 2 | 0 | 10 |
@@ -37,7 +37,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Storage and persistence](#81-storage-and-persistence-per) | 0 | 2 | 3 | 5 |
 | [Command palette](#82-command-palette-pal) | 0 | 0 | 3 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 3 | 3 | 7 |
-| **Overall** | **36** | **42** | **103** | **181** |
+| **Overall** | **35** | **43** | **103** | **181** |
 
 ## Contents
 
@@ -671,7 +671,7 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 | CON-2 | Typed name and address resolution | 🟢 Fully linked | As CON-1 |
 | CON-3 | Contact management | ⚪ Not done | `people.createContact`, `updateContact`, `deleteContact`, batch variants |
 | CON-4 | Contact photos | ⚪ Not done | `photos` person field; `updateContactPhoto`, `deleteContactPhoto` |
-| CON-5 | Contact card | ⚪ Not done | `people.get`, `people.getBatchGet` |
+| CON-5 | Contact card | 🟡 Partially done | `people.get`, `people.getBatchGet` |
 | CON-6 | Contact groups | ⚪ Not done | `contactGroups.*`, `contactGroups.members.modify` |
 | CON-7 | Workspace directory | ⚪ Not done | `people.listDirectoryPeople`, `searchDirectoryPeople` |
 | CON-8 | Save a frequent address as a contact | ⚪ Not done | `otherContacts.copyOtherContactToMyContactsGroup` |
