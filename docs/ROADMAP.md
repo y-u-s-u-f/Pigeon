@@ -33,11 +33,11 @@ To update: change the status cell in the area's table, then the counts below.
 | [Calendar](#6-calendar-cal) | 18 | 7 | 17 | 42 |
 | [Sync and push](#71-sync-and-push-syn) | 2 | 5 | 0 | 7 |
 | [Notifications and background](#72-notifications-and-background-ntf) | 3 | 0 | 0 | 3 |
-| [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 2 | 3 | 0 | 5 |
+| [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 0 | 5 | 0 | 5 |
 | [Storage and persistence](#81-storage-and-persistence-per) | 1 | 1 | 1 | 3 |
 | [Command palette](#82-command-palette-pal) | 0 | 3 | 0 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 6 | 0 | 7 |
-| **Overall** | **63** | **64** | **49** | **176** |
+| **Overall** | **61** | **66** | **49** | **176** |
 
 ## Contents
 
@@ -1205,8 +1205,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
 | STA-1 | Initial load and loading states | 🟡 Partially done | None |
-| STA-2 | Action failure and rollback | ⚪ Not done | API error responses |
-| STA-3 | Offline mode and queued changes | ⚪ Not done | None |
+| STA-2 | Action failure and rollback | 🟡 Partially done | API error responses |
+| STA-3 | Offline mode and queued changes | 🟡 Partially done | None |
 | STA-4 | Expired sign-in | 🟡 Partially done | OAuth `invalid_grant`, 401 |
 | STA-5 | Conflicts with server changes | 🟡 Partially done | ETags, `historyId`, `syncToken` |
 
