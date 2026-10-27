@@ -814,7 +814,8 @@ impl CalendarPass<'_> {
 // - Delete: `events.delete`; "This event" deletes the instance, "This and
 //   following" rewrites the series' UNTIL. Someone else's event is declined
 //   and removed from the user's calendar instead (CAL-22).
-// - Move: `events.move`. Rsvp: the user's own `responseStatus`. SetSelected:
+// - Move: `events.move`, then a patch putting back the explicit reminders
+//   and color, which are per calendar and dropped by the move. Rsvp: the user's own `responseStatus`. SetSelected:
 //   `calendarList.patch`.
 //
 // A 412 (changed elsewhere) or any other failure stores Google's version
@@ -1683,8 +1684,10 @@ impl Writer<'_> {
         Ok(())
     }
 
+    /// `events.move`, then the per-calendar fields it drops (the reminders,
+    /// the color) patched back onto the moved event.
     fn move_to(&self, id: &str, to: &str) -> anyhow::Result<()> {
-        let Some((event, _)) = self.locate(id) else {
+        let Some((event, raw)) = self.locate(id) else {
             return Err(anyhow!("This event isn't in Google Calendar"));
         };
         if event.calendar == to {
@@ -1695,14 +1698,39 @@ impl Writer<'_> {
             self.event_url(&event.calendar, id),
             enc(to)
         );
-        let response = self.send("POST", url, None, None, &[])?;
+        let moved: Value = self.send("POST", url, None, None, &[])?.json()?;
+        // Whatever the move answers, Google drops these right after (a
+        // later read has neither): set them again.
+        let mut body = Map::new();
+        if let Some(raw) = &raw {
+            if raw["reminders"]["useDefault"] == json!(false) {
+                body.insert("reminders".into(), raw["reminders"].clone());
+            }
+            if raw["colorId"].is_string() {
+                body.insert("colorId".into(), raw["colorId"].clone());
+            }
+        }
         self.store.delete_calendar_events(
             self.account,
             &event.calendar,
             Some(&[id.to_string()]),
         )?;
         let mut seen = BTreeSet::new();
-        self.store_raw(to, &response.json()?, &mut seen)
+        if body.is_empty() {
+            return self.store_raw(to, &moved, &mut seen);
+        }
+        // Stored with the old reminders until Google has them back, so the
+        // panel never shows the new calendar's default in between.
+        let mut interim = moved.clone();
+        for (key, value) in &body {
+            interim[key] = value.clone();
+        }
+        self.store_raw(to, &interim, &mut seen)?;
+        // No If-Match: the etag `events.move` answers is already stale
+        // (Google answers 412 to it), and nobody else had it in between.
+        let url = format!("{}?sendUpdates=none", self.event_url(to, id));
+        let patched = self.send("PATCH", url, Some(&Value::Object(body)), None, &[])?;
+        self.store_raw(to, &patched.json()?, &mut seen)
     }
 
     /// The user's own answer, the rest of the guest list as Google has it
@@ -2716,6 +2744,93 @@ mod tests {
             (now_stored.title.as_str(), now_stored.etag.as_str()),
             ("Theirs", "\"2\"")
         );
+    }
+
+    #[test]
+    fn move_keeps_explicit_reminders() {
+        const OTHER_PATH: &str = "/calendar/v3/calendars/other%40example.com/events";
+        let event = |reminders: &str, etag: &str| {
+            format!(
+                r#"{{"id":"m1","etag":"\"{etag}\"","status":"confirmed","summary":"Move me",
+                "organizer":{{"email":"me@example.com","self":true}},
+                "start":{{"dateTime":"2026-10-28T10:00:00-07:00"}},"end":{{"dateTime":"2026-10-28T11:00:00-07:00"}},
+                "reminders":{reminders}}}"#
+            )
+        };
+        let explicit = r#"{"useDefault":false,"overrides":[{"method":"popup","minutes":10}]}"#;
+        let default = r#"{"useDefault":true}"#;
+        let op = CalOp::Move {
+            id: "m1".into(),
+            to_calendar: "other@example.com".into(),
+        };
+
+        // Explicit: moved, then the reminders patched back.
+        let store = seeded(&[&event(explicit, "1")]);
+        let moved = event(default, "2");
+        let patched = event(explicit, "3");
+        let fake = FakeTransport::new()
+            .on(
+                "POST",
+                &format!("{CAL_PATH}/m1/move"),
+                &[],
+                &[(200, moved.as_str())],
+            )
+            .on(
+                "PATCH",
+                &format!("{OTHER_PATH}/m1"),
+                &[],
+                &[(200, patched.as_str())],
+            );
+        let done = commit_at(&fake, &store, ME, &op, &zone(), now());
+        assert_eq!(done.error, None);
+        let requests = fake.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].method, "PATCH");
+        assert_eq!(header(&requests[1], "If-Match"), None);
+        assert_eq!(
+            body(&requests[1]),
+            json!({"reminders": serde_json::from_str::<Value>(explicit).unwrap()})
+        );
+        let now_stored = stored(&store, "m1");
+        assert_eq!(now_stored.calendar, "other@example.com");
+        assert_eq!(now_stored.reminder_minutes, Some(10));
+        assert_eq!(now_stored.etag, "\"3\"");
+
+        // The patch failing leaves the moved event, as Google has it.
+        let store = seeded(&[&event(explicit, "1")]);
+        let fake = FakeTransport::new()
+            .on(
+                "POST",
+                &format!("{CAL_PATH}/m1/move"),
+                &[],
+                &[(200, moved.as_str())],
+            )
+            .on("PATCH", &format!("{OTHER_PATH}/m1"), &[], &[(412, "{}")])
+            .on(
+                "GET",
+                &format!("{OTHER_PATH}/m1"),
+                &[],
+                &[(200, moved.as_str())],
+            );
+        let done = commit_at(&fake, &store, ME, &op, &zone(), now());
+        assert!(done.error.is_some());
+        let now_stored = stored(&store, "m1");
+        assert_eq!(now_stored.calendar, "other@example.com");
+        assert_eq!(now_stored.etag, "\"2\"");
+
+        // The calendar's default: the move alone.
+        let store = seeded(&[&event(default, "1")]);
+        let moved = event(default, "2");
+        let fake = FakeTransport::new().on(
+            "POST",
+            &format!("{CAL_PATH}/m1/move"),
+            &[],
+            &[(200, moved.as_str())],
+        );
+        let done = commit_at(&fake, &store, ME, &op, &zone(), now());
+        assert_eq!(done.error, None);
+        assert_eq!(fake.requests().len(), 1);
+        assert_eq!(stored(&store, "m1").calendar, "other@example.com");
     }
 
     #[test]

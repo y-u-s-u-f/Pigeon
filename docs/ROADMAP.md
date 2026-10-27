@@ -1037,7 +1037,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-40 Move an event to another calendar
 
-- **Today:** The panel's calendar picker (`render_calendar_picker()` in `event_panel.rs`) changes the event's calendar. W7: it goes as `events.move` with `destination` (`CalOp::Move`, before any patch of the same edit); Google's answer is stored under the new calendar. Only the organizer of a whole event (not one occurrence) gets the picker; calendars the user can't write to are faded and can't be picked.
+- **Today:** The panel's calendar picker (`render_calendar_picker()` in `event_panel.rs`) changes the event's calendar. W7: it goes as `events.move` with `destination` (`CalOp::Move`, before any patch of the same edit); Google's answer is stored under the new calendar. Reminders and the event color are per calendar, and Google drops them right after a move (its move answer still shows them, with an etag already stale), so the same commit patches an explicit `reminders` override and any `colorId` back onto the moved event (without `If-Match`), storing the event with them in between so the panel never flips to the new calendar's default; an event on its calendar's default reminders moves alone (checked live, Pigeon Test → Pigeon Test 2). Only the organizer of a whole event (not one occurrence) gets the picker; calendars the user can't write to are faded and can't be picked.
 - **Needs:** A tester pass on the real account (T2c; not checked yet, as it touches a second calendar). Birthdays, focus time, out of office and working location events can't move.
 
 ### Recurrence
