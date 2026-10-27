@@ -2179,8 +2179,7 @@ impl Render for Composer {
                     let Some(composer) = composer.upgrade() else {
                         return;
                     };
-                    // Only in the body: elsewhere ⌘K is the palette, ⌘\ the
-                    // sidebar.
+                    // Only in the body: elsewhere ⌘\ is the sidebar.
                     if composer.read(cx).body_focused(window, cx) {
                         composer.update(cx, |c, cx| c.format(format, window, cx));
                     } else {

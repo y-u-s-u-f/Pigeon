@@ -339,15 +339,16 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-z", Undo, Some(MAIL)),
         KeyBinding::new("tab", composer::NextField, Some(COMPOSER)),
         KeyBinding::new("shift-tab", composer::PrevField, Some(COMPOSER)),
-        // Formatting the body, like Gmail. The composer passes them on from
-        // its other fields, so there ⌘K is still the palette and ⌘\ the
-        // sidebar. On a US layout ⌘⇧7 arrives as ⌘&, and so on.
+        // Formatting the body, like Gmail, except links: ⌘⇧K, so ⌘K is the
+        // palette everywhere. The composer passes them on from its other
+        // fields, so there ⌘\ is still the sidebar. On a US layout ⌘⇧7
+        // arrives as ⌘&, and so on.
         KeyBinding::new("cmd-b", composer::FormatBold, Some(COMPOSER)),
         KeyBinding::new("cmd-i", composer::FormatItalic, Some(COMPOSER)),
         KeyBinding::new("cmd-u", composer::FormatUnderline, Some(COMPOSER)),
         KeyBinding::new("cmd-shift-x", composer::FormatStrikethrough, Some(COMPOSER)),
         KeyBinding::new("cmd-e", composer::FormatCode, Some(COMPOSER)),
-        KeyBinding::new("cmd-k", composer::InsertLink, Some(COMPOSER)),
+        KeyBinding::new("cmd-shift-k", composer::InsertLink, Some(COMPOSER)),
         KeyBinding::new("cmd-&", composer::NumberedList, Some(COMPOSER)),
         KeyBinding::new("cmd-*", composer::BulletedList, Some(COMPOSER)),
         KeyBinding::new("cmd-(", composer::QuoteLines, Some(COMPOSER)),
