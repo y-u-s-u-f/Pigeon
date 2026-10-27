@@ -456,7 +456,7 @@ impl CalendarView {
         let color = self.data.color_of(event);
         let selected = self.is_selected(&occurrence);
         let past = occurrence.end <= now();
-        let look = Look::of(event.my_status(self.me()));
+        let look = Look::of(event.my_status(&self.data.account));
         let height = ((end - start) as f32 / 60. * HOUR_HEIGHT - 2.).max(18.);
         let compact = height < 34.;
         // Narrow blocks give the title the room; the block's place already

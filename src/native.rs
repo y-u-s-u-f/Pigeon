@@ -218,3 +218,85 @@ pub fn open_login_items_settings() {
         let _: () = unsafe { msg_send![class, openSystemSettingsLoginItems] };
     }
 }
+
+// W3 (LNK-3): the default mail app, through Launch Services. Deprecated but
+// synchronous; macOS may ask the user to confirm the change.
+
+#[link(name = "CoreServices", kind = "framework")]
+unsafe extern "C" {
+    fn LSCopyDefaultHandlerForURLScheme(scheme: *const std::ffi::c_void)
+    -> *const std::ffi::c_void;
+    fn LSSetDefaultHandlerForURLScheme(
+        scheme: *const std::ffi::c_void,
+        handler: *const std::ffi::c_void,
+    ) -> i32;
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFRelease(object: *const std::ffi::c_void);
+}
+
+/// Who opens `mailto:` links.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MailHandler {
+    /// Not offered here, and why.
+    Unavailable(&'static str),
+    Pigeon,
+    /// Another app, by bundle id; empty when none is set.
+    Other(String),
+}
+
+/// This app's bundle id, when it runs as an app.
+fn bundle_id() -> Option<String> {
+    let class = AnyClass::get(c"NSBundle")?;
+    // SAFETY: `+[NSBundle mainBundle]` and `-bundleIdentifier` (nullable).
+    let id: Option<Retained<NSString>> = unsafe {
+        let bundle: Option<Retained<AnyObject>> = msg_send![class, mainBundle];
+        msg_send![&*bundle?, bundleIdentifier]
+    };
+    id.map(|id| id.to_string())
+}
+
+pub fn mail_handler() -> MailHandler {
+    let Some(me) = bundle_id() else {
+        return MailHandler::Unavailable("Available once Pigeon runs as an app.");
+    };
+    let scheme = NSString::from_str("mailto");
+    // SAFETY: NSString is toll-free bridged to CFString; the copy is ours
+    // to release.
+    let current = unsafe {
+        let handler = LSCopyDefaultHandlerForURLScheme(Retained::as_ptr(&scheme).cast());
+        if handler.is_null() {
+            String::new()
+        } else {
+            let text = (*handler.cast::<NSString>()).to_string();
+            CFRelease(handler);
+            text
+        }
+    };
+    if current.eq_ignore_ascii_case(&me) {
+        MailHandler::Pigeon
+    } else {
+        MailHandler::Other(current)
+    }
+}
+
+/// Make Pigeon open `mailto:` links; Launch Services' error code if not.
+pub fn make_default_mail_app() -> Result<(), String> {
+    let me = bundle_id().ok_or("Pigeon isn’t running as an app.")?;
+    let scheme = NSString::from_str("mailto");
+    let handler = NSString::from_str(&me);
+    // SAFETY: both are CFStrings by toll-free bridging.
+    let status = unsafe {
+        LSSetDefaultHandlerForURLScheme(
+            Retained::as_ptr(&scheme).cast(),
+            Retained::as_ptr(&handler).cast(),
+        )
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(format!("macOS said no (error {status})."))
+    }
+}

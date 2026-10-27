@@ -46,7 +46,11 @@ pub fn commit_compose(
 ) -> (anyhow::Result<()>, Vec<BackendEvent>) {
     let mut events = Vec::new();
     let result = match op {
-        MailOp::SaveDraft { local_id, draft } => save_draft(gmail, store, account, local_id, draft),
+        MailOp::SaveDraft {
+            local_id,
+            draft,
+            revision,
+        } => save_draft(gmail, store, account, local_id, draft, *revision),
         MailOp::DeleteDraft { local_id } => delete_draft(gmail, store, account, local_id),
         MailOp::Send {
             draft,
@@ -213,16 +217,19 @@ fn save_draft(
     account: &str,
     local_id: &str,
     draft: &Outgoing,
+    revision: u64,
 ) -> anyhow::Result<()> {
+    // W3 (DRF-5): sent or discarded since, it stays gone.
+    if store.draft_buried(account, local_id, revision) {
+        return Ok(());
+    }
     let stored = stored_draft(store, account, local_id);
-    // Here first: the text is never lost, whatever Gmail says.
-    store.put_threads(
+    // Here first: the text is never lost, whatever Gmail says. A newer
+    // local save stays as it is.
+    store.put_draft(
         account,
-        &[draft_thread(
-            draft,
-            local_id,
-            stored.as_ref().map(|s| s.1.clone()),
-        )],
+        &draft_thread(draft, local_id, stored.as_ref().map(|s| s.1.clone())),
+        revision,
     )?;
     let files = read_files(gmail, draft, stored.as_ref().map(|s| s.0.as_str()))?;
     let (raw, _) = build(store, account, draft, true, files);
@@ -234,12 +241,43 @@ fn save_draft(
     let saved: DraftRef = gmail
         .call(&request)
         .map_err(|e| refused("Couldn't save the draft to Gmail", e))?;
-    store.put_threads(
-        account,
-        &[draft_thread(draft, local_id, Some(saved.message.id))],
-    )?;
+    // The answer names Gmail's message; the text kept is the newest one
+    // stored, which may be newer than this save's.
+    let Some(mut thread) = store
+        .load_threads(account, &[local_id.to_string()])?
+        .pop()
+        .filter(|t| t.folder == Folder::Drafts)
+    else {
+        return Ok(());
+    };
+    if let Some(message) = thread.messages.last_mut() {
+        message.id = saved.message.id;
+    }
+    store.put_threads(account, &[thread])?;
     store.set_draft_id(account, local_id, &saved.id)?;
     Ok(())
+}
+
+/// W3 (DRF-5): a save while typing, here only; Gmail gets it with the
+/// `SaveDraft` op that follows. False when a newer save, a send or a
+/// discard came first.
+pub fn save_locally(
+    store: &Store,
+    account: &str,
+    local_id: &str,
+    draft: &Outgoing,
+    revision: u64,
+) -> anyhow::Result<bool> {
+    let message = stored_draft(store, account, local_id).map(|s| s.1);
+    let message = message.or_else(|| {
+        // Not in Gmail yet: keep the message id it was stored under.
+        store
+            .load_threads(account, &[local_id.to_string()])
+            .ok()?
+            .pop()
+            .map(|t| t.last_message().id.clone())
+    });
+    store.put_draft(account, &draft_thread(draft, local_id, message), revision)
 }
 
 fn delete_draft(gmail: &Gmail, store: &Store, account: &str, local_id: &str) -> anyhow::Result<()> {
@@ -252,7 +290,7 @@ fn delete_draft(gmail: &Gmail, store: &Store, account: &str, local_id: &str) -> 
     };
     // Kept while it waits to go again, so the retry knows the Gmail draft.
     if !result.as_ref().is_err_and(is_later) {
-        store.delete_threads(account, &[local_id.to_string()])?;
+        store.bury_draft(account, local_id)?;
     }
     result
 }
@@ -299,7 +337,7 @@ fn send(
     };
 
     if let Some(local) = local_id {
-        store.delete_threads(account, &[local.to_string()])?;
+        store.bury_draft(account, local)?;
     }
     // W2: a forward's held copies aren't needed any more.
     super::attachments::Files::in_data_dir().release(&draft.attachments);
@@ -400,8 +438,11 @@ fn load_draft(
         markdown: String::new(),
         reply_to: None,
         quoted: None,
+        signature: false,
     });
     origin.markdown = parsed.markdown;
+    // W3 (MST-2): its signature was taken out of the text.
+    origin.signature = parsed.signature;
     thread.origin = Some(origin);
     thread.loaded = crate::data::Loaded::Full;
     thread.reindex();
@@ -691,6 +732,7 @@ mod tests {
         let save = |subject: &str| MailOp::SaveDraft {
             local_id: "draft-local-1".into(),
             draft: outgoing(subject),
+            revision: 0,
         };
         commit_compose(&gmail, &store, ME, &save("One")).0.unwrap();
         assert_eq!(
@@ -728,6 +770,7 @@ mod tests {
         let op = MailOp::SaveDraft {
             local_id: "draft-local-2".into(),
             draft: outgoing("Kept"),
+            revision: 0,
         };
         assert!(commit_compose(&gmail, &store, ME, &op).0.is_err());
         let t = &store.load_threads(ME, &["draft-local-2".into()]).unwrap()[0];
@@ -750,6 +793,7 @@ mod tests {
         let save = MailOp::SaveDraft {
             local_id: "draft-local-5".into(),
             draft: outgoing("Bye"),
+            revision: 0,
         };
         commit_compose(&gmail, &store, ME, &save).0.unwrap();
         let delete = MailOp::DeleteDraft {
@@ -804,6 +848,198 @@ mod tests {
         assert!(t.last_message().html().contains("<strong>two</strong>"));
         // The drafts sync still sees it unchanged.
         assert_eq!(store.stored_drafts(ME).unwrap()[0].2, "dm4");
+    }
+
+    // W3 (MST-1, MST-2, DRF-5).
+
+    fn save_op(local_id: &str, subject: &str, revision: u64) -> MailOp {
+        MailOp::SaveDraft {
+            local_id: local_id.into(),
+            draft: outgoing(subject),
+            revision,
+        }
+    }
+
+    fn create_answer(fake: FakeTransport, draft: &str, message: &str) -> FakeTransport {
+        fake.on(
+            "POST",
+            "/gmail/v1/users/me/drafts",
+            &[],
+            &[(
+                200,
+                &format!(r#"{{"id":"{draft}","message":{{"id":"{message}"}}}}"#),
+            )],
+        )
+    }
+
+    #[test]
+    fn typing_during_a_save_keeps_the_newer_text() {
+        let store = Store::open_in_memory().unwrap();
+        let (gmail, fake) = gmail(create_answer(FakeTransport::new(), "r1", "dm1"));
+        // Revision 2 is saved here while revision 1 is on its way to Gmail.
+        assert!(save_locally(&store, ME, "draft-local-1", &outgoing("Newer"), 2).unwrap());
+        commit_compose(&gmail, &store, ME, &save_op("draft-local-1", "Older", 1))
+            .0
+            .unwrap();
+        assert_eq!(fake.requests().len(), 1);
+        let t = &store.load_threads(ME, &["draft-local-1".into()]).unwrap()[0];
+        assert_eq!(t.subject, "Newer", "the stale answer kept the newer text");
+        // Gmail's ids are kept, so the drafts sync sees it unchanged.
+        assert_eq!(
+            store.stored_drafts(ME).unwrap(),
+            [("draft-local-1".into(), Some("r1".into()), "dm1".into())]
+        );
+        assert_eq!(store.draft_revision(ME, "draft-local-1").unwrap(), 2);
+        // An older local save loses too.
+        assert!(!save_locally(&store, ME, "draft-local-1", &outgoing("Oldest"), 1).unwrap());
+    }
+
+    #[test]
+    fn a_save_after_the_send_never_brings_the_draft_back() {
+        let store = Store::open_in_memory().unwrap();
+        let fake = create_answer(FakeTransport::new(), "r1", "dm1").on(
+            "POST",
+            "/gmail/v1/users/me/drafts/send",
+            &[],
+            &[(200, r#"{"id":"s1","threadId":"T1","labelIds":["SENT"]}"#)],
+        );
+        let (gmail, fake) = gmail(fake);
+        commit_compose(&gmail, &store, ME, &save_op("draft-local-1", "Hi", 3))
+            .0
+            .unwrap();
+        let send = MailOp::Send {
+            draft: outgoing("Hi"),
+            local_id: Some("draft-local-1".into()),
+            thread_id: "sent-local-1".into(),
+        };
+        commit_compose(&gmail, &store, ME, &send).0.unwrap();
+        assert!(fake.requests()[1].url.contains("drafts/send"));
+        // A late save of the same or an older revision does nothing.
+        commit_compose(&gmail, &store, ME, &save_op("draft-local-1", "Hi", 3))
+            .0
+            .unwrap();
+        assert!(!save_locally(&store, ME, "draft-local-1", &outgoing("Hi"), 2).unwrap());
+        assert_eq!(fake.requests().len(), 2);
+        assert!(
+            store
+                .load_threads(ME, &["draft-local-1".into()])
+                .unwrap()
+                .is_empty()
+        );
+        assert!(store.stored_drafts(ME).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_save_after_the_discard_never_brings_the_draft_back() {
+        let store = Store::open_in_memory().unwrap();
+        let fake = create_answer(FakeTransport::new(), "r9", "dm9").on(
+            "DELETE",
+            "/gmail/v1/users/me/drafts/r9",
+            &[],
+            &[(204, "")],
+        );
+        let (gmail, fake) = gmail(fake);
+        commit_compose(&gmail, &store, ME, &save_op("draft-local-5", "Bye", 5))
+            .0
+            .unwrap();
+        let delete = MailOp::DeleteDraft {
+            local_id: "draft-local-5".into(),
+        };
+        commit_compose(&gmail, &store, ME, &delete).0.unwrap();
+        commit_compose(&gmail, &store, ME, &save_op("draft-local-5", "Bye", 4))
+            .0
+            .unwrap();
+        assert_eq!(fake.requests().len(), 2);
+        assert!(store.load_all_threads(ME).unwrap().is_empty());
+        // Undo after the window saves it again, newer: it's back.
+        assert!(save_locally(&store, ME, "draft-local-5", &outgoing("Bye"), 6).unwrap());
+        assert_eq!(store.load_all_threads(ME).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_draft_saved_while_typing_survives_a_crash() {
+        let path =
+            std::env::temp_dir().join(format!("pigeon-drf5-{}.sqlite", uuid::Uuid::new_v4()));
+        {
+            let store = Store::open(&path).unwrap();
+            let draft = Outgoing {
+                from: Contact {
+                    name: "Work Me".into(),
+                    email: "alias@example.com".into(),
+                },
+                signature: "<b>Me</b>".into(),
+                ..outgoing("Unsent")
+            };
+            assert!(save_locally(&store, ME, "draft-local-7", &draft, 10).unwrap());
+            // Quit without closing: nothing else runs.
+        }
+        let store = Store::open(&path).unwrap();
+        let t = &store.load_threads(ME, &["draft-local-7".into()]).unwrap()[0];
+        assert_eq!(t.folder, Folder::Drafts);
+        let origin = t.origin.as_ref().unwrap();
+        assert_eq!(origin.markdown, "Hi **Ana**");
+        // Reopening keeps From and the signature.
+        assert!(origin.signature);
+        assert_eq!(t.last_message().from.email, "alias@example.com");
+        assert_eq!(store.draft_revision(ME, "draft-local-7").unwrap(), 10);
+        for ext in ["", "-wal", "-shm"] {
+            std::fs::remove_file(format!("{}{ext}", path.display())).ok();
+        }
+    }
+
+    #[test]
+    fn sent_mail_carries_the_aliass_name_reply_to_and_signature() {
+        let store = Store::open_in_memory().unwrap();
+        let (gmail, fake) = gmail(FakeTransport::new().on(
+            "POST",
+            "/gmail/v1/users/me/messages/send",
+            &[],
+            &[(200, r#"{"id":"s1","threadId":"T1"}"#)],
+        ));
+        let signature = "<b>Work Me</b><br>Example Ltd";
+        let draft = Outgoing {
+            from: Contact {
+                name: "Work Me".into(),
+                email: "alias@example.com".into(),
+            },
+            reply_to_address: "team@example.com".into(),
+            signature: signature.into(),
+            html: format!("<p>Hi</p>{}", mime::signature_block(signature)),
+            ..outgoing("[Pigeon test] alias")
+        };
+        let op = MailOp::Send {
+            draft,
+            local_id: None,
+            thread_id: "sent-local-1".into(),
+        };
+        commit_compose(&gmail, &store, ME, &op).0.unwrap();
+        let raw = raw_of(&fake.requests()[0]);
+        let text = String::from_utf8_lossy(&raw);
+        assert!(
+            text.contains("From: \"Work Me\" <alias@example.com>"),
+            "{text}"
+        );
+        assert!(text.contains("Reply-To: <team@example.com>"), "{text}");
+        assert!(
+            !text.contains(mime::SIGNATURE_HEADER),
+            "only drafts mark it"
+        );
+        let parsed = mail_parser::MessageParser::default().parse(&raw).unwrap();
+        let plain = parsed.body_text(0).unwrap();
+        assert!(
+            plain.ends_with("-- \r\nWork Me\r\nExample Ltd")
+                || plain.ends_with("-- \nWork Me\nExample Ltd"),
+            "{plain:?}"
+        );
+        let html = parsed.body_html(0).unwrap();
+        assert_eq!(
+            html.matches("class=\"gmail_signature\"").count(),
+            1,
+            "{html}"
+        );
+        // The sent copy keeps the Reply-To.
+        let t = &store.load_threads(ME, &["T1".into()]).unwrap()[0];
+        assert_eq!(t.last_message().reply_to[0].email, "team@example.com");
     }
 
     // W2 (ATT-7).

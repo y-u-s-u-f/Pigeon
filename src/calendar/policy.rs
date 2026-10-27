@@ -207,6 +207,7 @@ mod tests {
                 name: "Me".into(),
                 email: ME.into(),
                 aliases: vec!["alias@example.com".into()],
+                send_as: Vec::new(),
             },
             calendars: vec![calendar("work", true), calendar("hidden", false)],
             events,

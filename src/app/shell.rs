@@ -26,7 +26,7 @@ use crate::{
     theme::Theme,
 };
 
-/// A `mailto:` link's fields (LNK-3; W3 fills them in from the URL).
+/// A `mailto:` link's fields (LNK-3).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Mailto {
     pub to: Vec<String>,
@@ -37,20 +37,66 @@ pub struct Mailto {
 }
 
 impl Mailto {
-    /// Just the address part for now; W3 parses the rest.
+    /// RFC 6068: addresses before `?`, then `to`, `cc`, `bcc`, `subject`
+    /// and `body` fields, percent-decoded; `+` stays a plus. Other fields
+    /// are ignored.
     pub fn parse(url: &str) -> Option<Self> {
-        let rest = url.strip_prefix("mailto:")?;
-        let to = rest.split('?').next().unwrap_or_default();
-        Some(Self {
-            to: to
-                .split(',')
-                .map(str::trim)
-                .filter(|a| !a.is_empty())
-                .map(String::from)
-                .collect(),
-            ..Default::default()
-        })
+        let scheme = url.get(..7)?;
+        if !scheme.eq_ignore_ascii_case("mailto:") {
+            return None;
+        }
+        let rest = &url[7..];
+        let (to, query) = rest.split_once('?').unwrap_or((rest, ""));
+        let mut out = Self::default();
+        add_addresses(&mut out.to, to);
+        for pair in query.split('&').filter(|p| !p.is_empty()) {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            match percent_decode(key).to_ascii_lowercase().as_str() {
+                "to" => add_addresses(&mut out.to, value),
+                "cc" => add_addresses(&mut out.cc, value),
+                "bcc" => add_addresses(&mut out.bcc, value),
+                "subject" if out.subject.is_empty() => out.subject = percent_decode(value),
+                "body" if out.body.is_empty() => {
+                    out.body = percent_decode(value).replace("\r\n", "\n")
+                }
+                _ => {}
+            }
+        }
+        Some(out)
     }
+}
+
+/// The comma-separated addresses in `field`, decoded, onto `list`.
+fn add_addresses(list: &mut Vec<String>, field: &str) {
+    let decoded = percent_decode(field);
+    list.extend(
+        decoded
+            .split(',')
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .map(String::from),
+    );
+}
+
+/// `%XX` escapes as UTF-8; a broken escape stays as written.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(v) = s
+                .get(i + 1..i + 3)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(v);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// What to bring up in the main window.
@@ -148,6 +194,7 @@ pub fn init(backend: Entity<Backend>, cx: &mut App) {
         let on = !settings::current(cx).notifications;
         set_notifications(on, cx);
     });
+    cx.on_action(|_: &MakeDefaultMailApp, cx| make_default_mail_app(cx));
     cx.on_action(|_: &ToggleOpenAtLogin, cx| {
         let on = !matches!(
             native::login_item(),
@@ -309,6 +356,25 @@ pub fn set_notifications(on: bool, cx: &mut App) {
     });
 }
 
+/// W3: Settings › Mail › Signatures (MST-2).
+pub fn set_signatures(on: bool, cx: &mut App) {
+    let mut saved = settings::current(cx);
+    saved.signatures = on;
+    settings::remember(saved, cx);
+    backend_of(cx).update(cx, |b, cx| b.save_settings(saved.to_map(), cx));
+    cx.refresh_windows();
+}
+
+/// W3: Settings › General and ⌘K (LNK-3). macOS may ask to confirm.
+pub fn make_default_mail_app(cx: &mut App) {
+    let result = native::make_default_mail_app();
+    logging::info(&format!("default mail app: {result:?}"));
+    if let Err(e) = result {
+        eprintln!("Pigeon: couldn't become the default mail app: {e}");
+    }
+    cx.refresh_windows();
+}
+
 /// Settings › General and ⌘K (NTF-6). Needing approval opens System
 /// Settings where it's given.
 pub fn set_open_at_login(on: bool, cx: &mut App) {
@@ -441,8 +507,9 @@ impl PigeonApp {
                     }
                 });
             }
-            // W3 puts the mailto's fields in the draft.
-            Show::Compose(_) => self.compose_new(&Compose, window, cx),
+            Show::Compose(None) => self.compose_new(&Compose, window, cx),
+            // W3 (LNK-3): the link's fields fill the draft.
+            Show::Compose(Some(mailto)) => self.compose_mailto(mailto, window, cx),
             Show::NewEvent => {
                 self.set_mode(Mode::Calendar, window, cx);
                 cx.on_next_frame(window, |_, window, cx| {
@@ -483,5 +550,31 @@ mod tests {
             ["a@x.com", "b@y.com"]
         );
         assert!(Mailto::parse("https://x.com").is_none());
+    }
+
+    /// W3 (LNK-3): RFC 6068's fields and its edge cases.
+    #[test]
+    fn mailto_fields_per_rfc_6068() {
+        let m = Mailto::parse(
+            "MAILTO:ana%40x.com?cc=bo@x.com,%20cy@x.com&bcc=dee@x.com&to=eve@x.com\
+             &subject=Caf%C3%A9%20%26%20cake%3F&body=Line%201%0D%0ALine+2&x-other=1",
+        )
+        .unwrap();
+        assert_eq!(m.to, ["ana@x.com", "eve@x.com"]);
+        assert_eq!(m.cc, ["bo@x.com", "cy@x.com"]);
+        assert_eq!(m.bcc, ["dee@x.com"]);
+        assert_eq!(m.subject, "Café & cake?");
+        // CRLF becomes a newline; `+` is a plus, not a space.
+        assert_eq!(m.body, "Line 1\nLine+2");
+
+        // No address, only fields; a name with its address; empty parts.
+        let m = Mailto::parse("mailto:?to=%22Ana%20Lima%22%20%3Cana@x.com%3E&subject=").unwrap();
+        assert_eq!(m.to, ["\"Ana Lima\" <ana@x.com>"]);
+        assert_eq!(m.subject, "");
+        let m = Mailto::parse("mailto:,,a@x.com,?&&body=hi%").unwrap();
+        assert_eq!(m.to, ["a@x.com"]);
+        assert_eq!(m.body, "hi%", "a broken escape stays");
+        assert_eq!(Mailto::parse("mailto:").unwrap(), Mailto::default());
+        assert!(Mailto::parse("mail").is_none());
     }
 }

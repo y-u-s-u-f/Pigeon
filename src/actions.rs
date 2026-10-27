@@ -161,6 +161,10 @@ actions!(
         ChangeLabelVisibility,
         ToggleLabelFolded,
         ToggleHiddenLabels,
+        // W3: compose and identity.
+        ChangeFrom,
+        ToggleSignature,
+        MakeDefaultMailApp,
     ]
 );
 
@@ -215,6 +219,8 @@ pub const DATE_FIELD: &str = "DateField";
 pub const TIME_FIELD: &str = "TimeField";
 pub const GUESTS: &str = "Guests";
 pub const PANEL_CONTROL: &str = "PanelControl";
+/// W3: the composer's From button and its menu.
+pub const FROM_PICKER: &str = "FromPicker";
 /// A focusable button or row outside the event panel (see
 /// `ui::style::focusable_control`): enter and space press it.
 pub const CONTROL: &str = "Control";
@@ -512,6 +518,14 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("shift-l v", ChangeLabelVisibility, Some(MAIL)),
         KeyBinding::new("shift-l f", ToggleLabelFolded, Some(MAIL)),
         KeyBinding::new("shift-l h", ToggleHiddenLabels, Some(MAIL)),
+        // W3: From and the signature.
+        KeyBinding::new("cmd-shift-f", ChangeFrom, Some(COMPOSER)),
+        KeyBinding::new("cmd-shift-e", ToggleSignature, Some(COMPOSER)),
+        KeyBinding::new("enter", composer::FromActivate, Some(FROM_PICKER)),
+        KeyBinding::new("space", composer::FromActivate, Some(FROM_PICKER)),
+        KeyBinding::new("down", composer::FromNext, Some(FROM_PICKER)),
+        KeyBinding::new("up", composer::FromPrev, Some(FROM_PICKER)),
+        KeyBinding::new("escape", composer::FromDismiss, Some(FROM_PICKER)),
     ]);
 }
 
@@ -643,6 +657,9 @@ pub enum When {
     Inbox,
     /// W4b: the user has labels.
     Labels,
+    // W3.
+    /// A draft is open and there's more than one address to send from.
+    FromChoice,
 }
 
 macro_rules! commands {
@@ -785,4 +802,8 @@ pub const COMMANDS: &[Command] = commands! {
     Labels: "Label Visibility…", Tag, ChangeLabelVisibility if Labels;
     Labels: "Fold / Unfold Sublabels", ChevronRight, ToggleLabelFolded if Labels;
     Labels: "Show / Hide Hidden Labels", Tag, ToggleHiddenLabels if Labels;
+    // W3: compose and identity.
+    Compose: "Change From…", User, ChangeFrom if FromChoice;
+    Compose: "Add / Remove Signature", SquarePen, ToggleSignature if Draft;
+    App: "Make Pigeon the Default Mail App", Mail, MakeDefaultMailApp;
 };

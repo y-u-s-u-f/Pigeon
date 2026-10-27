@@ -126,8 +126,8 @@ The user's own plans, not driven by Google's APIs.
 #### ACC-2 Identity of "me"
 
 - **Today:** `MailData::is_me()` and `me()` (`src/data.rs`) compare against `account.email` and `Account::aliases`, ignoring case (`Account::is_me()`). The aliases come from Gmail `settings.sendAs.list` at the start of each full sync, kept in `sync_state` (`gmail_aliases`) and loaded on launch (`src/backend/sync.rs`). Mail from an alias shows as "me" in the reader, replies and reply-all skip every alias, Sent and Drafts rows show "To:", and aliases are never suggested as recipients (`Store::contacts()`).
-- **Needs:** Nothing more for "me". Replying from the alias a mail was sent to needs the From picker (see the sendAs item).
-- **Notes:** The calendar's guest list still compares against the primary address only. See MST-1.
+- **Needs:** Nothing more for "me". A tester pass on an account with a second send-as address.
+- **Notes (sprint 2 W3):** `is_me` also checks every `sendAs` address (`Account::send_as`). The calendar uses all of them too: `Event::my_status(&Account)` (the event colours, the RSVP row, the invite card), answering an invite (`set_rsvp`), "You" in the guest list and the invite card's organizer. Replies go from the alias the mail was sent to (MST-1).
 
 #### ACC-3 Add, sign in to and remove accounts
 
@@ -450,9 +450,8 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 #### CMP-1 New message
 
 - **Today:** `c` or palette "Compose New Message" opens an empty draft in the reading pane ("New Message"). `compose()` (`src/app/compose.rs`), `Composer` (`src/ui/composer.rs`). In memory until saved (DRF-1).
-- **Needs:** A tester pass on the real account (T2b); account choice when there are several (ACC-4); From alias choice (MST-1).
-- **Notes:** With Google (W6), saving it creates a Gmail draft (DRF-1) and sending goes through `messages.send` (CMP-8). From is the primary address and the account's name.
-- **Notes:** No signature (MST-2).
+- **Needs:** A tester pass on the real account (T2b); account choice when there are several (ACC-4).
+- **Notes:** With Google (W6), saving it creates a Gmail draft (DRF-1) and sending goes through `messages.send` (CMP-8). From is the default send-as address, changeable with the From picker (MST-1); it carries that address's signature (MST-2) and saves while typing (DRF-5).
 
 #### CMP-2 Reply
 
@@ -562,8 +561,9 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 #### DRF-5 Save while typing
 
-- **Today:** Not built; a crash loses everything since the last close.
-- **Needs:** Debounced saves (for example 2 s after typing stops) to the local store (PER-1) and `drafts.update`; a "Saving…/Saved" state.
+- **Today (sprint 2 W3):** 2 s after typing stops (`AUTOSAVE_DELAY`, `src/ui/composer.rs`) the draft is saved to the local store at once (`Backend::save_draft`, `compose::save_locally`) and a `SaveDraft` op is queued for Gmail: the first right away, then at most every 30 s (`REMOTE_SAVE_EVERY_MS`; a newer save replaces the waiting one), and at once when the draft closes. Footer: "Saving…" while edits wait, "Saved" once stored. A new message gets its stable `draft-local-*` id at its first save and shows in Drafts. Each save carries a revision (milliseconds, rising) of that id, stored in `drafts.revision` (schema 160): a save, or a Gmail answer, older than what's stored never overwrites newer text (it only records Gmail's draft and message ids). A send or a discard that commits leaves a tombstone at the last revision (`draft_tombstones`), so a late save never brings the draft back; a newer save (Undo after the window) does. A send waits behind its draft's saves (resource `send,<local id>`), and a save waiting out its 30 s goes at once when the draft is sent or discarded (`Outbox::hurry`). Crash recovery: the local copy reloads into Drafts at launch, and its queued save goes again.
+- **Needs:** A tester pass (T2b): type, wait 2 s, check "Saved"; quit without closing and relaunch; send right after typing.
+- **Notes:** Typing never sends more than one `drafts.update` per 30 s per draft.
 
 #### DRF-6 Sync drafts with the server
 
@@ -784,8 +784,8 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 #### LNK-3 `mailto:` links
 
-- **Today:** Passed to the system mail handler, not Pigeon's composer.
-- **Needs:** Open the composer with the address and `subject`, `body`, `cc`; pick the account (ACC-4). Optionally register Pigeon as the default mail app.
+- **Today (sprint 2 W3):** `mailto:` links in messages (`html_view::open_link`) and from other apps (gpui `on_open_urls`, `Show::Compose(Some(Mailto))`) open Pigeon's composer as a new message with To, Cc, Bcc, Subject and Body filled in. `Mailto::parse` (`src/app/shell.rs`) follows RFC 6068: addresses before `?` and in `to=`, several per field, percent-decoded (UTF-8), `+` kept, CRLF in the body made newlines, unknown fields ignored. Settings › General › "Default mail app" shows whether Pigeon opens `mailto:` and offers "Make Default" (Launch Services `LSSetDefaultHandlerForURLScheme`, `src/native.rs`; only when running as the bundled app); also ⌘K "Make Pigeon the Default Mail App". The bundle's Info.plist declares the `mailto` scheme.
+- **Needs:** A user check: making Pigeon the default mail app, then clicking a `mailto:` link in another app. Picking the account once there are several (ACC-4).
 
 ### 5.12 Mail settings (MST)
 
@@ -806,13 +806,15 @@ Gmail's `users.settings` resources. All need `gmail.settings.basic` unless noted
 
 #### MST-1 Send-as aliases and From picker
 
-- **Needs:** `sendAs.list` for every address the user may send from (feeds ACC-2), a From picker in the composer that defaults to `isDefault` (or, for replies, the alias the mail was sent to), and the alias's `displayName` and `replyToAddress` on sent mail. Users can edit those with `patch`/`update`.
+- **Today (sprint 2 W3):** Each full sync's `sendAs.list` (current `gmail.modify` scope) is kept whole: email, `displayName`, `replyToAddress`, `signature`, `isDefault`, `isPrimary`, pending verification (`data::SendAs`, sync state `gmail_send_as`, loaded on launch). With two or more verified addresses the composer shows a From row above To (`Composer::render_from`): a button with a menu of the addresses (↑/↓, Enter or Space, Esc; first in the Tab order), ⌘⇧F or ⌘K "Change From…". It defaults to the `isDefault` address; replies, reply-all and forwards go from the address I sent the mail from, else the first of mine in its To, Cc or Bcc (`pick_from`). Sent mail and drafts use the alias's display name (or the account's name when it has none) and its Reply-To (`Outgoing::reply_to_address`, `mime::build_message`). A draft keeps its From locally and in Gmail (the message's From header). Demo mode has a second address, `alex@riverastudio.example`, with a name, a Reply-To and a signature.
+- **Needs:** A tester pass on an account with a second verified address (one address shows no From row). Editing names and Reply-To stays in Gmail's settings (`patch`/`update` need `gmail.settings.basic`).
 - **Notes:** Creating, deleting and verifying aliases (`create`, `delete`, `verify`) are only available to Workspace service accounts with domain-wide delegation; send users to Gmail settings for that.
 
 #### MST-2 Signatures
 
-- **Needs:** Read each alias's `signature` (HTML) and insert it into new messages and replies; edit it in Settings and save with `sendAs.patch`. Gmail sanitises the HTML.
-- **Notes:** The composer writes markdown; the signature is HTML, so it needs its own rendering in the composer.
+- **Today (sprint 2 W3):** The From address's Gmail signature (HTML from `sendAs.list`) shows read-only under the body ("--", then the signature, with a remove button), apart from the markdown. It goes into the HTML part at send and draft save as Gmail web writes it (`<div class="gmail_signature">`, `mime::signature_block`) and as text after `-- ` in the plain-text part; drafts written here also carry `X-Pigeon-Signature: 1`. Changing From swaps it; an address without one shows none. ⌘⇧E or ⌘K "Add / Remove Signature" toggles it on one draft; Settings › Mail › Signatures turns it off for new drafts. Whether a draft carries it is kept (`DraftOrigin::signature`) here and across Gmail: reopening a draft written here takes the signature out of its text, and a draft written in Gmail web has its `gmail_signature` block removed before it becomes editor text (`mime::parse_draft`, `strip_signature`), so it never gets a second one.
+- **Needs:** A tester pass on an account with a signature set in Gmail. Editing signatures stays in Gmail's web settings (`sendAs.patch` needs `gmail.settings.basic`).
+- **Notes:** Signatures with images from the web show them only as the reader would (ATT-1).
 
 #### MST-3 Vacation responder
 

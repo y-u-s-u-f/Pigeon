@@ -2283,8 +2283,8 @@ impl CalendarView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let me = self.me();
-        let is_me = |email: &str| email.eq_ignore_ascii_case(me);
+        let account = &self.data.account;
+        let is_me = |email: &str| account.is_me(email);
         let editable = self.access_of(event) == Access::Edit;
         let organizer_attends = event
             .attendees
@@ -3042,7 +3042,7 @@ impl CalendarView {
             )),
         );
 
-        let rsvp = event.my_status(self.me()).map(|status| {
+        let rsvp = event.my_status(&self.data.account).map(|status| {
             let id = event.id.clone();
             section(
                 Icon::Check,

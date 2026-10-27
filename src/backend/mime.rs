@@ -450,15 +450,33 @@ pub fn build_message(out: &Outgoing, build: &Build) -> Vec<u8> {
             .in_reply_to(t.in_reply_to.as_str())
             .references(MessageId::new_list(t.references.iter().map(String::as_str)));
     }
+    if !out.reply_to_address.is_empty() {
+        m = m.reply_to(Address::new_address(
+            None::<&str>,
+            out.reply_to_address.as_str(),
+        ));
+    }
     if build.draft {
         m = m.header(MARKDOWN_HEADER, Raw::new("1"));
+        if !out.signature.is_empty() {
+            m = m.header(SIGNATURE_HEADER, Raw::new("1"));
+        }
     }
     let html = if out.html.is_empty() {
-        crate::markdown::to_html(&out.markdown)
+        let mut html = crate::markdown::to_html(&out.markdown);
+        if !out.signature.is_empty() {
+            html.push_str(&signature_block(&out.signature));
+        }
+        html
     } else {
         out.html.clone()
     };
-    m = m.text_body(out.markdown.clone()).html_body(html);
+    let mut text = out.markdown.clone();
+    if !out.signature.is_empty() {
+        text.push_str(SIGNATURE_DELIMITER);
+        text.push_str(&signature_text(&out.signature));
+    }
+    m = m.text_body(text).html_body(html);
     for (attachment, bytes) in &build.files {
         m = m.attachment(
             attachment.mime.clone(),
@@ -469,11 +487,82 @@ pub fn build_message(out: &Outgoing, build: &Build) -> Vec<u8> {
     m.write_to_vec().unwrap_or_default()
 }
 
+// Signatures (W3, MST-2).
+
+/// Marks a draft written here that carries its alias's signature, after
+/// `SIGNATURE_DELIMITER` in the plain-text part.
+pub const SIGNATURE_HEADER: &str = "X-Pigeon-Signature";
+/// What comes before the signature in the plain-text part (RFC 3676).
+pub const SIGNATURE_DELIMITER: &str = "\n\n-- \n";
+
+/// The signature as Gmail web writes it, so it knows it again there.
+pub fn signature_block(signature: &str) -> String {
+    format!(
+        "<br><span class=\"gmail_signature_prefix\">-- </span><br>\
+         <div dir=\"ltr\" class=\"gmail_signature\" data-smartmail=\"gmail_signature\">{signature}</div>"
+    )
+}
+
+/// The signature's text, for the plain-text part.
+pub fn signature_text(signature: &str) -> String {
+    crate::html::plain_text(&crate::html::parse(signature))
+        .trim()
+        .to_string()
+}
+
+/// `html` without its Gmail signature block (and the "-- " before it),
+/// if it has one.
+pub fn strip_signature(html: &str) -> Option<String> {
+    let lower = html.to_ascii_lowercase();
+    let class = lower.find("class=\"gmail_signature\"")?;
+    let start = lower[..class].rfind('<')?;
+    let tag = lower[start + 1..]
+        .split(|c: char| c.is_whitespace() || c == '>')
+        .next()
+        .unwrap_or("div")
+        .to_string();
+    // The element's end: its matching close tag, counting nested ones.
+    let (open, close) = (format!("<{tag}"), format!("</{tag}>"));
+    let mut depth = 0usize;
+    let mut at = start;
+    let end = loop {
+        let next_open = lower[at..].find(&open).map(|i| i + at);
+        let next_close = lower[at..].find(&close).map(|i| i + at);
+        match (next_open, next_close) {
+            (Some(o), Some(c)) if o < c => {
+                depth += 1;
+                at = o + open.len();
+            }
+            (_, Some(c)) => {
+                depth = depth.saturating_sub(1);
+                at = c + close.len();
+                if depth == 0 {
+                    break at;
+                }
+            }
+            _ => break html.len(),
+        }
+    };
+    // Gmail puts "-- " in a span of its own before it.
+    let mut cut = start;
+    if let Some(prefix) = lower[..start].rfind("<span class=\"gmail_signature_prefix\"") {
+        cut = prefix;
+    }
+    let before = html[..cut].trim_end();
+    let before = before
+        .strip_suffix("<br>")
+        .or_else(|| before.strip_suffix("<br clear=\"all\">"))
+        .unwrap_or(before);
+    Some(format!("{before}{}", &html[end..]))
+}
+
 /// A draft read back from `drafts.get format=raw`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ParsedDraft {
     /// Written here (`X-Pigeon-Markdown: 1`).
     pub ours: bool,
+    /// W3 (MST-2): it carried a signature, which `markdown` leaves out.
+    pub signature: bool,
     /// As typed when written here; otherwise the text.
     pub markdown: String,
     pub html: String,
@@ -486,17 +575,39 @@ pub fn parse_draft(raw: &[u8]) -> Option<ParsedDraft> {
         .headers()
         .get(MARKDOWN_HEADER)
         .is_some_and(|h| String::from_utf8_lossy(h.raw_value()).trim() == "1");
+    let header = |name: &str| {
+        message
+            .headers()
+            .get(name)
+            .is_some_and(|h| String::from_utf8_lossy(h.raw_value()).trim() == "1")
+    };
+    let ours_signed = ours && header(SIGNATURE_HEADER);
     let plain = message
         .text_body()
         .find(|p| p.is_content_type("text", "plain"))
         .and_then(|p| p.text().map(|t| t.into_owned()));
     let body = parse_message(raw)?;
-    // Ours: the plain part is the markdown. Others: their plain part, or
-    // the HTML's text.
-    let markdown =
-        plain.unwrap_or_else(|| crate::html::plain_text(&crate::html::parse(&body.html)));
+    // Written in Gmail with its signature: the signature comes out before
+    // the text goes to the editor, so it isn't added twice (MST-2).
+    let web_signed = (!ours).then(|| strip_signature(&body.html)).flatten();
+    let signature = ours_signed || web_signed.is_some();
+    // Ours: the plain part is the markdown, then the signature. Others:
+    // their plain part, or the HTML's text.
+    let markdown = match (web_signed, plain) {
+        (Some(html), _) => crate::html::plain_text(&crate::html::parse(&html)),
+        (None, Some(plain)) if ours_signed => {
+            let plain = plain.replace("\r\n", "\n");
+            match plain.rfind(SIGNATURE_DELIMITER) {
+                Some(at) => plain[..at].to_string(),
+                None => plain,
+            }
+        }
+        (None, Some(plain)) => plain,
+        (None, None) => crate::html::plain_text(&crate::html::parse(&body.html)),
+    };
     Some(ParsedDraft {
         ours,
+        signature,
         // Lines go out as CRLF; the editor's are LF.
         markdown: markdown.replace("\r\n", "\n").trim_end().to_string(),
         html: body.html,
@@ -788,6 +899,74 @@ mod tests {
         let draft = parse_draft(web.as_bytes()).unwrap();
         assert!(!draft.ours);
         assert_eq!(draft.markdown, "Hello there");
+    }
+
+    // W3 (MST-1, MST-2).
+
+    #[test]
+    fn signatures_go_in_both_parts_and_come_out_once() {
+        let out = Outgoing {
+            signature: "<b>Me</b><br>Example".into(),
+            reply_to_address: "team@example.com".into(),
+            ..outgoing()
+        };
+        let raw = build_message(&out, &build(true, None, Vec::new()));
+        let (head, _) = snapshot(&raw);
+        assert!(head.contains("X-Pigeon-Signature: 1\r\n"), "{head}");
+        assert!(head.contains("Reply-To: <team@example.com>\r\n"), "{head}");
+        let message = MessageParser::default().parse(&raw).unwrap();
+        assert!(
+            message
+                .body_text(0)
+                .unwrap()
+                .ends_with("- no\r\n\r\n-- \r\nMe\r\nExample"),
+            "{:?}",
+            message.body_text(0)
+        );
+        let html = message.body_html(0).unwrap();
+        assert!(html.contains("class=\"gmail_signature\""), "{html}");
+        assert!(html.contains("<b>Me</b>"));
+        // Reopened: the markdown is the note alone, flagged as signed.
+        let draft = parse_draft(&raw).unwrap();
+        assert!(draft.ours && draft.signature);
+        assert_eq!(draft.markdown, "Are you **free**?\n\n- yes\n- no");
+        // Without one, nothing is added or flagged.
+        let raw = build_message(&outgoing(), &build(true, None, Vec::new()));
+        assert!(!parse_draft(&raw).unwrap().signature);
+        assert!(!String::from_utf8_lossy(&raw).contains("gmail_signature"));
+    }
+
+    #[test]
+    fn a_gmail_web_draft_loses_its_signature_before_the_editor() {
+        let web = "From: me@example.com\r\nSubject: Hi\r\nMIME-Version: 1.0\r\n\
+            Content-Type: multipart/alternative; boundary=\"b\"\r\n\r\n\
+            --b\r\nContent-Type: text/plain\r\n\r\nHello there\r\n\r\n-- \r\nMe\r\nExample\r\n\
+            --b\r\nContent-Type: text/html\r\n\r\n<div dir=\"ltr\"><div>Hello there</div>\
+            <br clear=\"all\"><div><br></div><span class=\"gmail_signature_prefix\">-- </span><br>\
+            <div dir=\"ltr\" class=\"gmail_signature\" data-smartmail=\"gmail_signature\">\
+            <div dir=\"ltr\"><b>Me</b><div>Example</div></div></div></div>\r\n--b--\r\n";
+        let draft = parse_draft(web.as_bytes()).unwrap();
+        assert!(!draft.ours);
+        assert!(draft.signature, "found, so it isn't added again");
+        assert_eq!(draft.markdown, "Hello there");
+        // A Gmail draft without one keeps its text.
+        let plain = "From: me@example.com\r\nContent-Type: text/html\r\n\r\n<p>Just text</p>";
+        let draft = parse_draft(plain.as_bytes()).unwrap();
+        assert!(!draft.signature);
+        assert_eq!(draft.markdown, "Just text");
+    }
+
+    #[test]
+    fn strip_signature_takes_only_the_signature() {
+        let html = format!(
+            "<p>Hi</p>{}<blockquote>quoted</blockquote>",
+            signature_block("<div>Me</div>")
+        );
+        assert_eq!(
+            strip_signature(&html).unwrap(),
+            "<p>Hi</p><blockquote>quoted</blockquote>"
+        );
+        assert!(strip_signature("<p>Hi</p>").is_none());
     }
 
     #[test]

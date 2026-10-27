@@ -202,3 +202,16 @@ CREATE TABLE fired_reminders (
 -- messageListVisibility, as Gmail spells them. NULL: shown.
 ALTER TABLE labels ADD COLUMN list_visibility TEXT;
 ALTER TABLE labels ADD COLUMN message_visibility TEXT;
+
+-- migration: 160
+-- W3 (DRF-5): each local save of a draft carries a revision; a save
+-- answering an older one never overwrites newer text. Drafts sent or
+-- discarded leave their last revision behind, so a late save of an older
+-- one never brings them back.
+ALTER TABLE drafts ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE draft_tombstones (
+    account TEXT NOT NULL,
+    local_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    PRIMARY KEY (account, local_id)
+);

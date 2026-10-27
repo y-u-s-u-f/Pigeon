@@ -262,11 +262,7 @@ impl PigeonApp {
                 .child(icon(glyph, px(14.), theme.text_faint))
                 .child(div().min_w_0().truncate().child(text))
         };
-        let organizer = if data
-            .account
-            .email
-            .eq_ignore_ascii_case(&event.organizer.email)
-        {
+        let organizer = if data.account.is_me(&event.organizer.email) {
             "You".to_string()
         } else {
             event.organizer.display_name().to_string()
@@ -377,7 +373,7 @@ impl PigeonApp {
 
         card = card.children(self.render_day_timeline(event, start, end, theme, cx));
 
-        let status = event.my_status(&data.account.email);
+        let status = event.my_status(&data.account);
         let answers = div()
             .mt(SPACE_MD)
             .pt(SPACE_MD)
@@ -460,7 +456,7 @@ impl PigeonApp {
         }
         let calendar = self.calendar.read(cx);
         let data = &calendar.data;
-        let me = data.account.email.as_str();
+        let me = &data.account;
         let day = start.date();
         let others: Vec<Occurrence> = occurrences(
             &data.events,

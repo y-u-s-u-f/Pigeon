@@ -211,6 +211,10 @@ pub enum MailOp {
         /// The Drafts thread's id.
         local_id: String,
         draft: Outgoing,
+        /// W3 (DRF-5): which local save this is; an older one never
+        /// overwrites a newer one.
+        #[serde(default)]
+        revision: u64,
     },
     DeleteDraft {
         local_id: String,
@@ -288,6 +292,13 @@ pub struct Outgoing {
     /// The thread a reply answers.
     pub reply_to: Option<String>,
     pub quoted: Option<Quote>,
+    /// W3 (MST-1): the alias's Reply-To, if it has one.
+    #[serde(default)]
+    pub reply_to_address: String,
+    /// W3 (MST-2): the alias's signature as HTML, when the draft carries
+    /// one; `html` already has it, the plain-text part gets its text.
+    #[serde(default)]
+    pub signature: String,
 }
 
 impl Outgoing {
@@ -307,6 +318,13 @@ impl Outgoing {
             to: self.to.clone(),
             cc: self.cc.clone(),
             bcc: self.bcc.clone(),
+            reply_to: (!self.reply_to_address.is_empty())
+                .then(|| Contact {
+                    name: String::new(),
+                    email: self.reply_to_address.clone(),
+                })
+                .into_iter()
+                .collect(),
             snippet,
             body: crate::data::Body::Loaded {
                 html: self.html.clone(),
@@ -323,6 +341,7 @@ impl Outgoing {
             markdown: self.markdown.clone(),
             reply_to: self.reply_to.clone(),
             quoted: self.quoted.clone(),
+            signature: !self.signature.is_empty(),
         };
         Thread::local(
             local_id,
@@ -436,7 +455,12 @@ impl Op {
                 MailOp::SaveDraft { local_id, .. } | MailOp::DeleteDraft { local_id } => {
                     local_id.clone()
                 }
-                // Sends go one at a time.
+                // Sends go one at a time, and after the saves of their
+                // draft (W3, DRF-5).
+                MailOp::Send {
+                    local_id: Some(local_id),
+                    ..
+                } => format!("send,{local_id}"),
                 MailOp::Send { .. } => "send".into(),
             },
             Op::Calendar(op) => match op {
@@ -714,6 +738,7 @@ impl Backend {
                     name: rec.name.clone(),
                     email: rec.email.clone(),
                     aliases: Vec::new(),
+                    send_as: Vec::new(),
                 };
                 // Without the client, nothing refreshes: the cache shows,
                 // and signing in again says what's missing.
@@ -887,6 +912,14 @@ impl Backend {
     pub fn mail(&mut self, op: MailOp, cx: &mut Context<Self>) -> OpId {
         if let MailOp::Send { draft, .. } = &op {
             self.note_recipients(draft, cx);
+        }
+        // W3 (DRF-5): a save waiting out its 30 s goes first, now.
+        if let MailOp::Send {
+            local_id: Some(id), ..
+        }
+        | MailOp::DeleteDraft { local_id: id } = &op
+        {
+            log_outbox(self.outbox.hurry(id, now_ms()));
         }
         self.queue(Op::Mail(op), cx)
     }
@@ -1534,6 +1567,38 @@ impl Backend {
         })
     }
     // end sprint 2 W7b --------------------------------------------------
+
+    // Sprint 2 W3 (DRF-5) -----------------------------------------------
+
+    /// A save while typing: stored here now, at `revision`, and on Gmail
+    /// after `delay_ms` (newer saves before then replace it). False when a
+    /// newer save, a send or a discard came first.
+    pub fn save_draft(
+        &mut self,
+        local_id: String,
+        draft: Outgoing,
+        revision: u64,
+        delay_ms: i64,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let email = self.email().to_string();
+        match compose::save_locally(&self.store, &email, &local_id, &draft, revision) {
+            Ok(true) => {}
+            Ok(false) => return false,
+            Err(e) => eprintln!("Pigeon: couldn't save the draft here: {e:#}"),
+        }
+        self.push(
+            Op::Mail(MailOp::SaveDraft {
+                local_id,
+                draft,
+                revision,
+            }),
+            delay_ms.max(0),
+            cx,
+        );
+        true
+    }
+    // end sprint 2 W3 ---------------------------------------------------
 
     /// Write settings still waiting to settle: on quit.
     pub fn flush_settings(&mut self) {

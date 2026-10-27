@@ -86,6 +86,8 @@ pub struct Saved {
     pub event_minutes: Option<u32>,
     /// W7b: the menu bar item, its panel and quick join (NTF-4, NTF-5).
     pub menu_bar: MenuBarPrefs,
+    /// W3 (MST-2): new drafts carry the From address's Gmail signature.
+    pub signatures: bool,
 }
 
 /// W7b: Settings › Menu bar.
@@ -182,6 +184,7 @@ impl Default for Saved {
             time_24h: None,
             event_minutes: None,
             menu_bar: MenuBarPrefs::default(),
+            signatures: true,
         }
     }
 }
@@ -330,6 +333,9 @@ pub enum SettingId {
     MenuBarPanelKey,
     MenuBarJoinKey,
     MenuBarShortcutStatus,
+    // Sprint 2 W3.
+    Signatures,
+    DefaultMailApp,
 }
 
 pub struct SettingMeta {
@@ -411,6 +417,10 @@ pub const SETTINGS: &[SettingMeta] = settings! {
         ["quick join", "global", "hotkey", "shortcut", "video", "meet", "zoom"];
     MenuBar: MenuBarShortcutStatus, "Shortcuts", "Whether macOS gave Pigeon the shortcuts.",
         ["conflict", "taken", "registered", "status", "hotkey"];
+    Mail: Signatures, "Signatures", "New messages get the From address's signature from Gmail's settings, where it's edited. Also ⌘⇧E in a draft.",
+        ["signature", "sign off", "footer", "gmail", "alias"];
+    General: DefaultMailApp, "Default mail app", "Open mailto: links from other apps in Pigeon.",
+        ["mailto", "default", "email app", "mail client", "links", "handler"];
 };
 
 pub fn meta(id: SettingId) -> &'static SettingMeta {

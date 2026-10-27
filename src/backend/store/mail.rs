@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use chrono::DateTime;
-use rusqlite::{Transaction, params};
+use rusqlite::{OptionalExtension as _, Transaction, params};
 
 use super::{Store, from_json, json};
 use crate::{
@@ -279,19 +279,21 @@ impl Store {
             MailOp::Untrash { threads } => {
                 self.modify(account, threads, &[], &[gmail::TRASH.into()])
             }
-            MailOp::SaveDraft { local_id, draft } => {
-                self.put_threads(account, &[draft.to_draft_thread(local_id.clone())])
-            }
-            MailOp::DeleteDraft { local_id } => {
-                self.delete_threads(account, std::slice::from_ref(local_id))
-            }
+            MailOp::SaveDraft {
+                local_id,
+                draft,
+                revision,
+            } => self
+                .put_draft(account, &draft.to_draft_thread(local_id.clone()), *revision)
+                .map(|_| ()),
+            MailOp::DeleteDraft { local_id } => self.bury_draft(account, local_id),
             MailOp::Send {
                 draft,
                 local_id,
                 thread_id,
             } => {
                 if let Some(local_id) = local_id {
-                    self.delete_threads(account, std::slice::from_ref(local_id))?;
+                    self.bury_draft(account, local_id)?;
                 }
                 let message = draft.to_message(vec![gmail::SENT.into()]);
                 let thread = match self
@@ -509,6 +511,73 @@ impl Store {
             params![account, local_id, draft_id],
         )?;
         Ok(())
+    }
+
+    // W3 (DRF-5): revisions.
+
+    /// The newest revision written of the draft, or left by it when it was
+    /// sent or discarded; 0 for one never saved with a revision.
+    pub fn draft_revision(&self, account: &str, local_id: &str) -> anyhow::Result<u64> {
+        let conn = self.conn();
+        let stored: Option<i64> = conn
+            .query_row(
+                "SELECT MAX(revision) FROM (
+                    SELECT revision FROM drafts WHERE account = ?1 AND local_id = ?2
+                    UNION ALL
+                    SELECT revision FROM draft_tombstones WHERE account = ?1 AND local_id = ?2)",
+                params![account, local_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(stored.unwrap_or(0) as u64)
+    }
+
+    /// Whether the draft was sent or discarded at `revision` or later.
+    pub fn draft_buried(&self, account: &str, local_id: &str, revision: u64) -> bool {
+        self.conn()
+            .query_row(
+                "SELECT revision FROM draft_tombstones WHERE account = ?1 AND local_id = ?2",
+                params![account, local_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .is_ok_and(|r| r as u64 >= revision)
+    }
+
+    /// Write the draft at `revision`, unless a newer revision is stored or
+    /// it was sent or discarded since. False when it wasn't written.
+    pub fn put_draft(&self, account: &str, thread: &Thread, revision: u64) -> anyhow::Result<bool> {
+        if revision > 0 && self.draft_revision(account, &thread.id)? > revision {
+            return Ok(false);
+        }
+        if self.draft_buried(account, &thread.id, revision) {
+            return Ok(false);
+        }
+        self.put_threads(account, std::slice::from_ref(thread))?;
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "UPDATE drafts SET revision = ?3 WHERE account = ?1 AND local_id = ?2",
+            params![account, thread.id, revision as i64],
+        )?;
+        // Saved again after it went (Undo after the window): it's back.
+        tx.execute(
+            "DELETE FROM draft_tombstones WHERE account = ?1 AND local_id = ?2",
+            params![account, thread.id],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// The draft was sent or discarded: it goes, leaving its revision.
+    pub fn bury_draft(&self, account: &str, local_id: &str) -> anyhow::Result<()> {
+        let revision = self.draft_revision(account, local_id)?;
+        self.conn().execute(
+            "INSERT INTO draft_tombstones (account, local_id, revision) VALUES (?1, ?2, ?3)
+             ON CONFLICT (account, local_id) DO UPDATE SET revision = excluded.revision",
+            params![account, local_id, revision as i64],
+        )?;
+        self.delete_threads(account, &[local_id.to_string()])
     }
 }
 

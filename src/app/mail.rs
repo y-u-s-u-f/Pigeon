@@ -884,6 +884,9 @@ impl PigeonApp {
             When::Selection => mail && !self.checked.is_empty(),
             When::Inbox => mail && self.nav == Nav::Folder(Folder::Inbox),
             When::Labels => mail && !self.data.labels.is_empty(),
+            When::FromChoice => {
+                mail && self.composer.is_some() && self.data.account.identities().len() > 1
+            }
         }
     }
 

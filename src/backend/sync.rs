@@ -26,7 +26,7 @@ use super::{
     gmail::{self, Gmail, GmailError},
     http::Transport,
     mime,
-    store::{ALIASES_KEY, Store},
+    store::{ALIASES_KEY, SEND_AS_KEY, Store},
 };
 use crate::data::{Body, Folder, Thread};
 
@@ -161,6 +161,8 @@ struct Outcome {
     /// Sprint 2 W1: mail to notify about (NTF-1).
     new_mail: Vec<super::new_mail::NewMail>,
     aliases: Option<Vec<String>>,
+    /// W3 (MST-1): every send-as address, the main one too.
+    send_as: Option<Vec<crate::data::SendAs>>,
     loaded: Option<Folder>,
     full_done: bool,
     /// W4a: history touched the Inbox, so its category counts are stale.
@@ -259,6 +261,8 @@ impl MailSync {
             .gmail
             .call::<gmail::SendAsList>(&gmail::send_as_request())
         {
+            let send_as: Vec<crate::data::SendAs> =
+                list.send_as.iter().map(gmail::SendAs::to_send_as).collect();
             let aliases: Vec<String> = list
                 .send_as
                 .into_iter()
@@ -270,7 +274,13 @@ impl MailSync {
                     .set_sync_state(&self.account, ALIASES_KEY, &json)
                     .ok();
             }
+            if let Ok(json) = serde_json::to_string(&send_as) {
+                self.store
+                    .set_sync_state(&self.account, SEND_AS_KEY, &json)
+                    .ok();
+            }
             outcome.aliases = Some(aliases);
+            outcome.send_as = Some(send_as);
         }
         outcome
     }
@@ -624,6 +634,11 @@ impl Backend {
         {
             account.aliases = serde_json::from_str(&json).unwrap_or_default();
         }
+        if let Some(account) = &mut self.account
+            && let Ok(Some(json)) = self.store.sync_state(&email, SEND_AS_KEY)
+        {
+            account.send_as = serde_json::from_str(&json).unwrap_or_default();
+        }
         self.run_sync(cx);
     }
 
@@ -718,6 +733,11 @@ impl Backend {
             && let Some(account) = &mut self.account
         {
             account.aliases = aliases;
+        }
+        if let Some(send_as) = outcome.send_as
+            && let Some(account) = &mut self.account
+        {
+            account.send_as = send_as;
         }
         if !outcome.changed.is_empty() {
             cx.emit(BackendEvent::ThreadsChanged(outcome.changed));
@@ -1368,7 +1388,7 @@ mod tests {
                     "GET",
                     "/gmail/v1/users/me/settings/sendAs",
                     &[],
-                    &[(200, r#"{"sendAs":[{"sendAsEmail":"me@example.com"},{"sendAsEmail":"alias@example.com"}]}"#)],
+                    &[(200, r#"{"sendAs":[{"sendAsEmail":"me@example.com","isPrimary":true,"isDefault":true},{"sendAsEmail":"alias@example.com","displayName":"Work Me","replyToAddress":"team@example.com","signature":"<b>Me</b>","verificationStatus":"accepted"}]}"#)],
                 )
                 .on("GET", "/gmail/v1/users/me/threads", &[("labelIds", "INBOX")], &[(200, one)])
                 .on("GET", "/gmail/v1/users/me/threads", &[("q", "newer_than%3A90d")], &[(200, one)])
@@ -1396,6 +1416,20 @@ mod tests {
         assert!(outcomes.last().unwrap().full_done);
         let aliases = outcomes.iter().find_map(|o| o.aliases.clone()).unwrap();
         assert_eq!(aliases, ["alias@example.com"]);
+        // W3 (MST-1): with their names, reply-to and signatures.
+        let send_as = outcomes.iter().find_map(|o| o.send_as.clone()).unwrap();
+        assert_eq!(send_as.len(), 2);
+        assert!(send_as[0].is_default && send_as[0].is_primary);
+        assert_eq!(send_as[1].name, "Work Me");
+        assert_eq!(send_as[1].reply_to, "team@example.com");
+        assert_eq!(send_as[1].signature, "<b>Me</b>");
+        assert!(!send_as[1].pending);
+        let stored = sync
+            .store
+            .sync_state(ACCOUNT, SEND_AS_KEY)
+            .unwrap()
+            .unwrap();
+        assert!(stored.contains("Work Me"));
         let threads = sync.store.load_all_threads(ACCOUNT).unwrap();
         assert_eq!(threads.len(), 1);
         assert_eq!(

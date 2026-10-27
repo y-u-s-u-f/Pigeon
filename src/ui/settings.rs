@@ -426,6 +426,7 @@ impl PigeonApp {
         match id {
             SettingId::SyncNow => window.dispatch_action(Box::new(SyncNow), cx),
             SettingId::TestNotification => crate::notify::send_test(cx),
+            SettingId::DefaultMailApp => shell::make_default_mail_app(cx),
             SettingId::SignOut => {
                 let google = self.backend.read(cx).source() == Source::Google;
                 if google && !self.settings_page.confirm_sign_out {
@@ -580,6 +581,16 @@ impl PigeonApp {
                 Control::Choice(ix, JOIN_KEYS)
             }
             SettingId::MenuBarShortcutStatus => Control::Info(menu_bar::hot_key_status()),
+            // Sprint 2 W3.
+            SettingId::Signatures => Control::Switch(settings::current(cx).signatures),
+            SettingId::DefaultMailApp => match native::mail_handler() {
+                native::MailHandler::Unavailable(why) => Control::Info(why.into()),
+                native::MailHandler::Pigeon => Control::Info("Pigeon opens mailto: links.".into()),
+                native::MailHandler::Other(_) => Control::Button {
+                    label: "Make Default",
+                    danger: false,
+                },
+            },
         }
     }
 
@@ -639,11 +650,13 @@ impl PigeonApp {
                     [RemoteImages::Ask, RemoteImages::Always, RemoteImages::Never][choice];
                 self.saved.notifications = settings::current(cx).notifications;
                 self.saved.menu_bar = settings::current(cx).menu_bar;
+                self.saved.signatures = settings::current(cx).signatures;
                 settings::remember(self.saved, cx);
                 let map = self.saved.to_map();
                 self.backend.update(cx, |b, cx| b.save_settings(map, cx));
             }
             SettingId::Notifications => shell::set_notifications(on, cx),
+            SettingId::Signatures => shell::set_signatures(on, cx),
             SettingId::OpenAtLogin => shell::set_open_at_login(on, cx),
             SettingId::MenuBarIcon
             | SettingId::MenuBarNextMeeting
@@ -676,7 +689,8 @@ impl PigeonApp {
             | SettingId::SignOut
             | SettingId::TestNotification
             | SettingId::LoginItemStatus
-            | SettingId::MenuBarShortcutStatus => {}
+            | SettingId::MenuBarShortcutStatus
+            | SettingId::DefaultMailApp => {}
         }
         cx.notify();
     }

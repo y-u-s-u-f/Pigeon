@@ -5,7 +5,7 @@
 use super::{gmail, store::Store};
 use crate::{
     calendar::CalendarData,
-    data::{Account, Folder, MailData, Message, Thread, clean_snippet},
+    data::{Account, Folder, MailData, Message, SendAs, Thread, clean_snippet},
 };
 
 /// The placeholder mailbox, ready to store: newest first, snippets
@@ -109,10 +109,49 @@ pub fn calendar_data() -> CalendarData {
     data
 }
 
+/// The demo account's addresses: its own, and a studio alias.
+fn demo_send_as(account: &Account) -> Vec<SendAs> {
+    vec![
+        SendAs {
+            email: account.email.clone(),
+            signature: format!("{}<br>Sent with Pigeon", account.name),
+            is_default: true,
+            is_primary: true,
+            ..Default::default()
+        },
+        SendAs {
+            email: "alex@riverastudio.example".into(),
+            name: "Alex Rivera · Rivera Studio".into(),
+            reply_to: "hello@riverastudio.example".into(),
+            signature: "<b>Alex Rivera</b><br>Rivera Studio · \
+                <a href=\"https://riverastudio.example\">riverastudio.example</a>"
+                .into(),
+            ..Default::default()
+        },
+    ]
+}
+
 /// Fill `store` with the placeholder data; returns its account.
 pub fn seed(store: &Store) -> anyhow::Result<Account> {
     let mail = mail_data();
-    let account = mail.account.clone();
+    let mut account = mail.account.clone();
+    // W3 (MST-1, MST-2): an alias with a signature, so the From picker
+    // and the signature show.
+    account.send_as = demo_send_as(&account);
+    account.aliases = account.send_as[1..]
+        .iter()
+        .map(|s| s.email.clone())
+        .collect();
+    store.set_sync_state(
+        &account.email,
+        super::store::ALIASES_KEY,
+        &serde_json::to_string(&account.aliases)?,
+    )?;
+    store.set_sync_state(
+        &account.email,
+        super::store::SEND_AS_KEY,
+        &serde_json::to_string(&account.send_as)?,
+    )?;
     store.put_labels(&account.email, &mail.labels)?;
     store.put_threads(&account.email, &mail.threads)?;
     let calendar = calendar_data();

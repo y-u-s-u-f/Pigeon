@@ -255,7 +255,7 @@ impl<'a> Renderer<'a> {
                         let tip = url.clone();
                         d.cursor_pointer()
                             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                            .on_click(move |_, _, cx| cx.open_url(&url))
+                            .on_click(move |_, _, cx| open_link(&url, cx))
                     });
                 div()
                     .flex()
@@ -337,7 +337,7 @@ impl<'a> Renderer<'a> {
                             .active(|s| s.opacity(0.8))
                             .child(label.clone())
                             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                            .on_click(move |_, _, cx| cx.open_url(&url)),
+                            .on_click(move |_, _, cx| open_link(&url, cx)),
                     )
                     .into_any_element()
             }
@@ -451,7 +451,7 @@ impl<'a> Renderer<'a> {
                     let links = links.clone();
                     move |ix, window, cx| {
                         if TextSelection::selected_text(window, cx).is_empty() {
-                            cx.open_url(&links[ix].1)
+                            open_link(&links[ix].1, cx)
                         }
                     }
                 })
@@ -547,6 +547,15 @@ fn luminance(color: Hsla) -> f32 {
         }
     };
     0.2126 * channel(rgb.r) + 0.7152 * channel(rgb.g) + 0.0722 * channel(rgb.b)
+}
+
+/// W3 (LNK-3): `mailto:` opens Pigeon's composer; other links the browser.
+pub fn open_link(url: &str, cx: &mut gpui::App) {
+    use crate::app::shell::{self, Mailto, Show};
+    match Mailto::parse(url) {
+        Some(mailto) => shell::show(Show::Compose(Some(mailto)), cx),
+        None => cx.open_url(url),
+    }
 }
 
 #[cfg(test)]

@@ -7,32 +7,74 @@ use gpui::{AppContext as _, Context, Entity, Window, point, px};
 use super::{ComposeKind, Mode, PigeonApp, UndoAction};
 use crate::{
     actions::*,
-    backend::{MailOp, OpId, Outgoing, gmail},
-    data::{Body, Contact, Folder, Message, Quote, Thread, full_date},
+    backend::{MailOp, OpId, Outgoing, gmail, mime},
+    data::{Body, Contact, Folder, Message, Quote, SendAs, Thread, full_date},
     html,
     ui::composer::{
         ATTACHMENT_LIMIT, ATTACHMENT_LIMIT_ERROR, Composer, ComposerEvent, DraftContent, Quoted,
-        attachments_size,
+        REMOTE_SAVE_EVERY_MS, attachments_size, parse_address,
     },
 };
 
 /// What a Drafts thread holds, for the composer.
 fn draft_content(thread: &Thread) -> DraftContent {
     let message = thread.last_message();
+    let markdown = thread
+        .origin
+        .as_ref()
+        .map(|o| o.markdown.clone())
+        .filter(|m| !m.is_empty());
+    // Otherwise its text, without a Gmail signature, which comes back on
+    // its own (MST-2).
+    let stripped = markdown
+        .is_none()
+        .then(|| mime::strip_signature(message.html()))
+        .flatten();
+    let body = markdown.unwrap_or_else(|| {
+        let html = stripped.as_deref().unwrap_or(message.html());
+        html::plain_text(&html::parse(html))
+    });
     DraftContent {
         to: message.to.clone(),
         cc: message.cc.clone(),
         bcc: message.bcc.clone(),
         subject: thread.subject.clone(),
         // As typed, when it was written here or recovered; otherwise its text.
-        body: thread
-            .origin
-            .as_ref()
-            .map(|o| o.markdown.clone())
-            .filter(|m| !m.is_empty())
-            .unwrap_or_else(|| html::plain_text(&html::parse(message.html()))),
+        body,
         attachments: message.attachments.clone(),
+        // W3: as it was saved, here or in Gmail.
+        from: message.from.email.clone(),
+        signature: stripped.is_some() || thread.origin.as_ref().is_some_and(|o| o.signature),
     }
+}
+
+/// W3 (MST-1): the address a reply or forward of `last` goes from: the one
+/// I sent it from, else the first of mine it was sent to; a new message,
+/// or mail to none of them, the default.
+fn pick_from(kind: ComposeKind, last: Option<&Message>, identities: &[SendAs]) -> String {
+    let mine = |email: &str| {
+        identities
+            .iter()
+            .find(|s| s.email.eq_ignore_ascii_case(email))
+            .map(|s| s.email.clone())
+    };
+    let answered = last.filter(|_| kind != ComposeKind::New).and_then(|m| {
+        mine(&m.from.email).or_else(|| {
+            m.to.iter()
+                .chain(&m.cc)
+                .chain(&m.bcc)
+                .find_map(|c| mine(&c.email))
+        })
+    });
+    answered
+        .or_else(|| {
+            identities
+                .iter()
+                .find(|s| s.is_default)
+                .map(|s| s.email.clone())
+        })
+        .or_else(|| identities.first().map(|s| s.email.clone()))
+        .unwrap_or_default()
 }
 
 /// Who a reply to `last` goes to, as (To, Cc), like Gmail: to the sender, or
@@ -161,7 +203,7 @@ impl PigeonApp {
             return;
         }
         let thread = self.selected.map(|ix| &self.data.threads[ix]);
-        let (content, reply_to, quoted) = match (kind, thread) {
+        let (mut content, reply_to, quoted) = match (kind, thread) {
             (ComposeKind::New, _) => (DraftContent::default(), None, None),
             (_, None) => return,
             (_, Some(thread)) if thread.folder == Folder::Drafts => return,
@@ -176,6 +218,26 @@ impl PigeonApp {
                 (content, reply_to, quoted)
             }
         };
+        // W3: from the alias it answers, with its signature (MST-1, MST-2).
+        let identities = self.data.account.identities();
+        let last = thread.map(|t| t.last_message());
+        content.from = pick_from(kind, last, &identities);
+        content.signature = crate::settings::current(cx).signatures;
+        self.open_composer(kind, content, reply_to, quoted, window, cx);
+    }
+
+    /// A new composer for a draft not saved yet, focused where writing
+    /// starts.
+    fn open_composer(
+        &mut self,
+        kind: ComposeKind,
+        content: DraftContent,
+        reply_to: Option<String>,
+        quoted: Option<Quoted>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let identities = self.data.account.identities();
         let composer = cx.new(|cx| {
             Composer::new(
                 kind,
@@ -188,6 +250,7 @@ impl PigeonApp {
                 window,
                 cx,
             )
+            .with_identities(identities)
         });
         self.set_composer(composer.clone(), cx);
         composer.update(cx, |c, cx| {
@@ -258,6 +321,7 @@ impl PigeonApp {
             subject,
             body: String::new(),
             attachments,
+            ..Default::default()
         };
         (content, quoted)
     }
@@ -293,10 +357,12 @@ impl PigeonApp {
             .map(|q| Quoted::new(q.header.clone(), q.html.clone()));
         let draft_id = Some(thread.id.clone());
         let book = self.contact_book.clone();
+        let identities = self.data.account.identities();
         let composer = cx.new(|cx| {
             let mut composer = Composer::new(
                 kind, content, reply_to, draft_id, quoted, inline, book, window, cx,
-            );
+            )
+            .with_identities(identities);
             composer.awaiting_body = awaiting_body;
             composer
         });
@@ -360,6 +426,8 @@ impl PigeonApp {
                     this.reader_scroll.scroll_to_bottom();
                 }
             }
+            // W3 (DRF-5).
+            ComposerEvent::Autosave => this.save_draft(&composer, false, cx),
         });
         self.composer = Some((composer, events));
         cx.notify();
@@ -386,9 +454,17 @@ impl PigeonApp {
     /// What the composer holds, as a message to save or send carrying
     /// `html`.
     fn outgoing(&self, composer: &Composer, content: DraftContent, html: String) -> Outgoing {
+        // W3 (MST-1, MST-2): the alias's name, Reply-To and signature.
+        let identity = self.data.account.identity(&content.from);
+        let signature = composer
+            .signature_html()
+            .map(str::to_string)
+            .unwrap_or_default();
         Outgoing {
             kind: composer.kind,
-            from: self.data.me(),
+            from: self.data.account.sender(&identity),
+            reply_to_address: identity.reply_to.clone(),
+            signature,
             to: content.to,
             cc: content.cc,
             bcc: content.bcc,
@@ -404,28 +480,46 @@ impl PigeonApp {
         }
     }
 
-    /// Save the draft to Drafts, replacing the thread it was opened from.
-    pub(super) fn save_draft(&mut self, composer: &Entity<Composer>, cx: &mut Context<Self>) {
+    /// Save the draft to Drafts, replacing the thread it was opened from:
+    /// here at once, and on Gmail now when it closes (`remote_now`), else at
+    /// most every 30 s (DRF-5). Each save carries a newer revision of the
+    /// draft's one local id.
+    pub(super) fn save_draft(
+        &mut self,
+        composer: &Entity<Composer>,
+        remote_now: bool,
+        cx: &mut Context<Self>,
+    ) {
         let c = composer.read(cx);
         let content = c.content(cx);
-        // The quote is kept on the origin, so the body holds only the note.
-        let html = content.body_html();
-        let draft = self.outgoing(c, content, html);
+        // The quote is kept on the origin, so the body holds only the note
+        // and the signature.
+        let html = c.draft_html(cx);
+        let draft = self.outgoing(c, content.clone(), html);
         let id = c.draft_id.clone().unwrap_or_else(|| self.new_id("draft"));
+        let now = chrono::Utc::now().timestamp_millis();
+        let due = match (remote_now, c.remote_due) {
+            (false, Some(due)) => due.max(now),
+            _ => now,
+        };
+        let revision = composer.update(cx, |c, _| {
+            c.draft_id = Some(id.clone());
+            // The next save while typing waits 30 s after this one goes.
+            c.remote_due = Some(due + REMOTE_SAVE_EVERY_MS);
+            c.next_revision()
+        });
         let thread = draft.to_draft_thread(id.clone());
+        let saved = self.backend.update(cx, |b, cx| {
+            b.save_draft(id.clone(), draft, revision, due - now, cx)
+        });
+        if !saved {
+            return;
+        }
         self.update_threads(|data| match data.thread_ix(&id) {
             Some(ix) => data.threads[ix] = thread,
             None => data.threads.push(thread),
         });
-        self.backend.update(cx, |b, cx| {
-            b.mail(
-                MailOp::SaveDraft {
-                    local_id: id,
-                    draft,
-                },
-                cx,
-            )
-        });
+        composer.update(cx, |c, cx| c.mark_saved(content, cx));
     }
 
     /// Close the composer without losing anything: a changed draft goes to
@@ -434,8 +528,9 @@ impl PigeonApp {
         let Some((composer, _)) = self.composer.take() else {
             return;
         };
+        composer.update(cx, |c, _| c.set_closed(true));
         if !composer.read(cx).is_pristine(cx) {
-            self.save_draft(&composer, cx);
+            self.save_draft(&composer, true, cx);
             self.show_toast("Saved to Drafts", None, cx);
         }
         cx.notify();
@@ -534,7 +629,10 @@ impl PigeonApp {
         } else if removed_draft.is_some() {
             self.selected = None;
         }
-        composer.update(cx, |c, cx| c.remember_focus(window, cx));
+        composer.update(cx, |c, cx| {
+            c.remember_focus(window, cx);
+            c.set_closed(true);
+        });
         self.close_composer(window, cx);
         self.sends.push(op);
         self.show_toast(
@@ -576,6 +674,7 @@ impl PigeonApp {
             return;
         };
         let composer = composer.clone();
+        composer.update(cx, |c, _| c.set_closed(true));
         let c = composer.read(cx);
         let pristine = c.is_pristine(cx) && c.draft_id.is_none();
         let draft_id = c.draft_id.clone();
@@ -605,6 +704,63 @@ impl PigeonApp {
                 }),
                 cx,
             );
+        }
+    }
+
+    /// W3 (LNK-3): a new message from a `mailto:` link.
+    pub(super) fn compose_mailto(
+        &mut self,
+        mailto: crate::app::shell::Mailto,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_mode(Mode::Mail, window, cx);
+        self.stash_composer(cx);
+        let contacts = |list: &[String]| -> Vec<Contact> {
+            list.iter()
+                .map(|a| {
+                    parse_address(a).unwrap_or_else(|| Contact {
+                        name: String::new(),
+                        email: a.clone(),
+                    })
+                })
+                .collect()
+        };
+        let identities = self.data.account.identities();
+        let content = DraftContent {
+            to: contacts(&mailto.to),
+            cc: contacts(&mailto.cc),
+            bcc: contacts(&mailto.bcc),
+            subject: mailto.subject,
+            body: mailto.body,
+            from: pick_from(ComposeKind::New, None, &identities),
+            signature: crate::settings::current(cx).signatures,
+            ..Default::default()
+        };
+        self.open_composer(ComposeKind::New, content, None, None, window, cx);
+    }
+
+    /// W3 (MST-1): ⌘K "Change From…" opens the draft's From menu.
+    pub(super) fn change_from(
+        &mut self,
+        _: &ChangeFrom,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((composer, _)) = &self.composer {
+            composer.update(cx, |c, cx| c.open_from_menu(window, cx));
+        }
+    }
+
+    /// W3 (MST-2): add the signature to the open draft, or take it off.
+    pub(super) fn toggle_signature(
+        &mut self,
+        _: &ToggleSignature,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((composer, _)) = &self.composer {
+            composer.update(cx, |c, cx| c.toggle_signature(cx));
         }
     }
 
@@ -676,7 +832,7 @@ impl PigeonApp {
                 if let Some(op) = op
                     && !self.backend.update(cx, |b, _| b.cancel(op))
                 {
-                    self.save_draft(&composer, cx);
+                    self.save_draft(&composer, true, cx);
                 }
                 (composer, removed_draft)
             }
@@ -698,6 +854,7 @@ impl PigeonApp {
             self.reveal_thread(ix, window, cx);
         }
         self.composer = None;
+        composer.update(cx, |c, _| c.set_closed(false));
         self.set_composer(composer.clone(), cx);
         self.reader_focused = self.composer_inline(cx);
         composer.update(cx, |c, cx| c.restore_focus(window, cx));
@@ -832,6 +989,45 @@ mod tests {
             recipients(ComposeKind::ReplyAll, &m),
             "bob@x.com, cat@x.com | "
         );
+    }
+
+    fn ids() -> Vec<SendAs> {
+        ["me@x.com", "alias@x.com", "work@x.com"]
+            .iter()
+            .enumerate()
+            .map(|(i, e)| SendAs {
+                email: e.to_string(),
+                is_default: i == 2,
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    /// W3 (MST-1).
+    #[test]
+    fn replies_go_from_the_alias_the_mail_was_sent_to() {
+        let ids = ids();
+        // New: the default address, whatever is selected.
+        let m = message("ann@x.com", &["ALIAS@x.com"], &[], &[]);
+        assert_eq!(pick_from(ComposeKind::New, Some(&m), &ids), "work@x.com");
+        assert_eq!(pick_from(ComposeKind::New, None, &ids), "work@x.com");
+        // Reply, reply all and forward: the alias it was sent to.
+        for kind in [
+            ComposeKind::Reply,
+            ComposeKind::ReplyAll,
+            ComposeKind::Forward,
+        ] {
+            assert_eq!(pick_from(kind, Some(&m), &ids), "alias@x.com");
+        }
+        // Cc'd to me.
+        let m = message("ann@x.com", &["bob@x.com"], &["me@x.com"], &[]);
+        assert_eq!(pick_from(ComposeKind::Reply, Some(&m), &ids), "me@x.com");
+        // My own sent mail: the address I sent it from.
+        let m = message("alias@x.com", &["me@x.com"], &[], &[]);
+        assert_eq!(pick_from(ComposeKind::Reply, Some(&m), &ids), "alias@x.com");
+        // To none of mine (a list): the default.
+        let m = message("ann@x.com", &["list@x.com"], &[], &[]);
+        assert_eq!(pick_from(ComposeKind::Reply, Some(&m), &ids), "work@x.com");
     }
 
     #[test]

@@ -22,6 +22,25 @@ pub struct Account {
     /// Other addresses the user sends as (Gmail's `sendAs`), for `is_me`.
     #[serde(default)]
     pub aliases: Vec<String>,
+    /// W3 (MST-1): every address the user sends as, the main one too, as
+    /// `sendAs.list` gives them. Empty until the first sync.
+    #[serde(default)]
+    pub send_as: Vec<SendAs>,
+}
+
+/// W3 (MST-1, MST-2): an address the user sends as.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendAs {
+    pub email: String,
+    /// Gmail's `displayName`; empty means the account's name.
+    pub name: String,
+    pub reply_to: String,
+    /// HTML, as Gmail keeps it; edited in Gmail's settings.
+    pub signature: String,
+    pub is_default: bool,
+    pub is_primary: bool,
+    /// Not verified yet, so it can't send.
+    pub pending: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -208,6 +227,10 @@ pub struct DraftOrigin {
     /// The thread a reply answers, by id.
     pub reply_to: Option<String>,
     pub quoted: Option<Quote>,
+    /// W3 (MST-2): it carries the From alias's signature, kept apart from
+    /// the markdown.
+    #[serde(default)]
+    pub signature: bool,
 }
 
 /// A forwarded message: its header lines and HTML body.
@@ -578,6 +601,60 @@ impl Account {
     pub fn is_me(&self, email: &str) -> bool {
         email.eq_ignore_ascii_case(&self.email)
             || self.aliases.iter().any(|a| a.eq_ignore_ascii_case(email))
+            || self
+                .send_as
+                .iter()
+                .any(|s| s.email.eq_ignore_ascii_case(email))
+    }
+
+    /// W3 (MST-1): the addresses a message can go from: the verified
+    /// send-as addresses, or the main one alone before the first sync.
+    pub fn identities(&self) -> Vec<SendAs> {
+        let mut out: Vec<SendAs> = self
+            .send_as
+            .iter()
+            .filter(|s| !s.pending && !s.email.is_empty())
+            .cloned()
+            .collect();
+        if !out
+            .iter()
+            .any(|s| s.email.eq_ignore_ascii_case(&self.email))
+        {
+            out.insert(
+                0,
+                SendAs {
+                    email: self.email.clone(),
+                    is_primary: true,
+                    ..Default::default()
+                },
+            );
+        }
+        if !out.iter().any(|s| s.is_default) {
+            out[0].is_default = true;
+        }
+        out
+    }
+
+    /// The identity `email` names (ignoring case), else the default one.
+    pub fn identity(&self, email: &str) -> SendAs {
+        let all = self.identities();
+        all.iter()
+            .find(|s| s.email.eq_ignore_ascii_case(email))
+            .or_else(|| all.iter().find(|s| s.is_default))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Who a message from `identity` is from: its name, or the account's.
+    pub fn sender(&self, identity: &SendAs) -> Contact {
+        Contact {
+            name: if identity.name.is_empty() {
+                self.name.clone()
+            } else {
+                identity.name.clone()
+            },
+            email: identity.email.clone(),
+        }
     }
 }
 
@@ -794,6 +871,45 @@ pub fn file_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// W3 (MST-1, ACC-2).
+    #[test]
+    fn identities_and_me() {
+        let mut account = Account {
+            name: "Me".into(),
+            email: "me@x.com".into(),
+            ..Default::default()
+        };
+        // Before the first sync: the main address alone, as the default.
+        let ids = account.identities();
+        assert_eq!(ids.len(), 1);
+        assert!(ids[0].is_default);
+        account.send_as = vec![
+            SendAs {
+                email: "me@x.com".into(),
+                is_primary: true,
+                ..Default::default()
+            },
+            SendAs {
+                email: "work@x.com".into(),
+                name: "Work Me".into(),
+                is_default: true,
+                ..Default::default()
+            },
+            SendAs {
+                email: "new@x.com".into(),
+                pending: true,
+                ..Default::default()
+            },
+        ];
+        let ids = account.identities();
+        assert_eq!(ids.len(), 2, "unverified addresses can't send");
+        assert_eq!(account.identity("").email, "work@x.com");
+        assert_eq!(account.identity("ME@x.com").email, "me@x.com");
+        assert_eq!(account.sender(&account.identity("")).name, "Work Me");
+        assert_eq!(account.sender(&account.identity("me@x.com")).name, "Me");
+        assert!(account.is_me("WORK@x.com") && !account.is_me("ann@x.com"));
+    }
 
     #[test]
     fn archive_target_per_folder() {

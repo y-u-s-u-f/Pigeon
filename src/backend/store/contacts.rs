@@ -214,6 +214,7 @@ mod tests {
             name: "Me".into(),
             email: "me@example.com".into(),
             aliases: vec!["me.work@example.com".into()],
+            send_as: Vec::new(),
         }
     }
 

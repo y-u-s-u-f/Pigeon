@@ -25,6 +25,9 @@ const SCHEMA: &str = include_str!("schema.sql");
 
 /// The sync state key of the account's aliases (Gmail's `sendAs`), as JSON.
 pub const ALIASES_KEY: &str = "gmail_aliases";
+/// W3 (MST-1): every send-as address with its name, reply-to and
+/// signature, as JSON `[SendAs]`.
+pub const SEND_AS_KEY: &str = "gmail_send_as";
 
 #[derive(Clone)]
 pub struct Store {
@@ -151,6 +154,7 @@ impl Store {
             "outbox",
             "notified",
             "fired_reminders",
+            "draft_tombstones",
         ] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE account = ?1"),

@@ -114,8 +114,14 @@ impl PigeonApp {
         }
         // Labels come with the account's aliases (sendAs), which `is_me`
         // checks.
-        if let Some(account) = self.backend.read(cx).account() {
+        // W3: the send-as addresses too, for From and the calendar (ACC-2).
+        if let Some(account) = self.backend.read(cx).account().cloned() {
             self.data.account.aliases = account.aliases.clone();
+            self.data.account.send_as = account.send_as.clone();
+            self.calendar.update(cx, |calendar, _| {
+                calendar.data.account.aliases = account.aliases;
+                calendar.data.account.send_as = account.send_as;
+            });
         }
         self.refresh_server_counts(cx);
         cx.notify();

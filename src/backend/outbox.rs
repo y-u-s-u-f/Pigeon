@@ -125,6 +125,22 @@ impl Outbox {
         Ok(Some(last.id))
     }
 
+    /// W3 (DRF-5): the saves of draft `local_id` still waiting go at
+    /// `now`, ahead of its send or discard.
+    pub fn hurry(&self, local_id: &str, now: i64) -> anyhow::Result<()> {
+        for row in self.store.outbox_pending(&self.account)? {
+            if row.state == "pending"
+                && row.kind == "mail.save_draft"
+                && row.resource == local_id
+                && row.not_before > now
+            {
+                self.store
+                    .outbox_update_payload(row.id, &row.payload, now)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Take back an op that hasn't started to go. False when it has (or
     /// is gone): the caller undoes it with the inverse op instead.
     pub fn cancel(&self, id: OpId) -> bool {
@@ -547,12 +563,42 @@ mod tests {
                     subject: subject.into(),
                     ..Outgoing::default()
                 },
+                revision: 0,
             })
         };
         let first = outbox.push(save("One"), 0, 0).unwrap();
         let second = outbox.push(save("Two"), 0, 0).unwrap();
         assert_eq!(first, second);
         assert_eq!(outbox.take_due(0).unwrap()[0].1, save("Two"));
+    }
+
+    /// W3 (DRF-5): a send waits for the saves of its draft, and a save
+    /// waiting out its 30 s goes at once when the draft is sent.
+    #[test]
+    fn a_send_goes_after_its_drafts_saves() {
+        let outbox = outbox();
+        let save = Op::Mail(MailOp::SaveDraft {
+            local_id: "draft-local-1".into(),
+            draft: Outgoing::default(),
+            revision: 7,
+        });
+        let save = outbox.push(save, 30_000, 0).unwrap();
+        let send = Op::Mail(MailOp::Send {
+            draft: Outgoing::default(),
+            local_id: Some("draft-local-1".into()),
+            thread_id: "sent-local-1".into(),
+        });
+        let send = outbox.push(send, 5_000, 0).unwrap();
+        // The send waits behind the save, even once its own time comes.
+        assert!(outbox.take_due(5_000).unwrap().is_empty());
+        outbox.hurry("draft-local-1", 6_000).unwrap();
+        let due = outbox.take_due(6_000).unwrap();
+        assert_eq!(due.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [save]);
+        // In flight, the save still holds the send back.
+        assert!(outbox.take_due(6_000).unwrap().is_empty());
+        outbox.finish(save).unwrap();
+        let due = outbox.take_due(6_000).unwrap();
+        assert_eq!(due.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [send]);
     }
 
     #[test]

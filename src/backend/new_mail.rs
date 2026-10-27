@@ -109,6 +109,7 @@ mod tests {
         Account {
             email: ME.into(),
             aliases: vec!["alias@x.com".into()],
+            send_as: Vec::new(),
             ..Default::default()
         }
     }

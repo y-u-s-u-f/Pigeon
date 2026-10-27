@@ -1346,12 +1346,9 @@ impl CalendarView {
     /// Answer an invite for the user: their own attendee entry takes
     /// `status`. Does nothing when they aren't invited.
     pub fn set_rsvp(&mut self, id: &str, status: RsvpStatus, cx: &mut Context<Self>) {
-        let me = self.data.account.email.clone();
+        let me = self.data.account.clone();
         if let Some(event) = self.event_mut(id)
-            && let Some(attendee) = event
-                .attendees
-                .iter_mut()
-                .find(|a| a.email.eq_ignore_ascii_case(&me))
+            && let Some(attendee) = event.attendees.iter_mut().find(|a| me.is_me(&a.email))
         {
             attendee.status = status;
             // The last answer goes, once it settles (CAL-14).

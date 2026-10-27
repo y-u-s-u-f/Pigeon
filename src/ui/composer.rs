@@ -10,7 +10,7 @@ use gpui::{
     AppContext as _, Context, Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable as _,
     FontWeight, InteractiveElement, IntoElement, MouseButton, ParentElement, PathPromptOptions,
     Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled, Subscription,
-    Window, actions, anchored,
+    Task, Window, actions, anchored,
     base::{
         actions::{SelectDown, SelectUp},
         input::RopeExt as _,
@@ -33,11 +33,11 @@ use super::{
 };
 use crate::ui::style::*;
 use crate::{
-    actions::{COMPOSER, DiscardDraft, RECIPIENTS, SendMessage, ShowCcBcc},
+    actions::{COMPOSER, DiscardDraft, FROM_PICKER, RECIPIENTS, SendMessage, ShowCcBcc},
     app::ComposeKind,
     assets::Icon,
     contacts::SharedContactBook,
-    data::{Attachment, Contact, file_size},
+    data::{Attachment, Contact, SendAs, file_size},
     html::{self, Document},
     markdown::{self, Edit, Inline, LineKind},
     theme::Theme,
@@ -72,8 +72,28 @@ actions!(
         BodyPageDown,
         BodySelectPageUp,
         BodySelectPageDown,
+        // W3: the From picker (MST-1).
+        FromActivate,
+        FromNext,
+        FromPrev,
+        FromDismiss,
     ]
 );
+
+/// W3 (DRF-5): a draft is saved here this long after typing stops.
+pub const AUTOSAVE_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+/// And on Gmail at most this often, and when it closes.
+pub const REMOTE_SAVE_EVERY_MS: i64 = 30_000;
+
+/// W3 (DRF-5): what the footer says about saving.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SaveState {
+    #[default]
+    Idle,
+    /// Edited since the last save; it's saved when typing stops.
+    Saving,
+    Saved,
+}
 
 /// What a formatting button or shortcut does to the body's markdown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,6 +187,10 @@ pub struct DraftContent {
     /// Files attached, as name, size and type; the files themselves aren't
     /// read (see ATT-6 in `docs/ROADMAP.md`).
     pub attachments: Vec<Attachment>,
+    /// W3 (MST-1): the address it goes from; empty for the default.
+    pub from: String,
+    /// W3 (MST-2): it carries the From address's signature.
+    pub signature: bool,
 }
 
 impl DraftContent {
@@ -202,10 +226,13 @@ pub enum ComposerEvent {
     /// The body changed; `at_end` when the caret is at its end, so a growing
     /// draft can be kept in view.
     Edited { at_end: bool },
+    /// W3 (DRF-5): typing stopped; time to save.
+    Autosave,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Field {
+    From,
     To,
     Cc,
     Bcc,
@@ -261,6 +288,29 @@ pub struct Composer {
     /// The field that had focus when the draft closed, for Undo to return to.
     resume_at: Option<Field>,
     book: SharedContactBook,
+    // W3.
+    /// The addresses it can go from (MST-1); From shows with two or more.
+    identities: Vec<SendAs>,
+    from: String,
+    /// The From menu is open, on this row.
+    from_menu: Option<usize>,
+    from_focus: FocusHandle,
+    signature: bool,
+    /// The signature shown, parsed once per address.
+    signature_doc: Option<(String, Rc<Document>)>,
+    /// Opened from Drafts: titled "Draft" even once saving gives new ones
+    /// an id too.
+    opened_as_draft: bool,
+    /// DRF-5: the last revision handed out, the save state, the pending
+    /// save, and when Gmail may next get one (Unix ms).
+    revision: u64,
+    /// What it said when last saved.
+    last_saved: Option<DraftContent>,
+    pub save_state: SaveState,
+    save_task: Option<Task<()>>,
+    pub remote_due: Option<i64>,
+    /// Sent, discarded or closed: no more saves while typing.
+    closed: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -306,13 +356,12 @@ impl Composer {
                 .default_value(content.subject.clone())
         });
         subscriptions.push(
-            cx.subscribe_in(&subject, window, |this, _, event, window, cx| {
-                if let InputEvent::PressEnter {
+            cx.subscribe_in(&subject, window, |this, _, event, window, cx| match event {
+                InputEvent::PressEnter {
                     secondary: false, ..
-                } = event
-                {
-                    this.focus_field(Field::Body, window, cx);
-                }
+                } => this.focus_field(Field::Body, window, cx),
+                InputEvent::Change => this.edited(cx),
+                _ => {}
             }),
         );
         let palette = Rc::new(Cell::new(Palette::new(Theme::of(cx))));
@@ -354,6 +403,7 @@ impl Composer {
                     this.scroll.scroll_to_bottom();
                 }
                 cx.emit(ComposerEvent::Edited { at_end });
+                this.edited(cx);
             }
         }));
         let body_caret = {
@@ -361,6 +411,7 @@ impl Composer {
             (body.cursor(), body.text().len())
         };
 
+        let opened_as_draft = draft_id.is_some();
         Self {
             kind,
             reply_to,
@@ -384,8 +435,195 @@ impl Composer {
             pending: None,
             resume_at: None,
             book,
+            identities: Vec::new(),
+            from: String::new(),
+            from_menu: None,
+            from_focus: cx.focus_handle(),
+            signature: false,
+            signature_doc: None,
+            opened_as_draft,
+            revision: 0,
+            last_saved: None,
+            save_state: SaveState::Idle,
+            save_task: None,
+            remote_due: None,
+            closed: false,
             _subscriptions: subscriptions,
         }
+    }
+
+    // W3: From, signatures and saving while typing.
+
+    /// The addresses it can go from; an empty or unknown From becomes the
+    /// default one, as if it had opened with it.
+    pub fn with_identities(mut self, identities: Vec<SendAs>) -> Self {
+        self.identities = identities;
+        self.from = self.resolve_from(&self.initial.from.clone());
+        self.signature = self.initial.signature;
+        self.initial.from = self.from.clone();
+        self
+    }
+
+    fn resolve_from(&self, email: &str) -> String {
+        self.identities
+            .iter()
+            .find(|s| s.email.eq_ignore_ascii_case(email))
+            .or_else(|| self.identities.iter().find(|s| s.is_default))
+            .or(self.identities.first())
+            .map_or_else(|| email.to_string(), |s| s.email.clone())
+    }
+
+    /// The identity it goes from.
+    pub fn identity(&self) -> Option<&SendAs> {
+        self.identities
+            .iter()
+            .find(|s| s.email.eq_ignore_ascii_case(&self.from))
+    }
+
+    /// From shows when there's a choice.
+    fn shows_from(&self) -> bool {
+        self.identities.len() > 1
+    }
+
+    /// The signature it carries now, as HTML: the From address's, unless
+    /// it has none or the draft doesn't carry one.
+    pub fn signature_html(&self) -> Option<&str> {
+        signature_for(&self.identities, &self.from, self.signature)
+    }
+
+    /// Send from `email`; its signature takes the old one's place.
+    pub fn set_from(&mut self, email: &str, cx: &mut Context<Self>) {
+        let email = self.resolve_from(email);
+        if email != self.from {
+            self.from = email;
+            self.edited(cx);
+        }
+        cx.notify();
+    }
+
+    /// Add the signature, or take it off this draft.
+    pub fn toggle_signature(&mut self, cx: &mut Context<Self>) {
+        self.signature = !self.signature;
+        self.edited(cx);
+        cx.notify();
+    }
+
+    /// ⌘K "Change From…": the menu opens on the current address.
+    pub fn open_from_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.shows_from() {
+            return;
+        }
+        let current = self
+            .identities
+            .iter()
+            .position(|s| s.email == self.from)
+            .unwrap_or(0);
+        self.from_menu = Some(current);
+        self.from_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn picker_activate(&mut self, _: &FromActivate, window: &mut Window, cx: &mut Context<Self>) {
+        match self.from_menu.take() {
+            Some(ix) => {
+                if let Some(email) = self.identities.get(ix).map(|s| s.email.clone()) {
+                    self.set_from(&email, cx);
+                }
+            }
+            None => self.open_from_menu(window, cx),
+        }
+        cx.notify();
+    }
+
+    fn picker_step(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.identities.len() as isize;
+        match self.from_menu {
+            Some(ix) if count > 0 => {
+                self.from_menu = Some((ix as isize + delta).rem_euclid(count) as usize);
+                cx.notify();
+            }
+            _ => self.open_from_menu(window, cx),
+        }
+    }
+
+    fn picker_next(&mut self, _: &FromNext, window: &mut Window, cx: &mut Context<Self>) {
+        self.picker_step(1, window, cx);
+    }
+
+    fn picker_prev(&mut self, _: &FromPrev, window: &mut Window, cx: &mut Context<Self>) {
+        self.picker_step(-1, window, cx);
+    }
+
+    fn picker_dismiss(&mut self, _: &FromDismiss, _: &mut Window, cx: &mut Context<Self>) {
+        if self.from_menu.take().is_none() {
+            return cx.propagate();
+        }
+        cx.notify();
+    }
+
+    /// Something changed: save once typing stops (DRF-5).
+    fn edited(&mut self, cx: &mut Context<Self>) {
+        if self.closed {
+            return;
+        }
+        self.save_state = SaveState::Saving;
+        self.save_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(AUTOSAVE_DELAY).await;
+            this.update(cx, |this, cx| {
+                this.save_task = None;
+                if this.closed {
+                    return;
+                }
+                let saved = this.last_saved.as_ref().unwrap_or(&this.initial);
+                if this.unchanged_since(saved, cx) {
+                    if this.last_saved.is_none() {
+                        this.save_state = SaveState::Idle;
+                    } else {
+                        this.save_state = SaveState::Saved;
+                    }
+                    cx.notify();
+                } else {
+                    cx.emit(ComposerEvent::Autosave);
+                }
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    /// A save is about to go: its revision, newer than any before it,
+    /// across launches too (milliseconds).
+    pub fn next_revision(&mut self) -> u64 {
+        let now = chrono::Utc::now().timestamp_millis().max(0) as u64;
+        self.revision = now.max(self.revision + 1);
+        self.revision
+    }
+
+    /// Saved, saying `content`.
+    pub fn mark_saved(&mut self, content: DraftContent, cx: &mut Context<Self>) {
+        if self.save_task.is_none() {
+            self.save_state = SaveState::Saved;
+        }
+        self.last_saved = Some(content);
+        cx.notify();
+    }
+
+    /// Sent, discarded or closed: no more saves while typing, until Undo
+    /// brings it back.
+    pub fn set_closed(&mut self, closed: bool) {
+        self.closed = closed;
+        if closed {
+            self.save_task = None;
+        }
+    }
+
+    /// The body with the signature under it: what a draft saves.
+    pub fn draft_html(&self, cx: &gpui::App) -> String {
+        let mut out = self.content(cx).body_html();
+        if let Some(signature) = self.signature_html() {
+            out.push_str(&crate::backend::mime::signature_block(signature));
+        }
+        out
     }
 
     /// The draft's text arrived: show it, as if it had opened with it.
@@ -417,7 +655,12 @@ impl Composer {
             body.set_selected_range(0..0, cx);
         });
         self.attachments = content.attachments.clone();
-        self.initial = content;
+        self.from = self.resolve_from(&content.from);
+        self.signature = content.signature;
+        self.initial = DraftContent {
+            from: self.from.clone(),
+            ..content
+        };
         cx.notify();
     }
 
@@ -428,7 +671,11 @@ impl Composer {
 
     /// The fields in tab order.
     fn fields(&self) -> Vec<Field> {
-        let mut fields = vec![Field::To];
+        let mut fields = Vec::new();
+        if self.shows_from() {
+            fields.push(Field::From);
+        }
+        fields.push(Field::To);
         if self.show_cc_bcc {
             fields.extend([Field::Cc, Field::Bcc]);
         }
@@ -441,6 +688,7 @@ impl Composer {
 
     fn focus_handle_of(&self, field: Field, cx: &gpui::App) -> FocusHandle {
         match field {
+            Field::From => self.from_focus.clone(),
             Field::To => self.recipients[0].input.focus_handle(cx),
             Field::Cc => self.recipients[1].input.focus_handle(cx),
             Field::Bcc => self.recipients[2].input.focus_handle(cx),
@@ -456,7 +704,11 @@ impl Composer {
     }
 
     fn focus_field(&mut self, field: Field, window: &mut Window, cx: &mut Context<Self>) {
+        if field != Field::From {
+            self.from_menu = None;
+        }
         match field {
+            Field::From => self.from_focus.focus(window, cx),
             Field::To | Field::Cc | Field::Bcc => {
                 let input = self.recipients[recipient_ix(field)].input.clone();
                 input.update(cx, |input, cx| input.focus(window, cx));
@@ -566,12 +818,19 @@ impl Composer {
             subject: self.subject.read(cx).value().trim().to_string(),
             body: self.body.read(cx).value().trim_end().to_string(),
             attachments: self.attachments.clone(),
+            from: self.from.clone(),
+            signature: self.signature,
         }
     }
 
     /// Nothing changed since it opened. Text still in a recipient field
     /// counts as a change, even when it isn't an address yet.
     pub fn is_pristine(&self, cx: &gpui::App) -> bool {
+        self.unchanged_since(&self.initial, cx)
+    }
+
+    /// Whether it says what `then` said.
+    fn unchanged_since(&self, then: &DraftContent, cx: &gpui::App) -> bool {
         if self
             .recipients
             .iter()
@@ -581,12 +840,14 @@ impl Composer {
         }
         let now = self.content(cx);
         let emails = |c: &[Contact]| c.iter().map(|c| c.email.to_lowercase()).collect::<Vec<_>>();
-        now.attachments.len() == self.initial.attachments.len()
-            && emails(&now.to) == emails(&self.initial.to)
-            && emails(&now.cc) == emails(&self.initial.cc)
-            && emails(&now.bcc) == emails(&self.initial.bcc)
-            && now.subject == self.initial.subject.trim()
-            && now.body == self.initial.body.trim_end()
+        now.attachments.len() == then.attachments.len()
+            && emails(&now.to) == emails(&then.to)
+            && emails(&now.cc) == emails(&then.cc)
+            && emails(&now.bcc) == emails(&then.bcc)
+            && now.subject == then.subject.trim()
+            && now.body == then.body.trim_end()
+            && now.from.eq_ignore_ascii_case(&then.from)
+            && now.signature == then.signature
     }
 
     /// Whether one of the draft's fields has focus.
@@ -594,9 +855,10 @@ impl Composer {
         self.focused_field(window, cx).is_some()
     }
 
-    /// The body as HTML, with the forwarded message quoted under it.
+    /// The body as HTML, its signature under it, then the forwarded message
+    /// quoted.
     pub fn html(&self, cx: &gpui::App) -> String {
-        let mut out = self.content(cx).body_html();
+        let mut out = self.draft_html(cx);
         if let Some(quoted) = &self.quoted {
             out.push_str("<blockquote><p>---------- Forwarded message ----------");
             for (label, value) in &quoted.header {
@@ -759,6 +1021,7 @@ impl Composer {
         match event {
             InputEvent::Change => {
                 self.error = None;
+                self.edited(cx);
                 let value = self.recipients[ix].input.read(cx).value();
                 if value.contains([',', ';']) {
                     // Everything before the last separator is finished.
@@ -885,6 +1148,7 @@ impl Composer {
 
     fn remove_chip(&mut self, ix: usize, chip: usize, cx: &mut Context<Self>) {
         self.recipients[ix].chips.remove(chip);
+        self.edited(cx);
         cx.notify();
     }
 
@@ -955,6 +1219,7 @@ impl Composer {
         match self.focused_recipients(window, cx) {
             Some(ix) if self.recipients[ix].input.read(cx).value().is_empty() => {
                 self.recipients[ix].chips.pop();
+                self.edited(cx);
                 cx.notify();
             }
             _ => cx.propagate(),
@@ -1208,6 +1473,7 @@ impl Composer {
                 ..Attachment::from_file(name, meta.len())
             });
         }
+        self.edited(cx);
         cx.notify();
     }
 
@@ -1297,6 +1563,7 @@ impl Composer {
                         .child(icon(Icon::X, px(12.), theme.text_faint))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.attachments.remove(ix);
+                            this.edited(cx);
                             if this
                                 .error
                                 .as_ref()
@@ -1451,9 +1718,206 @@ impl Composer {
     }
 }
 
+impl Composer {
+    /// W3 (MST-1): the From row, with its menu of addresses.
+    fn render_from(
+        &self,
+        window: &Window,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let focused = self.from_focus.is_focused(window);
+        let label = |s: &SendAs| {
+            if s.name.is_empty() {
+                s.email.clone()
+            } else {
+                format!("{} <{}>", s.name, s.email)
+            }
+        };
+        let current = self.identity().map(label).unwrap_or_default();
+        let menu = self.from_menu.map(|highlighted| {
+            let rows = self.identities.iter().enumerate().map(|(row, identity)| {
+                let chosen = identity.email == self.from;
+                div()
+                    .id(("from-option", row))
+                    .role(gpui::Role::ListBoxOption)
+                    .aria_label(label(identity))
+                    .aria_selected(chosen)
+                    .h(px(40.))
+                    .px(SPACE_SM)
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_SM)
+                    .rounded(RADIUS_MD)
+                    .when(row == highlighted, |d| d.bg(theme.selected_bg))
+                    .hover(|d| d.bg(theme.hover_bg))
+                    .child(div().w(px(16.)).flex_none().when(chosen, |d| {
+                        d.child(icon(Icon::Check, px(14.), theme.accent))
+                    }))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(TEXT_BASE)
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(if identity.name.is_empty() {
+                                        identity.email.clone()
+                                    } else {
+                                        identity.name.clone()
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(TEXT_SM)
+                                    .text_color(theme.text_muted)
+                                    .child(identity.email.clone()),
+                            ),
+                    )
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.from_menu = Some(row);
+                        this.picker_activate(&FromActivate, window, cx);
+                    }))
+            });
+            div().w_full().h(px(0.)).child(
+                deferred(
+                    anchored().snap_to_window_with_margin(px(8.)).child(
+                        div()
+                            .id("from-menu")
+                            .role(gpui::Role::ListBox)
+                            .aria_label("From addresses")
+                            .occlude()
+                            .mt(SPACE_SM)
+                            .w(px(360.))
+                            .p(SPACE_XS)
+                            .flex()
+                            .flex_col()
+                            .rounded(RADIUS_MD)
+                            .bg(theme.overlay_bg)
+                            .border_1()
+                            .border_color(theme.overlay_border)
+                            .shadow(super::popover_shadow(theme))
+                            .children(rows),
+                    ),
+                )
+                .with_priority(1),
+            )
+        });
+        let ring = focus_ring(theme);
+        div()
+            .min_h(px(40.))
+            .py(SPACE_SM)
+            .flex()
+            .items_start()
+            .gap(SPACE_SM)
+            .border_b_1()
+            .border_color(theme.border)
+            .child(field_label("From", theme))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .id("from")
+                            .track_focus(&self.from_focus)
+                            // Also an Input, so the mail's one-letter
+                            // shortcuts stay out while it has focus.
+                            .key_context(format!("{FROM_PICKER} Input").as_str())
+                            .on_action(cx.listener(Self::picker_activate))
+                            .on_action(cx.listener(Self::picker_next))
+                            .on_action(cx.listener(Self::picker_prev))
+                            .on_action(cx.listener(Self::picker_dismiss))
+                            .role(gpui::Role::ComboBox)
+                            .aria_label(format!("From: {current}"))
+                            .h(HIT_TARGET)
+                            .max_w_full()
+                            .px(SPACE_SM)
+                            .ml(-SPACE_SM)
+                            .flex()
+                            .items_center()
+                            .gap(SPACE_XS)
+                            .rounded(RADIUS_SM)
+                            .text_size(TEXT_BASE)
+                            .hover(|s| s.bg(theme.hover_bg))
+                            .when(focused, |d| d.bg(theme.hover_bg).shadow(ring))
+                            .child(div().min_w_0().truncate().child(current))
+                            .child(icon(Icon::ChevronDown, px(13.), theme.text_faint))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if this.from_menu.take().is_none() {
+                                    this.open_from_menu(window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .children(menu),
+            )
+    }
+
+    /// W3 (MST-2): Gmail's signature for the From address, under the body.
+    /// Read-only: it's edited in Gmail's settings.
+    fn render_signature(&mut self, theme: &Theme) -> Option<gpui::AnyElement> {
+        let html = self.signature_html()?.to_string();
+        let doc = match &self.signature_doc {
+            Some((seen, doc)) if *seen == html => doc.clone(),
+            _ => {
+                let doc = Rc::new(html::parse(&html));
+                self.signature_doc = Some((html, doc.clone()));
+                doc
+            }
+        };
+        Some(
+            div()
+                .id("signature")
+                .role(gpui::Role::Group)
+                .aria_label("Signature, from Gmail’s settings")
+                .mt(SPACE_SM)
+                .flex()
+                .items_start()
+                .gap(SPACE_SM)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(SPACE_2XS)
+                        .text_size(TEXT_BASE)
+                        .line_height(relative(1.55))
+                        .text_color(theme.text_muted)
+                        .child(div().text_color(theme.text_faint).child("--"))
+                        .child(html_view::render(&doc, theme)),
+                )
+                .child(
+                    super::icon_button(
+                        "remove-signature",
+                        Icon::X,
+                        "Remove signature",
+                        Box::new(crate::actions::ToggleSignature),
+                        theme,
+                    )
+                    .size(HIT_TARGET),
+                )
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .into_any_element(),
+        )
+    }
+}
+
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
+        // Focus went elsewhere: the From menu closes (W3).
+        if self.from_menu.is_some() && !self.from_focus.is_focused(window) {
+            self.from_menu = None;
+        }
         if self.pending.is_some() {
             cx.defer_in(window, Self::apply_pending);
         }
@@ -1467,8 +1931,9 @@ impl Render for Composer {
             }
         });
         let standalone = !self.inline;
+        let signature = self.render_signature(&theme);
 
-        let title = match (self.kind, self.draft_id.is_some()) {
+        let title = match (self.kind, self.opened_as_draft) {
             (_, true) => "Draft",
             (ComposeKind::New, _) => "New Message",
             (ComposeKind::Reply, _) => "Reply",
@@ -1561,6 +2026,23 @@ impl Render for Composer {
                     .child(hint(&["Esc"], "Save draft")),
             )
             .child(div().flex_1())
+            // W3 (DRF-5).
+            .children(
+                match self.save_state {
+                    SaveState::Idle => None,
+                    SaveState::Saving => Some("Saving…"),
+                    SaveState::Saved => Some("Saved"),
+                }
+                .map(|status| {
+                    div()
+                        .id("save-status")
+                        .role(gpui::Role::Status)
+                        .aria_label(status)
+                        .text_size(TEXT_SM)
+                        .text_color(theme.text_faint)
+                        .child(status)
+                }),
+            )
             .child(
                 super::style::focusable_control(div().id("attach"), &theme)
                     .role(gpui::Role::Button)
@@ -1623,6 +2105,9 @@ impl Render for Composer {
                         .child(title),
                 )
             })
+            .when(self.shows_from(), |this| {
+                this.child(self.render_from(window, &theme, cx))
+            })
             .child(self.render_recipients(0, window, &theme, cx))
             .when(self.show_cc_bcc, |this| {
                 this.child(self.render_recipients(1, window, &theme, cx))
@@ -1648,6 +2133,7 @@ impl Render for Composer {
                 )
             })
             .child(self.render_body(window, &theme, cx))
+            .children(signature)
             .children(self.render_attachments(&theme, cx))
             .children(quoted);
 
@@ -1762,6 +2248,16 @@ fn recipient_field(ix: usize) -> Field {
     [Field::To, Field::Cc, Field::Bcc][ix]
 }
 
+/// W3 (MST-2): the signature a draft from `from` shows and sends: that
+/// address's, when the draft carries one and the address has one.
+pub fn signature_for<'a>(identities: &'a [SendAs], from: &str, carries: bool) -> Option<&'a str> {
+    identities
+        .iter()
+        .find(|s| carries && s.email.eq_ignore_ascii_case(from))
+        .map(|s| s.signature.as_str())
+        .filter(|s| !s.trim().is_empty())
+}
+
 /// Gmail's limit on what a message carries.
 pub const ATTACHMENT_LIMIT: u64 = 25 * 1024 * 1024;
 pub const ATTACHMENT_LIMIT_ERROR: &str = "Attachments are over Gmail’s 25 MB limit";
@@ -1785,4 +2281,36 @@ pub fn parse_address(text: &str) -> Option<Contact> {
             email: email.to_string(),
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_signature_follows_from() {
+        let ids = [
+            SendAs {
+                email: "me@x.com".into(),
+                signature: "<b>Me</b>".into(),
+                is_default: true,
+                ..Default::default()
+            },
+            SendAs {
+                email: "work@x.com".into(),
+                signature: "Work".into(),
+                ..Default::default()
+            },
+            SendAs {
+                email: "plain@x.com".into(),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(signature_for(&ids, "me@x.com", true), Some("<b>Me</b>"));
+        // Swapped with From, and gone for an address without one.
+        assert_eq!(signature_for(&ids, "WORK@x.com", true), Some("Work"));
+        assert_eq!(signature_for(&ids, "plain@x.com", true), None);
+        // Taken off this draft.
+        assert_eq!(signature_for(&ids, "work@x.com", false), None);
+    }
 }

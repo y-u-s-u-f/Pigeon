@@ -456,6 +456,7 @@ impl PigeonApp {
             time_24h: calendar.prefs.time_24h,
             event_minutes: calendar.prefs.event_minutes,
             menu_bar: crate::settings::current(cx).menu_bar,
+            signatures: crate::settings::current(cx).signatures,
         }
     }
 
@@ -1729,6 +1730,9 @@ impl Render for PigeonApp {
             .on_action(cx.listener(Self::close_draft))
             .on_action(cx.listener(Self::discard_draft))
             .on_action(cx.listener(Self::show_cc_bcc))
+            // W3.
+            .on_action(cx.listener(Self::change_from))
+            .on_action(cx.listener(Self::toggle_signature))
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::close_search))
             .on_action(cx.listener(Self::focus_results))

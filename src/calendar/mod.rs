@@ -380,14 +380,15 @@ impl Event {
         Some((old, new))
     }
 
-    /// My answer to an invite, when someone else organizes it.
-    pub fn my_status(&self, me: &str) -> Option<RsvpStatus> {
-        if self.organizer.email.eq_ignore_ascii_case(me) {
+    /// My answer to an invite, when someone else organizes it. Any of my
+    /// addresses is me (ACC-2).
+    pub fn my_status(&self, me: &crate::data::Account) -> Option<RsvpStatus> {
+        if me.is_me(&self.organizer.email) {
             return None;
         }
         self.attendees
             .iter()
-            .find(|a| a.email.eq_ignore_ascii_case(me))
+            .find(|a| me.is_me(&a.email))
             .map(|a| a.status)
     }
 }

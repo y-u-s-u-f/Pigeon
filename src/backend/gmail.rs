@@ -274,6 +274,34 @@ pub struct SendAsList {
 #[serde(rename_all = "camelCase")]
 pub struct SendAs {
     pub send_as_email: String,
+    // W3 (MST-1, MST-2).
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub reply_to_address: String,
+    #[serde(default)]
+    pub signature: String,
+    #[serde(default)]
+    pub is_default: bool,
+    #[serde(default)]
+    pub is_primary: bool,
+    /// "accepted" or "pending"; the primary address has none.
+    #[serde(default)]
+    pub verification_status: String,
+}
+
+impl SendAs {
+    pub fn to_send_as(&self) -> crate::data::SendAs {
+        crate::data::SendAs {
+            email: self.send_as_email.clone(),
+            name: self.display_name.clone(),
+            reply_to: self.reply_to_address.clone(),
+            signature: self.signature.clone(),
+            is_default: self.is_default,
+            is_primary: self.is_primary,
+            pending: self.verification_status == "pending",
+        }
+    }
 }
 
 /// Google sends 64-bit numbers as strings.
@@ -1126,6 +1154,7 @@ pub fn draft_thread(draft_id: &str, m: &GMessage) -> Thread {
         markdown: String::new(),
         reply_to: Some(m.thread_id.clone()),
         quoted: None,
+        signature: false,
     });
     let mut thread = Thread::local(
         draft_thread_id(draft_id),
@@ -1191,6 +1220,7 @@ mod tests {
         Account {
             email: "me@x.com".into(),
             aliases: vec!["alias@x.com".into()],
+            send_as: Vec::new(),
             ..Default::default()
         }
     }

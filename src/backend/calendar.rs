@@ -3376,7 +3376,13 @@ mod tests {
             ["t-plan-uid@google.com"]
         );
         let event = stored(&store, "inv9");
-        assert_eq!(event.my_status(ME), Some(RsvpStatus::NeedsAction));
+        assert_eq!(
+            event.my_status(&crate::data::Account {
+                email: ME.into(),
+                ..Default::default()
+            }),
+            Some(RsvpStatus::NeedsAction)
+        );
 
         // Google has none: nothing changes.
         let fake = FakeTransport::new().on(

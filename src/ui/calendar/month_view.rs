@@ -342,7 +342,7 @@ impl CalendarView {
         let color = self.data.color_of(event);
         let selected = self.is_selected(&occurrence);
         let past = occurrence.end <= now();
-        let look = Look::of(event.my_status(self.me()));
+        let look = Look::of(event.my_status(&self.data.account));
         let hover = theme.event_fill_hover(color);
         let clipped_left = item.bar
             && (start > item.start || occurrence.start < week_start + Duration::days(start as i64));
