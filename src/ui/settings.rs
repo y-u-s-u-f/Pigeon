@@ -24,11 +24,12 @@ use gpui::{
 use super::{HEADER_HEIGHT, avatar, binding_caps, empty_state, icon, keycap, window_drag_area};
 use crate::ui::style::*;
 use crate::{
-    actions::{COMMANDS, Scope},
+    actions::{COMMANDS, Scope, SignOut, SyncNow},
     app::{Density, PigeonApp},
     assets::Icon,
+    backend::Source,
     data::Contact,
-    settings::{self, Appearance, Entry, Match, Section, SettingId},
+    settings::{self, Appearance, Entry, Match, RemoteImages, Section, SettingId},
     theme::Theme,
     ui::{calendar::ViewKind, shortcuts_help::live_bindings},
 };
@@ -60,6 +61,7 @@ const CONTENT_MAX: Pixels = px(680.);
 const APPEARANCES: &[&str] = &["System", "Light", "Dark"];
 const SCOPES: &[&str] = &["Current view", "All mail"];
 const VIEWS: &[&str] = &["Day", "Week", "Month"];
+const IMAGES: &[&str] = &["Ask", "Always", "Never"];
 
 pub struct SettingsPage {
     pub open: bool,
@@ -77,6 +79,8 @@ pub struct SettingsPage {
     pub focus: FocusHandle,
     pub search: Entity<InputState>,
     scroll: ScrollHandle,
+    /// Sign Out was pressed once: the row asks to confirm.
+    confirm_sign_out: bool,
     _flash: Option<Task<()>>,
 }
 
@@ -95,6 +99,7 @@ impl SettingsPage {
             focus: cx.focus_handle(),
             search,
             scroll: ScrollHandle::new(),
+            confirm_sign_out: false,
             _flash: None,
         };
         (page, events)
@@ -112,6 +117,13 @@ enum Control {
     },
     Account(Contact),
     Keys(Vec<KeyBinding>),
+    /// Read-only text, shown under the label.
+    Info(String),
+    /// Runs something; `danger` asks first.
+    Button {
+        label: &'static str,
+        danger: bool,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -299,6 +311,7 @@ impl PigeonApp {
             page.scroll.set_offset(point(px(0.), px(0.)));
         }
         page.row = None;
+        page.confirm_sign_out = false;
         cx.notify();
     }
 
@@ -313,6 +326,7 @@ impl PigeonApp {
             }
         };
         self.settings_page.keyboard = true;
+        self.settings_page.confirm_sign_out = false;
         if !self.settings_query(cx).is_empty() {
             let len = self.settings_results(window, cx).len();
             self.settings_page.result = step(self.settings_page.result, len);
@@ -382,9 +396,31 @@ impl PigeonApp {
             Control::Switch(on) => Change::Switch(!on),
             Control::Choice(ix, options) => Change::Choice((ix + 1) % options.len()),
             Control::Stepper { .. } => Change::Reset,
-            Control::Account(_) | Control::Keys(_) => return,
+            Control::Button { .. } => return self.press_setting(id, window, cx),
+            Control::Account(_) | Control::Keys(_) | Control::Info(_) => return,
         };
         self.change_setting(id, change, window, cx);
+    }
+
+    /// Sync Now and Sign Out; Sign Out asks first, signed in to Google.
+    fn press_setting(&mut self, id: SettingId, window: &mut Window, cx: &mut Context<Self>) {
+        match id {
+            SettingId::SyncNow => window.dispatch_action(Box::new(SyncNow), cx),
+            SettingId::SignOut => {
+                let google = self.backend.read(cx).source() == Source::Google;
+                if google && !self.settings_page.confirm_sign_out {
+                    self.settings_page.confirm_sign_out = true;
+                } else {
+                    self.settings_page.confirm_sign_out = false;
+                    if google {
+                        self.close_settings(window, cx);
+                    }
+                    window.dispatch_action(Box::new(SignOut), cx);
+                }
+            }
+            _ => {}
+        }
+        cx.notify();
     }
 
     fn settings_adjust(&mut self, up: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -406,13 +442,17 @@ impl PigeonApp {
             Control::Choice(ix, options) if up => Change::Choice((ix + 1).min(options.len() - 1)),
             Control::Choice(ix, _) => Change::Choice(ix.saturating_sub(1)),
             Control::Stepper { .. } => Change::Step(if up { 1 } else { -1 }),
-            Control::Account(_) | Control::Keys(_) => return,
+            Control::Account(_) | Control::Keys(_) | Control::Info(_) | Control::Button { .. } => {
+                return;
+            }
         };
         self.change_setting(id, change, window, cx);
     }
 
     fn settings_close(&mut self, _: &Close, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.settings_query(cx).is_empty() {
+        if std::mem::take(&mut self.settings_page.confirm_sign_out) {
+            cx.notify();
+        } else if !self.settings_query(cx).is_empty() {
             self.clear_settings_search(window, cx);
             cx.notify();
         } else {
@@ -460,7 +500,27 @@ impl PigeonApp {
                 VIEWS,
             ),
             SettingId::WeekNumbers => Control::Switch(calendar.show_week_numbers),
+            SettingId::RemoteImages => Control::Choice(
+                match self.saved.remote_images {
+                    RemoteImages::Ask => 0,
+                    RemoteImages::Always => 1,
+                    RemoteImages::Never => 2,
+                },
+                IMAGES,
+            ),
             SettingId::Account => Control::Account(self.data.me()),
+            SettingId::Access => Control::Info(super::status::scopes(self.backend.read(cx))),
+            SettingId::LastSync => {
+                Control::Info(super::status::last_sync(self.backend.read(cx), now_ms()))
+            }
+            SettingId::SyncNow => Control::Button {
+                label: "Sync Now",
+                danger: false,
+            },
+            SettingId::SignOut => Control::Button {
+                label: "Sign Out",
+                danger: true,
+            },
         }
     }
 
@@ -514,7 +574,18 @@ impl PigeonApp {
                 c.show_week_numbers = on;
                 cx.notify();
             }),
-            SettingId::Account => {}
+            SettingId::RemoteImages => {
+                // Kept on `saved` itself, where the reader reads it (ATT-1).
+                self.saved.remote_images =
+                    [RemoteImages::Ask, RemoteImages::Always, RemoteImages::Never][choice];
+                let map = self.saved.to_map();
+                self.backend.update(cx, |b, cx| b.save_settings(map, cx));
+            }
+            SettingId::Account
+            | SettingId::Access
+            | SettingId::LastSync
+            | SettingId::SyncNow
+            | SettingId::SignOut => {}
         }
         cx.notify();
     }
@@ -922,10 +993,13 @@ impl PigeonApp {
         let compact = matches!(entry, Entry::Shortcut(_));
         let label = entry.label();
         let description = match (&control, found) {
-            // The account's own row says whose it is.
-            (Some(Control::Account(_)), None) => "",
+            // The account's own row says whose it is; info rows say it.
+            (Some(Control::Account(_) | Control::Info(_)), None) => "",
             _ => entry.description(),
         };
+        let confirming = entry == Entry::Setting(SettingId::SignOut)
+            && self.settings_page.confirm_sign_out
+            && !in_results;
 
         let leading = match (&control, entry) {
             (Some(Control::Account(me)), _) => Some(
@@ -949,6 +1023,22 @@ impl PigeonApp {
                     div()
                         .child(me.email.clone())
                         .child(super::status::granted(self.backend.read(cx)))
+                        .into_any_element(),
+                ),
+            ),
+            Some(Control::Info(text)) if !in_results => (
+                div().child(label).into_any_element(),
+                Some(div().child(text.clone()).into_any_element()),
+            ),
+            _ if confirming => (
+                div().child("Sign out?").into_any_element(),
+                Some(
+                    div()
+                        .text_color(theme.danger)
+                        .child(format!(
+                            "{} and its cached mail and calendar are removed from this Mac.",
+                            self.data.me().email
+                        ))
                         .into_any_element(),
                 ),
             ),
@@ -1082,6 +1172,43 @@ impl PigeonApp {
                     }))
                     .into_any_element(),
             ),
+            Some(Control::Info(_)) => None,
+            Some(Control::Button { label, danger }) => {
+                let Entry::Setting(id) = entry else {
+                    unreachable!()
+                };
+                let press = |name: &'static str| {
+                    cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        cx.stop_propagation();
+                        if name == "settings-cancel" {
+                            this.settings_page.confirm_sign_out = false;
+                            cx.notify();
+                        } else {
+                            this.press_setting(id, window, cx);
+                        }
+                    })
+                };
+                Some(if confirming {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(SPACE_SM)
+                        .child(
+                            button(("settings-cancel", ix), "Cancel", Tone::Plain, &theme)
+                                .on_click(press("settings-cancel")),
+                        )
+                        .child(
+                            button(("settings-confirm", ix), label, Tone::Confirm, &theme)
+                                .on_click(press("settings-confirm")),
+                        )
+                        .into_any_element()
+                } else {
+                    let tone = if danger { Tone::Danger } else { Tone::Plain };
+                    button(("settings-button", ix), label, tone, &theme)
+                        .on_click(press("settings-button"))
+                        .into_any_element()
+                })
+            }
             Some(Control::Account(_)) => Some(super::status::status_line(
                 self.backend.read(cx).status(),
                 chrono::Utc::now().timestamp_millis(),
@@ -1152,6 +1279,9 @@ impl PigeonApp {
             )
             .children(trailing.map(|t| div().flex_none().child(t)))
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                if !confirming {
+                    this.settings_page.confirm_sign_out = false;
+                }
                 if in_results {
                     this.jump_to_setting(entry, window, cx);
                 } else {
@@ -1163,6 +1293,54 @@ impl PigeonApp {
             }))
             .into_any_element()
     }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Tone {
+    Plain,
+    /// Red text: it asks first.
+    Danger,
+    /// Filled red: the confirmation.
+    Confirm,
+}
+
+fn button(
+    id: impl Into<gpui::ElementId>,
+    label: &'static str,
+    tone: Tone,
+    theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
+    focusable_control(div().id(id), theme)
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .h(HIT_TARGET)
+        .px(SPACE_MD)
+        .flex()
+        .items_center()
+        .gap(SPACE_SM)
+        .rounded(RADIUS_MD)
+        .text_size(TEXT_SM)
+        .font_weight(FontWeight::MEDIUM)
+        .cursor_pointer()
+        .map(|this| match tone {
+            Tone::Plain => this
+                .bg(theme.control_track)
+                .text_color(theme.text)
+                .hover(|s| s.bg(theme.selected_bg)),
+            Tone::Danger => this
+                .bg(theme.control_track)
+                .text_color(theme.danger)
+                .hover(|s| s.bg(theme.selected_bg)),
+            Tone::Confirm => this
+                .bg(theme.danger)
+                .text_color(theme.accent_text)
+                .hover(|s| s.opacity(0.9)),
+        })
+        .child(label)
+}
+
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
 }
 
 fn group_header(title: &'static str, theme: &Theme) -> AnyElement {

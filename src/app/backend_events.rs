@@ -44,7 +44,10 @@ impl PigeonApp {
             .filter(|id| !threads.iter().any(|t| &t.id == *id))
             .cloned()
             .collect();
+        // W11 (STA-5): the open thread keeps its expanded and focused messages.
+        let open = self.open_messages(ids);
         self.update_threads(|data| data.upsert_threads(threads));
+        self.restore_open_messages(open);
         if !gone.is_empty() {
             self.on_threads_removed(&gone, cx);
         }
@@ -208,7 +211,7 @@ impl PigeonApp {
     /// or `EventsChanged`); say why.
     fn on_op_failed(&mut self, op: OpId, message: &str, cx: &mut Context<Self>) {
         self.sends.retain(|s| *s != op);
-        self.show_toast(message.to_string(), None, cx);
+        self.show_error_toast(message.to_string(), cx);
     }
 
     /// Signed in, signed out or switched to the demo data: everything
@@ -243,4 +246,60 @@ impl PigeonApp {
         self.refresh_rows(false);
         cx.notify();
     }
+
+    // W11 (STA-5): the reader's message state goes by index; across a
+    // reload it goes by message id, so a new or removed message doesn't
+    // shift it.
+
+    /// The open thread's expanded, focused and last message ids, when it's
+    /// among `ids`.
+    fn open_messages(&self, ids: &[String]) -> Option<OpenMessages> {
+        let thread = &self.data.threads[self.selected?];
+        if !ids.contains(&thread.id) || thread.messages.iter().any(|m| m.id.is_empty()) {
+            return None;
+        }
+        let id = |ix: usize| thread.messages.get(ix).map(|m| m.id.clone());
+        Some(OpenMessages {
+            thread: thread.id.clone(),
+            expanded: self
+                .expanded_messages
+                .iter()
+                .filter_map(|&ix| id(ix))
+                .collect(),
+            focused: self.focused_message.and_then(id),
+            last: thread.messages.last().map(|m| m.id.clone()),
+        })
+    }
+
+    fn restore_open_messages(&mut self, open: Option<OpenMessages>) {
+        let Some(open) = open else {
+            return;
+        };
+        let Some(thread) = self.selected.map(|ix| &self.data.threads[ix]) else {
+            return;
+        };
+        if thread.id != open.thread {
+            return;
+        }
+        let ix = |id: &String| thread.messages.iter().position(|m| &m.id == id);
+        // The last message is always shown open; it stays open once a newer
+        // one arrives.
+        self.expanded_messages = open
+            .expanded
+            .iter()
+            .chain(&open.last)
+            .filter_map(ix)
+            .collect();
+        self.focused_message = match &open.focused {
+            Some(id) => ix(id).or(Some(thread.messages.len().saturating_sub(1))),
+            None => None,
+        };
+    }
+}
+
+struct OpenMessages {
+    thread: String,
+    expanded: Vec<String>,
+    focused: Option<String>,
+    last: Option<String>,
 }

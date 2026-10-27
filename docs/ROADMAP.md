@@ -143,7 +143,8 @@ The user's own plans, not driven by Google's APIs.
 #### ACC-5 Per-account sync status
 
 - **Today:** Basic (W2). A status line under the sidebar's account card and in Settings › Accounts (`src/ui/status.rs`): "Synced just now" / "Synced 3 minutes ago" / "Syncing…" / "Syncing 340 of 1,000" / "Offline · 3 changes waiting" / "Sign in again" (a button that runs Sign In) / "Demo data". `Backend::set_status()` and `Backend::note_error()` are what sync (W3, W4) calls; until then the launch profile check sets "Synced just now".
-- **Needs:** W3/W4 to feed it from their sync loops; last error and a periodic re-render of the relative time (W11). Per account: last successful sync, current state, last error. Links to STA-1, STA-3.
+- **Today (W11):** What the line says goes through `backend::health::Health` (`src/backend/health.rs`): sync's Syncing/Synced, with an expired sign-in over everything, then "Offline · N changes waiting", then "Waiting for Gmail…" while a request waits out a backoff of 4 s or more (`GoogleTransport::waiting_for_gmail()`). Times read "Synced just now / 4 min ago / 2 h ago / 3 days ago" (`status::ago()`) and refresh once a minute. At launch it shows the last sync from the store until this launch's first pass. Settings › Accounts: the account row (name, email, allowed features, status line), Access (every granted scope in plain words), Last sync ("3 min ago · Oct 27, 14:02", plus the state when not Synced), Sync Now and Sign Out.
+- **Needs:** A tester pass (T3b item 5). Per account once there are several (ACC-4). Links to STA-1, STA-3.
 
 #### ACC-6 Scopes and consent
 
@@ -153,7 +154,7 @@ The user's own plans, not driven by Google's APIs.
 
 #### ACC-7 Token refresh, revoke and sign out
 
-- **Today:** W2. `auth::Auth` keeps the access token in memory with its expiry and refreshes 60 s early; one refresh runs at a time and other callers wait for it. `GoogleTransport` refreshes once and retries on a 401. Sign Out (⌘K) revokes at `oauth2.googleapis.com/revoke` (best effort), deletes the Keychain item, the `accounts.json` entry and the account's cached rows (`Store::delete_account()`), then shows the sign-in screen. Settings has no Sign Out button yet (W11).
+- **Today:** W2. `auth::Auth` keeps the access token in memory with its expiry and refreshes 60 s early; one refresh runs at a time and other callers wait for it. `GoogleTransport` refreshes once and retries on a 401. Sign Out (⌘K) revokes at `oauth2.googleapis.com/revoke` (best effort), deletes the Keychain item, the `accounts.json` entry and the account's cached rows (`Store::delete_account()`), then shows the sign-in screen. Settings › Accounts › Sign out (W11) asks first ("Sign out? <email> and its cached mail and calendar are removed from this Mac", Cancel / Sign Out; Enter confirms, Esc cancels), then runs the same Sign Out. ⌘K's Sign Out doesn't ask.
 - **Needs:** Refresh the access token before it expires, retry once on 401, then show "sign in again" (STA-4). Sign out calls the revoke endpoint and deletes the Keychain item.
 - **Notes:** While the OAuth app is in "Testing" status, refresh tokens expire after 7 days.
 
@@ -712,7 +713,7 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 #### ATT-1 Remote images
 
 - **Today:** Images show as a bordered box with an icon and the alt text (or "Image"); never downloaded, since GPUI here only has `NullHttpClient`. Tracking pixels (≤ 2 px) are dropped. `Block::Image` (`src/html.rs`) keeps only `alt`; `Renderer::block()` (`src/ui/html_view.rs`) draws the box.
-- **Needs:** Load on demand or through a proxy so the user's IP and opens aren't exposed; cache results. A setting: always / ask / never.
+- **Needs:** Load on demand or through a proxy so the user's IP and opens aren't exposed; cache results. The setting is in: Settings › Mail › Load remote images, Ask / Always / Never (W11, saved as `remote_images`).
 - **Notes:** Needs an HTTP client dependency or the backend.
 
 #### ATT-2 Inline (`cid:`) images
@@ -1212,15 +1213,19 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 #### STA-1 Initial load and loading states
 
 - **Today:** Launch reads the cache (`Backend::load_mail()`) and never waits on the network. List: skeleton rows while a view's first page loads, "Couldn't load <view>" if the first sync failed, the empty text only once loaded (`view_loaded()`, W3). Reader: "Loading…" per message, "Couldn't load this message" with Retry. The sidebar status line is W2's.
-- **Needs:** Stale and offline states (W11).
+- **Today (W11):** The status line shows Offline and "Waiting for Gmail…" over sync's state (ACC-5, STA-3).
+- **Needs:** A tester pass (T3b items 1–2): an unloaded body while offline reads "isn't downloaded yet", Retry after reconnecting.
 
 #### STA-2 Action failure and rollback
 
 - **Today:** Every handler changes `data` and calls `cx.notify()` without checking anything.
-- **Needs:** Pending state per change, server confirmation, rollback of folder, flags and list position on failure, and an error toast (`show_toast()` exists). Send failures: CMP-12.
+- **Today (W11):** `OpFailed` shows an error toast (`PigeonApp::show_error_toast()`): the danger tone from `theme.rs` with an alert icon, no Undo, `Role::Alert`. Success and Undo toasts are unchanged.
+- **Needs:** Pending state per change, server confirmation, rollback of folder, flags and list position on failure (W5). Send failures: CMP-12.
 
 #### STA-3 Offline mode and queued changes
 
+- **Today (indicator, W11):** Offline shows within about 10 s of the network going away: a probe (TCP connect to `gmail.googleapis.com:443`, no request) runs every 8 s while the window is active (60 s in the background); two failures in a row are Offline, as are two network failures in a row in the transport. Offline, probes back off 15 s → 2 min; the first that connects, or a sync that succeeds, ends it and runs a sync and the queue at once. Once the transport is offline, a network error fails at once instead of retrying 8 times (`GoogleTransport::send_with()`); polls do the retrying. The line reads "Offline · N changes waiting" from the outbox's count, recounted when a change is queued.
+- **Today (dev switch, 6.4 item 6):** With `PIGEON_DEV=1`, every request fails as a network error while `<data dir>/simulate-offline` exists (`touch` it / `rm` it; `UreqTransport::send()` in `src/backend/http.rs`, and the probe). Never active without `PIGEON_DEV=1`.
 - **Needs:** A visible offline state; changes queued in the local store (PER-2) and sent when back online; reading from the cache (PER-1); sends held in the outbox; queue size and pending items shown.
 
 #### STA-4 Expired sign-in
@@ -1230,7 +1235,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### STA-5 Conflicts with server changes
 
-- **Today:** A sync that changes the open thread reloads it in place, keeping the selection (W3); drafts open in the composer aren't replaced.
+- **Today:** A sync that changes the open thread reloads it in place, keeping the selection (W3); drafts open in the composer aren't replaced. W11: the reader's expanded and focused messages are kept by message id across the reload (`open_messages()` / `restore_open_messages()` in `src/app/backend_events.rs`), so a new message doesn't shift them, and the message that was last stays open when a newer one arrives.
 - **Today (events, W7):** Event patches carry `If-Match`; a 412 reloads Google's version into the store and the view, drops the op, and shows "Changed elsewhere; reloaded" (checked on the real account with a stale ETag).
 - **Needs:** Rules for drafts changed elsewhere. Links to DRF-6, LST-8.
 
@@ -1253,13 +1258,14 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### PER-2 Outbox and drafts that survive quit
 
-- **Today:** Every `MailOp` and `CalOp` is a row in the store's `outbox` table (`src/backend/outbox.rs`) before it commits. Sends, discards, moves, deletes and event deletes wait out the 5 s undo window (`UNDO_WINDOW`); Undo inside it deletes the row (`Backend::cancel()`), past it the UI queues the inverse op. Consecutive label changes to the same threads merge; a newer save of a draft replaces an older one; ops on one thread, event or draft go one at a time. The worker (`Backend::schedule()`) commits due rows; demo mode commits by applying the op to its in-memory store (`Store::apply_mail_op()`, `apply_cal_op()`), so nothing survives a quit there. `Quit` still calls `cx.quit()` with no flush.
-- **Needs:** The Google commit, retries, rollback and pending-op overlay (W5); rows left at quit flushed on the next launch (the worker already picks them up); Quit sending due sends at once and waiting up to 5 s for rows in flight (W11). Deviation from the plan: the store takes an op's change when it commits, not when it's queued, so Undo never has to revert the store; reads during the window come from the UI's view model and, after a sync, W5's overlay.
+- **Today:** Every `MailOp` and `CalOp` is a row in the store's `outbox` table (`src/backend/outbox.rs`) before it commits. Sends, discards, moves, deletes and event deletes wait out the 5 s undo window (`UNDO_WINDOW`); Undo inside it deletes the row (`Backend::cancel()`), past it the UI queues the inverse op. Consecutive label changes to the same threads merge; a newer save of a draft replaces an older one; ops on one thread, event or draft go one at a time. The worker (`Backend::schedule()`) commits due rows; demo mode commits by applying the op to its in-memory store (`Store::apply_mail_op()`, `apply_cal_op()`), so nothing survives a quit there. Quit (⌘Q, the menu, closing the last window) runs `Backend::flush_on_quit()` first (W11, `src/main.rs` `quit()`): sends still in their undo window become due at once (`Outbox::send_now()`), and Quit waits until nothing due is left to commit, at most 5 s (`health::QUIT_WAIT`); other queued rows stay for the next launch.
+- **Needs:** The Google commit, retries, rollback and pending-op overlay (W5); rows left at quit flushed on the next launch (the worker already picks them up). A tester pass of Quit inside a send's undo window (T4). Deviation from the plan: the store takes an op's change when it commits, not when it's queued, so Undo never has to revert the store; reads during the window come from the UI's view model and, after a sync, W5's overlay.
 
 #### PER-3 Persisted UI state and settings
 
 - **Today:** Saved to the `settings` table (one row per key, JSON values) of the on-disk store, in demo mode too: appearance, Reduce motion, auto-advance, default search scope, list density, text size, sidebar shown, sidebar and list widths, Archived expanded, calendar view, week numbers, and remote images (Ask/Always/Never, for ATT-1). `Saved` (`src/settings.rs`) is the snapshot; `PigeonApp::save_settings()` hands it to `Backend::save_settings()` whenever the app or the calendar notifies and it changed (written 300 ms after it settles, and on quit); `main()` loads it and `PigeonApp::apply_settings()` applies it before the first frame. Unknown keys are ignored and bad values take their default. The file is `~/Library/Application Support/Pigeon/pigeon.sqlite`, or `$PIGEON_DATA_DIR/pigeon.sqlite`. Still in memory: `nav`, `expanded_messages`, recent searches, recent palette commands, the window's size.
-- **Needs:** Nothing from the server. The Mail › Images row in Settings (W10/W11).
+- **Today (W11):** Settings › Mail › Load remote images (Ask / Always / Never) changes and saves `saved.remote_images`, which the reader reads (ATT-1). The plan's list (appearance, motion, auto-advance, search scope, density, text size, pane widths, images) is all saved.
+- **Needs:** Nothing from the server.
 - **Notes:** `expanded_messages` is per thread; keep it or accept the reset.
 
 ### 8.2 Command palette (PAL)

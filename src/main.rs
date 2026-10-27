@@ -13,8 +13,9 @@ mod theme;
 mod ui;
 
 use gpui::{
-    App, AppContext as _, Bounds, Menu, MenuItem, OsAction, SystemMenuType, TitlebarOptions,
-    WindowBackgroundAppearance, WindowBounds, WindowOptions, component::input, point, px, size,
+    App, AppContext as _, Bounds, Entity, Menu, MenuItem, OsAction, SystemMenuType,
+    TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, component::input,
+    point, px, size,
 };
 
 use crate::{
@@ -117,25 +118,37 @@ fn menus() -> Vec<Menu> {
     ]
 }
 
+/// Quit once the queue has had its chance (2.7): sends inside their undo
+/// window go now, and Quit waits up to 5 s for what's going.
+fn quit(backend: &Entity<Backend>, cx: &mut App) {
+    let flush = backend.update(cx, |b, cx| b.flush_on_quit(cx));
+    cx.spawn(async move |cx| {
+        flush.await;
+        cx.update(|cx| cx.quit());
+    })
+    .detach();
+}
+
 fn main() {
     gpui::application()
         .with_assets(assets::Assets)
         .run(move |cx: &mut App| {
             gpui::init(cx);
             actions::bind_keys(cx);
-            cx.on_action(|_: &Quit, cx| cx.quit());
             cx.on_action(|_: &Hide, cx| cx.hide());
             cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
             cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
             cx.set_menus(menus());
-            cx.on_window_closed(|cx, _| {
+            let backend = Backend::open(cx);
+            let quit_backend = backend.clone();
+            cx.on_action(move |_: &Quit, cx| quit(&quit_backend, cx));
+            let quit_backend = backend.clone();
+            cx.on_window_closed(move |cx, _| {
                 if cx.windows().is_empty() {
-                    cx.quit();
+                    quit(&quit_backend, cx);
                 }
             })
             .detach();
-
-            let backend = Backend::open(cx);
             let saved = Saved::from_map(backend.read(cx).load_settings());
 
             let bounds = Bounds::centered(None, size(px(1360.), px(860.)), cx);

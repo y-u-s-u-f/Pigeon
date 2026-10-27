@@ -10,6 +10,7 @@
 
 use std::{
     collections::VecDeque,
+    path::PathBuf,
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicU32, Ordering},
@@ -187,6 +188,25 @@ const BODY_LIMIT: u64 = 64 * 1024 * 1024;
 
 pub struct UreqTransport {
     agent: ureq::Agent,
+    /// The dev offline switch's file, with `PIGEON_DEV=1` (`offline_switch`).
+    offline_switch: Option<PathBuf>,
+}
+
+/// W11, dev only: with `PIGEON_DEV=1`, every request fails as a network
+/// error while this file is in the data folder, so offline states and the
+/// queue can be tested without touching Wi-Fi.
+pub const OFFLINE_SWITCH_FILE: &str = "simulate-offline";
+
+/// The dev offline switch's path; `None` in normal runs.
+pub fn offline_switch() -> Option<PathBuf> {
+    std::env::var("PIGEON_DEV")
+        .is_ok_and(|v| v == "1")
+        .then(|| super::data_dir().join(OFFLINE_SWITCH_FILE))
+}
+
+/// Whether the dev offline switch is on now.
+pub fn simulating_offline() -> bool {
+    offline_switch().is_some_and(|f| f.exists())
 }
 
 impl Default for UreqTransport {
@@ -205,6 +225,16 @@ impl UreqTransport {
             .build();
         Self {
             agent: ureq::Agent::new_with_config(config),
+            offline_switch: offline_switch(),
+        }
+    }
+
+    /// Fails every request while `file` exists, as `PIGEON_DEV=1` does with
+    /// the data folder's `simulate-offline`.
+    pub fn with_offline_switch(file: PathBuf) -> Self {
+        Self {
+            offline_switch: Some(file),
+            ..Self::new()
         }
     }
 
@@ -242,6 +272,13 @@ impl UreqTransport {
 impl Transport for UreqTransport {
     fn send(&self, request: &Request) -> Result<Response, TransportError> {
         let started = Instant::now();
+        if self.offline_switch.as_ref().is_some_and(|f| f.exists()) {
+            eprintln!(
+                "Pigeon: {} (simulated offline)",
+                log_line(request.method, &request.url, None, started.elapsed())
+            );
+            return Err(TransportError::Network("simulated offline".into()));
+        }
         let result = self.run(request);
         let status = result.as_ref().ok().map(|r| r.status);
         eprintln!(
@@ -432,7 +469,12 @@ pub struct GoogleTransport {
     in_flight: InFlight,
     /// Network failures in a row; two mean offline (2.9).
     failures: AtomicU32,
+    /// Requests sleeping through a long rate-limit or server-error backoff.
+    backing_off: AtomicU32,
 }
+
+/// A backoff at least this long shows as "Waiting for Gmail…".
+pub const LONG_BACKOFF: Duration = Duration::from_secs(4);
 
 impl GoogleTransport {
     pub fn new(
@@ -448,7 +490,13 @@ impl GoogleTransport {
             limiter: Limiter::gmail(now),
             in_flight: InFlight::new(MAX_IN_FLIGHT),
             failures: AtomicU32::new(0),
+            backing_off: AtomicU32::new(0),
         }
+    }
+
+    /// A request is waiting out a long backoff (2.9): "Waiting for Gmail…".
+    pub fn waiting_for_gmail(&self) -> bool {
+        self.backing_off.load(Ordering::Relaxed) > 0
     }
 
     /// Two network failures in a row, and no answer since.
@@ -464,7 +512,8 @@ impl GoogleTransport {
     /// Sends with the access token, waiting for quota first. A 401 refreshes
     /// the token and retries once. Network errors, 429, 5xx and rate-limit
     /// 403s back off and retry, up to `MAX_ATTEMPTS` tries; then the last
-    /// response or error is the answer.
+    /// response or error is the answer. Once offline, a network error is
+    /// the answer at once: polls retry, backing off (2.9).
     pub fn send_with(
         &self,
         request: &Request,
@@ -473,6 +522,7 @@ impl GoogleTransport {
         let mut refreshed = false;
         let mut attempt = 0;
         loop {
+            let mut long_wait = false;
             self.limiter.acquire(request.cost, priority, &*self.clock);
             let result = self.auth.access_token().and_then(|token| {
                 let mut signed = request.clone();
@@ -493,16 +543,25 @@ impl GoogleTransport {
                     if !is_retryable(&response) || attempt + 1 >= MAX_ATTEMPTS {
                         return Ok(response);
                     }
+                    long_wait = true;
                 }
                 Err(TransportError::AuthExpired) => return Err(TransportError::AuthExpired),
                 Err(e @ TransportError::Network(_)) => {
                     self.failures.fetch_add(1, Ordering::Relaxed);
-                    if attempt + 1 >= MAX_ATTEMPTS {
+                    if self.is_offline() || attempt + 1 >= MAX_ATTEMPTS {
                         return Err(e);
                     }
                 }
             }
-            self.clock.sleep(backoff(attempt, self.clock.jitter()));
+            let wait = backoff(attempt, self.clock.jitter());
+            let long_wait = long_wait && wait >= LONG_BACKOFF;
+            if long_wait {
+                self.backing_off.fetch_add(1, Ordering::Relaxed);
+            }
+            self.clock.sleep(wait);
+            if long_wait {
+                self.backing_off.fetch_sub(1, Ordering::Relaxed);
+            }
             attempt += 1;
         }
     }
@@ -917,7 +976,7 @@ mod tests {
     }
 
     #[test]
-    fn network_errors_retry_eight_times_then_fail() {
+    fn network_errors_fail_fast_once_offline() {
         let fake =
             Arc::new(FakeTransport::new().on("GET", "/gmail/v1/users/me/profile", &[], &[(0, "")]));
         let (transport, clock) = google(fake.clone());
@@ -925,11 +984,32 @@ mod tests {
             transport.send(&Request::get(PROFILE, 1)),
             Err(TransportError::Network(_))
         ));
-        assert_eq!(fake.requests().len(), MAX_ATTEMPTS as usize);
+        // One retry; the second failure in a row is offline, and polls
+        // take over the retrying.
+        assert_eq!(fake.requests().len(), 2);
         let seconds: Vec<u64> = clock.sleeps().iter().map(|d| d.as_secs()).collect();
-        assert_eq!(seconds, [1, 2, 4, 8, 16, 32, 64]);
+        assert_eq!(seconds, [1]);
         assert!(transport.is_offline());
+        // Offline already: no retry at all.
+        assert!(transport.send(&Request::get(PROFILE, 1)).is_err());
+        assert_eq!(fake.requests().len(), 3);
         assert_eq!(backoff(12, Duration::ZERO), Duration::from_secs(64));
+    }
+
+    #[test]
+    fn offline_switch_fails_every_request() {
+        let dir = std::env::temp_dir().join(format!("pigeon-offline-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(OFFLINE_SWITCH_FILE);
+        std::fs::write(&file, "").unwrap();
+        let transport = UreqTransport::with_offline_switch(file.clone());
+        // Never reaches the network: the address doesn't resolve anyway.
+        let request = Request::get("https://pigeon.invalid/gmail/v1/users/me/profile", 1);
+        assert_eq!(
+            transport.send(&request),
+            Err(TransportError::Network("simulated offline".into()))
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

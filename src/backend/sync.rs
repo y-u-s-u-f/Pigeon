@@ -34,7 +34,7 @@ const HISTORY_KEY: &str = "gmail_history_id";
 /// The history id taken at the start of a full sync, kept until it ends.
 const FULL_START_KEY: &str = "gmail_full_h0";
 const ALIASES_KEY: &str = "gmail_aliases";
-const LAST_SYNC_KEY: &str = "last_sync";
+pub(super) const LAST_SYNC_KEY: &str = "last_sync";
 
 const POLL_ACTIVE: Duration = Duration::from_secs(45);
 const POLL_INACTIVE: Duration = Duration::from_secs(5 * 60);
@@ -50,11 +50,11 @@ pub struct SyncState {
     running: bool,
     /// Asked to sync while a pass ran: go again once it ends.
     again: bool,
-    active: bool,
+    pub(super) active: bool,
     /// Network failures in a row (2.9).
     failures: u32,
     /// A full sync has finished once; every view is loaded.
-    full_done: bool,
+    pub(super) full_done: bool,
     /// Views whose first page the running full sync has stored.
     loaded: Vec<Folder>,
     /// Threads fetched and queued in this pass, for the status line.
@@ -741,7 +741,8 @@ impl Backend {
                 self.sync.last_error = Some(e.to_string());
                 if e.is_network() {
                     self.sync.failures += 1;
-                    if self.sync.failures >= 2 {
+                    // W11: or the transport's two failures in a row.
+                    if self.sync.failures >= 2 || self.transport().is_some_and(|t| t.is_offline()) {
                         let waiting = self.outbox.waiting();
                         self.set_status(SyncStatus::Offline { waiting }, cx);
                     }

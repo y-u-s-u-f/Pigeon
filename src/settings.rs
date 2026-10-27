@@ -198,7 +198,12 @@ pub enum SettingId {
     SearchScope,
     CalendarView,
     WeekNumbers,
+    RemoteImages,
     Account,
+    Access,
+    LastSync,
+    SyncNow,
+    SignOut,
 }
 
 pub struct SettingMeta {
@@ -240,12 +245,22 @@ pub const SETTINGS: &[SettingMeta] = settings! {
         ["next", "advance", "after"];
     Mail: SearchScope, "Search scope", "Where a new search looks, unless it says in:.",
         ["find", "default", "all mail", "everywhere", "current view"];
+    Mail: RemoteImages, "Load remote images", "Ask shows a Load Images bar on messages with images from the web.",
+        ["pictures", "images", "privacy", "tracking", "pixels", "remote content"];
     Calendar: CalendarView, "View", "Day, week or month. Also D, W and M in the calendar.",
         ["day", "week", "month", "default", "layout"];
     Calendar: WeekNumbers, "Week numbers", "Show the week of the year beside each week.",
         ["iso", "week of year"];
     Accounts: Account, "Account", "Who this mail and calendar are for.",
-        ["email", "address", "name", "signed in"];
+        ["email", "address", "name", "signed in", "status"];
+    Accounts: Access, "Access", "What Google allowed Pigeon to use.",
+        ["scopes", "permissions", "granted", "consent"];
+    Accounts: LastSync, "Last sync", "When Pigeon last checked Google for changes.",
+        ["synced", "updated", "offline", "status"];
+    Accounts: SyncNow, "Sync now", "Check Gmail and Google Calendar for changes. Also ⌘R.",
+        ["refresh", "reload", "fetch", "update"];
+    Accounts: SignOut, "Sign out", "Removes this account and its cached mail and calendar from this Mac.",
+        ["log out", "logout", "sign off", "remove account", "disconnect"];
 };
 
 pub fn meta(id: SettingId) -> &'static SettingMeta {

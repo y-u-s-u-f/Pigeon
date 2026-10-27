@@ -26,21 +26,26 @@ pub fn label(status: &SyncStatus, now_ms: i64) -> String {
         SyncStatus::Syncing { done, total } => {
             format!("Syncing {} of {}", thousands(*done), thousands(*total))
         }
-        SyncStatus::Synced { at } => {
-            let minutes = (now_ms - at).max(0) / 60_000;
-            match minutes {
-                0 => "Synced just now".into(),
-                1 => "Synced 1 minute ago".into(),
-                2..60 => format!("Synced {minutes} minutes ago"),
-                _ => format!("Synced {} h ago", minutes / 60),
-            }
-        }
+        SyncStatus::Synced { at } => format!("Synced {}", ago(*at, now_ms)),
         SyncStatus::Offline { waiting: 0 } => "Offline".into(),
         SyncStatus::Offline { waiting: 1 } => "Offline · 1 change waiting".into(),
         SyncStatus::Offline { waiting } => {
             format!("Offline · {} changes waiting", thousands(*waiting))
         }
         SyncStatus::AuthExpired => "Sign in again".into(),
+        SyncStatus::Waiting => "Waiting for Gmail…".into(),
+    }
+}
+
+/// "just now", "4 min ago", "2 h ago", "3 days ago".
+pub fn ago(at_ms: i64, now_ms: i64) -> String {
+    let minutes = (now_ms - at_ms).max(0) / 60_000;
+    match minutes {
+        0 => "just now".into(),
+        1..60 => format!("{minutes} min ago"),
+        60..1440 => format!("{} h ago", minutes / 60),
+        1440..2880 => "1 day ago".into(),
+        _ => format!("{} days ago", minutes / 1440),
     }
 }
 
@@ -120,6 +125,71 @@ pub fn granted(backend: &Backend) -> String {
     }
 }
 
+/// Every scope Google granted, in plain words (Settings › Accounts).
+pub fn scopes(backend: &Backend) -> String {
+    match backend.source() {
+        Source::Demo => return "Demo data: everything, on this Mac only".into(),
+        Source::SignedOut => return "Not signed in".into(),
+        Source::Google => {}
+    }
+    let mut names: Vec<String> = Vec::new();
+    for scope in backend.granted_scopes() {
+        let name = scope_name(scope);
+        if !name.is_empty() && !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
+        }
+    }
+    if names.is_empty() {
+        "Nothing: sign in again to allow mail, calendar and contacts".into()
+    } else {
+        names.join(" · ")
+    }
+}
+
+fn scope_name(scope: &str) -> &str {
+    match scope.rsplit('/').next().unwrap_or(scope) {
+        "openid" => "",
+        "userinfo.email" | "userinfo.profile" | "email" | "profile" => "Name and email",
+        "gmail.modify" => "Mail: read, organize and send",
+        "calendar" => "Calendar",
+        "contacts.readonly" => "Contacts (read-only)",
+        "contacts.other.readonly" => "Other contacts (read-only)",
+        "directory.readonly" => "Directory (read-only)",
+        other => other,
+    }
+}
+
+/// "3 min ago · 14:02", or why there's none (Settings › Accounts).
+pub fn last_sync(backend: &Backend, now_ms: i64) -> String {
+    match backend.source() {
+        Source::Demo => return "Demo data is always up to date".into(),
+        Source::SignedOut => return "Not signed in".into(),
+        Source::Google => {}
+    }
+    let Some(at) = backend.last_synced() else {
+        return "Not yet".into();
+    };
+    let when = chrono::DateTime::from_timestamp_millis(at)
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%b %-d, %H:%M")
+                .to_string()
+        })
+        .unwrap_or_default();
+    let status = match backend.status() {
+        SyncStatus::Synced { .. } => String::new(),
+        status => format!(" · now {}", label(status, now_ms)),
+    };
+    format!("{} · {when}{status}", capitalize(&ago(at, now_ms)))
+}
+
+fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
+}
+
 /// In place of a feature Google wasn't allowed to show.
 pub fn missing_scope(what: &'static str, theme: &Theme) -> AnyElement {
     let title = format!("{what} access wasn't granted");
@@ -151,8 +221,9 @@ mod tests {
         );
         assert_eq!(
             label(&SyncStatus::Synced { at: now - 180_000 }, now),
-            "Synced 3 minutes ago"
+            "Synced 3 min ago"
         );
+        assert_eq!(label(&SyncStatus::Waiting, now), "Waiting for Gmail…");
         assert_eq!(
             label(
                 &SyncStatus::Syncing {
@@ -172,5 +243,29 @@ mod tests {
             "Offline · 3 changes waiting"
         );
         assert_eq!(label(&SyncStatus::AuthExpired, now), "Sign in again");
+    }
+
+    #[test]
+    fn scopes_read_plainly() {
+        assert_eq!(scope_name("openid"), "");
+        assert_eq!(scope_name(GMAIL_SCOPE), "Mail: read, organize and send");
+        assert_eq!(scope_name(CALENDAR_SCOPE), "Calendar");
+        assert_eq!(scope_name("https://example.com/auth/other"), "other");
+        assert_eq!(capitalize("just now"), "Just now");
+    }
+
+    #[test]
+    fn ago_rounds_down() {
+        let min = 60_000;
+        let now = 100 * 24 * 60 * min;
+        assert_eq!(ago(now - 59_000, now), "just now");
+        assert_eq!(ago(now - min, now), "1 min ago");
+        assert_eq!(ago(now - 59 * min, now), "59 min ago");
+        assert_eq!(ago(now - 60 * min, now), "1 h ago");
+        assert_eq!(ago(now - 23 * 60 * min - 59 * min, now), "23 h ago");
+        assert_eq!(ago(now - 24 * 60 * min, now), "1 day ago");
+        assert_eq!(ago(now - 3 * 24 * 60 * min, now), "3 days ago");
+        // A clock that went back reads as now.
+        assert_eq!(ago(now + min, now), "just now");
     }
 }

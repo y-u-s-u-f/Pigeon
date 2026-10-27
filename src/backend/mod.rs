@@ -21,6 +21,7 @@ pub mod calendar;
 pub mod compose;
 pub mod demo;
 pub mod gmail;
+pub mod health;
 pub mod http;
 pub mod mime;
 pub mod outbox;
@@ -94,6 +95,8 @@ pub enum SyncStatus {
     },
     /// The refresh token stopped working: "Sign in again".
     AuthExpired,
+    /// A request is waiting out a long backoff: "Waiting for Gmail…" (W11).
+    Waiting,
 }
 
 /// The browser sign-in, for the sign-in screen (ACC-3).
@@ -501,6 +504,8 @@ pub struct Backend {
     _profile: Option<Task<()>>,
     /// Mail sync and body fetches (W3, `sync`).
     sync: sync::SyncState,
+    /// W11: offline, waiting and the queue, over sync's status (`health`).
+    health: health::Health,
 }
 
 impl EventEmitter<BackendEvent> for Backend {}
@@ -592,6 +597,7 @@ impl Backend {
             store,
             prefs,
             account,
+            health: health::Health::new(status.clone()),
             status,
             pending_settings: None,
             committing: false,
@@ -612,6 +618,7 @@ impl Backend {
         if let Some(transport) = this.transport() {
             this.start_mail_sync(transport, cx);
         }
+        this.start_health(cx);
         this
     }
 
@@ -744,6 +751,8 @@ impl Backend {
         match self.outbox.push(op, delay, now_ms()) {
             Ok(id) => {
                 self.schedule(cx);
+                // W11: "Offline · N changes waiting" counts it.
+                self.refresh_status(cx);
                 id
             }
             Err(e) => {
@@ -921,10 +930,10 @@ impl Backend {
 
     /// What the status line says, changed by sync (W3, W4).
     pub fn set_status(&mut self, status: SyncStatus, cx: &mut Context<Self>) {
-        if self.status != status {
-            self.status = status;
-            cx.emit(BackendEvent::Status(self.status.clone()));
-        }
+        // W11: shown through `health`, which keeps Offline and an expired
+        // sign-in over sync's progress.
+        self.health.note(status);
+        self.refresh_status(cx);
     }
 
     /// A request that failed for good: an expired sign-in, or offline once

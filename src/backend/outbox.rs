@@ -151,6 +151,18 @@ impl Outbox {
             .min()
     }
 
+    /// W11, Quit (2.7): sends still waiting out their undo window are due
+    /// at `now`.
+    pub fn send_now(&self, now: i64) -> anyhow::Result<()> {
+        for row in self.store.outbox_pending(&self.account)? {
+            if row.state == "pending" && row.kind == "mail.send" && row.not_before > now {
+                self.store
+                    .outbox_update_payload(row.id, &row.payload, now)?;
+            }
+        }
+        Ok(())
+    }
+
     /// How many ops are still to go ("3 changes waiting").
     pub fn waiting(&self) -> usize {
         self.store
@@ -270,5 +282,24 @@ mod tests {
         // The star waits behind the archive of the same thread.
         assert!(outbox.take_due(0).unwrap().is_empty());
         assert_eq!(outbox.take_due(5_000).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn quit_sends_now_and_leaves_the_rest() {
+        let outbox = outbox();
+        let send = Op::Mail(MailOp::Send {
+            draft: Outgoing::default(),
+            local_id: None,
+            thread_id: "sent-local-1".into(),
+        });
+        let send = outbox.push(send, 5_000, 1_000).unwrap();
+        let trash = Op::Mail(MailOp::Trash {
+            threads: vec!["t1".into()],
+        });
+        outbox.push(trash, 5_000, 1_000).unwrap();
+        outbox.send_now(2_000).unwrap();
+        let due = outbox.take_due(2_000).unwrap();
+        assert_eq!(due.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [send]);
+        assert_eq!(outbox.next_due(), Some(6_000));
     }
 }

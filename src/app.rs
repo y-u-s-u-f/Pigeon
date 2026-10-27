@@ -102,6 +102,8 @@ pub enum ComposeKind {
 pub struct Toast {
     pub message: SharedString,
     pub undo: Option<UndoAction>,
+    /// Something failed (STA-2): a warning tone, never an Undo.
+    pub error: bool,
     /// Counts toasts shown back to back, so each one animates in.
     serial: usize,
     _timer: Task<()>,
@@ -213,7 +215,7 @@ pub struct PigeonApp {
     /// The system's Reduce Motion, from before the setting overrode it.
     pub(crate) system_reduce_motion: bool,
     /// The settings as last handed to the backend to save.
-    saved: Saved,
+    pub(crate) saved: Saved,
     /// Gmail's unread counts (`ui::sidebar`).
     pub server_counts: ui::sidebar::ServerCounts,
     _subscriptions: Vec<Subscription>,
@@ -933,10 +935,23 @@ impl PigeonApp {
         self.toast = Some(Toast {
             message: message.into(),
             undo,
+            error: false,
             serial,
             _timer: timer,
         });
         cx.notify();
+    }
+
+    /// W11 (STA-2): a failure, in the warning tone, with no Undo.
+    pub(crate) fn show_error_toast(
+        &mut self,
+        message: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_toast(message, None, cx);
+        if let Some(toast) = &mut self.toast {
+            toast.error = true;
+        }
     }
 
     // Keyboard focus between the list and the reader.
@@ -1408,7 +1423,19 @@ impl PigeonApp {
                         .border_color(theme.overlay_border)
                         .shadow(ui::overlay_shadow(theme))
                         .text_size(TEXT_BASE)
-                        .child(ui::icon(Icon::Check, px(15.), theme.accent))
+                        .role(if toast.error {
+                            gpui::Role::Alert
+                        } else {
+                            gpui::Role::Status
+                        })
+                        .aria_label(toast.message.clone())
+                        .map(|this| {
+                            if toast.error {
+                                this.child(ui::icon(Icon::OctagonAlert, px(15.), theme.danger))
+                            } else {
+                                this.child(ui::icon(Icon::Check, px(15.), theme.accent))
+                            }
+                        })
                         .child(toast.message.clone())
                         .when(toast.undo.is_some(), |this| {
                             this.child(
