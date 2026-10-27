@@ -32,12 +32,12 @@ To update: change the status cell in the area's table, then the counts below.
 | [Mail settings](#512-mail-settings-mst) | 10 | 0 | 0 | 10 |
 | [Calendar](#6-calendar-cal) | 18 | 4 | 20 | 42 |
 | [Sync and push](#71-sync-and-push-syn) | 2 | 0 | 5 | 7 |
-| [Notifications and background](#72-notifications-and-background-ntf) | 4 | 0 | 0 | 4 |
+| [Notifications and background](#72-notifications-and-background-ntf) | 0 | 4 | 0 | 4 |
 | [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 0 | 2 | 3 | 5 |
-| [Storage and persistence](#81-storage-and-persistence-per) | 2 | 0 | 3 | 5 |
+| [Storage and persistence](#81-storage-and-persistence-per) | 0 | 2 | 3 | 5 |
 | [Command palette](#82-command-palette-pal) | 0 | 0 | 3 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 3 | 3 | 7 |
-| **Overall** | **62** | **14** | **103** | **179** |
+| **Overall** | **56** | **20** | **103** | **179** |
 
 ## Contents
 
@@ -1187,10 +1187,10 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| NTF-1 | New mail notifications | ⚪ Not done | From SYN-2 / SYN-3 |
-| NTF-2 | Unread badge | ⚪ Not done | `labels.get` (`INBOX`) |
-| NTF-3 | Background sync when the window is closed | ⚪ Not done | SYN loop |
-| NTF-6 | Open at login | ⚪ Not done | None |
+| NTF-1 | New mail notifications | 🟡 Partially done | From SYN-2 / SYN-3 |
+| NTF-2 | Unread badge | 🟡 Partially done | `labels.get` (`INBOX`) |
+| NTF-3 | Background sync when the window is closed | 🟡 Partially done | SYN loop |
+| NTF-6 | Open at login | 🟡 Partially done | None |
 
 #### NTF-1 New mail notifications
 
@@ -1263,8 +1263,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | PER-1 | Local mailbox store | 🟢 Fully linked | Holds SYN data |
 | PER-2 | Outbox and drafts that survive quit | 🟢 Fully linked | None |
 | PER-3 | Persisted UI state and settings | 🟢 Fully linked | None |
-| PER-4 | App bundle and install | ⚪ Not done | None |
-| PER-5 | Single instance | ⚪ Not done | None |
+| PER-4 | App bundle and install | 🟡 Partially done | None |
+| PER-5 | Single instance | 🟡 Partially done | None |
 
 #### PER-4 App bundle and install
 
