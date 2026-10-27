@@ -19,7 +19,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Planned features](#3-planned-features-pln) | 3 | 0 | 0 | 3 |
 | [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 2 | 3 | 3 | 8 |
 | [Folders and labels](#51-folders-and-labels-fol) | 6 | 0 | 6 | 12 |
-| [Thread list](#52-thread-list-lst) | 0 | 2 | 7 | 9 |
+| [Thread list](#52-thread-list-lst) | 0 | 1 | 8 | 9 |
 | [Reading pane](#53-reading-pane-rdr) | 1 | 0 | 7 | 8 |
 | [Message actions](#54-message-and-thread-actions-act) | 0 | 0 | 7 | 7 |
 | [Compose and sending](#55-compose-and-sending-cmp) | 0 | 1 | 12 | 13 |
@@ -30,7 +30,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Images and attachments](#510-images-and-attachments-att) | 3 | 1 | 3 | 7 |
 | [Links](#511-links-lnk) | 2 | 0 | 1 | 3 |
 | [Mail settings](#512-mail-settings-mst) | 10 | 0 | 0 | 10 |
-| [Calendar](#6-calendar-cal) | 18 | 5 | 19 | 42 |
+| [Calendar](#6-calendar-cal) | 18 | 6 | 18 | 42 |
 | [Sync and push](#71-sync-and-push-syn) | 2 | 1 | 4 | 7 |
 | [Notifications and background](#72-notifications-and-background-ntf) | 3 | 0 | 0 | 3 |
 | [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 0 | 2 | 3 | 5 |
@@ -259,7 +259,7 @@ The user's own plans, not driven by Google's APIs.
 | LST-5 | Keyboard list navigation | 🟢 Fully linked | `threads.get` on demand |
 | LST-6 | Unread count in the list header | 🟢 Fully linked | `labels.get` |
 | LST-7 | Pagination and lazy loading | 🟢 Fully linked | `pageToken`, `maxResults` |
-| LST-8 | Live refresh and new mail in the list | 🟡 Partially done | `history.list` (SYN-2) |
+| LST-8 | Live refresh and new mail in the list | 🟢 Fully linked | `history.list` (SYN-2) |
 | LST-9 | Empty-result text | 🟡 Partially done | None |
 
 #### LST-1 Thread rows
@@ -871,7 +871,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | CAL-40 | Move an event to another calendar | 🟡 Partially done | `events.move` |
 | **Recurrence** | | | |
 | CAL-5 | Recurring events | 🟢 Fully linked | `recurrence` (RRULE, EXDATE), `events.instances`, `singleEvents` |
-| CAL-6 | This event or all events | 🟢 Fully linked | Instance `events.patch`; series split with `UNTIL` |
+| CAL-6 | This event or all events | 🟡 Partially done | Instance `events.patch`; series split with `UNTIL` |
 | CAL-29 | Set and edit repeat rules | ⚪ Not done | `recurrence` |
 | **Invites and RSVP** | | | |
 | CAL-13 | Guests and invitations | 🟢 Fully linked | `attendees`, `sendUpdates` |
