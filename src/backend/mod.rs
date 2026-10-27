@@ -789,12 +789,14 @@ impl Backend {
                 .background_executor()
                 .spawn(async move {
                     // W6: drafts and sends, at the user's priority.
+                    let calendar_transport = transport.clone();
                     let compose_gmail =
                         transport.map(|t| gmail::Gmail::new(Arc::new(compose::UserCalls(t))));
                     due.into_iter()
                         .map(|(id, op)| {
                             // W5: Google commits go through gmail.rs and
                             // calendar.rs here.
+                            let mut calendar = false;
                             let (result, events) = if demo {
                                 let result = match &op {
                                     Op::Mail(op) => store.apply_mail_op(&account, op),
@@ -806,22 +808,38 @@ impl Backend {
                             {
                                 // W6: drafts and sends.
                                 compose::commit_compose(gmail, &store, &account, op)
+                            } else if let (Op::Calendar(op), Some(transport)) =
+                                (&op, &calendar_transport)
+                            {
+                                // W7: calendar writes.
+                                calendar = true;
+                                let committed = calendar::commit(
+                                    &calendar::UserPriority(transport.clone()),
+                                    &store,
+                                    &account,
+                                    op,
+                                );
+                                (committed.result(), committed.changes.backend_events())
                             } else {
                                 (
                                     Err(anyhow::anyhow!("not connected to Google yet")),
                                     Vec::new(),
                                 )
                             };
-                            (id, result, events)
+                            (id, result, events, calendar)
                         })
                         .collect::<Vec<_>>()
                 })
                 .await;
             this.update(cx, |this, cx| {
-                for (id, result, events) in results {
-                    // W6: what the commit changed, before it's reported.
+                for (id, result, events, calendar) in results {
+                    // What the commit changed, before it's reported.
                     for event in events {
                         cx.emit(event);
+                    }
+                    // W7: a calendar sync shortly after a calendar write.
+                    if calendar {
+                        this.sync_calendar_soon(cx);
                     }
                     match result {
                         Ok(()) => {

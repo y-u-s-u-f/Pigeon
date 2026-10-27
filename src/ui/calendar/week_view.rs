@@ -298,7 +298,9 @@ impl CalendarView {
                     let (left, width) = column_box(placement, day_width, MIN_COLUMN);
                     let overlapped =
                         placement.cols > 1 && day_width / (placement.cols as f32) < MIN_COLUMN;
-                    let ends_here = time::minutes_into(date, timed[i].end) <= 24 * 60;
+                    // Read-only events have no resize edge (CAL-22).
+                    let ends_here = time::minutes_into(date, timed[i].end) <= 24 * 60
+                        && self.can_edit(&self.data.events[timed[i].event].id);
                     self.render_block(
                         *timed[i],
                         minutes[i],

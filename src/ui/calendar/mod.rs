@@ -10,6 +10,10 @@
 //! - `set_rsvp` answers an invite for the user.
 //!
 //! Every change also goes to the backend as a `CalOp` (`queue`, `patched`).
+//! Edits settle first: one patch per event once the panel leaves it or
+//! after `EDIT_DEBOUNCE` idle (`flush_edit`); drags go at once. A change
+//! guests would see asks first whether to email them (`GuestPrompt`).
+//! Events the user can't change (`Access`, CAL-22) only take an answer.
 //!
 //! A repeating event changes as a whole series unless the user picks "This
 //! event": the occurrence then becomes an event of its own and the series
@@ -42,10 +46,13 @@ use self::{drag::GridDrag, event_panel::EventPanel};
 use crate::ui::style::*;
 use crate::{
     actions::*,
-    backend::{Backend, CalOp, OpId, SendUpdates},
+    backend::{
+        Backend, CalOp, OpId, SendUpdates,
+        calendar::{Access, access, asks_guests, has_guests, instance_id, is_organizer},
+    },
     calendar::{
         CalendarData, Event, Occurrence, RsvpStatus, SeriesScope, occurrences,
-        time::{self, add_months, month_grid, next_half_hour, week_start},
+        time::{self, LocalZone, add_months, month_grid, next_half_hour, week_start},
     },
     contacts::SharedContactBook,
     theme::Theme,
@@ -74,6 +81,8 @@ const GRID_MIN_BESIDE_PANEL: f32 = 680.;
 const FIRST_VISIBLE_HOUR: f32 = 7.5;
 /// How far next and previous event look past the period shown.
 const SEARCH_DAYS: i64 = 62;
+/// How long edits and answers to an invite settle before they go.
+const EDIT_DEBOUNCE: StdDuration = StdDuration::from_millis(1500);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewKind {
@@ -144,6 +153,75 @@ impl PromptKind {
     }
 }
 
+/// An event changed and not yet handed to the backend.
+#[derive(Clone, Debug)]
+struct PendingEdit {
+    id: String,
+    /// As it was before.
+    before: Event,
+}
+
+/// "Send updates to guests?", waiting for an answer (CAL-13).
+#[derive(Clone, Debug)]
+pub struct GuestPrompt {
+    pub event_id: String,
+    pub kind: GuestAsk,
+}
+
+#[allow(clippy::large_enum_variant)] // One at a time.
+#[derive(Clone, Debug)]
+pub enum GuestAsk {
+    /// Edits or a new event: the ops to queue, and the event as it was, to
+    /// put back on Cancel (`None`: a new event, which goes).
+    Save {
+        ops: Vec<CalOp>,
+        before: Option<Event>,
+    },
+    Delete {
+        occurrence: NaiveDateTime,
+        scope: SeriesScope,
+    },
+}
+
+impl GuestPrompt {
+    fn question(&self) -> &'static str {
+        match self.kind {
+            GuestAsk::Save { before: None, .. } => "Send invitations to guests?",
+            GuestAsk::Save { .. } => "Send updates to guests?",
+            GuestAsk::Delete { .. } => "Send cancellation to guests?",
+        }
+    }
+}
+
+const GUEST_CHOICES: &[(SendUpdates, &str)] = &[
+    (SendUpdates::All, "Send"),
+    (SendUpdates::None, "Don't send"),
+];
+
+/// The op with `send` as its `sendUpdates`.
+fn with_send(op: CalOp, send: SendUpdates) -> CalOp {
+    match op {
+        CalOp::Insert { event, .. } => CalOp::Insert {
+            event,
+            send_updates: send,
+        },
+        CalOp::Patch {
+            id,
+            before,
+            after,
+            scope,
+            ..
+        } => CalOp::Patch {
+            id,
+            before,
+            after,
+            scope,
+            send_updates: send,
+        },
+        op => op,
+    }
+}
+
 /// What a delete took out, to put back on undo.
 #[derive(Clone, Debug, Default)]
 pub struct Removal {
@@ -191,6 +269,15 @@ pub struct CalendarView {
     /// The event made last, while it's open and may still be dropped for
     /// having no title.
     new_event: Option<String>,
+    /// Edits settling (`flush_edit`).
+    pending: Option<PendingEdit>,
+    /// A new event that goes in once it has a title.
+    unsent: Option<String>,
+    _edit_timer: Option<Task<()>>,
+    /// An answer to an invite, settling.
+    pending_rsvp: Option<(String, RsvpStatus)>,
+    _rsvp_timer: Option<Task<()>>,
+    pub guest_prompt: Option<GuestPrompt>,
     /// Repaints every half minute so the current-time line moves.
     _tick: Task<()>,
     _closing: Option<Task<()>>,
@@ -269,6 +356,12 @@ impl CalendarView {
             book,
             backend,
             new_event: None,
+            pending: None,
+            unsent: None,
+            _edit_timer: None,
+            pending_rsvp: None,
+            _rsvp_timer: None,
+            guest_prompt: None,
             _tick: tick,
             _closing: None,
             _autoscroll: None,
@@ -581,21 +674,36 @@ impl CalendarView {
     /// a new event left without a title goes.
     fn leave_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_panel(window, cx);
-        let Some(id) = self.new_event.take() else {
+        let new_event = self.new_event.take();
+        let mut never_went = false;
+        if let Some(id) = &new_event
+            && self.event(id).is_some_and(|e| e.title.trim().is_empty())
+            && self.unsent.as_ref() == Some(id)
+        {
+            // Never went in; nothing to take back.
+            self.unsent = None;
+            never_went = true;
+        }
+        self.flush_edit(cx);
+        self.flush_rsvp(cx);
+        let Some(id) = new_event else {
             return;
         };
         let untitled = self.event(&id).is_some_and(|e| e.title.trim().is_empty());
         if untitled && let Some(ix) = self.data.event_ix(&id) {
             self.data.events.remove(ix);
-            self.queue(
-                CalOp::Delete {
-                    id: id.clone(),
-                    occurrence: None,
-                    scope: SeriesScope::All,
-                    send_updates: SendUpdates::None,
-                },
-                cx,
-            );
+            if !never_went {
+                // It went in before its title was cleared.
+                self.queue(
+                    CalOp::Delete {
+                        id: id.clone(),
+                        occurrence: None,
+                        scope: SeriesScope::All,
+                        send_updates: SendUpdates::None,
+                    },
+                    cx,
+                );
+            }
             if self.selected.as_ref().is_some_and(|s| s.event_id == id) {
                 self.selected = None;
             }
@@ -643,34 +751,224 @@ impl CalendarView {
         self.backend.update(cx, |b, cx| b.calendar(op, cx))
     }
 
-    /// The event changed from `before`: patch it, moving it first if its
-    /// calendar changed.
-    pub(crate) fn patched(&self, before: Event, cx: &mut Context<Self>) {
-        let Some(after) = self.event(&before.id).cloned() else {
+    /// What the user may do with `event` (CAL-22).
+    pub fn access_of(&self, event: &Event) -> Access {
+        let role = self
+            .data
+            .calendar(&event.calendar)
+            .map(|c| c.access_role)
+            .unwrap_or_default();
+        access(event, role, self.me())
+    }
+
+    pub fn can_edit(&self, id: &str) -> bool {
+        self.event(id)
+            .is_some_and(|e| self.access_of(e) == Access::Edit)
+    }
+
+    /// The event changed from `before`. The change settles, then goes as
+    /// one patch (`flush_edit`); a change to another event first sends the
+    /// one settling.
+    pub(crate) fn patched(&mut self, before: Event, cx: &mut Context<Self>) {
+        // A new event goes in whole.
+        if self.unsent.as_deref() != Some(before.id.as_str()) {
+            if self.pending.as_ref().is_some_and(|p| p.id != before.id) {
+                self.flush_edit(cx);
+            }
+            if self.pending.is_none() {
+                self.pending = Some(PendingEdit {
+                    id: before.id.clone(),
+                    before,
+                });
+            }
+        }
+        self.settle_edit(cx);
+    }
+
+    /// Send the edit in `EDIT_DEBOUNCE`, unless more come.
+    fn settle_edit(&mut self, cx: &mut Context<Self>) {
+        self._edit_timer = Some(cx.spawn(async |this, cx| {
+            cx.background_executor().timer(EDIT_DEBOUNCE).await;
+            this.update(cx, |this, cx| {
+                // A repeating event waits for "This event" or "All events".
+                let asking = this
+                    .panel
+                    .as_ref()
+                    .is_some_and(|p| p.snapshot.is_some() && p.scope.is_none());
+                if !asking {
+                    this.flush_edit(cx);
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// Hand the backend the settling edit now: the new event (once it has
+    /// a title), or a move and a patch from how it was.
+    pub(crate) fn flush_edit(&mut self, cx: &mut Context<Self>) {
+        self.read_panel_text(cx);
+        self._edit_timer = None;
+        let unsent = self
+            .unsent
+            .as_ref()
+            .and_then(|id| self.event(id))
+            .filter(|e| !e.title.trim().is_empty())
+            .cloned();
+        if let Some(event) = unsent {
+            self.unsent = None;
+            let ops = vec![CalOp::Insert {
+                event: event.clone(),
+                send_updates: SendUpdates::None,
+            }];
+            self.save(ops, None, &event, cx);
+        }
+        let Some(PendingEdit { id, before }) = self.pending.take() else {
             return;
         };
-        if after == before {
+        let Some(after) = self.event(&id).cloned() else {
+            return;
+        };
+        if before == after {
             return;
         }
+        let mut ops = Vec::new();
         if after.calendar != before.calendar {
-            self.queue(
-                CalOp::Move {
-                    id: after.id.clone(),
-                    to_calendar: after.calendar.clone(),
+            ops.push(CalOp::Move {
+                id: id.clone(),
+                to_calendar: after.calendar.clone(),
+            });
+        }
+        ops.push(CalOp::Patch {
+            id,
+            before: before.clone(),
+            after: after.clone(),
+            scope: SeriesScope::All,
+            send_updates: SendUpdates::None,
+        });
+        self.save(ops, Some(before), &after, cx);
+    }
+
+    /// Queue `ops`, which save `after`, asking first about the guests.
+    fn save(
+        &mut self,
+        ops: Vec<CalOp>,
+        before: Option<Event>,
+        after: &Event,
+        cx: &mut Context<Self>,
+    ) {
+        if asks_guests(before.as_ref(), after, self.me()) {
+            let event_id = after.id.clone();
+            self.ask_guests(
+                GuestPrompt {
+                    event_id,
+                    kind: GuestAsk::Save { ops, before },
                 },
                 cx,
             );
+        } else {
+            for op in ops {
+                self.queue(op, cx);
+            }
         }
-        self.queue(
-            CalOp::Patch {
-                id: after.id.clone(),
-                before,
-                after,
-                scope: SeriesScope::All,
-                send_updates: SendUpdates::None,
-            },
-            cx,
+    }
+
+    /// The panel's text fields hold what was typed last, even if a reload
+    /// from the store replaced the event meanwhile.
+    fn read_panel_text(&mut self, cx: &mut Context<Self>) {
+        let Some(panel) = &self.panel else { return };
+        let settling = self
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.id == panel.event_id)
+            || self.unsent.as_ref() == Some(&panel.event_id);
+        if !settling {
+            return;
+        }
+        let (id, title, location, notes) = (
+            panel.event_id.clone(),
+            panel.title.read(cx).value().to_string(),
+            panel.location_text(cx),
+            panel.notes_text(cx),
         );
+        if let Some(event) = self.event_mut(&id) {
+            event.title = title;
+            event.location = location;
+            event.description = notes;
+        }
+    }
+
+    /// Ask about emailing the guests. A question still open (about an
+    /// earlier change) is answered "Don't send".
+    fn ask_guests(&mut self, prompt: GuestPrompt, cx: &mut Context<Self>) {
+        if let Some(GuestPrompt {
+            kind: GuestAsk::Save { ops, .. },
+            ..
+        }) = self.guest_prompt.take()
+        {
+            for op in ops {
+                self.queue(op, cx);
+            }
+        }
+        self.guest_prompt = Some(prompt);
+        cx.notify();
+    }
+
+    /// Send or Don't send; `None` is Cancel, which puts the event back.
+    pub fn answer_guests(
+        &mut self,
+        send: Option<SendUpdates>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(prompt) = self.guest_prompt.take() else {
+            return;
+        };
+        let id = prompt.event_id.clone();
+        match (prompt.kind, send) {
+            (GuestAsk::Save { ops, .. }, Some(send)) => {
+                for op in ops {
+                    self.queue(with_send(op, send), cx);
+                }
+            }
+            (GuestAsk::Save { before, .. }, None) => match before {
+                Some(before) => {
+                    if let Some(event) = self.event_mut(&id) {
+                        *event = before.clone();
+                    }
+                    // The panel's fields show it as it was again.
+                    if let Some(panel) = &self.panel
+                        && panel.event_id == id
+                    {
+                        let occurrence = if before.is_series() {
+                            panel.occurrence
+                        } else {
+                            before.start
+                        };
+                        self.panel = Some(EventPanel::new(&before, occurrence, window, cx));
+                        if let Some(selected) = &mut self.selected
+                            && selected.event_id == id
+                        {
+                            selected.start = occurrence;
+                        }
+                    }
+                }
+                None => {
+                    self.data.events.retain(|e| e.id != id);
+                    if self.selected.as_ref().is_some_and(|s| s.event_id == id) {
+                        self.selected = None;
+                    }
+                    if self.panel.as_ref().is_some_and(|p| p.event_id == id) {
+                        self.panel = None;
+                    }
+                }
+            },
+            (GuestAsk::Delete { occurrence, scope }, Some(send)) => {
+                self.delete_with(&id, occurrence, scope, Some(send), window, cx);
+            }
+            (GuestAsk::Delete { .. }, None) => {}
+        }
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
     }
 
     /// Make an event over `[start, end)` and open it with its title focused.
@@ -723,14 +1021,10 @@ impl CalendarView {
             busy: true,
             ..Event::default()
         };
-        self.data.events.push(event.clone());
-        self.queue(
-            CalOp::Insert {
-                event,
-                send_updates: SendUpdates::None,
-            },
-            cx,
-        );
+        self.data.events.push(event);
+        // It goes in once it has a title (`flush_edit`).
+        self.flush_edit(cx);
+        self.unsent = Some(id.clone());
         if !all_day && self.view != ViewKind::Month {
             let day = start.date();
             self.reveal_minutes(
@@ -765,6 +1059,10 @@ impl CalendarView {
         let Some(before) = self.event(id).cloned() else {
             return;
         };
+        if self.access_of(&before) != Access::Edit {
+            self.sync_panel_times(window, cx);
+            return;
+        }
         let event = self.event_mut(id).expect("checked above");
         let shift = start - occurrence;
         event.start += shift;
@@ -793,21 +1091,24 @@ impl CalendarView {
     }
 
     /// Take one occurrence of a series out into an event of its own, at
-    /// `[start, end)`, with the series as it is now; the series skips it
-    /// from then on. Returns the new event's id.
+    /// `[start, end)`, with the fields of `edited` (the series as the user
+    /// changed it); the series skips it from then on. Returns the new
+    /// event's id: Google's id for that occurrence (CAL-6).
     fn detach(
         &mut self,
         series_id: &str,
         occurrence: NaiveDateTime,
         start: NaiveDateTime,
         end: NaiveDateTime,
+        edited: Event,
         cx: &mut Context<Self>,
     ) -> Option<String> {
-        let id = self.new_id();
         let before = self.event(series_id)?.clone();
-        let series = self.event_mut(series_id)?;
-        series.exceptions.push(occurrence);
-        let exception = Event {
+        let mut id = instance_id(series_id, occurrence, before.all_day, &LocalZone::system());
+        if self.event(&id).is_some() {
+            id = self.new_id();
+        }
+        let occurrence_of = |series: &Event, start, end| Event {
             id: id.clone(),
             start,
             end,
@@ -817,15 +1118,17 @@ impl CalendarView {
             original_start: Some(occurrence),
             ..series.clone()
         };
-        self.data.events.push(exception.clone());
+        // The occurrence as the rule had it, and as changed.
+        let as_was = occurrence_of(&before, occurrence, occurrence + before.duration());
+        self.data.events.push(occurrence_of(&edited, start, end));
+        self.event_mut(series_id)?.exceptions.push(occurrence);
         self.patched(before, cx);
-        self.queue(
-            CalOp::Insert {
-                event: exception,
-                send_updates: SendUpdates::None,
-            },
-            cx,
-        );
+        self.flush_edit(cx);
+        self.pending = Some(PendingEdit {
+            id: id.clone(),
+            before: as_was,
+        });
+        self.settle_edit(cx);
         Some(id)
     }
 
@@ -844,14 +1147,23 @@ impl CalendarView {
                 .find(|a| a.email.eq_ignore_ascii_case(&me))
         {
             attendee.status = status;
-            self.queue(
-                CalOp::Rsvp {
-                    id: id.to_string(),
-                    status,
-                },
-                cx,
-            );
+            // The last answer goes, once it settles (CAL-14).
+            if self.pending_rsvp.as_ref().is_some_and(|(p, _)| p != id) {
+                self.flush_rsvp(cx);
+            }
+            self.pending_rsvp = Some((id.to_string(), status));
+            self._rsvp_timer = Some(cx.spawn(async |this, cx| {
+                cx.background_executor().timer(EDIT_DEBOUNCE).await;
+                this.update(cx, |this, cx| this.flush_rsvp(cx)).ok();
+            }));
             cx.notify();
+        }
+    }
+
+    fn flush_rsvp(&mut self, cx: &mut Context<Self>) {
+        self._rsvp_timer = None;
+        if let Some((id, status)) = self.pending_rsvp.take() {
+            self.queue(CalOp::Rsvp { id, status }, cx);
         }
     }
 
@@ -874,15 +1186,62 @@ impl CalendarView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.delete_with(id, occurrence, scope, None, window, cx);
+    }
+
+    /// `delete_occurrence`, telling the guests or not; `None` asks first
+    /// when there are guests. Someone else's event is declined and removed
+    /// from the user's calendar instead (CAL-22).
+    fn delete_with(
+        &mut self,
+        id: &str,
+        occurrence: NaiveDateTime,
+        scope: SeriesScope,
+        send: Option<SendUpdates>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(event) = self.event(id) else {
             return;
         };
+        if self.access_of(event) == Access::ReadOnly {
+            return;
+        }
+        let me = self.me().to_string();
+        let declines = !is_organizer(event, &me);
         let title = event.display_title().to_string();
         let scope = match scope {
             _ if !event.is_series() => SeriesScope::All,
             SeriesScope::Following if occurrence <= event.start => SeriesScope::All,
             scope => scope,
         };
+        let never_went = self.unsent.as_deref() == Some(id);
+        if send.is_none() && !declines && !never_went && has_guests(event, &me) {
+            self.ask_guests(
+                GuestPrompt {
+                    event_id: id.to_string(),
+                    kind: GuestAsk::Delete { occurrence, scope },
+                },
+                cx,
+            );
+            self.prompt = None;
+            return;
+        }
+        let send = send.unwrap_or_default();
+        // What's settling goes first, unless the event goes with it.
+        if never_went {
+            self.unsent = None;
+        }
+        if scope == SeriesScope::All && self.pending.as_ref().is_some_and(|p| p.id == id) {
+            self.pending = None;
+        }
+        self.flush_edit(cx);
+        if self.pending_rsvp.as_ref().is_some_and(|(p, _)| p == id) {
+            self.pending_rsvp = None;
+        }
+        if self.event(id).is_none() {
+            return;
+        }
         let mut removal = Removal {
             select: Some(Selection {
                 event_id: id.to_string(),
@@ -902,6 +1261,7 @@ impl CalendarView {
         };
         let day = time::date_label(occurrence.date(), today());
         let message = match scope {
+            _ if declines => format!("Declined “{title}” and removed it"),
             SeriesScope::All => format!("Deleted “{title}”"),
             SeriesScope::This => format!("Deleted “{title}” on {day}"),
             SeriesScope::Following => format!("Deleted “{title}” from {day} on"),
@@ -951,15 +1311,17 @@ impl CalendarView {
             self.new_event = None;
         }
         self.prompt = None;
-        removal.op = Some(self.queue(
-            CalOp::Delete {
-                id: id.to_string(),
-                occurrence: Some(occurrence),
-                scope,
-                send_updates: SendUpdates::None,
-            },
-            cx,
-        ));
+        if !never_went {
+            removal.op = Some(self.queue(
+                CalOp::Delete {
+                    id: id.to_string(),
+                    occurrence: Some(occurrence),
+                    scope,
+                    send_updates: send,
+                },
+                cx,
+            ));
+        }
         cx.emit(CalendarEvent::Deleted { message, removal });
         cx.notify();
     }
@@ -973,7 +1335,10 @@ impl CalendarView {
             .op
             .is_some_and(|op| self.backend.update(cx, |b, _| b.cancel(op)));
         if !cancelled {
-            for (_, event) in &removal.removed {
+            // Someone else's event was only declined; it can't be made
+            // again here.
+            let me = self.me().to_string();
+            for (_, event) in removal.removed.iter().filter(|(_, e)| is_organizer(e, &me)) {
                 self.queue(
                     CalOp::Insert {
                         event: event.clone(),
@@ -1088,9 +1453,14 @@ impl CalendarView {
         match prompt.kind {
             PromptKind::Delete => self.delete_occurrence(id, prompt.occurrence, scope, window, cx),
             PromptKind::Move { start, end } if scope == SeriesScope::This => {
-                let Some(new_id) = self.detach(id, prompt.occurrence, start, end, cx) else {
+                let Some(series) = self.event(id).cloned() else {
                     return;
                 };
+                let Some(new_id) = self.detach(id, prompt.occurrence, start, end, series, cx)
+                else {
+                    return;
+                };
+                self.flush_edit(cx);
                 let selection = Selection {
                     event_id: new_id.clone(),
                     start,
@@ -1102,6 +1472,7 @@ impl CalendarView {
             }
             PromptKind::Move { start, end } => {
                 self.retime_occurrence(id, prompt.occurrence, start, end, window, cx);
+                self.flush_edit(cx);
                 if self.panel.is_some() {
                     self.open_event(id, start, false, window, cx);
                 }
@@ -1244,6 +1615,9 @@ impl CalendarView {
     /// Enter: answers an open prompt with its first choice, or opens the
     /// selected event.
     fn open_selected(&mut self, _: &OpenEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.guest_prompt.is_some() {
+            return self.answer_guests(Some(SendUpdates::All), window, cx);
+        }
         if self.prompt.is_some() {
             return self.answer_prompt(SeriesScope::This, window, cx);
         }
@@ -1268,6 +1642,12 @@ impl CalendarView {
         let Some((id, start)) = target else {
             return;
         };
+        if self
+            .event(&id)
+            .is_none_or(|e| self.access_of(e) == Access::ReadOnly)
+        {
+            return;
+        }
         if self.event(&id).is_some_and(|e| e.is_series()) {
             self.ask_delete(&id, start, cx);
         } else {
@@ -1281,7 +1661,9 @@ impl CalendarView {
         if self.cancel_drag(cx) {
             return;
         }
-        if self.prompt.take().is_some() {
+        if self.guest_prompt.is_some() {
+            self.answer_guests(None, window, cx);
+        } else if self.prompt.take().is_some() {
             cx.notify();
         } else if let Some(menu) = self.menu.take() {
             if menu == Menu::GoToDate {
@@ -1422,15 +1804,15 @@ impl CalendarView {
         self.render_scope_buttons(kind.choices().1, true, theme, cx, Self::answer_prompt)
     }
 
-    /// A row of buttons, one per scope; the first is the default (which
+    /// A row of buttons, one per choice; the first is the default (which
     /// enter takes, with `enter_hint`).
-    pub(crate) fn render_scope_buttons(
+    pub(crate) fn render_scope_buttons<T: Copy + 'static>(
         &self,
-        choices: &'static [(SeriesScope, &'static str)],
+        choices: &'static [(T, &'static str)],
         enter_hint: bool,
         theme: &Theme,
         cx: &mut Context<Self>,
-        pick: fn(&mut Self, SeriesScope, &mut Window, &mut Context<Self>),
+        pick: fn(&mut Self, T, &mut Window, &mut Context<Self>),
     ) -> gpui::Div {
         div()
             .flex()
@@ -1488,6 +1870,49 @@ impl CalendarView {
             .event(&prompt.event_id)
             .map(|e| e.display_title().to_string())
             .unwrap_or_default();
+        let buttons = self.render_prompt_choices(prompt.kind, theme, cx);
+        self.render_prompt_card(question, title, buttons, theme, cx, |this, _, cx| {
+            this.prompt = None;
+            cx.notify();
+        })
+    }
+
+    /// "Send updates to guests?" over the bottom of the grid (CAL-13).
+    fn render_guest_prompt(
+        &self,
+        prompt: &GuestPrompt,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let title = self
+            .event(&prompt.event_id)
+            .map(|e| e.display_title().to_string())
+            .unwrap_or_default();
+        let buttons =
+            self.render_scope_buttons(GUEST_CHOICES, true, theme, cx, |this, send, window, cx| {
+                this.answer_guests(Some(send), window, cx)
+            });
+        self.render_prompt_card(
+            prompt.question(),
+            title,
+            buttons,
+            theme,
+            cx,
+            |this, window, cx| this.answer_guests(None, window, cx),
+        )
+    }
+
+    /// A question card over the bottom of the grid: the question, the
+    /// event's title, the answers and Cancel.
+    fn render_prompt_card(
+        &self,
+        question: &'static str,
+        title: String,
+        buttons: gpui::Div,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+        cancel: fn(&mut Self, &mut Window, &mut Context<Self>),
+    ) -> AnyElement {
         div()
             .absolute()
             .bottom(SPACE_XL)
@@ -1534,10 +1959,12 @@ impl CalendarView {
                                     .child(title),
                             ),
                     )
-                    .child(self.render_prompt_choices(prompt.kind, theme, cx))
+                    .child(buttons)
                     .child(
                         div()
                             .id("prompt-cancel")
+                            .role(gpui::Role::Button)
+                            .aria_label("Cancel")
                             .h(HIT_TARGET)
                             .px(SPACE_SM)
                             .flex()
@@ -1550,10 +1977,9 @@ impl CalendarView {
                             .child("Cancel")
                             .child(keycap("esc", theme))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.prompt = None;
-                                cx.notify();
-                            })),
+                            .on_click(
+                                cx.listener(move |this, _, window, cx| cancel(this, window, cx)),
+                            ),
                     ),
             ))
             .into_any_element()
@@ -1578,7 +2004,10 @@ impl Render for CalendarView {
                     .as_ref()
                     .is_some_and(|panel| panel.event_id == p.event_id))
         });
-        let floating_prompt = floating_prompt.map(|p| self.render_floating_prompt(p, &theme, cx));
+        let floating_prompt = match &self.guest_prompt {
+            Some(p) => Some(self.render_guest_prompt(p, &theme, cx)),
+            None => floating_prompt.map(|p| self.render_floating_prompt(p, &theme, cx)),
+        };
         div()
             .id("calendar")
             .key_context(CALENDAR)

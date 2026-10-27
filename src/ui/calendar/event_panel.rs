@@ -18,6 +18,7 @@ use crate::ui::style::*;
 use crate::{
     actions::*,
     assets::Icon,
+    backend::calendar::{Access, is_organizer},
     calendar::{
         Attendee, Event, RsvpStatus, SeriesScope,
         time::{
@@ -294,6 +295,14 @@ impl EventPanel {
         (self.occurrence, self.occurrence + event.duration())
     }
 
+    pub fn location_text(&self, cx: &gpui::App) -> String {
+        self.location.read(cx).value().to_string()
+    }
+
+    pub fn notes_text(&self, cx: &gpui::App) -> String {
+        self.notes.read(cx).value().to_string()
+    }
+
     /// Write the occurrence's dates and times into their fields.
     fn sync_times(&mut self, event: &Event, window: &mut Window, cx: &mut Context<CalendarView>) {
         let (start, end) = self.times(event);
@@ -318,6 +327,14 @@ impl EventPanel {
 }
 
 impl CalendarView {
+    /// Whether the event may go to another calendar (CAL-40): Google moves
+    /// only whole events, and only for their organizer.
+    fn can_move(&self, event: &Event) -> bool {
+        self.access_of(event) == Access::Edit
+            && is_organizer(event, self.me())
+            && event.recurring_event_id.is_none()
+    }
+
     fn panel_event(&self) -> Option<(&EventPanel, &Event)> {
         let panel = self.panel.as_ref()?;
         Some((panel, self.event(&panel.event_id)?))
@@ -394,21 +411,17 @@ impl CalendarView {
         if scope == SeriesScope::This {
             let (series_id, origin, start) =
                 (panel.event_id.clone(), panel.origin, panel.occurrence);
-            let Some(duration) = self.event(&series_id).map(|e| e.duration()) else {
+            let Some(edited) = self.event(&series_id).cloned() else {
                 return;
             };
-            // The copy takes the series as edited; the series goes back.
-            let Some(id) = self.detach(&series_id, origin, start, start + duration, cx) else {
-                return;
-            };
-            let before = self.event(&series_id).cloned();
+            // The series goes back; the occurrence takes the change.
             if let Some(series) = self.event_mut(&series_id) {
                 *series = snapshot;
-                series.exceptions.push(origin);
             }
-            if let Some(before) = before {
-                self.patched(before, cx);
-            }
+            let end = start + edited.duration();
+            let Some(id) = self.detach(&series_id, origin, start, end, edited, cx) else {
+                return;
+            };
             if let Some(panel) = &mut self.panel {
                 panel.event_id = id.clone();
             }
@@ -416,15 +429,21 @@ impl CalendarView {
                 event_id: id,
                 start,
             });
+        } else {
+            // The change waited for the answer.
+            self.settle_edit(cx);
         }
         cx.notify();
     }
 
     fn edit_event(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Event)) {
-        self.before_panel_edit();
         let Some(id) = self.panel.as_ref().map(|p| p.event_id.clone()) else {
             return;
         };
+        if !self.can_edit(&id) {
+            return;
+        }
+        self.before_panel_edit();
         let Some(before) = self.event(&id).cloned() else {
             return;
         };
@@ -471,6 +490,9 @@ impl CalendarView {
                 let Some((panel, event)) = self.panel_event() else {
                     return;
                 };
+                if self.access_of(event) != Access::Edit {
+                    return;
+                }
                 let (start, end) = panel.times(event);
                 let shown = if field == Field::EndDate {
                     end - Duration::days(1)
@@ -645,6 +667,13 @@ impl CalendarView {
         let Some((_, event)) = self.panel_event() else {
             return;
         };
+        let allowed = match menu {
+            Menu::EventCalendar => self.can_move(event),
+            _ => self.access_of(event) == Access::Edit,
+        };
+        if !allowed {
+            return;
+        }
         let current = match menu {
             Menu::EventCalendar => self.data.calendar_ix(&event.calendar).unwrap_or(0),
             _ => REMINDERS
@@ -663,7 +692,19 @@ impl CalendarView {
     fn choose_menu_row(&mut self, menu: Menu, ix: usize, cx: &mut Context<Self>) {
         match menu {
             Menu::EventCalendar => {
-                if let Some(id) = self.data.calendars.get(ix).map(|c| c.id.clone()) {
+                let writable = |c: &&crate::calendar::Calendar| {
+                    matches!(
+                        c.access_role,
+                        crate::calendar::AccessRole::Owner | crate::calendar::AccessRole::Writer
+                    )
+                };
+                if let Some(id) = self
+                    .data
+                    .calendars
+                    .get(ix)
+                    .filter(writable)
+                    .map(|c| c.id.clone())
+                {
                     self.edit_event(cx, |e| e.calendar = id);
                 }
             }
@@ -816,6 +857,9 @@ impl CalendarView {
         let Some((panel, event)) = self.panel_event() else {
             return;
         };
+        if self.access_of(event) != Access::Edit {
+            return;
+        }
         let (start, end) = panel.times(event);
         let id = event.id.clone();
         let all_day = !event.all_day;
@@ -970,6 +1014,23 @@ impl CalendarView {
         let event = self.event(&panel.event_id)?;
         let color = self.data.color_of(event);
         let accent = theme.event_accent(color, false);
+        let access = self.access_of(event);
+        let editable = access == Access::Edit;
+        // Why the fields don't take typing (CAL-22).
+        let read_only_note = (!editable).then(|| {
+            div()
+                .pl(SPACE_LG)
+                .flex()
+                .items_center()
+                .gap(SPACE_SM)
+                .text_size(TEXT_SM)
+                .text_color(theme.text_muted)
+                .child(if access == Access::Rsvp {
+                    "Only the organizer can change this event"
+                } else {
+                    "You can't change events in this calendar"
+                })
+        });
 
         let header = window_drag_area(div().id("event-panel-header"))
             .h(HEADER_HEIGHT)
@@ -1013,6 +1074,7 @@ impl CalendarView {
                     .child(
                         div().flex_1().min_w_0().child(
                             Input::new(&panel.title)
+                                .readonly(!editable)
                                 .appearance(false)
                                 .px(px(0.))
                                 .h(px(32.))
@@ -1032,6 +1094,7 @@ impl CalendarView {
                     .child(icon(Icon::Repeat, px(13.), theme.text_faint))
                     .child(line)
             }))
+            .children(read_only_note)
             // After the first change to a repeating event: to which?
             .when(panel.snapshot.is_some() && panel.scope.is_none(), |d| {
                 d.child(enter(
@@ -1095,6 +1158,7 @@ impl CalendarView {
                             .mx(px(-2.))
                             .child(
                                 Textarea::new(&panel.notes)
+                                    .readonly(!editable)
                                     .appearance(false)
                                     .text_size(TEXT_BASE),
                             ),
@@ -1178,13 +1242,25 @@ impl CalendarView {
                 .child(self.render_prompt_choices(prompt.kind, theme, cx))
                 .into_any_element();
         }
+        // Someone else's event: deleting declines it and hides it (CAL-22).
+        let label = match self.access_of(event) {
+            Access::ReadOnly => return div().into_any_element(),
+            Access::Edit if is_organizer(event, self.me()) => {
+                if event.is_series() {
+                    "Delete event…"
+                } else {
+                    "Delete event"
+                }
+            }
+            _ => "Decline and remove",
+        };
         div()
             .px(SPACE_XL)
             .pt(SPACE_LG)
             .child(
                 focusable_control(div().id("event-delete-button"), theme)
                     .role(gpui::Role::Button)
-                    .aria_label("Delete event")
+                    .aria_label(label)
                     .h(HIT_TARGET)
                     .px(SPACE_MD)
                     .flex()
@@ -1196,11 +1272,7 @@ impl CalendarView {
                     .text_color(theme.danger)
                     .hover(|s| s.bg(theme.danger.alpha(0.1)))
                     .child(icon(Icon::Trash, px(15.), theme.danger))
-                    .child(if event.is_series() {
-                        "Delete event…"
-                    } else {
-                        "Delete event"
-                    })
+                    .child(label)
                     .child(div().flex_1())
                     .child(
                         div()
@@ -1231,7 +1303,14 @@ impl CalendarView {
                 .enumerate()
                 .map(|(ix, calendar)| {
                     let current = calendar.id == event.calendar;
+                    let writable = matches!(
+                        calendar.access_role,
+                        crate::calendar::AccessRole::Owner | crate::calendar::AccessRole::Writer
+                    );
                     menu_row(("calendar-choice", ix), ix == highlight, theme)
+                        .role(gpui::Role::MenuItem)
+                        .aria_label(calendar.name.clone())
+                        .when(!writable, |d| d.opacity(0.4))
                         .child(div().size(px(10.)).rounded_full().bg(calendar.color))
                         .child(div().flex_1().child(calendar.name.clone()))
                         .when(current, |d| {
@@ -1261,7 +1340,9 @@ impl CalendarView {
                     .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
                     .child(div().size(px(10.)).rounded_full().bg(color))
                     .child(self.calendar_name(event))
-                    .child(icon(Icon::ChevronDown, px(13.), theme.text_faint))
+                    .when(self.can_move(event), |d| {
+                        d.child(icon(Icon::ChevronDown, px(13.), theme.text_faint))
+                    })
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.click_control_menu(Menu::EventCalendar, cx)
@@ -1395,6 +1476,7 @@ impl CalendarView {
             .child(
                 field_box(focused, theme).child(
                     Input::new(input)
+                        .readonly(self.access_of(event) != Access::Edit)
                         .appearance(false)
                         .px(px(0.))
                         .h(px(28.))
@@ -1617,6 +1699,9 @@ impl CalendarView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let link = event.video_link.clone();
+        let editable = self.access_of(event) == Access::Edit;
+        // A Meet link from Google stays as Google made it (CAL-17).
+        let video_readonly = !editable || !event.conference_uri.is_empty();
         div()
             .flex()
             .flex_col()
@@ -1625,7 +1710,7 @@ impl CalendarView {
                 theme,
                 field_box(panel.is_focused(Field::Location, window, cx), theme)
                     .text_size(TEXT_BASE)
-                    .child(field_input(&panel.location)),
+                    .child(field_input(&panel.location, !editable)),
             ))
             .child(
                 section(
@@ -1644,7 +1729,7 @@ impl CalendarView {
                                 .text_size(TEXT_BASE)
                                 .map(|d| {
                                     if focused || link.is_empty() {
-                                        d.child(field_input(&panel.video))
+                                        d.child(field_input(&panel.video, video_readonly))
                                     } else {
                                         // A long link ends in an ellipsis
                                         // until it's edited.
@@ -1702,6 +1787,7 @@ impl CalendarView {
     ) -> AnyElement {
         let me = self.me();
         let is_me = |email: &str| email.eq_ignore_ascii_case(me);
+        let editable = self.access_of(event) == Access::Edit;
         let organizer_attends = event
             .attendees
             .iter()
@@ -1803,7 +1889,7 @@ impl CalendarView {
                     &attendee.contact(),
                     Some(attendee.status),
                     organizer.then_some("Organizer"),
-                    (!is_me(&attendee.email)).then_some(ix),
+                    (editable && !is_me(&attendee.email)).then_some(ix),
                     cx,
                 )
                 .into_any_element(),
@@ -1920,18 +2006,20 @@ impl CalendarView {
                         .children(summary)
                         .children(rows),
                 )
-                .child(
-                    div()
-                        .key_context(GUESTS)
-                        .flex()
-                        .flex_col()
-                        .child(
-                            field_box(focused, theme)
-                                .text_size(TEXT_BASE)
-                                .child(field_input(&panel.guests)),
-                        )
-                        .children(suggestions),
-                ),
+                .when(editable, |d| {
+                    d.child(
+                        div()
+                            .key_context(GUESTS)
+                            .flex()
+                            .flex_col()
+                            .child(
+                                field_box(focused, theme)
+                                    .text_size(TEXT_BASE)
+                                    .child(field_input(&panel.guests, false)),
+                            )
+                            .children(suggestions),
+                    )
+                }),
         )
         .into_any_element()
     }
@@ -2075,8 +2163,9 @@ fn section(glyph: Icon, theme: &Theme, content: impl IntoElement) -> gpui::Div {
         .child(div().flex_1().min_w_0().flex().flex_col().child(content))
 }
 
-fn field_input(input: &Entity<InputState>) -> Input {
+fn field_input(input: &Entity<InputState>, readonly: bool) -> Input {
     Input::new(input)
+        .readonly(readonly)
         .appearance(false)
         .px(px(0.))
         .text_size(TEXT_BASE)

@@ -7,7 +7,9 @@
 //! they happen. The grid repaints only when the snapped times change. A
 //! press that never moves past a few pixels is a click: on an event it
 //! selects and opens it, on empty space it does nothing. A double click on
-//! empty space makes a 30-minute event. Escape cancels a drag.
+//! empty space makes a 30-minute event. Escape cancels a drag. Events the
+//! user can't change (CAL-22) don't move; pressing them is a click. A move
+//! or resize goes to Google at once (CAL-21).
 
 use chrono::{Duration, NaiveDate, NaiveDateTime};
 use gpui::{
@@ -245,6 +247,16 @@ impl CalendarView {
     /// The times the drag would set with the mouse at `position`.
     fn update_drag(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
         let Some(drag) = &self.drag else { return };
+        // Events the user can't change stay put; the press is a click.
+        if let Some(occurrence) = drag.occurrence()
+            && !self
+                .data
+                .events
+                .get(occurrence.event)
+                .is_some_and(|e| self.can_edit(&e.id))
+        {
+            return;
+        }
         let Some((day, minutes)) = self.grid_time(position) else {
             return;
         };
@@ -313,6 +325,8 @@ impl CalendarView {
                 }
                 if moved {
                     self.retime_occurrence(&id, occurrence.start, drag.start, drag.end, window, cx);
+                    // Drags go at once.
+                    self.flush_edit(cx);
                 }
                 // The panel, when open, follows the selection.
                 if self.panel.is_some() {

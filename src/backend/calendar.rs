@@ -15,22 +15,28 @@
 //!   Google's own occurrences (`events.instances`) instead.
 //!
 //! Times are wall-clock times in the user's zone (6.4 item 8).
+//!
+//! Writes (W7): `commit` sends one `CalOp` to Google, also off the main
+//! thread. See its block below.
 
-use std::collections::{BTreeSet, HashMap};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::Arc,
+};
 
 use anyhow::{Context as _, anyhow};
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use serde::{Deserialize, de::DeserializeOwned};
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 use super::{
-    BackendEvent,
-    http::{Request, Response, Transport, TransportError},
+    BackendEvent, CalOp, SendUpdates,
+    http::{GoogleTransport, Request, Response, Transport, TransportError},
     store::Store,
 };
 use crate::{
     calendar::{
-        AccessRole, Attendee, Calendar, Event, EventStatus, RsvpStatus,
+        AccessRole, Attendee, Calendar, Event, EventStatus, RsvpStatus, SeriesScope,
         recurrence::parse_recurrence,
         time::{LocalZone, midnight},
     },
@@ -799,6 +805,953 @@ impl CalendarPass<'_> {
     }
 }
 
+// Writes (W7) -----------------------------------------------------------
+//
+// `commit` sends one `CalOp` to Google (docs/BACKEND_SPRINT_1.md, W7):
+//
+// - Insert: `events.insert` with the client's id (CAL-11). An occurrence
+//   taken out of its series ("This event") is Google's instance, found with
+//   `events.instances`, patched.
+// - Patch: `events.patch` with `If-Match`, only the fields that changed.
+// - Delete: `events.delete`; "This event" deletes the instance, "This and
+//   following" rewrites the series' UNTIL. Someone else's event is declined
+//   and removed from the user's calendar instead (CAL-22).
+// - Move: `events.move`. Rsvp: the user's own `responseStatus`. SetSelected:
+//   `calendarList.patch`.
+//
+// A 412 (changed elsewhere) or any other failure stores Google's version
+// again, which the app reloads: that's the rollback (STA-2, STA-5).
+
+/// What the user may do with an event (CAL-22).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Access {
+    Edit,
+    /// Only answer the invite; deleting it declines it and hides it.
+    Rsvp,
+    ReadOnly,
+}
+
+/// Whether the user organizes `event`: Google says so, or it names them
+/// (the placeholder data does), or nobody.
+pub fn is_organizer(event: &Event, me: &str) -> bool {
+    event.organizer_self
+        || event.organizer.email.is_empty()
+        || event.organizer.email.eq_ignore_ascii_case(me)
+}
+
+/// From the calendar's `accessRole`, who organizes the event and whether
+/// its guests may change it. Birthdays and events from Gmail are Google's.
+pub fn access(event: &Event, role: AccessRole, me: &str) -> Access {
+    if !matches!(role, AccessRole::Owner | AccessRole::Writer) {
+        return Access::ReadOnly;
+    }
+    let googles = matches!(event.event_type.as_str(), "birthday" | "fromGmail");
+    if !googles && (is_organizer(event, me) || event.guests_can_modify) {
+        Access::Edit
+    } else if event
+        .attendees
+        .iter()
+        .any(|a| a.email.eq_ignore_ascii_case(me))
+    {
+        Access::Rsvp
+    } else {
+        Access::ReadOnly
+    }
+}
+
+/// Guests besides the user and the organizer.
+pub fn has_guests(event: &Event, me: &str) -> bool {
+    event.attendees.iter().any(|a| {
+        !a.email.eq_ignore_ascii_case(me) && !a.email.eq_ignore_ascii_case(&event.organizer.email)
+    })
+}
+
+/// Whether saving `after` (new when `before` is `None`) should ask "Send
+/// updates to guests?" (CAL-13): it has guests, and the change is one they
+/// see, not just the user's reminder or busy/free.
+pub fn asks_guests(before: Option<&Event>, after: &Event, me: &str) -> bool {
+    let guests = has_guests(after, me) || before.is_some_and(|b| has_guests(b, me));
+    guests
+        && match before {
+            None => true,
+            Some(before) => patch_body(before, after, None, &LocalZone::system())
+                .keys()
+                .any(|k| k != "reminders" && k != "transparency"),
+        }
+}
+
+fn send_updates_param(send: SendUpdates) -> &'static str {
+    match send {
+        SendUpdates::All => "all",
+        SendUpdates::None => "none",
+    }
+}
+
+/// Google's id for the occurrence of `series` the rule puts at `original`:
+/// `<series>_<UTC start>`, or `<series>_<date>` all day.
+pub fn instance_id(
+    series: &str,
+    original: NaiveDateTime,
+    all_day: bool,
+    zone: &LocalZone,
+) -> String {
+    if all_day {
+        format!("{series}_{}", original.format("%Y%m%d"))
+    } else {
+        format!(
+            "{series}_{}",
+            (zone.to_utc)(original).format("%Y%m%dT%H%M%SZ")
+        )
+    }
+}
+
+/// An exclusive end as RRULE's inclusive UNTIL: a date all day, else UTC.
+fn ical_until(until: NaiveDateTime, all_day: bool, zone: &LocalZone) -> String {
+    let last = until - Duration::seconds(1);
+    if all_day {
+        last.format("%Y%m%d").to_string()
+    } else {
+        (zone.to_utc)(last).format("%Y%m%dT%H%M%SZ").to_string()
+    }
+}
+
+/// An RRULE line with its end replaced: UNTIL when given, else COUNT when
+/// given, else neither. Everything else in it stays as Google wrote it.
+pub fn rewrite_rrule(line: &str, until: Option<&str>, count: Option<u32>) -> String {
+    let value = line.strip_prefix("RRULE:").unwrap_or(line);
+    let mut parts: Vec<String> = value
+        .split(';')
+        .filter(|p| {
+            let key = p.split('=').next().unwrap_or_default().to_ascii_uppercase();
+            !p.is_empty() && key != "UNTIL" && key != "COUNT"
+        })
+        .map(str::to_string)
+        .collect();
+    match (until, count) {
+        (Some(until), _) => parts.push(format!("UNTIL={until}")),
+        (None, Some(count)) => parts.push(format!("COUNT={count}")),
+        (None, None) => {}
+    }
+    format!("RRULE:{}", parts.join(";"))
+}
+
+/// The event's `recurrence` lines with the RRULE's end set from its rule.
+/// `raw` keeps the lines Pigeon doesn't model (EXDATE, RDATE).
+fn recurrence_lines(event: &Event, raw: Option<&Value>, zone: &LocalZone) -> Vec<String> {
+    let Some(rule) = &event.recurrence else {
+        return Vec::new();
+    };
+    let lines: Vec<String> = raw
+        .and_then(|r| r["recurrence"].as_array())
+        .map(|l| {
+            l.iter()
+                .filter_map(|l| l.as_str().map(String::from))
+                .collect()
+        })
+        .filter(|l: &Vec<String>| !l.is_empty())
+        .unwrap_or_else(|| vec![rule.to_rrule(event.all_day, zone)]);
+    let until = rule.until.map(|u| ical_until(u, event.all_day, zone));
+    lines
+        .into_iter()
+        .map(|line| {
+            if line.to_ascii_uppercase().starts_with("RRULE:") {
+                rewrite_rrule(&line, until.as_deref(), rule.count)
+            } else {
+                line
+            }
+        })
+        .collect()
+}
+
+/// Location and description with a video link typed in Pigeon folded in:
+/// into the location when that's empty, else atop the description. A
+/// link from Google's `conferenceData` is read-only (6.4 item 9).
+fn place(event: &Event) -> (String, String) {
+    let link = event.video_link.trim();
+    let (location, description) = (event.location.clone(), event.description.clone());
+    if link.is_empty()
+        || link == event.conference_uri
+        || location.contains(link)
+        || description.contains(link)
+    {
+        (location, description)
+    } else if location.trim().is_empty() {
+        (link.to_string(), description)
+    } else {
+        let description = format!("{link}\n\n{description}").trim_end().to_string();
+        (location, description)
+    }
+}
+
+/// A start or end: a date all day, else the instant with the event's zone
+/// (its own, else the user's; CAL-12). A patch clears the other form.
+fn time_json(t: NaiveDateTime, event: &Event, zone: &LocalZone, patch: bool) -> Value {
+    let tz = event
+        .time_zone
+        .clone()
+        .unwrap_or_else(|| zone.name.to_string());
+    let mut out = if event.all_day {
+        json!({ "date": t.format("%Y-%m-%d").to_string(), "timeZone": tz })
+    } else {
+        json!({ "dateTime": rfc3339((zone.to_utc)(t)), "timeZone": tz })
+    };
+    if patch {
+        let other = if event.all_day { "dateTime" } else { "date" };
+        out[other] = Value::Null;
+    }
+    out
+}
+
+fn rsvp_key(status: RsvpStatus) -> &'static str {
+    match status {
+        RsvpStatus::Accepted => "accepted",
+        RsvpStatus::Tentative => "tentative",
+        RsvpStatus::Declined => "declined",
+        RsvpStatus::NeedsAction => "needsAction",
+    }
+}
+
+/// The guest list to write: Google's entries for the guests that stay
+/// (rooms always stay; Pigeon doesn't show them), then the new guests.
+fn attendees_json(event: &Event, raw: Option<&Value>) -> Value {
+    let keeps = |email: &str| {
+        event
+            .attendees
+            .iter()
+            .any(|a| a.email.eq_ignore_ascii_case(email))
+    };
+    let old: Vec<Value> = raw
+        .and_then(|r| r["attendees"].as_array().cloned())
+        .unwrap_or_default();
+    let mut out: Vec<Value> = old
+        .iter()
+        .filter(|a| {
+            a["resource"].as_bool() == Some(true) || keeps(a["email"].as_str().unwrap_or(""))
+        })
+        .cloned()
+        .collect();
+    for a in &event.attendees {
+        let known = old.iter().any(|o| {
+            o["email"]
+                .as_str()
+                .is_some_and(|e| e.eq_ignore_ascii_case(&a.email))
+        });
+        if !known {
+            let mut entry = json!({ "email": a.email, "responseStatus": rsvp_key(a.status) });
+            if !a.name.is_empty() {
+                entry["displayName"] = json!(a.name);
+            }
+            out.push(entry);
+        }
+    }
+    Value::Array(out)
+}
+
+fn reminders_json(minutes: Option<u32>) -> Value {
+    let overrides: Vec<Value> = minutes
+        .map(|m| json!({ "method": "popup", "minutes": m }))
+        .into_iter()
+        .collect();
+    json!({ "useDefault": false, "overrides": overrides })
+}
+
+/// The fields of `after` that differ from `before`, as Google's event JSON
+/// for `events.patch`. `raw` is the stored Google event, for the guest list
+/// and the repeat lines. The calendar (a move) and the series' exceptions
+/// (instances of their own) aren't fields here.
+pub fn patch_body(
+    before: &Event,
+    after: &Event,
+    raw: Option<&Value>,
+    zone: &LocalZone,
+) -> Map<String, Value> {
+    let mut body = Map::new();
+    if before.title != after.title {
+        body.insert("summary".into(), json!(after.title));
+    }
+    let (old_location, old_description) = place(before);
+    let (location, description) = place(after);
+    if old_location != location {
+        body.insert("location".into(), json!(location));
+    }
+    if old_description != description {
+        body.insert("description".into(), json!(description));
+    }
+    if (before.start, before.end, before.all_day, &before.time_zone)
+        != (after.start, after.end, after.all_day, &after.time_zone)
+    {
+        body.insert("start".into(), time_json(after.start, after, zone, true));
+        body.insert("end".into(), time_json(after.end, after, zone, true));
+    }
+    let emails =
+        |e: &Event| -> Vec<String> { e.attendees.iter().map(|a| a.email.to_lowercase()).collect() };
+    if !after.attendees_omitted && emails(before) != emails(after) {
+        body.insert("attendees".into(), attendees_json(after, raw));
+    }
+    if before.reminder_minutes != after.reminder_minutes {
+        body.insert("reminders".into(), reminders_json(after.reminder_minutes));
+    }
+    if before.busy != after.busy {
+        let transparency = if after.busy { "opaque" } else { "transparent" };
+        body.insert("transparency".into(), json!(transparency));
+    }
+    let end = |e: &Event| e.recurrence.as_ref().map(|r| (r.until, r.count));
+    if end(before) != end(after) && after.recurrence.is_some() {
+        body.insert(
+            "recurrence".into(),
+            json!(recurrence_lines(after, raw, zone)),
+        );
+    }
+    body
+}
+
+/// A new event, whole, for `events.insert` with its own id (CAL-11).
+pub fn insert_body(event: &Event, zone: &LocalZone) -> Value {
+    let (location, description) = place(event);
+    let mut body = json!({
+        "id": event.id,
+        "summary": event.title,
+        "location": location,
+        "description": description,
+        "start": time_json(event.start, event, zone, false),
+        "end": time_json(event.end, event, zone, false),
+        "reminders": reminders_json(event.reminder_minutes),
+        "transparency": if event.busy { "opaque" } else { "transparent" },
+    });
+    if !event.attendees.is_empty() {
+        body["attendees"] = attendees_json(event, None);
+    }
+    if event.recurrence.is_some() {
+        body["recurrence"] = json!(recurrence_lines(event, None, zone));
+    }
+    body
+}
+
+/// After a calendar write, sync soon, so what Google changed with it (the
+/// series' instances, the guests' copies) shows (2.6).
+const SYNC_AFTER_WRITE: std::time::Duration = std::time::Duration::from_secs(2);
+
+impl super::Backend {
+    pub(super) fn sync_calendar_soon(&mut self, cx: &mut gpui::Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SYNC_AFTER_WRITE).await;
+            this.update(cx, |this, cx| {
+                this.sync.calendar_due = true;
+                this.run_sync(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+
+/// Google answered 412: the event changed since it was read.
+#[derive(Debug)]
+struct Conflict;
+
+impl std::fmt::Display for Conflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Changed elsewhere; reloaded")
+    }
+}
+
+impl std::error::Error for Conflict {}
+
+/// What a commit did, for the app: the events to reload, and why it
+/// failed, if it did. The store already holds Google's version.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Committed {
+    pub changes: CalendarChanges,
+    pub error: Option<String>,
+    /// It failed for want of a network or a sign-in; it may go later.
+    pub retry: bool,
+}
+
+impl Committed {
+    /// As the outbox reports ops: `Err` with the toast's text.
+    pub fn result(&self) -> anyhow::Result<()> {
+        match &self.error {
+            Some(e) => Err(anyhow!("{e}")),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Commits to Google ahead of sync (the quota's reserve for user actions).
+pub struct UserPriority(pub Arc<GoogleTransport>);
+
+impl Transport for UserPriority {
+    fn send(&self, request: &Request) -> Result<Response, TransportError> {
+        self.0.send_user(request)
+    }
+}
+
+/// Sends `op` to Google for `account` and stores what Google answers.
+/// Blocking: run it off the main thread.
+pub fn commit(transport: &dyn Transport, store: &Store, account: &str, op: &CalOp) -> Committed {
+    commit_at(
+        transport,
+        store,
+        account,
+        op,
+        &LocalZone::system(),
+        Utc::now(),
+    )
+}
+
+fn commit_at(
+    transport: &dyn Transport,
+    store: &Store,
+    account: &str,
+    op: &CalOp,
+    zone: &LocalZone,
+    now: DateTime<Utc>,
+) -> Committed {
+    let w = Writer {
+        transport,
+        store,
+        account,
+        zone,
+        now,
+    };
+    let mut touched = BTreeSet::new();
+    let mut out = Committed::default();
+    if let Err(e) = w.apply(op, &mut touched) {
+        out.retry = is_network(&e);
+        out.error = Some(if e.is::<Conflict>() {
+            Conflict.to_string()
+        } else {
+            format!("{e:#}")
+        });
+        // Google's version back: the rollback.
+        match op {
+            CalOp::SetSelected { .. } => out.changes.calendars = true,
+            CalOp::Insert { event, .. } => {
+                w.reload(&event.calendar, &event.id, &mut touched).ok();
+            }
+            CalOp::Patch { id, after, .. } => {
+                w.reload(&after.calendar, id, &mut touched).ok();
+            }
+            CalOp::Delete { id, .. } | CalOp::Move { id, .. } | CalOp::Rsvp { id, .. } => {
+                if let Some((event, _)) = w.locate(id) {
+                    w.reload(&event.calendar, id, &mut touched).ok();
+                }
+            }
+        }
+    }
+    let ids: Vec<String> = touched.into_iter().collect();
+    let present: BTreeSet<String> = store
+        .load_events(account, &ids)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| e.id)
+        .collect();
+    for id in ids {
+        if present.contains(&id) {
+            out.changes.changed.push(id);
+        } else {
+            out.changes.removed.push(id);
+        }
+    }
+    out
+}
+
+struct Writer<'a> {
+    transport: &'a dyn Transport,
+    store: &'a Store,
+    account: &'a str,
+    zone: &'a LocalZone,
+    now: DateTime<Utc>,
+}
+
+impl Writer<'_> {
+    fn events_url(&self, calendar: &str) -> String {
+        format!("{API}/calendars/{}/events", enc(calendar))
+    }
+
+    fn event_url(&self, calendar: &str, id: &str) -> String {
+        format!("{}/{}", self.events_url(calendar), enc(id))
+    }
+
+    /// Sends, and maps 412 to `Conflict` and other failures to Google's
+    /// reason. Statuses in `ok` count as done (a delete of what's gone).
+    fn send(
+        &self,
+        method: &'static str,
+        url: String,
+        body: Option<&Value>,
+        if_match: Option<&str>,
+        ok: &[u16],
+    ) -> anyhow::Result<Response> {
+        let mut request = match body {
+            Some(body) => Request::json(method, url, body, COST),
+            None => Request {
+                method,
+                ..Request::get(url, COST)
+            },
+        };
+        if let Some(etag) = if_match.filter(|e| !e.is_empty()) {
+            request.headers.push(("If-Match".into(), etag.to_string()));
+        }
+        let response = self.transport.send(&request)?;
+        if response.status == 412 {
+            return Err(Conflict.into());
+        }
+        if !response.is_success() && !ok.contains(&response.status) {
+            return Err(api_error(
+                "Google Calendar didn't take the change",
+                &response,
+            ));
+        }
+        Ok(response)
+    }
+
+    /// The stored event with this id, in whichever calendar, with its JSON.
+    fn locate(&self, id: &str) -> Option<(Event, Option<Value>)> {
+        let event = self
+            .store
+            .load_events(self.account, &[id.to_string()])
+            .ok()?
+            .into_iter()
+            .next()?;
+        let calendar = event.calendar.clone();
+        self.stored(&calendar, id).or(Some((event, None)))
+    }
+
+    fn stored(&self, calendar: &str, id: &str) -> Option<(Event, Option<Value>)> {
+        let (event, json) = self
+            .store
+            .calendar_event(self.account, calendar, id)
+            .ok()??;
+        Some((event, json.and_then(|j| serde_json::from_str(&j).ok())))
+    }
+
+    fn pass<'b>(&'b self, calendar: &'b str) -> anyhow::Result<CalendarPass<'b>> {
+        let default_reminder = self
+            .store
+            .calendars_to_sync(self.account)?
+            .into_iter()
+            .find(|(id, _)| id == calendar)
+            .and_then(|(_, r)| r);
+        Ok(CalendarPass {
+            transport: self.transport,
+            store: self.store,
+            account: self.account,
+            calendar,
+            default_reminder,
+            zone: self.zone,
+            now: self.now,
+        })
+    }
+
+    /// Stores an event as Google returned it; a series (or an instance's
+    /// series) gets its exceptions recomputed.
+    fn store_raw(
+        &self,
+        calendar: &str,
+        raw: &Value,
+        touched: &mut BTreeSet<String>,
+    ) -> anyhow::Result<()> {
+        let pass = self.pass(calendar)?;
+        match event_from_google(raw, calendar, pass.default_reminder, self.zone) {
+            Some(Item::Event(event)) => {
+                touched.insert(event.id.clone());
+                let series = if event.is_series() {
+                    Some(event.id.clone())
+                } else {
+                    event.recurring_event_id.clone()
+                };
+                self.store
+                    .put_google_events(self.account, &[(event, raw.to_string())])?;
+                if let Some(series) = series {
+                    pass.refresh_series(&series, touched)?;
+                }
+            }
+            Some(Item::Deleted(id)) => {
+                touched.extend(self.store.delete_calendar_events(
+                    self.account,
+                    calendar,
+                    Some(&[id]),
+                )?);
+            }
+            None => {}
+        }
+        Ok(())
+    }
+
+    /// Google's version of an event, stored; gone if Google has none.
+    fn reload(
+        &self,
+        calendar: &str,
+        id: &str,
+        touched: &mut BTreeSet<String>,
+    ) -> anyhow::Result<()> {
+        let url = format!(
+            "{}?timeZone={}",
+            self.event_url(calendar, id),
+            enc(self.zone.name)
+        );
+        let response = get(self.transport, &url)?;
+        match response.status {
+            404 | 410 => {
+                touched.insert(id.to_string());
+                self.store.delete_calendar_events(
+                    self.account,
+                    calendar,
+                    Some(&[id.to_string()]),
+                )?;
+                Ok(())
+            }
+            _ if response.is_success() => self.store_raw(calendar, &response.json()?, touched),
+            _ => Err(api_error("Couldn't reload the event", &response)),
+        }
+    }
+
+    /// The occurrence of `series` its rule puts at `original` (wall time),
+    /// from `events.instances` around it.
+    fn find_instance(
+        &self,
+        calendar: &str,
+        series: &str,
+        original: NaiveDateTime,
+    ) -> anyhow::Result<Value> {
+        let at = (self.zone.to_utc)(original);
+        let url = format!(
+            "{}/instances?maxResults=50&timeZone={}&timeMin={}&timeMax={}",
+            self.event_url(calendar, series),
+            enc(self.zone.name),
+            enc(&rfc3339(at - Duration::days(1))),
+            enc(&rfc3339(at + Duration::days(1))),
+        );
+        let Listing::Items { items, .. } =
+            list_all::<Value>(self.transport, &url, "Couldn't find the occurrence")?
+        else {
+            return Err(anyhow!("Couldn't find the occurrence: the series is gone"));
+        };
+        items
+            .into_iter()
+            .find(|raw| {
+                serde_json::from_value::<GoogleTime>(raw["originalStartTime"].clone())
+                    .ok()
+                    .and_then(|t| wall_time(&t, self.zone))
+                    .is_some_and(|(t, _)| t == original)
+            })
+            .ok_or_else(|| anyhow!("Couldn't find that occurrence in Google Calendar"))
+    }
+
+    fn apply(&self, op: &CalOp, touched: &mut BTreeSet<String>) -> anyhow::Result<()> {
+        match op {
+            CalOp::Insert {
+                event,
+                send_updates,
+            } => self.insert(event, *send_updates, touched),
+            CalOp::Patch {
+                id,
+                before,
+                after,
+                send_updates,
+                ..
+            } => self.patch(id, before, after, *send_updates, touched),
+            CalOp::Delete {
+                id,
+                occurrence,
+                scope,
+                send_updates,
+            } => self.delete(id, *occurrence, *scope, *send_updates, touched),
+            CalOp::Move { id, to_calendar } => self.move_to(id, to_calendar),
+            CalOp::Rsvp { id, status } => self.rsvp(id, *status, SendUpdates::All).map(|_| ()),
+            CalOp::SetSelected { calendar, selected } => {
+                self.send(
+                    "PATCH",
+                    format!("{API}/users/me/calendarList/{}", enc(calendar)),
+                    Some(&json!({ "selected": selected })),
+                    None,
+                    &[],
+                )?;
+                self.store.apply_cal_op(self.account, self.account, op)
+            }
+        }
+    }
+
+    fn insert(
+        &self,
+        event: &Event,
+        send: SendUpdates,
+        touched: &mut BTreeSet<String>,
+    ) -> anyhow::Result<()> {
+        if event.recurring_event_id.is_some() {
+            // One occurrence changed on its own: Google's instance, with
+            // what differs from its series.
+            let before = self.series_at_occurrence(event).unwrap_or_else(|| Event {
+                id: event.id.clone(),
+                calendar: event.calendar.clone(),
+                ..Event::default()
+            });
+            return self.patch_instance(&before, event, send, touched);
+        }
+        let query = format!("?sendUpdates={}", send_updates_param(send));
+        let url = format!("{}{query}", self.events_url(&event.calendar));
+        let response = self.send(
+            "POST",
+            url,
+            Some(&insert_body(event, self.zone)),
+            None,
+            &[409],
+        )?;
+        let response = if response.status == 409 {
+            // Its id was deleted before (an undo after the delete went):
+            // Google restores a cancelled event by confirming it again.
+            self.send(
+                "PATCH",
+                format!("{}{query}", self.event_url(&event.calendar, &event.id)),
+                Some(&json!({ "status": "confirmed" })),
+                None,
+                &[],
+            )?
+        } else {
+            response
+        };
+        // The app has it already.
+        let mut seen = BTreeSet::new();
+        self.store_raw(&event.calendar, &response.json()?, &mut seen)
+    }
+
+    /// The series of an occurrence as stored, as that one occurrence.
+    fn series_at_occurrence(&self, event: &Event) -> Option<Event> {
+        let series_id = event.recurring_event_id.as_deref()?;
+        let original = event.original_start?;
+        let (series, _) = self.stored(&event.calendar, series_id)?;
+        Some(Event {
+            id: event.id.clone(),
+            start: original,
+            end: original + series.duration(),
+            recurrence: None,
+            exceptions: Vec::new(),
+            recurring_event_id: Some(series_id.to_string()),
+            original_start: Some(original),
+            ..series
+        })
+    }
+
+    /// Patch Google's instance for the occurrence `after` takes out of its
+    /// series. If Google's id isn't the one Pigeon gave it, the app swaps.
+    fn patch_instance(
+        &self,
+        before: &Event,
+        after: &Event,
+        send: SendUpdates,
+        touched: &mut BTreeSet<String>,
+    ) -> anyhow::Result<()> {
+        let series = after
+            .recurring_event_id
+            .as_deref()
+            .ok_or_else(|| anyhow!("not an occurrence"))?;
+        let original = after.original_start.unwrap_or(after.start);
+        let instance = self.find_instance(&after.calendar, series, original)?;
+        let instance_id = instance["id"].as_str().unwrap_or_default().to_string();
+        let body = patch_body(before, after, Some(&instance), self.zone);
+        let stored = if body.is_empty() {
+            instance
+        } else {
+            let url = format!(
+                "{}?sendUpdates={}",
+                self.event_url(&after.calendar, &instance_id),
+                send_updates_param(send)
+            );
+            self.send(
+                "PATCH",
+                url,
+                Some(&Value::Object(body)),
+                instance["etag"].as_str(),
+                &[],
+            )?
+            .json()?
+        };
+        let mut seen = BTreeSet::new();
+        self.store_raw(&after.calendar, &stored, &mut seen)?;
+        // Changing an instance gives its series a new etag.
+        self.reload(&after.calendar, series, &mut seen)?;
+        if instance_id != after.id {
+            touched.insert(after.id.clone());
+            touched.insert(instance_id);
+        }
+        Ok(())
+    }
+
+    fn patch(
+        &self,
+        id: &str,
+        before: &Event,
+        after: &Event,
+        send: SendUpdates,
+        touched: &mut BTreeSet<String>,
+    ) -> anyhow::Result<()> {
+        let stored = self
+            .stored(&after.calendar, id)
+            .or_else(|| self.stored(&before.calendar, id));
+        let Some((current, raw)) = stored else {
+            if after.recurring_event_id.is_some() {
+                // An occurrence just taken out of its series.
+                return self.patch_instance(before, after, send, touched);
+            }
+            return Err(anyhow!("This event isn't in Google Calendar"));
+        };
+        let body = patch_body(before, after, raw.as_ref(), self.zone);
+        if body.is_empty() {
+            return Ok(());
+        }
+        let url = format!(
+            "{}?sendUpdates={}",
+            self.event_url(&current.calendar, id),
+            send_updates_param(send)
+        );
+        let etag = Some(current.etag.as_str()).filter(|e| !e.is_empty());
+        let response = self.send(
+            "PATCH",
+            url,
+            Some(&Value::Object(body)),
+            etag.or(Some(after.etag.as_str())),
+            &[],
+        )?;
+        let mut seen = BTreeSet::new();
+        self.store_raw(&current.calendar, &response.json()?, &mut seen)
+    }
+
+    fn delete(
+        &self,
+        id: &str,
+        occurrence: Option<NaiveDateTime>,
+        scope: SeriesScope,
+        mut send: SendUpdates,
+        touched: &mut BTreeSet<String>,
+    ) -> anyhow::Result<()> {
+        // Never stored: it never reached Google, or is gone already.
+        let Some((event, raw)) = self.locate(id) else {
+            return Ok(());
+        };
+        let calendar = event.calendar.clone();
+        let scope = match (scope, occurrence) {
+            (_, None) => SeriesScope::All,
+            _ if !event.is_series() => SeriesScope::All,
+            (SeriesScope::Following, Some(at)) if at <= event.start => SeriesScope::All,
+            (SeriesScope::Following, _) if !is_organizer(&event, self.account) => SeriesScope::All,
+            (scope, _) => scope,
+        };
+        let target = match (scope, occurrence) {
+            (SeriesScope::This, Some(at)) => {
+                let instance = self.find_instance(&calendar, id, at)?;
+                instance["id"].as_str().unwrap_or(id).to_string()
+            }
+            _ => id.to_string(),
+        };
+        if !is_organizer(&event, self.account) {
+            // Someone else's: decline it, then take it off this calendar.
+            self.rsvp(&target, RsvpStatus::Declined, SendUpdates::All)
+                .ok();
+            send = SendUpdates::None;
+        }
+        let local = CalOp::Delete {
+            id: id.to_string(),
+            occurrence,
+            scope,
+            send_updates: send,
+        };
+        if scope == SeriesScope::Following {
+            let mut series = event.clone();
+            if let Some(rule) = &mut series.recurrence {
+                rule.until = occurrence;
+                rule.count = None;
+            }
+            let body = json!({ "recurrence": recurrence_lines(&series, raw.as_ref(), self.zone) });
+            let url = format!(
+                "{}?sendUpdates={}",
+                self.event_url(&calendar, id),
+                send_updates_param(send)
+            );
+            let response = self.send("PATCH", url, Some(&body), Some(&event.etag), &[])?;
+            self.store
+                .apply_cal_op(self.account, self.account, &local)?;
+            return self.store_raw(&calendar, &response.json()?, touched);
+        }
+        let url = format!(
+            "{}?sendUpdates={}",
+            self.event_url(&calendar, &target),
+            send_updates_param(send)
+        );
+        self.send("DELETE", url, None, None, &[404, 410])?;
+        self.store
+            .apply_cal_op(self.account, self.account, &local)?;
+        if scope == SeriesScope::All {
+            touched.insert(id.to_string());
+        } else {
+            // The cancelled occurrence, and the series' new etag.
+            let mut seen = BTreeSet::new();
+            self.reload(&calendar, &target, &mut seen)?;
+            self.reload(&calendar, id, &mut seen)?;
+        }
+        Ok(())
+    }
+
+    fn move_to(&self, id: &str, to: &str) -> anyhow::Result<()> {
+        let Some((event, _)) = self.locate(id) else {
+            return Err(anyhow!("This event isn't in Google Calendar"));
+        };
+        if event.calendar == to {
+            return Ok(());
+        }
+        let url = format!(
+            "{}/move?destination={}&sendUpdates=none",
+            self.event_url(&event.calendar, id),
+            enc(to)
+        );
+        let response = self.send("POST", url, None, None, &[])?;
+        self.store.delete_calendar_events(
+            self.account,
+            &event.calendar,
+            Some(&[id.to_string()]),
+        )?;
+        let mut seen = BTreeSet::new();
+        self.store_raw(to, &response.json()?, &mut seen)
+    }
+
+    /// The user's own answer, the rest of the guest list as Google has it
+    /// (CAL-14).
+    fn rsvp(&self, id: &str, status: RsvpStatus, send: SendUpdates) -> anyhow::Result<()> {
+        let Some((event, raw)) = self.locate(id) else {
+            return Err(anyhow!("This event isn't in Google Calendar"));
+        };
+        let me = self.account;
+        let mut attendees: Vec<Value> = raw
+            .as_ref()
+            .and_then(|r| r["attendees"].as_array().cloned())
+            .unwrap_or_default();
+        let mine = attendees.iter_mut().find(|a| {
+            a["self"].as_bool() == Some(true)
+                || a["email"]
+                    .as_str()
+                    .is_some_and(|e| e.eq_ignore_ascii_case(me))
+        });
+        match mine {
+            Some(entry) => entry["responseStatus"] = json!(rsvp_key(status)),
+            None => attendees.push(json!({ "email": me, "responseStatus": rsvp_key(status) })),
+        }
+        let url = format!(
+            "{}?sendUpdates={}",
+            self.event_url(&event.calendar, id),
+            send_updates_param(send)
+        );
+        let response = self.send(
+            "PATCH",
+            url,
+            Some(&json!({ "attendees": attendees })),
+            None,
+            &[],
+        )?;
+        let mut seen = BTreeSet::new();
+        self.store_raw(&event.calendar, &response.json()?, &mut seen)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1109,5 +2062,516 @@ mod tests {
             ]
         );
         assert!(CalendarChanges::default().is_empty());
+    }
+
+    // Writes (W7).
+
+    const CAL: &str = "primary@example.com";
+    const CAL_PATH: &str = "/calendar/v3/calendars/primary%40example.com/events";
+    const SERIES: &str = r#"{"id":"s1","etag":"\"s\"","status":"confirmed","summary":"Standup",
+        "organizer":{"email":"me@example.com","self":true},
+        "start":{"dateTime":"2026-10-26T10:00:00-07:00","timeZone":"America/Los_Angeles"},
+        "end":{"dateTime":"2026-10-26T10:30:00-07:00","timeZone":"America/Los_Angeles"},
+        "recurrence":["RRULE:FREQ=WEEKLY;BYDAY=MO,WE","EXDATE;TZID=America/Los_Angeles:20261102T100000"]}"#;
+    const SINGLE: &str = r#"{"id":"e1","etag":"\"1\"","status":"confirmed","summary":"Review",
+        "organizer":{"email":"me@example.com","self":true},
+        "start":{"dateTime":"2026-10-28T10:00:00-07:00"},"end":{"dateTime":"2026-10-28T11:00:00-07:00"},
+        "attendees":[{"email":"me@example.com","self":true,"responseStatus":"accepted"},
+                     {"email":"room@resource.example.com","resource":true,"responseStatus":"accepted"},
+                     {"email":"ann@example.com","responseStatus":"needsAction"}]}"#;
+
+    /// A store with the primary calendar and `events` from Google.
+    fn seeded(events: &[&str]) -> Store {
+        let store = Store::open_in_memory().unwrap();
+        let entry = CalendarListEntry {
+            id: CAL.into(),
+            summary: "Me".into(),
+            selected: true,
+            access_role: "owner".into(),
+            ..Default::default()
+        };
+        store
+            .put_google_calendar(ME, &calendar_from_entry(&entry, &HashMap::new()), false)
+            .unwrap();
+        for json in events {
+            let raw: Value = serde_json::from_str(json).unwrap();
+            let Some(Item::Event(e)) = event_from_google(&raw, CAL, None, &zone()) else {
+                panic!("not an event");
+            };
+            store
+                .put_google_events(ME, &[(e, raw.to_string())])
+                .unwrap();
+        }
+        store
+    }
+
+    fn stored(store: &Store, id: &str) -> Event {
+        store.load_events(ME, &[id.to_string()]).unwrap().remove(0)
+    }
+
+    fn body(request: &Request) -> Value {
+        serde_json::from_slice(&request.body).unwrap()
+    }
+
+    fn header<'a>(request: &'a Request, name: &str) -> Option<&'a str> {
+        request
+            .headers
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn patch_body_carries_only_what_changed() {
+        let store = seeded(&[SINGLE]);
+        let before = stored(&store, "e1");
+        let raw: Value = serde_json::from_str(SINGLE).unwrap();
+        let patch = |f: &dyn Fn(&mut Event)| {
+            let mut after = before.clone();
+            f(&mut after);
+            patch_body(&before, &after, Some(&raw), &zone())
+        };
+        assert!(patch(&|_| {}).is_empty());
+
+        let p = patch(&|e| {
+            e.title = "Plan".into();
+            e.busy = false;
+        });
+        let keys: Vec<&String> = p.keys().collect();
+        assert_eq!(keys, ["summary", "transparency"]);
+        assert_eq!(p["transparency"], "transparent");
+
+        // Timed: the instant, with the user's zone; the date cleared.
+        let p = patch(&|e| {
+            e.start += Duration::hours(1);
+            e.end += Duration::hours(1);
+        });
+        assert_eq!(
+            p["start"],
+            json!({"dateTime":"2026-10-28T18:00:00Z","timeZone":"America/Los_Angeles","date":null})
+        );
+        // All day: dates, the time cleared.
+        let p = patch(&|e| {
+            e.all_day = true;
+            e.start = at(d(2026, 10, 28), 0, 0);
+            e.end = at(d(2026, 10, 29), 0, 0);
+        });
+        assert_eq!(p["start"]["date"], "2026-10-28");
+        assert_eq!(p["end"]["date"], "2026-10-29");
+        assert_eq!(p["start"]["dateTime"], Value::Null);
+
+        let p = patch(&|e| e.reminder_minutes = Some(30));
+        assert_eq!(
+            p["reminders"],
+            json!({"useDefault":false,"overrides":[{"method":"popup","minutes":30}]})
+        );
+        let reminded = Event {
+            reminder_minutes: Some(30),
+            ..before.clone()
+        };
+        assert_eq!(
+            patch_body(&reminded, &before, Some(&raw), &zone())["reminders"],
+            json!({"useDefault":false,"overrides":[]})
+        );
+
+        // Guests: the room stays though Pigeon doesn't show it; Ann goes,
+        // Bob comes.
+        let p = patch(&|e| {
+            e.attendees.retain(|a| a.email != "ann@example.com");
+            e.attendees.push(Attendee {
+                name: "Bob".into(),
+                email: "bob@example.com".into(),
+                status: RsvpStatus::NeedsAction,
+            });
+        });
+        let emails: Vec<&str> = p["attendees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["email"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            emails,
+            [
+                "me@example.com",
+                "room@resource.example.com",
+                "bob@example.com"
+            ]
+        );
+        assert!(
+            patch(&|e| {
+                e.attendees_omitted = true;
+                e.attendees.clear();
+            })
+            .is_empty()
+        );
+
+        // A typed video link: into the empty location, else atop the notes.
+        let p = patch(&|e| e.video_link = "https://zoom.example.com/j/1".into());
+        assert_eq!(p["location"], "https://zoom.example.com/j/1");
+        let p = patch(&|e| {
+            e.location = "Room 4".into();
+            e.description = "Agenda".into();
+            e.video_link = "https://zoom.example.com/j/1".into();
+        });
+        assert_eq!(p["description"], "https://zoom.example.com/j/1\n\nAgenda");
+        // Google's Meet link isn't written.
+        let mut meet = before.clone();
+        meet.conference_uri = "https://meet.google.com/x".into();
+        let mut after = meet.clone();
+        after.video_link = meet.conference_uri.clone();
+        assert!(patch_body(&meet, &after, Some(&raw), &zone()).is_empty());
+    }
+
+    #[test]
+    fn guests_are_asked_about_only_what_they_see() {
+        let store = seeded(&[SINGLE]);
+        let with_guest = stored(&store, "e1");
+        let alone = Event {
+            attendees: Vec::new(),
+            ..with_guest.clone()
+        };
+        let changed = |e: &Event, f: &dyn Fn(&mut Event)| {
+            let mut after = e.clone();
+            f(&mut after);
+            after
+        };
+        let title = |e: &mut Event| e.title = "New".into();
+        assert!(asks_guests(
+            Some(&with_guest),
+            &changed(&with_guest, &title),
+            ME
+        ));
+        assert!(!asks_guests(Some(&alone), &changed(&alone, &title), ME));
+        // The user's own reminder and busy/free don't concern the guests.
+        assert!(!asks_guests(
+            Some(&with_guest),
+            &changed(&with_guest, &|e| e.reminder_minutes = Some(5)),
+            ME
+        ));
+        assert!(!asks_guests(
+            Some(&with_guest),
+            &changed(&with_guest, &|e| e.busy = false),
+            ME
+        ));
+        // Removing the last guest still tells them.
+        assert!(asks_guests(Some(&with_guest), &alone, ME));
+        // A new event: invitations, if it has guests.
+        assert!(asks_guests(None, &with_guest, ME));
+        assert!(!asks_guests(None, &alone, ME));
+        assert_eq!(send_updates_param(SendUpdates::All), "all");
+        assert_eq!(send_updates_param(SendUpdates::None), "none");
+    }
+
+    #[test]
+    fn read_only_rules() {
+        let mine = Event {
+            organizer: Contact {
+                name: String::new(),
+                email: ME.into(),
+            },
+            ..Event::default()
+        };
+        let me_attending = vec![Attendee {
+            name: String::new(),
+            email: ME.into(),
+            status: RsvpStatus::NeedsAction,
+        }];
+        let theirs = Event {
+            organizer: Contact {
+                name: String::new(),
+                email: "boss@example.com".into(),
+            },
+            attendees: me_attending.clone(),
+            ..Event::default()
+        };
+        let cases = [
+            (&mine, AccessRole::Owner, Access::Edit),
+            (&mine, AccessRole::Writer, Access::Edit),
+            (&mine, AccessRole::Reader, Access::ReadOnly),
+            (&mine, AccessRole::FreeBusyReader, Access::ReadOnly),
+            (&theirs, AccessRole::Owner, Access::Rsvp),
+            (&theirs, AccessRole::Reader, Access::ReadOnly),
+        ];
+        for (event, role, want) in cases {
+            assert_eq!(
+                access(event, role, ME),
+                want,
+                "{role:?} {}",
+                event.organizer.email
+            );
+        }
+        let modifiable = Event {
+            guests_can_modify: true,
+            ..theirs.clone()
+        };
+        assert_eq!(access(&modifiable, AccessRole::Owner, ME), Access::Edit);
+        let on_their_calendar = Event {
+            organizer: Contact {
+                name: String::new(),
+                email: "team@group.calendar.google.com".into(),
+            },
+            organizer_self: true,
+            ..Event::default()
+        };
+        assert_eq!(
+            access(&on_their_calendar, AccessRole::Writer, ME),
+            Access::Edit
+        );
+        let birthday = Event {
+            event_type: "birthday".into(),
+            ..mine.clone()
+        };
+        assert_eq!(access(&birthday, AccessRole::Owner, ME), Access::ReadOnly);
+        let not_invited = Event {
+            attendees: Vec::new(),
+            ..theirs
+        };
+        assert_eq!(
+            access(&not_invited, AccessRole::Owner, ME),
+            Access::ReadOnly
+        );
+    }
+
+    #[test]
+    fn insert_uses_the_client_id() {
+        let store = seeded(&[]);
+        let event = Event {
+            id: "0123456789abcdef0123456789abcdef".into(),
+            calendar: CAL.into(),
+            title: "Lunch".into(),
+            start: at(d(2026, 10, 28), 12, 0),
+            end: at(d(2026, 10, 28), 13, 0),
+            reminder_minutes: Some(10),
+            busy: true,
+            ..Event::default()
+        };
+        let answer = r#"{"id":"0123456789abcdef0123456789abcdef","etag":"\"n\"","status":"confirmed",
+            "summary":"Lunch","organizer":{"email":"me@example.com","self":true},
+            "start":{"dateTime":"2026-10-28T12:00:00-07:00"},"end":{"dateTime":"2026-10-28T13:00:00-07:00"}}"#;
+        let fake = FakeTransport::new().on("POST", CAL_PATH, &[], &[(200, answer)]);
+        let op = CalOp::Insert {
+            event: event.clone(),
+            send_updates: SendUpdates::All,
+        };
+        let done = commit_at(&fake, &store, ME, &op, &zone(), now());
+        assert_eq!(done.error, None);
+        let request = &fake.requests()[0];
+        assert!(request.url.ends_with("?sendUpdates=all"));
+        let sent = body(request);
+        assert_eq!(sent["id"], event.id.as_str());
+        assert_eq!(sent["start"]["dateTime"], "2026-10-28T19:00:00Z");
+        assert_eq!(sent["reminders"]["overrides"][0]["minutes"], 10);
+        assert_eq!(stored(&store, &event.id).etag, "\"n\"");
+    }
+
+    #[test]
+    fn instance_lookup_patches_googles_occurrence() {
+        let store = seeded(&[SERIES]);
+        let series = stored(&store, "s1");
+        let original = at(d(2026, 10, 28), 10, 0);
+        let id = instance_id("s1", original, false, &zone());
+        assert_eq!(id, "s1_20261028T170000Z");
+        assert_eq!(
+            instance_id("s1", at(d(2026, 10, 28), 0, 0), true, &zone()),
+            "s1_20261028"
+        );
+        let instances = r#"{"items":[
+            {"id":"s1_20261026T170000Z","etag":"\"i1\"","status":"confirmed","summary":"Standup",
+             "recurringEventId":"s1","originalStartTime":{"dateTime":"2026-10-26T10:00:00-07:00"},
+             "start":{"dateTime":"2026-10-26T10:00:00-07:00"},"end":{"dateTime":"2026-10-26T10:30:00-07:00"}},
+            {"id":"s1_20261028T170000Z","etag":"\"i2\"","status":"confirmed","summary":"Standup",
+             "recurringEventId":"s1","originalStartTime":{"dateTime":"2026-10-28T10:00:00-07:00"},
+             "start":{"dateTime":"2026-10-28T10:00:00-07:00"},"end":{"dateTime":"2026-10-28T10:30:00-07:00"}}]}"#;
+        let patched = r#"{"id":"s1_20261028T170000Z","etag":"\"i3\"","status":"confirmed","summary":"Standup (late)",
+             "recurringEventId":"s1","originalStartTime":{"dateTime":"2026-10-28T10:00:00-07:00"},
+             "start":{"dateTime":"2026-10-28T11:00:00-07:00"},"end":{"dateTime":"2026-10-28T11:30:00-07:00"}}"#;
+        let fake = FakeTransport::new()
+            .on(
+                "GET",
+                &format!("{CAL_PATH}/s1/instances"),
+                &[],
+                &[(200, instances)],
+            )
+            .on(
+                "PATCH",
+                &format!("{CAL_PATH}/s1_20261028T170000Z"),
+                &[],
+                &[(200, patched)],
+            )
+            .on(
+                "GET",
+                &format!("{CAL_PATH}/s1"),
+                &[],
+                &[(200, &SERIES.replace(r#"\"s\""#, r#"\"s9\""#))],
+            );
+        let exception = Event {
+            id: id.clone(),
+            title: "Standup (late)".into(),
+            start: at(d(2026, 10, 28), 11, 0),
+            end: at(d(2026, 10, 28), 11, 30),
+            recurrence: None,
+            exceptions: Vec::new(),
+            recurring_event_id: Some("s1".into()),
+            original_start: Some(original),
+            ..series
+        };
+        let op = CalOp::Insert {
+            event: exception,
+            send_updates: SendUpdates::None,
+        };
+        let done = commit_at(&fake, &store, ME, &op, &zone(), now());
+        assert_eq!(done.error, None);
+        assert!(done.changes.removed.is_empty(), "same id as Google's");
+        let requests = fake.requests();
+        assert!(requests[0].url.contains("timeMin=2026-10-27T17%3A00%3A00Z"));
+        let patch = &requests[1];
+        assert_eq!(header(patch, "If-Match"), Some("\"i2\""));
+        let sent = body(patch);
+        let keys: Vec<&String> = sent.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["summary", "start", "end"]);
+        // The series skips it; the instance is stored on its own.
+        assert!(stored(&store, "s1").exceptions.contains(&original));
+        assert_eq!(stored(&store, &id).etag, "\"i3\"");
+        // Changing the instance changed the series' etag; it's read again.
+        assert_eq!(stored(&store, "s1").etag, "\"s9\"");
+    }
+
+    #[test]
+    fn until_rewrite() {
+        assert_eq!(
+            rewrite_rrule(
+                "RRULE:FREQ=WEEKLY;COUNT=10;BYDAY=MO",
+                Some("20261104T165959Z"),
+                None
+            ),
+            "RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20261104T165959Z"
+        );
+        assert_eq!(
+            rewrite_rrule("RRULE:FREQ=DAILY;UNTIL=20261231", None, Some(3)),
+            "RRULE:FREQ=DAILY;COUNT=3"
+        );
+        assert_eq!(
+            rewrite_rrule("RRULE:FREQ=DAILY;UNTIL=20261231", None, None),
+            "RRULE:FREQ=DAILY"
+        );
+        assert_eq!(
+            ical_until(at(d(2026, 11, 4), 0, 0), true, &zone()),
+            "20261103"
+        );
+
+        // "This and following": the series ends before the occurrence;
+        // its EXDATE stays.
+        let store = seeded(&[SERIES]);
+        let answer = r#"{"id":"s1","etag":"\"s2\"","status":"confirmed","summary":"Standup",
+            "organizer":{"email":"me@example.com","self":true},
+            "start":{"dateTime":"2026-10-26T10:00:00-07:00","timeZone":"America/Los_Angeles"},
+            "end":{"dateTime":"2026-10-26T10:30:00-07:00","timeZone":"America/Los_Angeles"},
+            "recurrence":["RRULE:FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20261104T165959Z",
+                          "EXDATE;TZID=America/Los_Angeles:20261102T100000"]}"#;
+        let fake =
+            FakeTransport::new().on("PATCH", &format!("{CAL_PATH}/s1"), &[], &[(200, answer)]);
+        let op = CalOp::Delete {
+            id: "s1".into(),
+            occurrence: Some(at(d(2026, 11, 4), 10, 0)),
+            scope: SeriesScope::Following,
+            send_updates: SendUpdates::None,
+        };
+        let done = commit_at(&fake, &store, ME, &op, &zone(), now());
+        assert_eq!(done.error, None);
+        let patch = &fake.requests()[0];
+        assert!(patch.url.ends_with("?sendUpdates=none"));
+        assert_eq!(header(patch, "If-Match"), Some("\"s\""));
+        assert_eq!(
+            body(patch),
+            json!({"recurrence":["RRULE:FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20261104T165959Z",
+                                 "EXDATE;TZID=America/Los_Angeles:20261102T100000"]})
+        );
+        let series = stored(&store, "s1");
+        assert_eq!(series.etag, "\"s2\"");
+        assert_eq!(
+            series.recurrence.unwrap().until,
+            Some(at(d(2026, 11, 4), 10, 0))
+        );
+        assert!(done.changes.changed.contains(&"s1".to_string()));
+    }
+
+    #[test]
+    fn conflict_reloads_googles_version() {
+        let store = seeded(&[SINGLE]);
+        let before = stored(&store, "e1");
+        let theirs = r#"{"id":"e1","etag":"\"2\"","status":"confirmed","summary":"Theirs",
+            "organizer":{"email":"me@example.com","self":true},
+            "start":{"dateTime":"2026-10-28T10:00:00-07:00"},"end":{"dateTime":"2026-10-28T11:00:00-07:00"}}"#;
+        let fake = FakeTransport::new()
+            .on(
+                "PATCH",
+                &format!("{CAL_PATH}/e1"),
+                &[],
+                &[(
+                    412,
+                    r#"{"error":{"code":412,"message":"Precondition Failed"}}"#,
+                )],
+            )
+            .on("GET", &format!("{CAL_PATH}/e1"), &[], &[(200, theirs)]);
+        let op = CalOp::Patch {
+            id: "e1".into(),
+            before: before.clone(),
+            after: Event {
+                title: "Mine".into(),
+                ..before
+            },
+            scope: SeriesScope::All,
+            send_updates: SendUpdates::None,
+        };
+        let done = commit_at(&fake, &store, ME, &op, &zone(), now());
+        assert_eq!(done.error.as_deref(), Some("Changed elsewhere; reloaded"));
+        assert!(!done.retry);
+        assert!(done.result().is_err());
+        assert_eq!(done.changes.changed, ["e1"]);
+        assert_eq!(header(&fake.requests()[0], "If-Match"), Some("\"1\""));
+        let now_stored = stored(&store, "e1");
+        assert_eq!(
+            (now_stored.title.as_str(), now_stored.etag.as_str()),
+            ("Theirs", "\"2\"")
+        );
+    }
+
+    #[test]
+    fn someone_elses_event_is_declined_and_removed() {
+        let invite = r#"{"id":"inv","etag":"\"v\"","status":"confirmed","summary":"Their meeting",
+            "organizer":{"email":"boss@example.com"},
+            "start":{"dateTime":"2026-10-28T10:00:00-07:00"},"end":{"dateTime":"2026-10-28T11:00:00-07:00"},
+            "attendees":[{"email":"boss@example.com","organizer":true,"responseStatus":"accepted"},
+                         {"email":"me@example.com","self":true,"responseStatus":"needsAction"}]}"#;
+        let store = seeded(&[invite]);
+        let declined = invite.replace("needsAction", "declined");
+        let fake = FakeTransport::new()
+            .on(
+                "PATCH",
+                &format!("{CAL_PATH}/inv"),
+                &[],
+                &[(200, declined.as_str())],
+            )
+            .on("DELETE", &format!("{CAL_PATH}/inv"), &[], &[(204, "")]);
+        let op = CalOp::Delete {
+            id: "inv".into(),
+            occurrence: None,
+            scope: SeriesScope::All,
+            send_updates: SendUpdates::All,
+        };
+        let done = commit_at(&fake, &store, ME, &op, &zone(), now());
+        assert_eq!(done.error, None);
+        let requests = fake.requests();
+        assert_eq!(requests[0].method, "PATCH");
+        assert!(requests[0].url.ends_with("?sendUpdates=all"));
+        assert_eq!(
+            body(&requests[0])["attendees"][1]["responseStatus"],
+            "declined"
+        );
+        assert_eq!(requests[1].method, "DELETE");
+        assert!(requests[1].url.ends_with("?sendUpdates=none"));
+        assert_eq!(done.changes.removed, ["inv"]);
+        assert!(store.load_events(ME, &["inv".into()]).unwrap().is_empty());
     }
 }

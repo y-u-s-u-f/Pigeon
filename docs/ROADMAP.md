@@ -898,7 +898,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 #### CAL-2 Calendar list, colours and visibility
 
 - **Today:** The header's calendars button shows and hides calendars; palette "Show/Hide Calendar: X". Events take their calendar's colour. The menu groups "My calendars" (owner) and "Other calendars", marks reader calendars "View only", truncates long names and scrolls when long; rows are checkboxes for VoiceOver. `toggle_calendar()`; `render_calendars_button()` (`header.rs`). From Google (W4, `backend/calendar.rs`): `calendarList.list` (with `showHidden`, then its sync token) gives the name (`summaryOverride` else `summary`), colour (`backgroundColor`, else `colorId` through `colors.get`, fetched once and cached in `sync_state`), `selected` → visible, `hidden` (left out of the menu and not synced), `accessRole`, `primary`, `timeZone`, `defaultReminders` (`Store::put_google_calendar()`). Changes reach the view as `CalendarsChanged`.
-- **Needs:** Save visibility with `calendarList.patch` (`selected`) (W7).
+- **Today (writes, W7):** Showing or hiding a calendar commits at once with `calendarList.patch` `{selected}` (`backend::calendar::commit()`); a failure reloads the list from the store, which puts the switch back.
+- **Needs:** A tester pass on the real account (T2c).
 - **Notes:** Shared and subscribed calendars are often read-only (CAL-22).
 
 #### CAL-3 Load events for the visible range
@@ -931,68 +932,78 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 #### CAL-23 Persisted calendar UI state
 
 - **Today:** View and week numbers are saved with PER-3. Visibility changes queue `CalOp::SetSelected` (`calendarList.selected`), kept in demo mode's store until quit. The date resets on launch.
-- **Needs:** `calendarList.patch` for visibility (W7).
+- **Needs:** Nothing for visibility (`calendarList.patch`, W7; CAL-2). The date still resets on launch.
 
 ### Events
 
 #### CAL-7 Edit an event in the panel
 
 - **Today:** Click, or `e`/`enter` on the selection, opens the right panel. Title, calendar, location, video link, guests, notes, reminder and busy/free edit in place; changes apply on every keystroke (`on_field_event()`); Esc closes. `open_event()`, `close_panel()`; `EventPanel` (`event_panel.rs`).
-- **Needs:** `events.patch` (or `get` + `update`) with `If-Match` on the ETag; batch writes on close or after a pause. CalDAV: `PUT` with `If-Match`.
-- **Notes:** No Save button, so failed writes must keep the user's text (STA-2).
+- **Today (writes, W7):** Edits settle, then go as one `events.patch` per event: when the panel leaves the event or after 1.5 s idle (`EDIT_DEBOUNCE`; `patched()`, `settle_edit()`, `flush_edit()` in `mod.rs`). The body carries only the changed fields (`backend::calendar::patch_body()`), with `If-Match` on the stored ETag; Google's answer is stored, so the next patch has the new ETag. A failure reloads Google's version (rollback) with a toast; a 412 says "Changed elsewhere; reloaded" (STA-5). A calendar sync runs 2 s after each committed write (`Backend::sync_calendar_soon()`). Read-only events (CAL-22) show their fields read-only.
+- **Needs:** A tester pass on the real account (T2c). Edits still settling are lost if the app quits within 1.5 s. CalDAV: `PUT` with `If-Match`.
+- **Notes:** No Save button, so failed writes must keep the user's text (STA-2). A sync that reloads the open event can replace fields being edited; the title, location and notes are read back from the panel's fields before each patch (`read_panel_text()`), the rest isn't.
 
 #### CAL-8 Date, time and all-day editing
 
 - **Today:** Date and time fields with pickers; typed values ("tomorrow", "Oct 27", "10/27", "3pm", "15:30", "noon"); up/down by a day or 15 minutes; all-day switch. Tab reaches every control in reading order; enter/space work switch and pickers. `commit_field()`, `step_field()`, `set_date()`, `set_time()`, `toggle_all_day()`; `time::parse_date()`, `parse_time()`. Changing the start keeps the duration; an end at or before the start moves to the next day; ends are ≥ 15 minutes after the start.
-- **Needs:** All-day: `start.date`/`end.date` with an exclusive end. Timed: `dateTime` with `timeZone` (CAL-12).
+- **Today (writes, W7):** All-day writes `start.date`/`end.date` (exclusive end) and clears `dateTime`; timed writes the instant (UTC) in `dateTime` with `timeZone` (CAL-12) and clears `date`. Checked on the real account: all-day and back.
+- **Needs:** A tester pass on the real account (T2c).
 
 #### CAL-9 Create an event
 
 - **Today:** `c` or the header "+" creates one at the next half hour (today or the selected day), opens it, focuses the title. Dragging or double-clicking the grid also creates (CAL-21). Goes to the first visible calendar, 10-minute reminder, busy, user as organizer. `new_event()`, `create_event()`. An untitled new event is dropped when its panel closes, without a toast.
-- **Needs:** `events.insert` once it has a title; replace the local ID (CAL-11).
+- **Today (writes, W7):** `events.insert` once the new event has a title (on leaving the panel or after 1.5 s idle; `CalendarView::unsent`); an untitled one never reaches Google. With guests it asks "Send invitations to guests?" first (CAL-13).
+- **Needs:** A tester pass on the real account (T2c).
 - **Notes:** A default-calendar setting isn't built.
 
 #### CAL-10 Delete an event and undo
 
 - **Today:** `delete`/`backspace` or the panel's Delete; toast with Undo. `delete_occurrence()` / `delete_event()` queue a delayed `CalOp::Delete` and emit `CalendarEvent::Deleted`; `UndoAction::DeleteEvent` → `restore()`, which cancels the op, or re-inserts the events once it went. Series ask first (CAL-6). Every other calendar change queues a `CalOp` too (`CalendarView::queue()`, `patched()`).
-- **Needs:** `events.delete` after the toast ends (or delete + re-insert on Undo), with `sendUpdates` so guests get a cancellation; maybe ask first.
-- **Notes:** For an event someone else organizes, "delete" should mean decline and hide (CAL-22).
+- **Today (writes, W7):** The delete waits out the toast; Undo inside it cancels the op, so Google never sees it. Then `events.delete` (a 404/410 counts as done). With guests it asks "Send cancellation to guests?" first (`sendUpdates`). Undo after it went re-inserts with the same id; Google answers 409, and Pigeon restores the cancelled event with `status: confirmed` (checked on the real account). Someone else's event is declined (`responseStatus`, organizer told) and then deleted from the user's calendar, with the toast "Declined “…” and removed it" (CAL-22).
+- **Needs:** A tester pass on the real account (T2c).
+- **Notes:** Undo of "This event" after the delete went doesn't bring the occurrence back in Google (rare: the toast lasts as long as the undo window).
 
 #### CAL-11 IDs for new events
 
 - **Today:** A UUID's 32 hex digits (`CalendarView::new_id()`), valid as a client-chosen Google event id.
-- **Needs:** Server IDs, or a local UUID until the first insert (Google accepts client-chosen IDs in base32hex). A stable `iCalUID` so invite mail can find the event (CAL-20).
+- **Today (writes, W7):** The UUID is the id `events.insert` sends, so the event keeps it in Google (checked on the real account). An occurrence taken out of its series ("This event") takes Google's instance id, `<series>_<UTC start>` or `<series>_<date>` (`backend::calendar::instance_id()`); the commit looks the instance up with `events.instances` and, if Google's id differs, the app swaps the event for Google's.
+- **Needs:** A tester pass (T2c). `iCalUID` comes from Google once synced (CAL-20).
 
 #### CAL-12 Time zones
 
 - **Today:** Wall-clock times: `wall_time()` drops the JSON's UTC offset (`naive_local()`), and also reads the offset-less times the store writes; the model uses `NaiveDateTime`. The placeholder data uses Eastern offsets for San Francisco places, so converting would move every event. From Google (W4): events are read with `timeZone=<macOS zone>` and every `dateTime` is converted to the local wall clock (`time::LocalZone`, `iana-time-zone` + `chrono::Local`; no tz database). `Event::time_zone` keeps the event's own `start.timeZone` and `Calendar::time_zone` the calendar's, for writes. A timed series kept in another zone isn't expanded locally (its wall time moves across DST and its days can land on other dates here); Google's own occurrences are stored instead (CAL-5).
-- **Needs:** Write back with the event's zone (W7). All-day events have none. Google's `timezone` setting isn't read; the macOS zone is used.
+- **Today (writes, W7):** Writes send the instant with the event's own `timeZone`, else the macOS zone (`time_json()`), so a series keeps its zone.
+- **Needs:** A tester pass (T2c). Google's `timezone` setting isn't read; the macOS zone is used.
 - **Notes:** No zone picker or "shown in another zone" hint yet.
 
 #### CAL-15 Reminders
 
 - **Today:** One reminder (none, at start, 5, 10, 15, 30 min, 1 h, 1 day). `reminder_minutes`. Nothing fires.
-- **Needs:** Save as `reminders.overrides` with `method=popup` (or `useDefault`). Schedule macOS notifications, also after restart and with the window closed (NTF-3). Several reminders: CAL-33.
+- **Today (writes, W7):** Saved as `reminders` `{useDefault: false, overrides: [{popup, m}]}`; "No reminder" is `useDefault: false` with no overrides. Written only when changed, so a calendar default stays in use until the user picks one.
+- **Needs:** A tester pass (T2c). Schedule macOS notifications, also after restart and with the window closed (NTF-3). Several reminders: CAL-33.
 
 #### CAL-16 Busy and free
 
 - **Today:** Busy/Free choice; drawn the same. `busy` on `Event`.
-- **Needs:** `transparency` (`opaque`/`transparent`); it affects free/busy for others (CAL-27).
+- **Today (writes, W7):** Saved as `transparency` (`opaque`/`transparent`). Busy/free and reminder changes alone don't ask about guests.
+- **Needs:** A tester pass (T2c). It affects free/busy for others (CAL-27).
 
 #### CAL-17 Video links
 
 - **Today:** Shows and edits a link with a Join button (`cx.open_url()`). `video_link` in JSON. From Google (W4): `conferenceData.entryPoints` (the `video` one) or else `hangoutLink` fills `Event::conference_uri` and `video_link`, so Join works.
-- **Needs:** Make the link read-only when it comes from `conferenceData` (6.4 item 9; W7). Phone and PIN entry points aren't shown, nor a URL found in location or description. Creating Meet links: CAL-34.
+- **Today (writes, W7):** A link from `conferenceData`/`hangoutLink` is read-only in the panel and never written. A link typed in Pigeon is saved into the location when that's empty, else at the top of the description (6.4 item 9; `place()`); after the next sync it shows there, not in the video field.
+- **Needs:** A tester pass (T2c). Phone and PIN entry points aren't shown, nor a URL found in location or description. Creating Meet links: CAL-34.
 
 #### CAL-21 Drag to create, move and resize
 
 - **Today:** Day and Week grids: drag empty space to create (live preview snapped to 15 minutes, times floating above; opens with title focused on release); double-click for 30 minutes; drag to move across time and days; drag the bottom edge to resize (≥ 15 min). Auto-scroll near edges; < 4 px is a click; Escape cancels. `src/ui/calendar/drag.rs` (`GridDrag`, `press_grid()`, `press_occurrence()`, `drag_to()`, `finish_drag()`) calls `create_event()` and `retime_occurrence()`. The all-day lane and Month view can't be dragged.
-- **Needs:** One write on release; ask whether to notify guests (`sendUpdates`). Series ask "This event / All events" (CAL-6); failures snap back (STA-2).
+- **Today (writes, W7):** A move or resize writes once on release (`flush_edit()` in `finish_drag()`), asking about guests when the event has any; a drag-create inserts once titled (CAL-9). Series ask "This event / All events" first (CAL-6). Failures reload Google's version, which snaps the event back (STA-2). Read-only events (CAL-22) don't move and have no resize edge.
+- **Needs:** A tester pass on the real account (T2c).
 
 #### CAL-22 Organizer and read-only permissions
 
-- **Today:** Not built: every event is editable, including others' and shared ones. The model has what the rules need: `Calendar::access_role` (`AccessRole`), `Event::organizer_self` (set in demo mode), `guests_can_modify`, `attendees_omitted`, `event_type`.
-- **Needs:** The calendar's `accessRole` (`freeBusyReader`, `reader`, `writer`, `owner`), and per event `organizer.self`, `guestsCanModify`, `locked`, `privateCopy`. Make the panel read-only where Google would refuse.
+- **Today (W7):** `backend::calendar::access()` gives Edit, Rsvp or ReadOnly: a reader or free/busy calendar is read-only; on a writer/owner calendar the organizer (`organizer.self`, or the user's address, as in demo mode) or a guest with `guestsCanModify` edits; birthdays and events from Gmail don't; an invited user only answers. Read-only events show their fields read-only with a line saying why, no guest field, no resize edge, and can't be dragged; Delete is hidden. For an invite, Delete reads "Decline and remove" and declines it, then deletes the user's copy (CAL-10). The calendar picker (CAL-40) is only for the organizer of a whole event, and lists calendars the user can't write to faded. Applies in demo mode too.
+- **Needs:** A tester pass (T2c). `locked` and `privateCopy` aren't read.
 - **Notes:** Guests can usually change only their RSVP, reminders and, on their copy, busy/free.
 
 #### CAL-28 Event colours and labels
@@ -1022,8 +1033,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-40 Move an event to another calendar
 
-- **Today:** The panel's calendar picker (`render_calendar_picker()` in `event_panel.rs`) changes the event's calendar in memory.
-- **Needs:** `events.move` with `destination` (changes the organizer calendar). Only `default` events can move; birthdays, focus time, out of office, working location and from-Gmail events can't.
+- **Today:** The panel's calendar picker (`render_calendar_picker()` in `event_panel.rs`) changes the event's calendar. W7: it goes as `events.move` with `destination` (`CalOp::Move`, before any patch of the same edit); Google's answer is stored under the new calendar. Only the organizer of a whole event (not one occurrence) gets the picker; calendars the user can't write to are faded and can't be picked.
+- **Needs:** A tester pass on the real account (T2c; not checked yet, as it touches a second calendar). Birthdays, focus time, out of office and working location events can't move.
 
 ### Recurrence
 
@@ -1037,7 +1048,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 #### CAL-6 This event or all events
 
 - **Today:** Changing, dragging or deleting one occurrence asks which ones. In the panel, the first change shows "Apply this change to: This event / All events" (shown on the whole series until answered; closing without answering keeps "all"). Dropping a drag asks over the grid; enter = "This event", escape cancels. Delete asks "This event / This and following / All events". Undo restores any. "This event" copies the occurrence into its own event (`detach()`) and adds an exception; "This and following" sets `until` and drops later changed occurrences; "All" changes or deletes the series and its exceptions. `SeriesPrompt`, `answer_prompt()`, `delete_occurrence()`, `restore()` (`mod.rs`); `choose_edit_scope()` (`event_panel.rs`).
-- **Needs:** One occurrence: patch or delete the instance (from `events.instances`). Following: end the series with `UNTIL` (plus a new series if the change continues). All: patch the series. Exceptions keep their link to the series. CalDAV: `RECURRENCE-ID` overrides or `EXDATE`.
+- **Today (writes, W7):** "This event": the occurrence takes Google's instance id (CAL-11); the commit finds the instance with `events.instances` around its original start and patches only what differs from the series (`If-Match` on the instance's ETag); a delete deletes the instance. "This and following": the series' RRULE gets `UNTIL` just before the occurrence (`rewrite_rrule()`: COUNT dropped, other parts and EXDATE lines kept as Google wrote them), with `If-Match`. "All": patches the series; a retime that moves the series' end rewrites `UNTIL` the same way. Changing an instance changes its series' ETag, so the series is read again after each instance write. The panel holds its edits back until "This / All" is answered, so a "This event" change never touches the series in Google. All three checked on the real account's `[Pigeon test] series`.
+- **Needs:** A tester pass (T2c). "This and following" for edits (series split) isn't offered. CalDAV: `RECURRENCE-ID` overrides or `EXDATE`.
 - **Notes:** "This and following" is offered for deletes only. Series edits don't reach occurrences changed on their own, as in Google Calendar.
 
 #### CAL-29 Set and edit repeat rules
@@ -1049,14 +1061,16 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 #### CAL-13 Guests and invitations
 
 - **Today:** The panel lists organizer and guests with RSVP icons and a summary ("3 people · 2 yes · 1 awaiting"). "Add guests" suggests contacts (CON-1); `enter` adds, `backspace` on empty removes the last. `render_guests()`, `update_guest_suggestions()`, `add_guest()`, `remove_guest()`. Nothing is sent and the user isn't asked.
-- **Needs:** Save `attendees`; send invites and updates with `sendUpdates` (`all`, `externalOnly`, `none`); ask "send updates to guests?". CalDAV: iMIP. Free/busy for guests: CAL-27.
-- **Notes:** `attendeesOmitted` means the list is incomplete; don't write it back as is.
+- **Today (writes, W7):** Guest changes save `attendees`, keeping Google's entries for the guests who stay (rooms included, though not shown). When a save or delete touches an event with guests other than the user, a card over the grid asks "Send updates to guests?" (or "Send invitations…", "Send cancellation…"): Send (enter) → `sendUpdates=all`, Don't send → `none`, Cancel (esc) puts the event back (`GuestPrompt`, `answer_guests()`). Changes only to the user's reminder or busy/free don't ask (`asks_guests()`). A new question while one is open answers the old one "Don't send".
+- **Needs:** A tester pass on the real account (T2c); whether invites arrive at the second address is checked by the user later (6.4 item 6). `externalOnly` isn't offered. CalDAV: iMIP. Free/busy for guests: CAL-27.
+- **Notes:** With `attendeesOmitted` the guest list is never written.
 
 #### CAL-14 My RSVP
 
 - **Today:** For others' events the panel shows "Going? Yes / Maybe / No", as does the invite card (CAL-20). Unanswered invites are outlined; declined ones struck through. `set_rsvp()`, `Event::my_status()`, `Look` (`week_view.rs`).
-- **Needs:** Patch the `self` attendee's `responseStatus` (`accepted`, `tentative`, `declined`, `needsAction`) so the organizer is told. One write serves the panel and the card.
-- **Notes:** Debounce repeated changes. Answering for one occurrence of a series isn't supported (CAL-6).
+- **Today (writes, W7):** The last answer goes after 1.5 s (or when the panel leaves the event) as an `events.patch` of `attendees` where only the user's own entry (`self`) changes `responseStatus`, with `sendUpdates=all` so the organizer is told. One write serves the panel and the card.
+- **Needs:** A tester pass with a real invitation (T3b item 3).
+- **Notes:** Answering for one occurrence of a series isn't supported (CAL-6).
 
 #### CAL-20 Invite emails linked to events
 
@@ -1217,7 +1231,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 #### STA-5 Conflicts with server changes
 
 - **Today:** A sync that changes the open thread reloads it in place, keeping the selection (W3); drafts open in the composer aren't replaced.
-- **Needs:** Rules for drafts and events changed elsewhere; ETags for events (CAL-7). Links to DRF-6, LST-8.
+- **Today (events, W7):** Event patches carry `If-Match`; a 412 reloads Google's version into the store and the view, drops the op, and shows "Changed elsewhere; reloaded" (checked on the real account with a stale ETag).
+- **Needs:** Rules for drafts changed elsewhere. Links to DRF-6, LST-8.
 
 ---
 
