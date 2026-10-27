@@ -394,6 +394,7 @@ impl PigeonApp {
                 CalendarViewSetting::Month => ViewKind::Month,
             };
             c.show_week_numbers = saved.week_numbers;
+            c.apply_saved(&saved);
         });
     }
 
@@ -419,6 +420,9 @@ impl PigeonApp {
             week_numbers: calendar.show_week_numbers,
             remote_images: self.saved.remote_images,
             notifications: crate::settings::current(cx).notifications,
+            calendar_date: Some(calendar.anchor),
+            time_24h: calendar.prefs.time_24h,
+            event_minutes: calendar.prefs.event_minutes,
         }
     }
 
@@ -1368,6 +1372,13 @@ impl PigeonApp {
         cx: &mut Context<Self>,
     ) {
         self.close_overlays(window, cx);
+        // W5: quick add (CAL-39).
+        if let PaletteEvent::QuickAdd(text) = event {
+            self.set_mode(Mode::Calendar, window, cx);
+            return self
+                .calendar
+                .update(cx, |c, cx| c.quick_add(text, window, cx));
+        }
         let PaletteEvent::Run(command) = event else {
             return;
         };
@@ -1650,6 +1661,10 @@ impl Render for PigeonApp {
             .id("pigeon")
             .key_context(CONTEXT)
             .on_action(cx.listener(Self::toggle_command_palette))
+            // W5: quick add (CAL-39).
+            .on_action(cx.listener(|this, _: &NewEventFromText, window, cx| {
+                this.open_palette("New event: ", window, cx)
+            }))
             .on_action(cx.listener(Self::toggle_shortcuts_help))
             .on_action(cx.listener(Self::open_thread))
             .on_action(cx.listener(Self::back_to_list))

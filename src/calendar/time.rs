@@ -5,9 +5,51 @@ use chrono::{
     TimeZone as _, Timelike, Utc, Weekday,
 };
 
-/// Weeks start on Monday.
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
+/// The first day of the week shown, as days from Monday (Google's
+/// `weekStart`, CAL-41), and whether times show on a 24-hour clock. Set
+/// by the calendar from the settings; read by the formatting here.
+static FIRST_WEEKDAY: AtomicU8 = AtomicU8::new(0);
+static CLOCK_24H: AtomicBool = AtomicBool::new(false);
+
+pub fn set_first_weekday(day: Weekday) {
+    FIRST_WEEKDAY.store(day.num_days_from_monday() as u8, Ordering::Relaxed);
+}
+
+pub fn first_weekday() -> Weekday {
+    Weekday::try_from(FIRST_WEEKDAY.load(Ordering::Relaxed)).unwrap_or(Weekday::Mon)
+}
+
+pub fn set_24_hour(on: bool) {
+    CLOCK_24H.store(on, Ordering::Relaxed);
+}
+
+pub fn is_24_hour() -> bool {
+    CLOCK_24H.load(Ordering::Relaxed)
+}
+
+/// Weeks start on the user's first day (Monday unless Google says
+/// otherwise).
 pub fn week_start(date: NaiveDate) -> NaiveDate {
-    date - Duration::days(date.weekday().num_days_from_monday() as i64)
+    week_start_on(date, first_weekday())
+}
+
+pub fn week_start_on(date: NaiveDate, first: Weekday) -> NaiveDate {
+    let back = (date.weekday().num_days_from_monday() + 7 - first.num_days_from_monday()) % 7;
+    date - Duration::days(back as i64)
+}
+
+/// The Monday of `date`'s week: RRULE's default week start.
+pub fn monday_of(date: NaiveDate) -> NaiveDate {
+    week_start_on(date, Weekday::Mon)
+}
+
+/// The one-letter weekday heads of a week row, from the first day.
+pub fn weekday_letters() -> [&'static str; 7] {
+    const LETTERS: [&str; 7] = ["M", "T", "W", "T", "F", "S", "S"];
+    let first = first_weekday().num_days_from_monday() as usize;
+    std::array::from_fn(|i| LETTERS[(first + i) % 7])
 }
 
 pub fn month_start(date: NaiveDate) -> NaiveDate {
@@ -66,9 +108,13 @@ pub fn next_half_hour(now: NaiveDateTime) -> NaiveDateTime {
     }
 }
 
-/// "9:30 AM".
+/// "9:30 AM", or "09:30" on a 24-hour clock.
 pub fn time_label(time: NaiveTime) -> String {
-    time.format("%-I:%M %p").to_string()
+    if is_24_hour() {
+        time.format("%H:%M").to_string()
+    } else {
+        time.format("%-I:%M %p").to_string()
+    }
 }
 
 /// "9", "9:30": the hour and, when not on the hour, the minutes.
@@ -84,8 +130,12 @@ fn meridiem(time: NaiveTime) -> &'static str {
     if time.hour() < 12 { "AM" } else { "PM" }
 }
 
-/// "9 – 10:30 AM", or "11 AM – 1 PM" across noon.
+/// "9 – 10:30 AM", or "11 AM – 1 PM" across noon; "09:00 – 10:30" on a
+/// 24-hour clock.
 pub fn time_range_label(start: NaiveTime, end: NaiveTime) -> String {
+    if is_24_hour() {
+        return format!("{} – {}", time_label(start), time_label(end));
+    }
     if meridiem(start) == meridiem(end) {
         format!(
             "{} – {} {}",
@@ -104,8 +154,11 @@ pub fn time_range_label(start: NaiveTime, end: NaiveTime) -> String {
     }
 }
 
-/// "9 AM", "9:30 AM".
+/// "9 AM", "9:30 AM"; "09:30" on a 24-hour clock.
 pub fn compact_time_label(time: NaiveTime) -> String {
+    if is_24_hour() {
+        return time_label(time);
+    }
     format!("{} {}", short_time(time), meridiem(time))
 }
 
@@ -318,6 +371,17 @@ mod tests {
         assert_eq!(week_start(d(2026, 10, 26)), d(2026, 10, 26));
         assert_eq!(week_start(d(2026, 11, 1)), d(2026, 10, 26));
         assert_eq!(week_start(d(2026, 10, 31)), d(2026, 10, 26));
+        // Google's weekStart: Sunday or Saturday.
+        assert_eq!(
+            week_start_on(d(2026, 10, 31), Weekday::Sun),
+            d(2026, 10, 25)
+        );
+        assert_eq!(week_start_on(d(2026, 11, 1), Weekday::Sun), d(2026, 11, 1));
+        assert_eq!(
+            week_start_on(d(2026, 10, 30), Weekday::Sat),
+            d(2026, 10, 24)
+        );
+        assert_eq!(monday_of(d(2026, 11, 1)), d(2026, 10, 26));
     }
 
     #[test]

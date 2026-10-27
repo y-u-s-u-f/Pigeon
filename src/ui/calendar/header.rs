@@ -196,6 +196,24 @@ impl CalendarView {
             .pr(SPACE_LG)
             .child(self.render_title(title, rest, &theme, window, cx))
             .child(div().flex_1())
+            // Google's zone isn't this Mac's (CAL-41).
+            .when(self.zone_mismatch().is_some(), |d| {
+                let note: SharedString = self.time_zone_note().into();
+                d.child(
+                    div()
+                        .id("zone-note")
+                        .role(gpui::Role::Note)
+                        .aria_label(note.clone())
+                        .size(HIT_TARGET)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(RADIUS_MD)
+                        .hover(|s| s.bg(theme.hover_bg))
+                        .child(icon(Icon::Clock, px(15.), theme.text_muted))
+                        .tooltip(move |window, cx| Tooltip::new(note.clone()).build(window, cx)),
+                )
+            })
             .child(self.render_calendars_button(&theme, window, cx))
             .child(segmented)
             .child(div().w(px(1.)).h(px(18.)).mx(SPACE_XS).bg(theme.border))

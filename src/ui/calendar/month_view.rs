@@ -40,6 +40,9 @@ struct Item {
 
 /// "9am", "9:30pm".
 fn pill_time(time: NaiveTime) -> String {
+    if time::is_24_hour() {
+        return time.format("%H:%M").to_string();
+    }
     let meridiem = if time.hour() < 12 { "am" } else { "pm" };
     if time.minute() == 0 {
         format!("{}{meridiem}", time.format("%-I"))

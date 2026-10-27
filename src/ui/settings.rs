@@ -63,6 +63,9 @@ const APPEARANCES: &[&str] = &["System", "Light", "Dark"];
 const SCOPES: &[&str] = &["Current view", "All mail"];
 const VIEWS: &[&str] = &["Day", "Week", "Month"];
 const IMAGES: &[&str] = &["Ask", "Always", "Never"];
+// W5 (CAL-41).
+const EVENT_LENGTHS: &[&str] = &["15 min", "30 min", "45 min", "1 hr", "1.5 hrs", "2 hrs"];
+const EVENT_MINUTES: [u32; 6] = [15, 30, 45, 60, 90, 120];
 
 pub struct SettingsPage {
     pub open: bool,
@@ -524,6 +527,15 @@ impl PigeonApp {
                 },
                 IMAGES,
             ),
+            SettingId::TimeFormat => Control::Switch(calendar.uses_24_hour()),
+            SettingId::EventLength => {
+                let minutes = calendar.event_minutes();
+                let ix = (0..EVENT_MINUTES.len())
+                    .min_by_key(|&i| EVENT_MINUTES[i].abs_diff(minutes))
+                    .unwrap_or(3);
+                Control::Choice(ix, EVENT_LENGTHS)
+            }
+            SettingId::TimeZone => Control::Info(calendar.time_zone_note()),
             SettingId::Account => Control::Account(self.data.me()),
             SettingId::Access => Control::Info(super::status::scopes(self.backend.read(cx))),
             SettingId::LastSync => {
@@ -613,7 +625,18 @@ impl PigeonApp {
             }
             SettingId::Notifications => shell::set_notifications(on, cx),
             SettingId::OpenAtLogin => shell::set_open_at_login(on, cx),
-            SettingId::Account
+            SettingId::TimeFormat => self.calendar.update(cx, |c, cx| {
+                c.prefs.time_24h = Some(on);
+                c.apply_display();
+                cx.notify();
+            }),
+            SettingId::EventLength => self.calendar.update(cx, |c, cx| {
+                c.prefs.event_minutes = Some(EVENT_MINUTES[choice]);
+                c.apply_display();
+                cx.notify();
+            }),
+            SettingId::TimeZone
+            | SettingId::Account
             | SettingId::Access
             | SettingId::LastSync
             | SettingId::SyncNow

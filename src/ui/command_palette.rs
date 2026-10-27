@@ -18,7 +18,9 @@ use nucleo_matcher::{
 
 use super::{binding_caps, icon, keycap, overlay_shadow};
 use crate::ui::style::*;
-use crate::{actions::PALETTE, app::Nav, assets::Icon, data::Folder, theme::Theme};
+use crate::{
+    actions::PALETTE, app::Nav, assets::Icon, calendar::quick_add, data::Folder, theme::Theme,
+};
 
 actions!(command_palette, [SelectNext, SelectPrev, Confirm, Dismiss]);
 
@@ -29,6 +31,8 @@ const ROW_HEIGHT: f32 = 38.;
 const VISIBLE_ROWS: usize = 8;
 /// Thread results are capped so a broad query stays readable.
 const MAX_THREADS: usize = 30;
+/// `Match::entry` of the quick add row (CAL-39), which isn't an entry.
+const QUICK: usize = usize::MAX;
 
 #[derive(Clone, Copy)]
 pub enum PaletteCommand {
@@ -78,6 +82,8 @@ struct Match {
 pub enum PaletteEvent {
     Run(PaletteCommand),
     Dismiss,
+    // W5: "New event: Lunch with Sam Fri 1pm", the text after the colon.
+    QuickAdd(String),
 }
 
 pub struct CommandPalette {
@@ -89,6 +95,11 @@ pub struct CommandPalette {
     matcher: Matcher,
     /// Shown when nothing matches.
     empty_text: SharedString,
+    /// The palette of every command offers quick add; lists to pick from
+    /// don't.
+    offers_quick_add: bool,
+    /// The quick add row for the query: the text, its title and when.
+    quick: Option<(String, SharedString, SharedString)>,
     _input_events: Subscription,
 }
 
@@ -120,6 +131,9 @@ impl CommandPalette {
                 this.update_matches(cx);
             }
         });
+        let offers_quick_add = items
+            .iter()
+            .any(|i| matches!(i.command, PaletteCommand::Action(_)));
         let entries = items
             .into_iter()
             .map(|item| {
@@ -144,6 +158,8 @@ impl CommandPalette {
             scroll: UniformListScrollHandle::new(),
             matcher: Matcher::new(Config::DEFAULT),
             empty_text,
+            offers_quick_add,
+            quick: None,
             _input_events: input_events,
         };
         this.update_matches(cx);
@@ -158,6 +174,32 @@ impl CommandPalette {
         let (fuzzy, substring) = (pattern(AtomKind::Fuzzy), pattern(AtomKind::Substring));
 
         self.matches.clear();
+        self.quick = quick_add::command_text(&query)
+            .filter(|text| self.offers_quick_add && !text.is_empty())
+            .map(|text| {
+                let event = quick_add::parse(
+                    text,
+                    chrono::Local::now().naive_local(),
+                    quick_add::default_minutes(),
+                );
+                let title = if event.title.is_empty() {
+                    "New event".to_string()
+                } else {
+                    format!("New event: {}", event.title)
+                };
+                let today = chrono::Local::now().date_naive();
+                (
+                    text.to_string(),
+                    title.into(),
+                    event.when_label(today).into(),
+                )
+            });
+        if self.quick.is_some() {
+            self.matches.push(Match {
+                entry: QUICK,
+                indices: Vec::new(),
+            });
+        }
         if fuzzy.atoms.is_empty() {
             self.matches.extend(
                 self.entries
@@ -235,12 +277,21 @@ impl CommandPalette {
 
     fn run(&mut self, ix: usize, cx: &mut Context<Self>) {
         if let Some(m) = self.matches.get(ix) {
+            if m.entry == QUICK {
+                if let Some((text, _, _)) = &self.quick {
+                    cx.emit(PaletteEvent::QuickAdd(text.clone()));
+                }
+                return;
+            }
             cx.emit(PaletteEvent::Run(self.entries[m.entry].item.command));
         }
     }
 
-    fn render_row(&self, ix: usize, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_row(&self, ix: usize, theme: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
         let m = &self.matches[ix];
+        if m.entry == QUICK {
+            return self.render_quick_row(ix, theme, cx).into_any_element();
+        }
         let entry = &self.entries[m.entry];
         let item = &entry.item;
         let selected = ix == self.selected;
@@ -324,6 +375,76 @@ impl CommandPalette {
                             })),
                     )
                     .children(item.binding.as_ref().map(|b| binding_caps(b, theme))),
+            )
+            .on_mouse_move(cx.listener(move |this, _, _, cx| this.select(ix, cx)))
+            .on_click(cx.listener(move |this, _, _, cx| this.run(ix, cx)))
+            .into_any_element()
+    }
+
+    /// "New event: Lunch with Sam", "Fri, Oct 30 · 1 – 2 PM" (CAL-39).
+    fn render_quick_row(
+        &self,
+        ix: usize,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let (title, when) = self
+            .quick
+            .as_ref()
+            .map(|(_, title, when)| (title.clone(), when.clone()))
+            .unwrap_or_default();
+        let selected = ix == self.selected;
+        div()
+            .id(ix)
+            .role(gpui::Role::ListBoxOption)
+            .aria_label(SharedString::from(format!("{title}, {when}")))
+            .aria_selected(selected)
+            .h(px(ROW_HEIGHT))
+            .px(SPACE_SM)
+            .child(
+                div()
+                    .size_full()
+                    .px(SPACE_MD)
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_MD)
+                    .rounded(RADIUS_MD)
+                    .when(selected, |this| this.bg(theme.selected_bg))
+                    .child(icon(
+                        Icon::Plus,
+                        px(16.),
+                        if selected {
+                            theme.icon_active
+                        } else {
+                            theme.icon
+                        },
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .items_baseline()
+                            .gap(SPACE_SM)
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .max_w(px(380.))
+                                    .truncate()
+                                    .text_size(TEXT_BASE)
+                                    .text_color(theme.text)
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(TEXT_SM)
+                                    .text_color(theme.text_faint)
+                                    .child(when),
+                            ),
+                    ),
             )
             .on_mouse_move(cx.listener(move |this, _, _, cx| this.select(ix, cx)))
             .on_click(cx.listener(move |this, _, _, cx| this.run(ix, cx)))

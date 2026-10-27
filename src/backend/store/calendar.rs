@@ -7,7 +7,7 @@ use rusqlite::{OptionalExtension as _, Transaction, params};
 use super::Store;
 use crate::{
     backend::CalOp,
-    calendar::{AccessRole, Calendar, Event, SeriesScope},
+    calendar::{AccessRole, Calendar, Event, SeriesScope, reminders::ReminderKey},
 };
 
 impl Store {
@@ -17,12 +17,14 @@ impl Store {
         for c in calendars {
             tx.execute(
                 "INSERT INTO calendars (account, id, summary, bg, selected, access_role,
-                    is_primary, time_zone, default_reminder)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                    is_primary, time_zone, default_reminder, default_reminders, conference_types)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                  ON CONFLICT (account, id) DO UPDATE SET
                     summary = excluded.summary, bg = excluded.bg, selected = excluded.selected,
                     access_role = excluded.access_role, is_primary = excluded.is_primary,
-                    time_zone = excluded.time_zone, default_reminder = excluded.default_reminder",
+                    time_zone = excluded.time_zone, default_reminder = excluded.default_reminder,
+                    default_reminders = excluded.default_reminders,
+                    conference_types = excluded.conference_types",
                 params![
                     account,
                     c.id,
@@ -33,6 +35,8 @@ impl Store {
                     c.primary,
                     c.time_zone,
                     c.default_reminder,
+                    super::json(&c.default_reminders),
+                    super::json(&c.conference_types),
                 ],
             )?;
         }
@@ -44,7 +48,7 @@ impl Store {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, summary, bg, selected, access_role, is_primary, time_zone,
-                default_reminder
+                default_reminder, default_reminders, conference_types
              FROM calendars WHERE account = ?1 AND hidden = 0 ORDER BY rowid",
         )?;
         let rows = stmt.query_map([account], |r| {
@@ -60,6 +64,12 @@ impl Store {
                 primary: r.get(5)?,
                 time_zone: r.get(6)?,
                 default_reminder: r.get(7)?,
+                default_reminders: super::from_json(
+                    &r.get::<_, Option<String>>(8)?.unwrap_or_default(),
+                ),
+                conference_types: super::from_json(
+                    &r.get::<_, Option<String>>(9)?.unwrap_or_default(),
+                ),
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -131,13 +141,15 @@ impl Store {
     ) -> anyhow::Result<()> {
         self.conn().execute(
             "INSERT INTO calendars (account, id, summary, bg, selected, hidden, access_role,
-                is_primary, time_zone, default_reminder)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                is_primary, time_zone, default_reminder, default_reminders, conference_types)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT (account, id) DO UPDATE SET
                 summary = excluded.summary, bg = excluded.bg, selected = excluded.selected,
                 hidden = excluded.hidden, access_role = excluded.access_role,
                 is_primary = excluded.is_primary, time_zone = excluded.time_zone,
-                default_reminder = excluded.default_reminder",
+                default_reminder = excluded.default_reminder,
+                default_reminders = excluded.default_reminders,
+                conference_types = excluded.conference_types",
             params![
                 account,
                 c.id,
@@ -149,7 +161,70 @@ impl Store {
                 c.primary,
                 c.time_zone,
                 c.default_reminder,
+                super::json(&c.default_reminders),
+                super::json(&c.conference_types),
             ],
+        )?;
+        Ok(())
+    }
+
+    // Reminder notifications (W5).
+
+    /// The reminders shown in the last week.
+    pub fn fired_reminders(&self, account: &str) -> anyhow::Result<Vec<ReminderKey>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT calendar_id, event_id, instance_start, offset_minutes FROM fired_reminders
+             WHERE account = ?1",
+        )?;
+        let rows = stmt.query_map([account], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, u32>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (calendar, event, start, minutes) = row?;
+            if let Ok(start) = NaiveDateTime::parse_from_str(&start, START_FORMAT) {
+                out.push(ReminderKey {
+                    calendar,
+                    event,
+                    start,
+                    minutes,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Keeps a reminder as shown at `now` (ms); ones older than a week go.
+    pub fn mark_reminder_fired(
+        &self,
+        account: &str,
+        key: &ReminderKey,
+        now: i64,
+    ) -> anyhow::Result<()> {
+        const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+        let conn = self.conn();
+        conn.execute(
+            "INSERT OR REPLACE INTO fired_reminders
+                (account, calendar_id, event_id, instance_start, offset_minutes, fired_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                account,
+                key.calendar,
+                key.event,
+                key.start.format(START_FORMAT).to_string(),
+                key.minutes,
+                now
+            ],
+        )?;
+        conn.execute(
+            "DELETE FROM fired_reminders WHERE account = ?1 AND fired_at < ?2",
+            params![account, now - WEEK_MS],
         )?;
         Ok(())
     }
@@ -369,12 +444,29 @@ impl Store {
         let tx = conn.transaction()?;
         match op {
             CalOp::Insert { event, .. } => write_event(&tx, account, event)?,
+            // "This and following", whole: the series ends, the new one
+            // starts.
+            CalOp::Split { after, new, .. } => {
+                write_event(&tx, account, after)?;
+                if let Some(until) = after.recurrence.as_ref().and_then(|r| r.until) {
+                    drop_instances_from(&tx, account, &after.id, until)?;
+                }
+                write_event(&tx, account, new)?;
+            }
             CalOp::Patch {
+                before,
                 after: event,
                 scope,
                 ..
             } => {
                 write_event(&tx, account, event)?;
+                // No longer repeating: its occurrences of their own go.
+                if before.is_series() && !event.is_series() {
+                    tx.execute(
+                        "DELETE FROM events WHERE account = ?1 AND recurring_event_id = ?2",
+                        params![account, event.id],
+                    )?;
+                }
                 // "This and following" for a change: the series ends, and
                 // its occurrences changed on their own from there on go.
                 if *scope == SeriesScope::Following
@@ -511,10 +603,38 @@ fn write_event(tx: &Transaction, account: &str, event: &Event) -> anyhow::Result
     Ok(())
 }
 
+/// How a fired reminder's occurrence start is kept.
+const START_FORMAT: &str = "%Y-%m-%dT%H:%M:%S";
+
 #[cfg(test)]
 mod tests {
     use crate::backend::{CalOp, SendUpdates, demo, store::Store};
-    use crate::calendar::{RsvpStatus, SeriesScope};
+    use crate::calendar::{RsvpStatus, SeriesScope, reminders::ReminderKey};
+
+    #[test]
+    fn fired_reminders_are_kept_for_a_week() {
+        let store = Store::open_in_memory().unwrap();
+        let key = |minutes| ReminderKey {
+            calendar: "work".into(),
+            event: "e1".into(),
+            start: crate::calendar::time::at(
+                chrono::NaiveDate::from_ymd_opt(2026, 10, 27).unwrap(),
+                9,
+                0,
+            ),
+            minutes,
+        };
+        const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+        store.mark_reminder_fired("me", &key(10), 0).unwrap();
+        store.mark_reminder_fired("me", &key(10), 0).unwrap();
+        assert_eq!(store.fired_reminders("me").unwrap(), [key(10)]);
+        assert!(store.fired_reminders("other").unwrap().is_empty());
+        // Eight days on, the old one goes.
+        store
+            .mark_reminder_fired("me", &key(60), 8 * DAY_MS)
+            .unwrap();
+        assert_eq!(store.fired_reminders("me").unwrap(), [key(60)]);
+    }
 
     #[test]
     fn events_round_trip_and_ops() {

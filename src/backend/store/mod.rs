@@ -150,6 +150,7 @@ impl Store {
             "sync_state",
             "outbox",
             "notified",
+            "fired_reminders",
         ] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE account = ?1"),

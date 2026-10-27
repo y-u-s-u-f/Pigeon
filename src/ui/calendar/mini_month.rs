@@ -59,7 +59,7 @@ impl CalendarView {
                 }))
         };
 
-        let weekdays = ["M", "T", "W", "T", "F", "S", "S"].map(|d| {
+        let weekdays = crate::calendar::time::weekday_letters().map(|d| {
             div()
                 .w(HIT_TARGET)
                 .flex()

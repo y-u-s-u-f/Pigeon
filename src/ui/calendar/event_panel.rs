@@ -13,14 +13,20 @@ use gpui::{
     px, relative,
 };
 
-use super::{CalendarView, Menu, PromptKind, today};
+use super::{
+    CalendarView, MeetState, Menu, PromptKind,
+    repeat::{self, RepeatDraft, RepeatEnd},
+    today,
+};
 use crate::ui::style::*;
 use crate::{
     actions::*,
     assets::Icon,
     backend::calendar::{Access, is_organizer},
     calendar::{
-        Attendee, Event, RsvpStatus, SeriesScope,
+        Attendee, Event, Reminder, ReminderMethod, RsvpStatus, Rule, SeriesScope,
+        policy::{self, MAX_REMINDERS},
+        recurrence::Freq,
         time::{
             self, add_months, date_label, duration_label, month_start, parse_date, parse_time,
             time_label, week_start,
@@ -46,31 +52,33 @@ pub const PANEL_WIDTH: f32 = 372.;
 /// Slots in the time pickers.
 const SLOT_MINUTES: i64 = 15;
 
-const REMINDERS: [Option<u32>; 8] = [
-    None,
-    Some(0),
-    Some(5),
-    Some(10),
-    Some(15),
-    Some(30),
-    Some(60),
-    Some(24 * 60),
-];
+/// The reminders "Add reminder" offers, in minutes before (CAL-33).
+const REMINDER_PRESETS: [u32; 10] = [0, 5, 10, 15, 30, 60, 120, 1440, 2880, 10080];
 
-fn reminder_label(minutes: Option<u32>) -> String {
+fn reminder_label(minutes: u32) -> String {
     match minutes {
-        None => "No reminder".into(),
-        Some(0) => "At start time".into(),
-        Some(m) if m % (24 * 60) == 0 => match m / (24 * 60) {
+        0 => "At start time".into(),
+        m if m % (7 * 24 * 60) == 0 => match m / (7 * 24 * 60) {
+            1 => "1 week before".into(),
+            w => format!("{w} weeks before"),
+        },
+        m if m % (24 * 60) == 0 => match m / (24 * 60) {
             1 => "1 day before".into(),
             d => format!("{d} days before"),
         },
-        Some(m) if m % 60 == 0 => match m / 60 {
+        m if m % 60 == 0 => match m / 60 {
             1 => "1 hour before".into(),
             h => format!("{h} hours before"),
         },
-        Some(m) => format!("{m} minutes before"),
+        m => format!("{m} minutes before"),
     }
+}
+
+/// A row of the "Add reminder" menu: the calendar's defaults, or one more.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReminderChoice {
+    CalendarDefault,
+    Add(u32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,6 +91,10 @@ pub enum Field {
     EndTime,
     EndDate,
     AllDay,
+    /// The repeat menu (CAL-29).
+    Repeat,
+    /// The custom repeat's end date.
+    RepeatUntil,
     Location,
     Video,
     Guests,
@@ -109,6 +121,8 @@ pub struct EditScope {
     /// where the occurrence was then.
     before: Option<(Event, NaiveDateTime)>,
     chosen: Option<SeriesScope>,
+    /// The change is to the repeat itself: "This event" isn't offered.
+    rule_changed: bool,
 }
 
 impl EditScope {
@@ -131,8 +145,12 @@ impl EditScope {
 
     /// The answer. Returns the series and the occurrence as they were.
     pub fn choose(&mut self, scope: SeriesScope) -> Option<(Event, NaiveDateTime)> {
+        if scope == SeriesScope::This && self.rule_changed {
+            return None;
+        }
         let before = self.before.take()?;
         self.chosen = Some(scope);
+        self.rule_changed = false;
         Some(before)
     }
 
@@ -141,7 +159,32 @@ impl EditScope {
         if self.chosen.is_some() {
             return None;
         }
+        self.rule_changed = false;
         self.before.take()
+    }
+
+    /// The repeat changed while asking (or with this change).
+    pub fn mark_rule_changed(&mut self) {
+        if self.before.is_some() {
+            self.rule_changed = true;
+        }
+    }
+
+    /// The answers offered: a change to the repeat applies to this and
+    /// the following events, or to all.
+    pub fn choices(&self) -> &'static [(SeriesScope, &'static str)] {
+        if self.rule_changed {
+            &[
+                (SeriesScope::Following, "This and following"),
+                (SeriesScope::All, "All events"),
+            ]
+        } else {
+            &[
+                (SeriesScope::This, "This event"),
+                (SeriesScope::Following, "This and following"),
+                (SeriesScope::All, "All events"),
+            ]
+        }
     }
 }
 
@@ -162,6 +205,10 @@ pub struct EventPanel {
     calendar_focus: FocusHandle,
     all_day_focus: FocusHandle,
     reminder_focus: FocusHandle,
+    repeat_focus: FocusHandle,
+    repeat_until: Entity<InputState>,
+    /// The custom repeat editor, while open.
+    pub repeat_draft: Option<RepeatDraft>,
     /// The row of the open calendar or reminder menu that up, down and
     /// enter work on.
     menu_highlight: usize,
@@ -215,6 +262,7 @@ impl EventPanel {
             event.video_link.clone(),
         );
         let guests = input(Field::Guests, "Add guests", String::new());
+        let repeat_until = input(Field::RepeatUntil, "Date", String::new());
         let notes = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(1, 24)
@@ -244,6 +292,9 @@ impl EventPanel {
             calendar_focus: cx.focus_handle(),
             all_day_focus: cx.focus_handle(),
             reminder_focus: cx.focus_handle(),
+            repeat_focus: cx.focus_handle(),
+            repeat_until,
+            repeat_draft: None,
             menu_highlight: 0,
             picker: None,
             picker_month: month_start(occurrence.date()),
@@ -268,7 +319,10 @@ impl EventPanel {
             Field::Location => &self.location,
             Field::Video => &self.video,
             Field::Guests => &self.guests,
-            Field::Notes | Field::Calendar | Field::AllDay | Field::Reminder => return None,
+            Field::RepeatUntil => &self.repeat_until,
+            Field::Notes | Field::Calendar | Field::AllDay | Field::Repeat | Field::Reminder => {
+                return None;
+            }
         })
     }
 
@@ -277,6 +331,7 @@ impl EventPanel {
             Field::Calendar => self.calendar_focus.clone(),
             Field::AllDay => self.all_day_focus.clone(),
             Field::Reminder => self.reminder_focus.clone(),
+            Field::Repeat => self.repeat_focus.clone(),
             Field::Notes => self.notes.focus_handle(cx),
             _ => self.input(field).expect("text fields").focus_handle(cx),
         }
@@ -291,6 +346,7 @@ impl EventPanel {
                 Field::StartDate,
                 Field::EndDate,
                 Field::AllDay,
+                Field::Repeat,
                 Field::Location,
                 Field::Video,
                 Field::Guests,
@@ -305,6 +361,7 @@ impl EventPanel {
                 Field::StartTime,
                 Field::EndTime,
                 Field::AllDay,
+                Field::Repeat,
                 Field::Location,
                 Field::Video,
                 Field::Guests,
@@ -407,7 +464,7 @@ impl CalendarView {
         let Some(panel) = &mut self.panel else {
             return false;
         };
-        if panel.picker.take().is_some() {
+        if panel.picker.take().is_some() || panel.repeat_draft.take().is_some() {
             cx.notify();
             return true;
         }
@@ -487,6 +544,7 @@ impl CalendarView {
     /// edited, starts there. "All events": the change stays on the series.
     fn choose_edit_scope(&mut self, scope: SeriesScope, cx: &mut Context<Self>) {
         let Some(panel) = &mut self.panel else { return };
+        // `None` too for "This event" after a change to the repeat.
         let Some((snapshot, origin)) = panel.edit_scope.choose(scope) else {
             return;
         };
@@ -538,7 +596,7 @@ impl CalendarView {
         cx.notify();
     }
 
-    fn edit_event(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Event)) {
+    pub(crate) fn edit_event(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Event)) {
         let Some(id) = self.panel.as_ref().map(|p| p.event_id.clone()) else {
             return;
         };
@@ -612,6 +670,9 @@ impl CalendarView {
                 if field.is_date() || field.is_time() {
                     self.commit_field(field, window, cx);
                 }
+                if field == Field::RepeatUntil {
+                    self.commit_repeat_until(window, cx);
+                }
                 if let Some(panel) = &mut self.panel {
                     if panel.picker == Some(field) {
                         panel.picker = None;
@@ -626,6 +687,7 @@ impl CalendarView {
                 secondary: false, ..
             } => match field {
                 Field::Guests => self.commit_guest(window, cx),
+                Field::RepeatUntil => self.commit_repeat_until(window, cx),
                 f if f.is_date() || f.is_time() => {
                     self.commit_field(f, window, cx);
                     self.move_field(true, window, cx);
@@ -751,15 +813,21 @@ impl CalendarView {
     /// The control (calendar, all-day, reminder) with focus, if any.
     fn focused_control(&self, window: &Window, cx: &gpui::App) -> Option<Field> {
         let panel = self.panel.as_ref()?;
-        [Field::Calendar, Field::AllDay, Field::Reminder]
-            .into_iter()
-            .find(|&f| panel.is_focused(f, window, cx))
+        [
+            Field::Calendar,
+            Field::AllDay,
+            Field::Repeat,
+            Field::Reminder,
+        ]
+        .into_iter()
+        .find(|&f| panel.is_focused(f, window, cx))
     }
 
     fn control_menu(field: Field) -> Option<Menu> {
         match field {
             Field::Calendar => Some(Menu::EventCalendar),
             Field::Reminder => Some(Menu::Reminder),
+            Field::Repeat => Some(Menu::Repeat),
             _ => None,
         }
     }
@@ -771,17 +839,23 @@ impl CalendarView {
         };
         let allowed = match menu {
             Menu::EventCalendar => self.can_move(event),
-            _ => self.access_of(event) == Access::Edit,
+            Menu::Repeat => self.can_repeat(event),
+            _ => {
+                self.access_of(event) == Access::Edit
+                    && self.reminders_of(event).len() < MAX_REMINDERS
+            }
         };
         if !allowed {
             return;
         }
         let current = match menu {
             Menu::EventCalendar => self.data.calendar_ix(&event.calendar).unwrap_or(0),
-            _ => REMINDERS
-                .iter()
-                .position(|&m| m == event.reminder_minutes)
-                .unwrap_or(0),
+            Menu::Repeat => {
+                let start = self.panel.as_ref().map_or(event.start, |p| p.occurrence);
+                repeat::preset_index(event.recurrence.as_ref(), start.date())
+                    .unwrap_or(repeat::presets(start.date()).len())
+            }
+            _ => 0,
         };
         if let Some(panel) = &mut self.panel {
             panel.menu_highlight = current;
@@ -791,7 +865,13 @@ impl CalendarView {
     }
 
     /// Choose row `ix` of the open calendar or reminder menu.
-    fn choose_menu_row(&mut self, menu: Menu, ix: usize, cx: &mut Context<Self>) {
+    fn choose_menu_row(
+        &mut self,
+        menu: Menu,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match menu {
             Menu::EventCalendar => {
                 let writable = |c: &&crate::calendar::Calendar| {
@@ -817,12 +897,26 @@ impl CalendarView {
                 }
             }
             Menu::Reminder => {
-                if let Some(&minutes) = REMINDERS.get(ix) {
-                    self.edit_event(cx, |e| {
-                        e.reminder_minutes = minutes;
-                        e.reminder_use_default = false;
-                    });
+                let choice = self
+                    .panel_event()
+                    .and_then(|(_, e)| self.reminder_choices(e).get(ix).copied());
+                match choice {
+                    Some(ReminderChoice::CalendarDefault) => self.use_default_reminders(cx),
+                    Some(ReminderChoice::Add(minutes)) => {
+                        self.change_reminders(cx, |list| list.push(Reminder::popup(minutes)))
+                    }
+                    None => {}
                 }
+            }
+            Menu::Repeat => {
+                let start = self.panel.as_ref().map(|p| p.occurrence.date());
+                let presets = start.map(repeat::presets).unwrap_or_default();
+                self.menu = None;
+                match presets.into_iter().nth(ix) {
+                    Some((rule, _)) => self.set_rule(rule, cx),
+                    None => self.open_custom_repeat(window, cx),
+                }
+                return cx.notify();
             }
             Menu::Calendars | Menu::GoToDate => {}
         }
@@ -849,7 +943,7 @@ impl CalendarView {
             None => self.toggle_all_day(window, cx),
             Some(menu) if self.menu == Some(menu) => {
                 let ix = self.panel.as_ref().map_or(0, |p| p.menu_highlight);
-                self.choose_menu_row(menu, ix, cx);
+                self.choose_menu_row(menu, ix, window, cx);
             }
             Some(menu) => self.open_control_menu(menu, cx),
         }
@@ -869,8 +963,15 @@ impl CalendarView {
         }
         let count = match menu {
             Menu::EventCalendar => self.data.calendars.len(),
-            _ => REMINDERS.len(),
-        } as isize;
+            Menu::Repeat => self
+                .panel
+                .as_ref()
+                .map_or(0, |p| repeat::presets(p.occurrence.date()).len() + 1),
+            _ => self
+                .panel_event()
+                .map_or(0, |(_, e)| self.reminder_choices(e).len()),
+        }
+        .max(1) as isize;
         if let Some(panel) = &mut self.panel {
             panel.menu_highlight =
                 (panel.menu_highlight as isize + delta).rem_euclid(count) as usize;
@@ -993,6 +1094,286 @@ impl CalendarView {
             self.patched(before, cx);
         }
         self.retime_occurrence(&id, start, new_start, new_end, window, cx);
+    }
+
+    // Repeat (CAL-29), reminders (CAL-33) and Meet (CAL-34).
+
+    /// Whether the panel may change the event's repeat: not for an
+    /// occurrence changed on its own, which Google keeps in its series.
+    fn can_repeat(&self, event: &Event) -> bool {
+        self.access_of(event) == Access::Edit && event.recurring_event_id.is_none()
+    }
+
+    /// The open event repeats by `rule`, or not at all. For a series this
+    /// asks "This and following" or "All events"; either way the whole
+    /// RRULE is written.
+    fn set_rule(&mut self, rule: Option<Rule>, cx: &mut Context<Self>) {
+        let Some((_, event)) = self.panel_event() else {
+            return;
+        };
+        if !self.can_repeat(event) || event.recurrence == rule {
+            return;
+        }
+        let was_series = event.is_series();
+        self.edit_event(cx, |e| {
+            e.recurrence = rule;
+            // A single event keeps no exceptions.
+            if e.recurrence.is_none() {
+                e.exceptions.clear();
+            }
+        });
+        if was_series && let Some(panel) = &mut self.panel {
+            panel.edit_scope.mark_rule_changed();
+        }
+        cx.notify();
+    }
+
+    fn open_custom_repeat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((panel, event)) = self.panel_event() else {
+            return;
+        };
+        if !self.can_repeat(event) {
+            return;
+        }
+        let draft = RepeatDraft::new(event.recurrence.as_ref(), panel.occurrence.date());
+        if let Some(panel) = &mut self.panel {
+            panel.repeat_draft = Some(draft);
+        }
+        self.sync_repeat_until(window, cx);
+        cx.notify();
+    }
+
+    fn edit_draft(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut RepeatDraft),
+    ) {
+        if let Some(draft) = self.panel.as_mut().and_then(|p| p.repeat_draft.as_mut()) {
+            f(draft);
+            self.sync_repeat_until(window, cx);
+            cx.notify();
+        }
+    }
+
+    /// The end date field shows the draft's.
+    fn sync_repeat_until(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(panel) = &self.panel else { return };
+        let Some(RepeatEnd::On(day)) = panel.repeat_draft.as_ref().map(|d| d.end) else {
+            return;
+        };
+        let label = date_label(day, today());
+        let input = panel.repeat_until.clone();
+        if input.read(cx).value() != label {
+            input.update(cx, |input, cx| input.set_value(label, window, cx));
+        }
+    }
+
+    fn commit_repeat_until(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(panel) = &self.panel else { return };
+        let text = panel.repeat_until.read(cx).value().to_string();
+        if let Some(day) = parse_date(&text, today()) {
+            self.edit_draft(window, cx, |d| d.end = RepeatEnd::On(day));
+        } else {
+            self.sync_repeat_until(window, cx);
+        }
+    }
+
+    fn apply_custom_repeat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_repeat_until(window, cx);
+        let Some(draft) = self.panel.as_mut().and_then(|p| p.repeat_draft.take()) else {
+            return;
+        };
+        self.set_rule(Some(draft.to_rule()), cx);
+        if let Some(panel) = &self.panel {
+            window.focus(&panel.repeat_focus, cx);
+        }
+    }
+
+    /// The reminders that apply: the calendar's defaults, or the event's.
+    fn reminders_of(&self, event: &Event) -> Vec<Reminder> {
+        match self.data.calendar(&event.calendar) {
+            Some(calendar) => policy::reminders_for(event, calendar),
+            None => event.own_reminders(),
+        }
+    }
+
+    fn reminder_choices(&self, event: &Event) -> Vec<ReminderChoice> {
+        let current = self.reminders_of(event);
+        (!event.reminder_use_default)
+            .then_some(ReminderChoice::CalendarDefault)
+            .into_iter()
+            .chain(
+                REMINDER_PRESETS
+                    .into_iter()
+                    .filter(|&m| !current.iter().any(|r| r.minutes == m))
+                    .map(ReminderChoice::Add),
+            )
+            .collect()
+    }
+
+    /// The event's own reminders become `f`'s, from those that apply now.
+    fn change_reminders(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Vec<Reminder>)) {
+        let Some((_, event)) = self.panel_event() else {
+            return;
+        };
+        let mut list = self.reminders_of(event);
+        f(&mut list);
+        self.edit_event(cx, |e| e.set_reminders(list));
+    }
+
+    fn use_default_reminders(&mut self, cx: &mut Context<Self>) {
+        let Some((_, event)) = self.panel_event() else {
+            return;
+        };
+        let default = self
+            .data
+            .calendar(&event.calendar)
+            .and_then(|c| c.default_reminder);
+        self.edit_event(cx, |e| {
+            e.reminder_use_default = true;
+            e.reminders.clear();
+            e.reminder_minutes = default;
+        });
+    }
+
+    /// What "Add Google Meet" shows for `event`, if anything: only on
+    /// calendars that take Meet (any writable one in demo mode), for
+    /// events without a call yet.
+    pub(crate) fn meet_state(&self, event: &Event, cx: &gpui::App) -> Option<MeetState> {
+        if !event.conference_uri.is_empty()
+            || !event.video_link.trim().is_empty()
+            || self.access_of(event) != Access::Edit
+        {
+            return None;
+        }
+        if event.meet_request.is_some() {
+            return Some(MeetState::Adding);
+        }
+        let demo = self.backend.read(cx).is_demo();
+        let allowed = self.data.calendar(&event.calendar).is_some_and(|c| {
+            c.allows_meet()
+                || demo
+                    && matches!(
+                        c.access_role,
+                        crate::calendar::AccessRole::Owner | crate::calendar::AccessRole::Writer
+                    )
+        });
+        if !allowed {
+            return None;
+        }
+        Some(if self.meet_requests.contains_key(&event.id) {
+            MeetState::Failed
+        } else {
+            MeetState::Offer
+        })
+    }
+
+    /// Ask Google for a Meet on the open event; again, with the same
+    /// request id, after a failure. Demo mode makes up a link.
+    fn add_meet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((_, event)) = self.panel_event() else {
+            return;
+        };
+        if !matches!(
+            self.meet_state(event, cx),
+            Some(MeetState::Offer | MeetState::Failed)
+        ) {
+            return;
+        }
+        let id = event.id.clone();
+        if self.backend.read(cx).is_demo() {
+            let letters: String = id
+                .chars()
+                .filter_map(|c| c.to_digit(16))
+                .map(|d| (b'a' + d as u8) as char)
+                .chain(std::iter::repeat('x'))
+                .take(10)
+                .collect();
+            let link = format!(
+                "https://meet.google.com/{}-{}-{}",
+                &letters[..3],
+                &letters[3..7],
+                &letters[7..]
+            );
+            self.edit_event(cx, |e| {
+                e.conference_uri = link.clone();
+                e.video_link = link.clone();
+            });
+            if let Some(panel) = &self.panel {
+                let video = panel.video.clone();
+                video.update(cx, |input, cx| input.set_value(link, window, cx));
+            }
+        } else {
+            let request = match self.meet_requests.get(&id) {
+                Some(request) => request.clone(),
+                None => {
+                    let request = self.new_id();
+                    self.meet_requests.insert(id.clone(), request.clone());
+                    request
+                }
+            };
+            self.edit_event(cx, |e| e.meet_request = Some(request));
+        }
+        // Goes now, unless a series waits for its scope.
+        if !self.asking_scope() {
+            self.flush_edit(cx);
+        }
+        cx.notify();
+    }
+
+    /// The selected event in the panel, opening it if need be.
+    fn ensure_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.panel.is_none()
+            && let Some(selected) = self.selected.clone()
+        {
+            self.open_event(&selected.event_id, selected.start, false, window, cx);
+        }
+        self.panel.is_some()
+    }
+
+    pub(crate) fn add_google_meet(
+        &mut self,
+        _: &AddGoogleMeet,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.ensure_panel(window, cx) {
+            self.add_meet(window, cx);
+        }
+    }
+
+    /// Open a control's menu from its shortcut, the control focused.
+    fn open_menu_from_key(&mut self, field: Field, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.ensure_panel(window, cx) {
+            return;
+        }
+        let Some(menu) = Self::control_menu(field) else {
+            return;
+        };
+        if let Some(panel) = &self.panel {
+            let handle = panel.focus_handle_of(field, cx);
+            window.focus(&handle, cx);
+        }
+        self.open_control_menu(menu, cx);
+    }
+
+    pub(crate) fn set_repeat(
+        &mut self,
+        _: &SetRepeat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_menu_from_key(Field::Repeat, window, cx);
+    }
+
+    pub(crate) fn add_reminder(
+        &mut self,
+        _: &AddReminder,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_menu_from_key(Field::Reminder, window, cx);
     }
 
     // Guests.
@@ -1194,17 +1575,21 @@ impl CalendarView {
                         ),
                     ),
             )
-            .children(self.repeat_line(event).map(|line| {
-                div()
-                    .pl(SPACE_LG)
-                    .flex()
-                    .items_center()
-                    .gap(SPACE_SM)
-                    .text_size(TEXT_SM)
-                    .text_color(theme.text_muted)
-                    .child(icon(Icon::Repeat, px(13.), theme.text_faint))
-                    .child(line)
-            }))
+            .children(
+                self.repeat_line(event)
+                    .filter(|_| !self.can_repeat(event))
+                    .map(|line| {
+                        div()
+                            .pl(SPACE_LG)
+                            .flex()
+                            .items_center()
+                            .gap(SPACE_SM)
+                            .text_size(TEXT_SM)
+                            .text_color(theme.text_muted)
+                            .child(icon(Icon::Repeat, px(13.), theme.text_faint))
+                            .child(line)
+                    }),
+            )
             .children(read_only_note)
             // After the first change to a repeating event: to which?
             .when(panel.edit_scope.asking(), |d| {
@@ -1227,11 +1612,7 @@ impl CalendarView {
                                 .child("Apply this change to"),
                         )
                         .child(self.render_scope_buttons(
-                            &[
-                                (SeriesScope::This, "This event"),
-                                (SeriesScope::Following, "This and following"),
-                                (SeriesScope::All, "All events"),
-                            ],
+                            panel.edit_scope.choices(),
                             false,
                             &theme,
                             cx,
@@ -1249,6 +1630,9 @@ impl CalendarView {
             .child(title)
             .child(divider(&theme))
             .child(self.render_when(panel, event, &theme, window, cx))
+            .when(self.can_repeat(event), |d| {
+                d.child(self.render_repeat(panel, event, &theme, window, cx))
+            })
             .child(divider(&theme))
             .child(self.render_place(panel, event, &theme, window, cx))
             .child(divider(&theme))
@@ -1428,8 +1812,8 @@ impl CalendarView {
                         .when(current, |d| {
                             d.child(icon(Icon::Check, px(14.), theme.accent))
                         })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.choose_menu_row(Menu::EventCalendar, ix, cx)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.choose_menu_row(Menu::EventCalendar, ix, window, cx)
                         }))
                 });
             dropdown(px(34.), px(210.), theme).children(rows)
@@ -1635,7 +2019,7 @@ impl CalendarView {
                     }
                 }))
         };
-        let weekdays = ["M", "T", "W", "T", "F", "S", "S"].map(|d| {
+        let weekdays = time::weekday_letters().map(|d| {
             div()
                 .w(px(32.))
                 .flex()
@@ -1812,6 +2196,7 @@ impl CalendarView {
     ) -> AnyElement {
         let link = event.video_link.clone();
         let editable = self.access_of(event) == Access::Edit;
+        let meet = self.meet_state(event, cx).filter(|_| link.is_empty());
         // A Meet link from Google stays as Google made it (CAL-17).
         let video_readonly = !editable || !event.conference_uri.is_empty();
         div()
@@ -1882,7 +2267,8 @@ impl CalendarView {
                                     .child("Join")
                                     .on_click(move |_, _, cx| cx.open_url(&link)),
                             )
-                        }),
+                        })
+                        .when_some(meet, |d, state| d.child(meet_button(state, theme, cx))),
                 )
                 .pt(px(0.)),
             )
@@ -2136,6 +2522,503 @@ impl CalendarView {
         .into_any_element()
     }
 
+    /// The reminders that apply, each with its method; "Add reminder".
+    fn render_reminders(
+        &self,
+        event: &Event,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let editable = self.access_of(event) == Access::Edit;
+        let reminders = self.reminders_of(event);
+        let uses_default = event.reminder_use_default;
+        let open = self.menu == Some(Menu::Reminder);
+        let highlight = self.panel.as_ref().map_or(0, |p| p.menu_highlight);
+        let menu = open.then(|| {
+            let rows = self
+                .reminder_choices(event)
+                .into_iter()
+                .enumerate()
+                .map(|(ix, choice)| {
+                    let label = match choice {
+                        ReminderChoice::CalendarDefault => "Calendar default".to_string(),
+                        ReminderChoice::Add(minutes) => reminder_label(minutes),
+                    };
+                    menu_row(("reminder", ix), ix == highlight, theme)
+                        .role(gpui::Role::MenuItem)
+                        .aria_label(label.clone())
+                        .child(div().flex_1().child(label))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.choose_menu_row(Menu::Reminder, ix, window, cx)
+                        }))
+                });
+            deferred(
+                anchored()
+                    .snap_to_window_with_margin(px(8.))
+                    .child(dropdown(px(32.), px(200.), theme).children(rows)),
+            )
+            .with_priority(2)
+        });
+        let rows = reminders.iter().copied().enumerate().map(|(ix, reminder)| {
+            let label = reminder_label(reminder.minutes);
+            let email = reminder.method == ReminderMethod::Email;
+            div()
+                .h(px(30.))
+                .flex()
+                .items_center()
+                .gap(SPACE_SM)
+                .text_size(TEXT_BASE)
+                .child(div().flex_1().min_w_0().truncate().child(label.clone()))
+                .when(uses_default, |d| {
+                    d.child(
+                        div()
+                            .text_size(TEXT_SM)
+                            .text_color(theme.text_faint)
+                            .child("Default"),
+                    )
+                })
+                .map(|d| {
+                    if !editable {
+                        return d.child(
+                            div()
+                                .text_size(TEXT_SM)
+                                .text_color(theme.text_muted)
+                                .child(if email { "Email" } else { "Notification" }),
+                        );
+                    }
+                    d.child(
+                        chip(
+                            ("reminder-method", ix),
+                            if email { "Email" } else { "Notification" },
+                            false,
+                            theme,
+                        )
+                        .aria_label(if email {
+                            format!("{label} by email; switch to notification")
+                        } else {
+                            format!("{label} as a notification; switch to email")
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.change_reminders(cx, |list| {
+                                if let Some(r) = list.get_mut(ix) {
+                                    r.method = if email {
+                                        ReminderMethod::Popup
+                                    } else {
+                                        ReminderMethod::Email
+                                    };
+                                }
+                            })
+                        })),
+                    )
+                    .child(
+                        div()
+                            .id(("reminder-remove", ix))
+                            .role(gpui::Role::Button)
+                            .aria_label(format!("Remove reminder {label}"))
+                            .size(px(24.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(RADIUS_SM)
+                            .hover(|s| s.bg(theme.hover_bg))
+                            .child(icon(Icon::X, px(13.), theme.text_faint))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.change_reminders(cx, |list| {
+                                    if ix < list.len() {
+                                        list.remove(ix);
+                                    }
+                                })
+                            })),
+                    )
+                })
+        });
+        let can_add = editable && reminders.len() < MAX_REMINDERS;
+        section(
+            Icon::Bell,
+            theme,
+            div()
+                .flex()
+                .flex_col()
+                .children(rows)
+                .when(reminders.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .h(px(30.))
+                            .flex()
+                            .items_center()
+                            .text_size(TEXT_BASE)
+                            .text_color(theme.text_muted)
+                            .child("No reminders"),
+                    )
+                })
+                .when(can_add, |d| {
+                    d.child(
+                        div()
+                            .flex()
+                            .child(
+                                control(
+                                    div().id("reminder"),
+                                    self.panel.as_ref().map(|p| p.reminder_focus.clone()),
+                                    theme,
+                                )
+                                .role(gpui::Role::Button)
+                                .aria_label("Add reminder")
+                                .h(px(28.))
+                                .px(SPACE_SM)
+                                .flex()
+                                .items_center()
+                                .gap(SPACE_SM)
+                                .rounded(RADIUS_MD)
+                                .text_size(TEXT_SM)
+                                .text_color(theme.text_muted)
+                                .when(open, |d| d.bg(theme.selected_bg))
+                                .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
+                                .child(icon(Icon::Plus, px(13.), theme.text_faint))
+                                .child("Add reminder")
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| this.click_control_menu(Menu::Reminder, cx),
+                                )),
+                            )
+                            .when(open, |d| d.child(self.menu_backdrop(window, cx)))
+                            .children(menu),
+                    )
+                }),
+        )
+    }
+
+    /// The repeat menu, and the custom editor under it when open.
+    fn render_repeat(
+        &self,
+        panel: &EventPanel,
+        event: &Event,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = self.menu == Some(Menu::Repeat);
+        let start = panel.occurrence.date();
+        let presets = repeat::presets(start);
+        let custom_ix = presets.len();
+        let current = repeat::preset_index(event.recurrence.as_ref(), start).unwrap_or(custom_ix);
+        let highlight = panel.menu_highlight;
+        let label = event
+            .recurrence
+            .as_ref()
+            .map_or_else(|| "Does not repeat".to_string(), |r| r.label());
+        let menu = open.then(|| {
+            let rows = presets
+                .into_iter()
+                .map(|(_, label)| label)
+                .chain(["Custom…".to_string()])
+                .enumerate()
+                .map(|(ix, label)| {
+                    menu_row(("repeat-choice", ix), ix == highlight, theme)
+                        .role(gpui::Role::MenuItem)
+                        .aria_label(label.clone())
+                        .child(div().flex_1().child(label))
+                        .when(ix == current, |d| {
+                            d.child(icon(Icon::Check, px(14.), theme.accent))
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.choose_menu_row(Menu::Repeat, ix, window, cx)
+                        }))
+                });
+            deferred(
+                anchored()
+                    .snap_to_window_with_margin(px(8.))
+                    .child(dropdown(px(32.), px(260.), theme).children(rows)),
+            )
+            .with_priority(2)
+        });
+        let button = control(div().id("repeat"), Some(panel.repeat_focus.clone()), theme)
+            .role(gpui::Role::Button)
+            .aria_label(format!("Repeat: {label}"))
+            .h(px(28.))
+            .min_w_0()
+            .px(SPACE_SM)
+            .flex()
+            .items_center()
+            .gap(SPACE_SM)
+            .rounded(RADIUS_MD)
+            .text_size(TEXT_BASE)
+            .when(open, |d| d.bg(theme.selected_bg))
+            .hover(|s| s.bg(theme.hover_bg))
+            .child(div().min_w_0().truncate().child(label))
+            .child(icon(Icon::ChevronDown, px(13.), theme.text_faint))
+            .on_click(cx.listener(|this, _, _, cx| this.click_control_menu(Menu::Repeat, cx)));
+        section(
+            Icon::Repeat,
+            theme,
+            div()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .flex()
+                        .min_w_0()
+                        .child(button)
+                        .when(open, |d| d.child(self.menu_backdrop(window, cx)))
+                        .children(menu),
+                )
+                .children(
+                    panel
+                        .repeat_draft
+                        .as_ref()
+                        .map(|draft| self.render_repeat_draft(panel, draft, theme, window, cx)),
+                ),
+        )
+        .pt(px(0.))
+        .into_any_element()
+    }
+
+    /// The custom repeat editor: every N units, on which days, and until.
+    fn render_repeat_draft(
+        &self,
+        panel: &EventPanel,
+        draft: &RepeatDraft,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let muted = |text: &'static str| {
+            div()
+                .text_size(TEXT_SM)
+                .text_color(theme.text_muted)
+                .child(text)
+        };
+        let plural = draft.interval != 1;
+        let units = [
+            (Freq::Daily, "day"),
+            (Freq::Weekly, "week"),
+            (Freq::Monthly, "month"),
+            (Freq::Yearly, "year"),
+        ];
+        let every = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(SPACE_XS)
+            .child(muted("Every"))
+            .child(
+                step_button(
+                    "repeat-fewer",
+                    Icon::Minus,
+                    "Fewer",
+                    draft.interval > 1,
+                    theme,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.edit_draft(window, cx, |d| d.step_interval(-1))
+                })),
+            )
+            .child(
+                div()
+                    .min_w(SPACE_XL)
+                    .flex()
+                    .justify_center()
+                    .text_size(TEXT_BASE)
+                    .child(draft.interval.to_string()),
+            )
+            .child(
+                step_button(
+                    "repeat-more",
+                    Icon::Plus,
+                    "More",
+                    draft.interval < repeat::MAX_INTERVAL,
+                    theme,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.edit_draft(window, cx, |d| d.step_interval(1))
+                })),
+            )
+            .children(units.into_iter().enumerate().map(|(ix, (freq, unit))| {
+                let label = if plural {
+                    format!("{unit}s")
+                } else {
+                    unit.to_string()
+                };
+                chip(("repeat-unit", ix), label, draft.freq == freq, theme).on_click(cx.listener(
+                    move |this, _, window, cx| this.edit_draft(window, cx, |d| d.freq = freq),
+                ))
+            }));
+        let first = time::first_weekday().num_days_from_monday();
+        let days = (draft.freq == Freq::Weekly).then(|| {
+            div().flex().gap(SPACE_2XS).children(
+                time::weekday_letters()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ix, letter)| {
+                        let day = chrono::Weekday::try_from(((first + ix as u32) % 7) as u8)
+                            .unwrap_or(chrono::Weekday::Mon);
+                        chip(("repeat-day", ix), letter, draft.days.contains(&day), theme)
+                            .w(px(28.))
+                            .justify_center()
+                            .aria_label(format!("{day:?}"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.edit_draft(window, cx, |d| d.toggle_day(day))
+                            }))
+                    }),
+            )
+        });
+        let monthly = (draft.freq == Freq::Monthly).then(|| {
+            let presets = repeat::presets(draft.start);
+            let on = |ix: usize| presets[ix].1.trim_start_matches("Every month ").to_string();
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(SPACE_XS)
+                .child(
+                    chip("repeat-by-date", on(5), !draft.by_weekday, theme).on_click(cx.listener(
+                        |this, _, window, cx| this.edit_draft(window, cx, |d| d.by_weekday = false),
+                    )),
+                )
+                .child(
+                    chip("repeat-by-weekday", on(4), draft.by_weekday, theme).on_click(
+                        cx.listener(|this, _, window, cx| {
+                            this.edit_draft(window, cx, |d| d.by_weekday = true)
+                        }),
+                    ),
+                )
+        });
+        let end_kind = draft.end_kind();
+        let ends = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(SPACE_XS)
+            .child(muted("Ends"))
+            .children(
+                ["Never", "On", "After"]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ix, label)| {
+                        chip(("repeat-end", ix), label, end_kind == ix, theme).on_click(
+                            cx.listener(move |this, _, window, cx| {
+                                this.edit_draft(window, cx, |d| d.set_end_kind(ix))
+                            }),
+                        )
+                    }),
+            );
+        let end_detail = match draft.end {
+            RepeatEnd::Never => None,
+            RepeatEnd::On(_) => Some(
+                field_box(panel.is_focused(Field::RepeatUntil, window, cx), theme)
+                    .w(px(160.))
+                    .text_size(TEXT_BASE)
+                    .child(field_input(&panel.repeat_until, false))
+                    .into_any_element(),
+            ),
+            RepeatEnd::After(n) => Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_XS)
+                    .child(
+                        step_button(
+                            "repeat-count-down",
+                            Icon::Minus,
+                            "Fewer times",
+                            n > 1,
+                            theme,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.edit_draft(window, cx, |d| d.step_count(-1))
+                        })),
+                    )
+                    .child(div().text_size(TEXT_BASE).child(if n == 1 {
+                        "once".into()
+                    } else {
+                        format!("{n} times")
+                    }))
+                    .child(
+                        step_button(
+                            "repeat-count-up",
+                            Icon::Plus,
+                            "More times",
+                            n < repeat::MAX_COUNT,
+                            theme,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.edit_draft(window, cx, |d| d.step_count(1))
+                        })),
+                    )
+                    .into_any_element(),
+            ),
+        };
+        let buttons = div()
+            .flex()
+            .gap(SPACE_XS)
+            .child(
+                focusable_control(div().id("repeat-done"), theme)
+                    .role(gpui::Role::Button)
+                    .aria_label("Done")
+                    .h(px(28.))
+                    .px(SPACE_MD)
+                    .flex()
+                    .items_center()
+                    .rounded(RADIUS_MD)
+                    .bg(theme.accent)
+                    .text_color(theme.accent_text)
+                    .text_size(TEXT_SM)
+                    .font_weight(FontWeight::MEDIUM)
+                    .hover(|s| s.opacity(0.9))
+                    .child("Done")
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.apply_custom_repeat(window, cx)),
+                    ),
+            )
+            .child(
+                focusable_control(div().id("repeat-cancel"), theme)
+                    .role(gpui::Role::Button)
+                    .aria_label("Cancel")
+                    .h(px(28.))
+                    .px(SPACE_MD)
+                    .flex()
+                    .items_center()
+                    .rounded(RADIUS_MD)
+                    .text_size(TEXT_SM)
+                    .text_color(theme.text_muted)
+                    .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
+                    .child("Cancel")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(panel) = &mut this.panel {
+                            panel.repeat_draft = None;
+                        }
+                        cx.notify();
+                    })),
+            );
+        enter(
+            "repeat-draft",
+            div()
+                .id("repeat-draft")
+                .role(gpui::Role::Group)
+                .aria_label("Custom repeat")
+                .mt(SPACE_XS)
+                .p(SPACE_SM)
+                .flex()
+                .flex_col()
+                .gap(SPACE_SM)
+                .rounded(RADIUS_MD)
+                .border_1()
+                .border_color(theme.border)
+                .child(every)
+                .children(days)
+                .children(monthly)
+                .child(ends)
+                .children(end_detail)
+                .child(
+                    div()
+                        .text_size(TEXT_SM)
+                        .text_color(theme.text_faint)
+                        .child(draft.to_rule().label()),
+                )
+                .child(buttons),
+        )
+        .into_any_element()
+    }
+
     /// Reminder, busy or free, and the user's answer to an invite.
     fn render_options(
         &self,
@@ -2144,57 +3027,7 @@ impl CalendarView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let open = self.menu == Some(Menu::Reminder);
-        let current = event.reminder_minutes;
-        let highlight = self.panel.as_ref().map_or(0, |p| p.menu_highlight);
-        let menu = open.then(|| {
-            let rows = REMINDERS.iter().enumerate().map(|(ix, &minutes)| {
-                menu_row(("reminder", ix), ix == highlight, theme)
-                    .child(div().flex_1().child(reminder_label(minutes)))
-                    .when(minutes == current, |d| {
-                        d.child(icon(Icon::Check, px(14.), theme.accent))
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.choose_menu_row(Menu::Reminder, ix, cx)
-                    }))
-            });
-            deferred(
-                anchored()
-                    .snap_to_window_with_margin(px(8.))
-                    .child(dropdown(px(32.), px(200.), theme).children(rows)),
-            )
-            .with_priority(2)
-        });
-
-        let reminder = section(
-            Icon::Bell,
-            theme,
-            div()
-                .flex()
-                .child(
-                    control(
-                        div().id("reminder"),
-                        self.panel.as_ref().map(|p| p.reminder_focus.clone()),
-                        theme,
-                    )
-                    .h(px(28.))
-                    .px(SPACE_SM)
-                    .flex()
-                    .items_center()
-                    .gap(SPACE_SM)
-                    .rounded(RADIUS_MD)
-                    .text_size(TEXT_BASE)
-                    .when(open, |d| d.bg(theme.selected_bg))
-                    .hover(|s| s.bg(theme.hover_bg))
-                    .child(reminder_label(current))
-                    .child(icon(Icon::ChevronDown, px(13.), theme.text_faint))
-                    .on_click(
-                        cx.listener(|this, _, _, cx| this.click_control_menu(Menu::Reminder, cx)),
-                    ),
-                )
-                .when(open, |d| d.child(self.menu_backdrop(window, cx)))
-                .children(menu),
-        );
+        let reminder = self.render_reminders(event, theme, window, cx);
 
         let busy = event.busy;
         let availability = section(
@@ -2361,6 +3194,101 @@ fn control(
         .border_color(gpui::transparent_black())
         .when_some(focus, |d, focus| d.track_focus(&focus))
         .focus_visible(move |s| s.border_color(ring))
+}
+
+/// A small toggle in the repeat and reminder rows.
+fn chip(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    active: bool,
+    theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
+    let label = label.into();
+    div()
+        .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(label.clone())
+        .h(px(24.))
+        .px(SPACE_SM)
+        .flex()
+        .items_center()
+        .rounded(RADIUS_SM)
+        .text_size(TEXT_SM)
+        .font_weight(FontWeight::MEDIUM)
+        .map(|d| {
+            if active {
+                d.bg(theme.accent).text_color(theme.accent_text)
+            } else {
+                d.bg(theme.chip_bg)
+                    .text_color(theme.text_muted)
+                    .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
+            }
+        })
+        .child(label)
+}
+
+/// A − or + button; does nothing at its bound.
+fn step_button(
+    id: &'static str,
+    glyph: Icon,
+    label: &'static str,
+    enabled: bool,
+    theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .size(px(24.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(RADIUS_SM)
+        .bg(theme.chip_bg)
+        .map(|d| {
+            if enabled {
+                d.hover(|s| s.bg(theme.hover_bg))
+            } else {
+                d.opacity(0.4)
+            }
+        })
+        .child(icon(glyph, px(13.), theme.text_muted))
+}
+
+/// "Add Google Meet", "Adding…", or "Retry" after Google said no (CAL-34).
+fn meet_button(state: MeetState, theme: &Theme, cx: &mut Context<CalendarView>) -> AnyElement {
+    let (label, aria, color) = match state {
+        MeetState::Offer => ("Add Meet", "Add Google Meet", theme.text),
+        MeetState::Adding => ("Adding Meet…", "Adding Google Meet", theme.text_faint),
+        MeetState::Failed => (
+            "Retry Meet",
+            "Couldn't add Google Meet. Try again",
+            theme.danger,
+        ),
+    };
+    let busy = state == MeetState::Adding;
+    div()
+        .id("add-meet")
+        .role(gpui::Role::Button)
+        .aria_label(aria)
+        .flex_none()
+        .h(px(28.))
+        .px(SPACE_MD)
+        .flex()
+        .items_center()
+        .gap(SPACE_SM)
+        .rounded(RADIUS_MD)
+        .bg(theme.chip_bg)
+        .text_color(color)
+        .text_size(TEXT_SM)
+        .font_weight(FontWeight::MEDIUM)
+        .child(icon(Icon::Video, px(14.), color))
+        .child(label)
+        .when(!busy, |d| {
+            d.hover(|s| s.bg(theme.hover_bg))
+                .on_click(cx.listener(|this, _, window, cx| this.add_meet(window, cx)))
+        })
+        .into_any_element()
 }
 
 fn switch(on: bool, theme: &Theme) -> impl IntoElement {

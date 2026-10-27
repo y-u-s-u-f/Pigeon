@@ -77,6 +77,13 @@ pub struct Saved {
     pub remote_images: RemoteImages,
     /// Sprint 2 W1: notify about new mail (NTF-1).
     pub notifications: bool,
+    // W5.
+    /// The day the calendar showed last, where it opens again (CAL-23).
+    pub calendar_date: Option<chrono::NaiveDate>,
+    /// 24-hour times; `None` follows Google Calendar (CAL-41).
+    pub time_24h: Option<bool>,
+    /// A new event's length in minutes; `None` follows Google Calendar.
+    pub event_minutes: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +114,9 @@ impl Default for Saved {
             week_numbers: false,
             remote_images: RemoteImages::Ask,
             notifications: true,
+            calendar_date: None,
+            time_24h: None,
+            event_minutes: None,
         }
     }
 }
@@ -231,6 +241,9 @@ pub enum SettingId {
     CalendarView,
     WeekNumbers,
     RemoteImages,
+    TimeFormat,
+    EventLength,
+    TimeZone,
     Account,
     Access,
     LastSync,
@@ -288,6 +301,12 @@ pub const SETTINGS: &[SettingMeta] = settings! {
         ["day", "week", "month", "default", "layout"];
     Calendar: WeekNumbers, "Week numbers", "Show the week of the year beside each week.",
         ["iso", "week of year"];
+    Calendar: TimeFormat, "24-hour time", "Show 13:00 rather than 1 PM. Follows Google Calendar until changed here.",
+        ["clock", "12-hour", "am", "pm", "military", "format"];
+    Calendar: EventLength, "Default event length", "How long a new event is. Follows Google Calendar until changed here.",
+        ["duration", "new event", "minutes", "meeting length"];
+    Calendar: TimeZone, "Time zone", "Times show in this Mac's time zone.",
+        ["timezone", "zone", "utc", "gmt", "travel"];
     Accounts: Account, "Account", "Who this mail and calendar are for.",
         ["email", "address", "name", "signed in", "status"];
     Accounts: Access, "Access", "What Google allowed Pigeon to use.",
@@ -501,6 +520,9 @@ mod tests {
             calendar_view: CalendarViewSetting::Month,
             remote_images: RemoteImages::Never,
             notifications: false,
+            calendar_date: chrono::NaiveDate::from_ymd_opt(2026, 11, 3),
+            time_24h: Some(true),
+            event_minutes: Some(30),
             ..Saved::default()
         };
         assert_eq!(Saved::from_map(saved.to_map()), saved);

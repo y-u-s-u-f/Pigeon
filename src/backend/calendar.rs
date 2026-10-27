@@ -34,8 +34,10 @@ use super::{
 };
 use crate::{
     calendar::{
-        AccessRole, Attendee, Calendar, Event, EventStatus, RsvpStatus, SeriesScope,
+        AccessRole, Attendee, Calendar, Event, EventStatus, GoogleSettings, Reminder,
+        ReminderMethod, RsvpStatus, Rule, SeriesScope,
         recurrence::parse_recurrence,
+        reminders::ReminderKey,
         time::{LocalZone, midnight},
     },
     data::Contact,
@@ -116,6 +118,13 @@ pub struct CalendarListEntry {
     pub primary: bool,
     pub time_zone: Option<String>,
     pub default_reminders: Vec<GoogleReminder>,
+    pub conference_properties: ConferenceProperties,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ConferenceProperties {
+    pub allowed_conference_solution_types: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -232,12 +241,28 @@ pub fn calendar_from_entry(
         primary: entry.primary,
         time_zone: entry.time_zone.clone(),
         default_reminder: earliest_reminder(&entry.default_reminders),
+        default_reminders: reminders(&entry.default_reminders),
+        conference_types: entry
+            .conference_properties
+            .allowed_conference_solution_types
+            .clone(),
     }
 }
 
 /// The reminder furthest ahead of the event, in minutes.
 fn earliest_reminder(reminders: &[GoogleReminder]) -> Option<u32> {
     reminders.iter().map(|r| r.minutes).max()
+}
+
+/// Google's reminders, all of them (CAL-33).
+fn reminders(reminders: &[GoogleReminder]) -> Vec<Reminder> {
+    reminders
+        .iter()
+        .map(|r| Reminder {
+            minutes: r.minutes,
+            method: ReminderMethod::from_key(&r.method),
+        })
+        .collect()
 }
 
 /// One item of an event listing.
@@ -370,6 +395,12 @@ pub fn event_from_google(
         event_type: g.event_type.unwrap_or_else(|| "default".into()),
         conference_uri,
         reminder_use_default: reminders.use_default,
+        reminders: if reminders.use_default {
+            Vec::new()
+        } else {
+            self::reminders(&reminders.overrides)
+        },
+        meet_request: None,
     }))
 }
 
@@ -525,6 +556,10 @@ fn sync_pass_at(
             Err(e) => changes.errors.push(format!("{e:#}")),
         }
     }
+    // CAL-41: optional; the next pass tries again.
+    if let Err(e) = sync_settings(transport, store, account, now, &mut changes) {
+        eprintln!("Pigeon: {e:#}");
+    }
     let ids: Vec<String> = touched.into_iter().collect();
     let present: BTreeSet<String> = store
         .load_events(account, &ids)?
@@ -539,6 +574,50 @@ fn sync_pass_at(
         }
     }
     Ok(changes)
+}
+
+const SETTINGS_KEY: &str = "calendar_settings";
+const SETTINGS_AT_KEY: &str = "calendar_settings_at";
+/// How often Google's calendar settings are read again, in seconds.
+const SETTINGS_EVERY: i64 = 6 * 60 * 60;
+
+/// The user's Google Calendar settings (CAL-41), read with `settings.list`
+/// every few hours. A change counts as a calendar list change, so the app
+/// reloads them with the calendars.
+fn sync_settings(
+    transport: &dyn Transport,
+    store: &Store,
+    account: &str,
+    now: DateTime<Utc>,
+    changes: &mut CalendarChanges,
+) -> anyhow::Result<()> {
+    let last = store
+        .sync_state(account, SETTINGS_AT_KEY)?
+        .and_then(|s| s.parse::<i64>().ok());
+    if last.is_some_and(|at| now.timestamp() - at < SETTINGS_EVERY) {
+        return Ok(());
+    }
+    #[derive(Deserialize)]
+    struct Setting {
+        id: String,
+        value: String,
+    }
+    let response = get(
+        transport,
+        &format!("{API}/users/me/settings?maxResults=250"),
+    )?;
+    if !response.is_success() {
+        return Err(api_error("Couldn't read the calendar settings", &response));
+    }
+    let page: Page<Setting> = response.json()?;
+    let items: Vec<(String, String)> = page.items.into_iter().map(|s| (s.id, s.value)).collect();
+    let json = serde_json::to_string(&GoogleSettings::from_items(&items))?;
+    if store.sync_state(account, SETTINGS_KEY)?.as_deref() != Some(json.as_str()) {
+        store.set_sync_state(account, SETTINGS_KEY, &json)?;
+        changes.calendars = true;
+    }
+    store.set_sync_state(account, SETTINGS_AT_KEY, &now.timestamp().to_string())?;
+    Ok(())
 }
 
 /// Calendar colour ids to hex, fetched once.
@@ -934,32 +1013,48 @@ pub fn rewrite_rrule(line: &str, until: Option<&str>, count: Option<u32>) -> Str
     format!("RRULE:{}", parts.join(";"))
 }
 
-/// The event's `recurrence` lines with the RRULE's end set from its rule.
-/// `raw` keeps the lines Pigeon doesn't model (EXDATE, RDATE).
-fn recurrence_lines(event: &Event, raw: Option<&Value>, zone: &LocalZone) -> Vec<String> {
+/// The event's `recurrence` lines (CAL-29): its rule as the RRULE, and
+/// from `raw` the lines Pigeon doesn't model (EXDATE, RDATE), kept on
+/// purpose. When only the end changed since `before`, Google's RRULE stays
+/// with its end rewritten (it may hold parts Pigeon doesn't, like WKST); a
+/// new rule replaces it whole. No rule: no lines.
+fn recurrence_lines(
+    before: Option<&Rule>,
+    event: &Event,
+    raw: Option<&Value>,
+    zone: &LocalZone,
+) -> Vec<String> {
     let Some(rule) = &event.recurrence else {
         return Vec::new();
     };
-    let lines: Vec<String> = raw
+    let old: Vec<String> = raw
         .and_then(|r| r["recurrence"].as_array())
         .map(|l| {
             l.iter()
                 .filter_map(|l| l.as_str().map(String::from))
                 .collect()
         })
-        .filter(|l: &Vec<String>| !l.is_empty())
-        .unwrap_or_else(|| vec![rule.to_rrule(event.all_day, zone)]);
+        .unwrap_or_default();
+    let same = before.is_some_and(|b| b.same_pattern(rule));
     let until = rule.until.map(|u| ical_until(u, event.all_day, zone));
-    lines
-        .into_iter()
-        .map(|line| {
-            if line.to_ascii_uppercase().starts_with("RRULE:") {
+    let mut out = Vec::new();
+    let mut has_rule = false;
+    for line in old {
+        if !line.to_ascii_uppercase().starts_with("RRULE:") {
+            out.push(line);
+        } else if !has_rule {
+            has_rule = true;
+            out.push(if same {
                 rewrite_rrule(&line, until.as_deref(), rule.count)
             } else {
-                line
-            }
-        })
-        .collect()
+                rule.to_rrule(event.all_day, zone)
+            });
+        }
+    }
+    if !has_rule {
+        out.insert(0, rule.to_rrule(event.all_day, zone));
+    }
+    out
 }
 
 /// Location and description with a video link typed in Pigeon folded in:
@@ -1046,18 +1141,29 @@ fn attendees_json(event: &Event, raw: Option<&Value>) -> Value {
     Value::Array(out)
 }
 
-/// The calendar's default reminders, or the one the user picked ("No
-/// reminder" is no overrides).
+/// The calendar's default reminders, or the ones the user picked, up to
+/// five, notifications or emails (CAL-33; none is no overrides).
 fn reminders_json(event: &Event) -> Value {
     if event.reminder_use_default {
         return json!({ "useDefault": true });
     }
     let overrides: Vec<Value> = event
-        .reminder_minutes
-        .map(|m| json!({ "method": "popup", "minutes": m }))
-        .into_iter()
+        .own_reminders()
+        .iter()
+        .map(|r| json!({ "method": r.method.key(), "minutes": r.minutes }))
         .collect();
     json!({ "useDefault": false, "overrides": overrides })
+}
+
+/// "Add Google Meet" (CAL-34): the request Google answers with a Meet,
+/// with the event's request id, so a retry is the same request.
+fn meet_request_json(request_id: &str) -> Value {
+    json!({
+        "createRequest": {
+            "requestId": request_id,
+            "conferenceSolutionKey": { "type": "hangoutsMeet" },
+        }
+    })
 }
 
 /// The fields of `after` that differ from `before`, as Google's event JSON
@@ -1095,7 +1201,7 @@ pub fn patch_body(
     }
     // On the default, only which default it is can differ (another calendar).
     if before.reminder_use_default != after.reminder_use_default
-        || (!after.reminder_use_default && before.reminder_minutes != after.reminder_minutes)
+        || (!after.reminder_use_default && before.own_reminders() != after.own_reminders())
     {
         body.insert("reminders".into(), reminders_json(after));
     }
@@ -1103,12 +1209,24 @@ pub fn patch_body(
         let transparency = if after.busy { "opaque" } else { "transparent" };
         body.insert("transparency".into(), json!(transparency));
     }
-    let end = |e: &Event| e.recurrence.as_ref().map(|r| (r.until, r.count));
-    if end(before) != end(after) && after.recurrence.is_some() {
+    // The whole rule (CAL-29); none turns the series into one event.
+    if before.recurrence != after.recurrence && after.recurring_event_id.is_none() {
         body.insert(
             "recurrence".into(),
-            json!(recurrence_lines(after, raw, zone)),
+            json!(recurrence_lines(
+                before.recurrence.as_ref(),
+                after,
+                raw,
+                zone
+            )),
         );
+    }
+    // Only a new Meet is written; otherwise Google keeps `conferenceData`.
+    if let Some(request) = &after.meet_request
+        && before.meet_request.as_ref() != Some(request)
+        && after.conference_uri.is_empty()
+    {
+        body.insert("conferenceData".into(), meet_request_json(request));
     }
     body
 }
@@ -1130,12 +1248,49 @@ pub fn insert_body(event: &Event, zone: &LocalZone) -> Value {
         body["attendees"] = attendees_json(event, None);
     }
     if event.recurrence.is_some() {
-        body["recurrence"] = json!(recurrence_lines(event, None, zone));
+        body["recurrence"] = json!(recurrence_lines(None, event, None, zone));
+    }
+    if let Some(request) = event
+        .meet_request
+        .as_deref()
+        .filter(|_| event.conference_uri.is_empty())
+    {
+        body["conferenceData"] = meet_request_json(request);
     }
     body
 }
 
 impl super::Backend {
+    /// The user's Google Calendar settings as last read (CAL-41); the
+    /// defaults in demo mode and before the first sync.
+    pub fn calendar_settings(&self) -> GoogleSettings {
+        self.store
+            .sync_state(self.email(), SETTINGS_KEY)
+            .ok()
+            .flatten()
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default()
+    }
+
+    /// The reminders shown already, recently (W5 reminder notifications).
+    pub fn fired_reminders(&self) -> std::collections::HashSet<ReminderKey> {
+        self.store
+            .fired_reminders(self.email())
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
+    }
+
+    /// A reminder was shown; it won't be again.
+    pub fn mark_reminder_fired(&self, key: &ReminderKey) {
+        if let Err(e) =
+            self.store
+                .mark_reminder_fired(self.email(), key, Utc::now().timestamp_millis())
+        {
+            eprintln!("Pigeon: couldn't keep a reminder as shown: {e:#}");
+        }
+    }
+
     /// After a calendar write, sync soon, so what Google changed with it
     /// (the series' instances, the guests' copies) shows (2.6).
     pub(super) fn sync_calendar_soon(&mut self, cx: &mut gpui::Context<Self>) {
@@ -1213,6 +1368,7 @@ fn commit_at(
         account,
         zone,
         now,
+        pause: PAUSE,
     };
     let mut touched = BTreeSet::new();
     let mut out = Committed::default();
@@ -1232,6 +1388,12 @@ fn commit_at(
             }
             CalOp::Patch { id, after, .. } => {
                 w.reload(&after.calendar, id, &mut touched).ok();
+            }
+            // Whichever step failed, both as Google has them: the new
+            // series is gone if it never went in.
+            CalOp::Split { id, after, new, .. } => {
+                w.reload(&after.calendar, id, &mut touched).ok();
+                w.reload(&new.calendar, &new.id, &mut touched).ok();
             }
             CalOp::Delete { id, .. } | CalOp::Move { id, .. } | CalOp::Rsvp { id, .. } => {
                 if let Some((event, _)) = w.locate(id) {
@@ -1263,6 +1425,27 @@ struct Writer<'a> {
     account: &'a str,
     zone: &'a LocalZone,
     now: DateTime<Utc>,
+    /// Waits between polls for a new Meet; tests don't wait.
+    pause: fn(std::time::Duration),
+}
+
+#[cfg(not(test))]
+const PAUSE: fn(std::time::Duration) = std::thread::sleep;
+#[cfg(test)]
+const PAUSE: fn(std::time::Duration) = |_| {};
+
+/// How often, and how many times, a Meet still being set up is asked
+/// after (CAL-34).
+const MEET_POLL_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+const MEET_POLLS: usize = 8;
+
+/// The query that lets a write create a conference.
+fn conference_param(body: &Value) -> &'static str {
+    if body.get("conferenceData").is_some() {
+        "&conferenceDataVersion=1"
+    } else {
+        ""
+    }
 }
 
 impl Writer<'_> {
@@ -1453,6 +1636,25 @@ impl Writer<'_> {
                 scope,
                 send_updates,
             } => self.patch(id, before, after, *scope, *send_updates, touched),
+            // "This and following" (CAL-6): the new series goes in only
+            // once the old one ended.
+            CalOp::Split {
+                id,
+                before,
+                after,
+                new,
+                send_updates,
+            } => {
+                self.patch(
+                    id,
+                    before,
+                    after,
+                    SeriesScope::Following,
+                    *send_updates,
+                    touched,
+                )?;
+                self.insert(new, *send_updates, touched)
+            }
             CalOp::Delete {
                 id,
                 occurrence,
@@ -1491,14 +1693,13 @@ impl Writer<'_> {
             return self.patch_instance(&before, event, send, touched);
         }
         let query = format!("?sendUpdates={}", send_updates_param(send));
-        let url = format!("{}{query}", self.events_url(&event.calendar));
-        let response = self.send(
-            "POST",
-            url,
-            Some(&insert_body(event, self.zone)),
-            None,
-            &[409],
-        )?;
+        let body = insert_body(event, self.zone);
+        let url = format!(
+            "{}{query}{}",
+            self.events_url(&event.calendar),
+            conference_param(&body)
+        );
+        let response = self.send("POST", url, Some(&body), None, &[409])?;
         let response = if response.status == 409 {
             // Its id was deleted before (an undo after the delete went):
             // Google restores a cancelled event by confirming it again.
@@ -1512,9 +1713,54 @@ impl Writer<'_> {
         } else {
             response
         };
-        // The app has it already.
+        let mut stored: Value = response.json()?;
+        // The app has it already, but not its Meet.
         let mut seen = BTreeSet::new();
-        self.store_raw(&event.calendar, &response.json()?, &mut seen)
+        if body.get("conferenceData").is_some() {
+            stored = self.await_meet(&event.calendar, stored, touched)?;
+            touched.insert(event.id.clone());
+        }
+        self.store_raw(&event.calendar, &stored, &mut seen)
+    }
+
+    /// A write that asked for a Meet: Google's event once the Meet is
+    /// there, asking again a few times while it's being set up (CAL-34).
+    /// Fails, retryably, when Google refuses or takes too long; what it
+    /// answered last is stored.
+    fn await_meet(
+        &self,
+        calendar: &str,
+        mut event: Value,
+        touched: &mut BTreeSet<String>,
+    ) -> anyhow::Result<Value> {
+        const WHAT: &str = "Couldn't add Google Meet";
+        for attempt in 0..=MEET_POLLS {
+            match event["conferenceData"]["createRequest"]["status"]["statusCode"].as_str() {
+                Some("pending") => {}
+                Some("failure") => {
+                    self.store_raw(calendar, &event, touched)?;
+                    return Err(anyhow!("{WHAT}: Google refused it"));
+                }
+                _ => return Ok(event),
+            }
+            if attempt == MEET_POLLS {
+                break;
+            }
+            (self.pause)(MEET_POLL_EVERY);
+            let id = event["id"].as_str().unwrap_or_default().to_string();
+            let url = format!(
+                "{}?timeZone={}",
+                self.event_url(calendar, &id),
+                enc(self.zone.name)
+            );
+            let response = get(self.transport, &url)?;
+            if !response.is_success() {
+                return Err(api_error(WHAT, &response));
+            }
+            event = response.json()?;
+        }
+        self.store_raw(calendar, &event, touched)?;
+        Err(anyhow!("{WHAT}: Google is still setting it up"))
     }
 
     /// The series of an occurrence as stored, as that one occurrence.
@@ -1602,16 +1848,18 @@ impl Writer<'_> {
         if body.is_empty() {
             return Ok(());
         }
+        let body = Value::Object(body);
         let url = format!(
-            "{}?sendUpdates={}",
+            "{}?sendUpdates={}{}",
             self.event_url(&current.calendar, id),
-            send_updates_param(send)
+            send_updates_param(send),
+            conference_param(&body)
         );
         let etag = Some(current.etag.as_str()).filter(|e| !e.is_empty());
         let response = self.send(
             "PATCH",
             url,
-            Some(&Value::Object(body)),
+            Some(&body),
             etag.or(Some(after.etag.as_str())),
             &[],
         )?;
@@ -1622,8 +1870,20 @@ impl Writer<'_> {
         {
             self.store.drop_instances_from(self.account, id, until)?;
         }
+        // No longer repeating: its occurrences of their own go too.
+        if before.is_series() && !after.is_series() {
+            touched.extend(
+                self.store
+                    .delete_instances(self.account, &current.calendar, id)?,
+            );
+        }
+        let mut stored: Value = response.json()?;
+        if body.get("conferenceData").is_some() {
+            stored = self.await_meet(&current.calendar, stored, touched)?;
+            touched.insert(id.to_string());
+        }
         let mut seen = BTreeSet::new();
-        self.store_raw(&current.calendar, &response.json()?, &mut seen)
+        self.store_raw(&current.calendar, &stored, &mut seen)
     }
 
     fn delete(
@@ -1671,7 +1931,7 @@ impl Writer<'_> {
                 rule.until = occurrence;
                 rule.count = None;
             }
-            let body = json!({ "recurrence": recurrence_lines(&series, raw.as_ref(), self.zone) });
+            let body = json!({ "recurrence": recurrence_lines(event.recurrence.as_ref(), &series, raw.as_ref(), self.zone) });
             let url = format!(
                 "{}?sendUpdates={}",
                 self.event_url(&calendar, id),
@@ -2110,7 +2370,7 @@ mod tests {
         assert_eq!(e.start, at(d(2026, 10, 26), 22, 30));
         let rule = e.recurrence.unwrap();
         assert!(rule.unsupported && !rule.custom);
-        assert_eq!(rule.label(), "Every week");
+        assert_eq!(rule.label(), "Every week on Tue");
     }
 
     fn fake() -> FakeTransport {
@@ -3137,5 +3397,321 @@ mod tests {
         let requests = fake.requests();
         assert_eq!(requests.len(), 1, "no decline first");
         assert!(requests[0].url.ends_with("?sendUpdates=none"));
+    }
+
+    // W5.
+
+    #[test]
+    fn rule_changes_replace_the_whole_rrule_and_keep_exdates() {
+        let store = seeded(&[SERIES]);
+        let before = stored(&store, "s1");
+        let raw: Value = serde_json::from_str(SERIES).unwrap();
+        // A new rule: the RRULE goes whole; EXDATE stays.
+        let mut after = before.clone();
+        let mut rule = Rule::monthly();
+        rule.by_day = vec![(Some(-1), chrono::Weekday::Mon)];
+        rule.count = Some(6);
+        after.recurrence = Some(rule);
+        let p = patch_body(&before, &after, Some(&raw), &zone());
+        assert_eq!(
+            p["recurrence"],
+            json!([
+                "RRULE:FREQ=MONTHLY;BYDAY=-1MO;COUNT=6",
+                "EXDATE;TZID=America/Los_Angeles:20261102T100000"
+            ])
+        );
+        // Only the end: Google's RRULE with the end rewritten.
+        let mut after = before.clone();
+        after.recurrence.as_mut().unwrap().count = Some(3);
+        let p = patch_body(&before, &after, Some(&raw), &zone());
+        assert_eq!(p["recurrence"][0], "RRULE:FREQ=WEEKLY;BYDAY=MO,WE;COUNT=3");
+        // RDATE lines stay too.
+        let with_rdate = json!({"recurrence": ["RRULE:FREQ=WEEKLY", "RDATE:20261101T100000Z"]});
+        let mut after = before.clone();
+        after.recurrence = Some(Rule::daily());
+        let p = patch_body(&before, &after, Some(&with_rdate), &zone());
+        assert_eq!(
+            p["recurrence"],
+            json!(["RRULE:FREQ=DAILY", "RDATE:20261101T100000Z"])
+        );
+        // No repeat: no lines at all.
+        let mut after = before.clone();
+        after.recurrence = None;
+        let p = patch_body(&before, &after, Some(&raw), &zone());
+        assert_eq!(p["recurrence"], json!([]));
+        // A single event made to repeat.
+        let single = stored(&seeded(&[SINGLE]), "e1");
+        let mut after = single.clone();
+        after.recurrence = Some(Rule::weekdays());
+        let p = patch_body(&single, &after, None, &zone());
+        assert_eq!(
+            p["recurrence"],
+            json!(["RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"])
+        );
+        // And back, through Google: the store drops its instances.
+        let answer = SERIES.replace(
+            r#""recurrence":["RRULE:FREQ=WEEKLY;BYDAY=MO,WE","EXDATE;TZID=America/Los_Angeles:20261102T100000"]"#,
+            r#""recurrence":[]"#,
+        );
+        let moved = Event {
+            id: "s1_20261028T170000Z".into(),
+            recurrence: None,
+            recurring_event_id: Some("s1".into()),
+            original_start: Some(at(d(2026, 10, 28), 10, 0)),
+            ..before.clone()
+        };
+        store.put_events(ME, std::slice::from_ref(&moved)).unwrap();
+        let fake =
+            FakeTransport::new().on("PATCH", &format!("{CAL_PATH}/s1"), &[], &[(200, &answer)]);
+        let op = CalOp::Patch {
+            id: "s1".into(),
+            before: before.clone(),
+            after: Event {
+                recurrence: None,
+                exceptions: Vec::new(),
+                ..before.clone()
+            },
+            scope: SeriesScope::All,
+            send_updates: SendUpdates::None,
+        };
+        let done = commit_at(&fake, &store, ME, &op, &zone(), now());
+        assert_eq!(done.error, None);
+        assert_eq!(body(&fake.requests()[0])["recurrence"], json!([]));
+        assert!(!stored(&store, "s1").is_series());
+        assert!(
+            store
+                .load_events(ME, std::slice::from_ref(&moved.id))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(done.changes.removed.contains(&moved.id));
+    }
+
+    #[test]
+    fn a_split_inserts_the_new_series_only_after_the_old_one_ended() {
+        let store = seeded(&[SERIES]);
+        let before = stored(&store, "s1");
+        let origin = at(d(2026, 11, 4), 10, 0);
+        let edited = Event {
+            title: "Standup (new room)".into(),
+            ..before.clone()
+        };
+        let (old, new) = before.split(origin, origin, &edited, "n1".into()).unwrap();
+        let op = CalOp::Split {
+            id: "s1".into(),
+            before: before.clone(),
+            after: old.clone(),
+            new: new.clone(),
+            send_updates: SendUpdates::None,
+        };
+        // The series changed elsewhere (412): nothing goes in, and the new
+        // series is gone again.
+        let theirs = SERIES.replace(r#"\"s\""#, r#"\"s7\""#);
+        let fake = FakeTransport::new()
+            .on("PATCH", &format!("{CAL_PATH}/s1"), &[], &[(412, "{}")])
+            .on("GET", &format!("{CAL_PATH}/s1"), &[], &[(200, &theirs)])
+            .on("POST", CAL_PATH, &[], &[(200, "{}")]);
+        store.put_events(ME, std::slice::from_ref(&new)).unwrap();
+        let done = commit_at(&fake, &store, ME, &op, &zone(), now());
+        assert_eq!(done.error.as_deref(), Some("Changed elsewhere; reloaded"));
+        assert!(fake.requests().iter().all(|r| r.method != "POST"));
+        assert!(done.changes.removed.contains(&"n1".to_string()));
+        assert!(store.load_events(ME, &["n1".into()]).unwrap().is_empty());
+        assert_eq!(stored(&store, "s1").etag, "\"s7\"");
+        // Offline at the first step: retried later, nothing rolled back.
+        let fake = FakeTransport::new().on("PATCH", &format!("{CAL_PATH}/s1"), &[], &[(0, "")]);
+        let done = commit_at(&fake, &store, ME, &op, &zone(), now());
+        assert!(done.retry.is_some());
+        assert_eq!(fake.requests().len(), 1);
+        // Both steps in order.
+        let store = seeded(&[SERIES]);
+        let answer = SERIES.replace(
+            "RRULE:FREQ=WEEKLY;BYDAY=MO,WE",
+            "RRULE:FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20261104T165959Z",
+        );
+        let inserted = r#"{"id":"n1","etag":"\"n\"","status":"confirmed","summary":"Standup (new room)",
+            "organizer":{"email":"me@example.com","self":true},
+            "start":{"dateTime":"2026-11-04T10:00:00-08:00"},"end":{"dateTime":"2026-11-04T10:30:00-08:00"},
+            "recurrence":["RRULE:FREQ=WEEKLY;BYDAY=MO,WE"]}"#;
+        let fake = FakeTransport::new()
+            .on("PATCH", &format!("{CAL_PATH}/s1"), &[], &[(200, &answer)])
+            .on("POST", CAL_PATH, &[], &[(200, inserted)]);
+        let done = commit_at(&fake, &store, ME, &op, &zone(), now());
+        assert_eq!(done.error, None);
+        let methods: Vec<&str> = fake.requests().iter().map(|r| r.method).collect();
+        assert_eq!(methods, ["PATCH", "POST"]);
+        assert_eq!(stored(&store, "n1").etag, "\"n\"");
+        // Demo mode applies both at once.
+        let demo = seeded(&[SERIES]);
+        demo.apply_cal_op(ME, ME, &op).unwrap();
+        assert_eq!(stored(&demo, "s1").recurrence.unwrap().until, Some(origin));
+        assert_eq!(stored(&demo, "n1").title, "Standup (new room)");
+    }
+
+    #[test]
+    fn several_reminders_and_every_default_are_kept() {
+        let e = series_with(
+            r#"{"useDefault":false,"overrides":[{"method":"email","minutes":1440},{"method":"popup","minutes":10}]}"#,
+        );
+        assert_eq!(e.reminders.len(), 2);
+        assert_eq!(e.reminder_minutes, Some(1440));
+        assert_eq!(
+            reminders_json(&e),
+            json!({"useDefault":false,"overrides":[
+                {"method":"email","minutes":1440},{"method":"popup","minutes":10}]})
+        );
+        let mut fewer = e.clone();
+        fewer.set_reminders(vec![Reminder::popup(10)]);
+        let p = patch_body(&e, &fewer, None, &zone());
+        assert_eq!(
+            p["reminders"],
+            json!({"useDefault":false,"overrides":[{"method":"popup","minutes":10}]})
+        );
+        let entry: CalendarListEntry = serde_json::from_str(
+            r#"{"id":"c","summary":"C","selected":true,"accessRole":"owner",
+                "defaultReminders":[{"method":"popup","minutes":10},{"method":"email","minutes":60}],
+                "conferenceProperties":{"allowedConferenceSolutionTypes":["hangoutsMeet"]}}"#,
+        )
+        .unwrap();
+        let calendar = calendar_from_entry(&entry, &HashMap::new());
+        assert_eq!(calendar.default_reminder, Some(60));
+        assert_eq!(calendar.default_reminders.len(), 2);
+        assert_eq!(calendar.default_reminders[1].method, ReminderMethod::Email);
+        assert!(calendar.allows_meet());
+        // Kept in the store.
+        let store = Store::open_in_memory().unwrap();
+        store.put_google_calendar(ME, &calendar, false).unwrap();
+        let back = &store.load_calendars(ME).unwrap()[0];
+        assert_eq!(back.default_reminders, calendar.default_reminders);
+        assert!(back.allows_meet());
+    }
+
+    #[test]
+    fn adding_meet_asks_once_then_waits_for_it() {
+        let store = seeded(&[SINGLE]);
+        let before = stored(&store, "e1");
+        let after = Event {
+            meet_request: Some("req-1".into()),
+            ..before.clone()
+        };
+        let pending = SINGLE.replace(
+            r#""summary":"Review","#,
+            r#""summary":"Review","conferenceData":{"createRequest":{"requestId":"req-1",
+                "status":{"statusCode":"pending"}}},"#,
+        );
+        let done_json = SINGLE.replace(
+            r#""summary":"Review","#,
+            r#""summary":"Review","conferenceData":{"createRequest":{"requestId":"req-1",
+                "status":{"statusCode":"success"}},
+                "entryPoints":[{"entryPointType":"video","uri":"https://meet.google.com/abc-defg-hij"}]},"#,
+        );
+        let fake = FakeTransport::new()
+            .on("PATCH", &format!("{CAL_PATH}/e1"), &[], &[(200, &pending)])
+            .on(
+                "GET",
+                &format!("{CAL_PATH}/e1"),
+                &[],
+                &[(200, &pending), (200, &done_json)],
+            );
+        let op = CalOp::Patch {
+            id: "e1".into(),
+            before: before.clone(),
+            after: after.clone(),
+            scope: SeriesScope::All,
+            send_updates: SendUpdates::None,
+        };
+        let done = commit_at(&fake, &store, ME, &op, &zone(), now());
+        assert_eq!(done.error, None);
+        let requests = fake.requests();
+        assert!(requests[0].url.contains("conferenceDataVersion=1"));
+        assert_eq!(
+            body(&requests[0]),
+            json!({"conferenceData":{"createRequest":{"requestId":"req-1",
+                "conferenceSolutionKey":{"type":"hangoutsMeet"}}}})
+        );
+        assert_eq!(requests.len(), 3, "polled until success");
+        let now_stored = stored(&store, "e1");
+        assert_eq!(
+            now_stored.conference_uri,
+            "https://meet.google.com/abc-defg-hij"
+        );
+        assert!(now_stored.meet_request.is_none());
+        assert!(done.changes.changed.contains(&"e1".to_string()));
+
+        // Still pending after every poll: a retryable failure, the same
+        // request id the next time.
+        let fake = FakeTransport::new()
+            .on("PATCH", &format!("{CAL_PATH}/e1"), &[], &[(200, &pending)])
+            .on("GET", &format!("{CAL_PATH}/e1"), &[], &[(200, &pending)]);
+        let store = seeded(&[SINGLE]);
+        let done = commit_at(&fake, &store, ME, &op, &zone(), now());
+        assert!(
+            done.error
+                .as_deref()
+                .unwrap()
+                .starts_with("Couldn't add Google Meet")
+        );
+        assert_eq!(
+            fake.requests().iter().filter(|r| r.method == "GET").count(),
+            MEET_POLLS + 1,
+            "bounded, plus the rollback's read"
+        );
+        // Other writes never touch conferenceData.
+        let titled = Event {
+            title: "Other".into(),
+            ..now_stored.clone()
+        };
+        let p = patch_body(&now_stored, &titled, None, &zone());
+        assert!(p.get("conferenceData").is_none());
+        // A new event with Meet asks for it in the insert.
+        let new = Event {
+            id: "n2".into(),
+            calendar: CAL.into(),
+            start: at(d(2026, 10, 28), 12, 0),
+            end: at(d(2026, 10, 28), 13, 0),
+            meet_request: Some("req-2".into()),
+            ..Event::default()
+        };
+        assert_eq!(
+            insert_body(&new, &zone())["conferenceData"]["createRequest"]["requestId"],
+            "req-2"
+        );
+    }
+
+    #[test]
+    fn google_calendar_settings_are_read_every_few_hours() {
+        let store = Store::open_in_memory().unwrap();
+        let page = r#"{"items":[{"id":"weekStart","value":"0"},{"id":"format24HourTime","value":"true"},
+            {"id":"defaultEventLength","value":"30"},{"id":"autoAddHangouts","value":"true"},
+            {"id":"remindOnRespondedEventsOnly","value":"true"},{"id":"timezone","value":"Europe/London"},
+            {"id":"locale","value":"en"}]}"#;
+        let fake =
+            FakeTransport::new().on("GET", "/calendar/v3/users/me/settings", &[], &[(200, page)]);
+        let mut changes = CalendarChanges::default();
+        sync_settings(&fake, &store, ME, now(), &mut changes).unwrap();
+        assert!(changes.calendars);
+        let json = store.sync_state(ME, SETTINGS_KEY).unwrap().unwrap();
+        let settings: GoogleSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            settings,
+            GoogleSettings {
+                week_start: Some(0),
+                format_24h: Some(true),
+                default_event_minutes: Some(30),
+                auto_add_meet: true,
+                remind_responded_only: true,
+                time_zone: Some("Europe/London".into()),
+            }
+        );
+        assert_eq!(settings.first_weekday(), chrono::Weekday::Sun);
+        // Not again within six hours; then again, unchanged: no reload.
+        let mut changes = CalendarChanges::default();
+        sync_settings(&fake, &store, ME, now() + Duration::hours(1), &mut changes).unwrap();
+        assert_eq!(fake.requests().len(), 1);
+        sync_settings(&fake, &store, ME, now() + Duration::hours(7), &mut changes).unwrap();
+        assert_eq!(fake.requests().len(), 2);
+        assert!(!changes.calendars);
+        // Without settings, the defaults.
+        assert_eq!(GoogleSettings::from_items(&[]), GoogleSettings::default());
     }
 }

@@ -945,8 +945,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-23 Persisted calendar UI state
 
-- **Today:** View and week numbers are saved with PER-3. Visibility changes queue `CalOp::SetSelected` (`calendarList.selected`), kept in demo mode's store until quit. The date resets on launch.
-- **Needs:** Nothing for visibility (`calendarList.patch`, W7; CAL-2). The date still resets on launch.
+- **Today:** View and week numbers are saved with PER-3. Visibility changes queue `CalOp::SetSelected` (`calendarList.selected`), kept in demo mode's store until quit. W5: the day shown is saved too (`Saved::calendar_date`, written on every calendar change) and the calendar reopens on it (`CalendarView::apply_saved()`); `t` still goes to today.
+- **Needs:** A tester pass. Nothing for visibility (`calendarList.patch`, W7; CAL-2).
 
 ### Events
 
@@ -987,14 +987,16 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 - **Today:** Wall-clock times: `wall_time()` drops the JSON's UTC offset (`naive_local()`), and also reads the offset-less times the store writes; the model uses `NaiveDateTime`. The placeholder data uses Eastern offsets for San Francisco places, so converting would move every event. From Google (W4): events are read with `timeZone=<macOS zone>` and every `dateTime` is converted to the local wall clock (`time::LocalZone`, `iana-time-zone` + `chrono::Local`; no tz database). `Event::time_zone` keeps the event's own `start.timeZone` and `Calendar::time_zone` the calendar's, for writes. A timed series kept in another zone isn't expanded locally (its wall time moves across DST and its days can land on other dates here); Google's own occurrences are stored instead (CAL-5).
 - **Today (writes, W7):** Writes send the instant with the event's own `timeZone`, else the macOS zone (`time_json()`), so a series keeps its zone.
-- **Needs:** A tester pass (T2c). Google's `timezone` setting isn't read; the macOS zone is used.
-- **Notes:** No zone picker or "shown in another zone" hint yet.
+- **Today (W5):** Google's `timezone` setting is read with the other settings (CAL-41). Times still show in the macOS zone; when Google's differs, a clock icon in the calendar header (tooltip and VoiceOver label) and Settings → Calendar → Time zone say so.
+- **Needs:** A tester pass (T2c).
+- **Notes:** No zone picker or showing events in Google's zone.
 
 #### CAL-15 Reminders
 
 - **Today:** One reminder (none, at start, 5, 10, 15, 30 min, 1 h, 1 day). `reminder_minutes`. Nothing fires.
 - **Today (writes, W7):** Saved as `reminders` `{useDefault: false, overrides: [{popup, m}]}`; "No reminder" is `useDefault: false` with no overrides. Written only when changed, so a calendar default stays in use until the user picks one (`Event::reminder_use_default`; picking any row, even the default's own value, makes it explicit). Inserts carry the same setting (`reminders_json()`): a new event (`c`, drag) starts on its calendar's default (`useDefault: true`, shown as that calendar's default, following the calendar picker) as in Google Calendar; the new series of a "This and following" split and an Undo re-insert keep the original's default or overrides.
-- **Needs:** A tester pass (T2c). Schedule macOS notifications, also after restart and with the window closed (NTF-3). Several reminders: CAL-33.
+- **Today (W5):** The panel lists every reminder (CAL-33). While Pigeon runs, popup reminders that fall due are found by `calendar::reminders::Scheduler` (checked every 30 s from `CalendarView`); the notification itself is W1's (`fire_reminder()`, marked `W5→W1: notify`; it only logs for now).
+- **Needs:** A tester pass (T2c). macOS notifications once W1's `notify` lands; also after restart and with the window closed (NTF-3).
 
 #### CAL-16 Busy and free
 
@@ -1006,7 +1008,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 - **Today:** Shows and edits a link with a Join button (`cx.open_url()`). `video_link` in JSON. From Google (W4): `conferenceData.entryPoints` (the `video` one) or else `hangoutLink` fills `Event::conference_uri` and `video_link`, so Join works.
 - **Today (writes, W7):** A link from `conferenceData`/`hangoutLink` is read-only in the panel and never written. A link typed in Pigeon is saved into the location when that's empty, else at the top of the description (6.4 item 9; `place()`); after the next sync it shows there, not in the video field.
-- **Needs:** A tester pass (T2c). Phone and PIN entry points aren't shown, nor a URL found in location or description. Creating Meet links: CAL-34.
+- **Today (W5):** `calendar::policy::video_link()` also finds a Meet, Zoom, Teams or Webex URL in the location or description (for the menu bar and quick join, W1; `next_joinable()`). Creating Meet links: CAL-34.
+- **Needs:** A tester pass (T2c). Phone and PIN entry points aren't shown; the panel's video field still shows only `video_link`.
 
 #### CAL-21 Drag to create, move and resize
 
@@ -1035,15 +1038,19 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-33 Several reminders and default reminders
 
-- **Needs:** More than one reminder per event, `email` as well as `popup` (`reminders.overrides`, up to 5), and the calendar's `defaultReminders` from `calendarList` (edited with `calendarList.patch`). `notificationSettings` on `calendarList` controls Google's own emails.
+- **Today (W5):** Events keep up to 5 reminders, each a notification or an email (`Event::reminders`, `set_reminders()`; `reminder_minutes` stays the earliest). Calendars keep all their `defaultReminders` (`Calendar::default_reminders`, schema block 130). The panel lists the reminders that apply (the calendar's marked "Default"), each with a Notification/Email toggle and a remove button; "Add reminder" (`⇧A`) offers "Calendar default" and 0 min to 1 week. Written as `reminders.overrides` with their methods. Popup reminders fire while Pigeon runs (`calendar::reminders`): never ones missed while asleep or before launch, recomputed after a wake or a clock change (the wall clock against `Instant`), each (calendar, event, occurrence, offset) once, kept in the store for a week (`fired_reminders`); Google's `remindOnRespondedEventsOnly` skips unanswered invites. Shared rules for W1 in `calendar::policy` (`reminders_for()`, `next_joinable()`, `video_link()`).
+- **Needs:** A tester pass. The notification (W1's `notify`; one marked call site). Editing a calendar's own `defaultReminders` (`calendarList.patch`). `notificationSettings` on `calendarList` controls Google's own emails.
 
 #### CAL-34 Create Google Meet links
 
-- **Needs:** "Add Google Meet" in the panel: `conferenceData.createRequest` with a `requestId` and `conferenceSolutionKey.type=hangoutsMeet`, sent with `conferenceDataVersion=1`; poll until `status.statusCode` is `success`. Google's `autoAddHangouts` setting (CAL-41) says whether to add one by default.
+- **Today (W5):** "Add Meet" in the panel's video row (`⇧G`, ⌘K "Add Google Meet"), only on calendars whose `conferenceProperties.allowedConferenceSolutionTypes` has `hangoutsMeet` (in demo mode any writable calendar, which gets a made-up link at once). It sets `Event::meet_request`; the patch or insert carries `conferenceData.createRequest` (`requestId`, `hangoutsMeet`) with `conferenceDataVersion=1`, then reads the event again up to 8 times, a second apart, until `status.statusCode` is `success`. "failure" or no answer in time fails the op ("Couldn't add Google Meet: …"); the button then reads "Retry Meet" and sends the same request id. Other writes never send `conferenceData`, so Google keeps the conference. New events get a Meet when Google's `autoAddHangouts` is on (CAL-41).
+- **Needs:** A tester pass on the real account.
+- **Notes:** Google may not retry a request id it already refused; a retry after "failure" may need a new id.
 
 #### CAL-39 Quick add from text
 
-- **Needs:** Optional: `events.quickAdd` creates an event from text ("Lunch with Sam Friday 1pm"). Pigeon's own parsers (`time::parse_date`, `parse_time`) may be enough; quickAdd needs a network round-trip before the event shows.
+- **Today (W5):** In ⌘K, "New event: Lunch with Sam Fri 1pm" (or "new event …") shows a row "New event: Lunch with Sam · Fri, Oct 30 · 1 – 2 PM"; enter opens the event in the panel with the title and times filled in, on that day. `⇧C` in Calendar opens ⌘K with "New event: " typed. Parsed locally (`calendar::quick_add`: dates and times as the panel reads them, ranges, "for 30 min", "all day"; a date without a time is all day, a time already past is tomorrow, "at 3" is 3 PM); no `events.quickAdd`.
+- **Needs:** A tester pass.
 
 #### CAL-40 Move an event to another calendar
 
@@ -1068,7 +1075,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-29 Set and edit repeat rules
 
-- **Needs:** A repeat picker in the panel (presets plus custom: interval, weekdays, monthly by date or weekday, end by date or count) writing `recurrence` RRULE strings; show the rule in words for any RRULE Google returns.
+- **Today (W5):** A Repeat row in the panel (`⇧R`, ⌘K "Repeat…", tab order after All day): "Does not repeat", every day, every weekday, weekly on the day, monthly on the nth (or last) weekday, monthly on the date, yearly, and "Custom…" (every N days/weeks/months/years, weekdays, monthly by date or weekday, ends never, on a date or after N times). `ui/calendar/repeat.rs` only makes rules the expander supports. Rules show in words with their end ("Every week on Tue, 10 times"), and custom RRULEs from Google are described. On a series, a repeat change offers only "This and following" or "All events". The write replaces the whole RRULE (only an end change keeps Google's RRULE with its end rewritten); EXDATE and RDATE lines stay; "Does not repeat" removes it and drops the occurrences changed on their own. "This and following" with a new rule (or none) starts the new series with it; it's one op (`CalOp::Split`) that inserts the new series only after the old one was shortened. Not offered on an occurrence changed on its own.
+- **Needs:** A tester pass on the real account.
 
 ### Invites and RSVP
 
@@ -1139,7 +1147,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-41 Calendar settings from Google
 
-- **Needs:** Read the user's Google Calendar settings with `settings.list` (read-only in the API; `settings.watch` for changes): `weekStart`, `timezone`, `format24HourTime`, `hideWeekends`, `defaultEventLength`, `showDeclinedEvents`, `hideInvitations`, `remindOnRespondedEventsOnly`, `locale`, `dateFieldOrder`, `autoAddHangouts`, `useKeyboardShortcuts`. Use them as defaults: week start (CAL-4), zone (CAL-12), new-event length (CAL-9), Meet by default (CAL-34), declined events.
+- **Today (W5):** `settings.list` is read at most every 6 hours during sync (`GoogleSettings`, kept in sync state; errors only logged): `weekStart` sets the week's first day, `format24HourTime` the clock, `defaultEventLength` a new event's length, `autoAddHangouts` Meet on new events (CAL-34), `remindOnRespondedEventsOnly` the reminders (CAL-33), `timezone` the zone notice (CAL-12). Settings → Calendar has "24-hour time" and "Default event length", which follow Google until changed in Pigeon (`Saved::time_24h`, `event_minutes`).
+- **Needs:** A tester pass. `settings.watch`; `hideWeekends`, `showDeclinedEvents`, `hideInvitations`, `locale`, `dateFieldOrder`, `useKeyboardShortcuts` aren't used.
 
 ---
 

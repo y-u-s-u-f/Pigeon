@@ -28,9 +28,14 @@ pub mod event_panel;
 pub mod header;
 pub mod mini_month;
 pub mod month_view;
+pub mod repeat;
 pub mod week_view;
 
-use std::{cell::Cell, rc::Rc, time::Duration as StdDuration};
+use std::{
+    cell::Cell,
+    rc::Rc,
+    time::{Duration as StdDuration, Instant},
+};
 
 use chrono::{Duration, Local, NaiveDate, NaiveDateTime};
 use gpui::{
@@ -49,11 +54,13 @@ use crate::ui::style::*;
 use crate::{
     actions::*,
     backend::{
-        Backend, CalOp, OpId, SendUpdates,
+        Backend, BackendEvent, CalOp, OpId, SendUpdates,
         calendar::{Access, access, asks_guests, has_guests, instance_id, is_organizer},
     },
     calendar::{
-        CalendarData, Event, Occurrence, RsvpStatus, SeriesScope, occurrences,
+        CalendarData, Event, GoogleSettings, Occurrence, RsvpStatus, SeriesScope, occurrences,
+        quick_add,
+        reminders::{DueReminder, Scheduler},
         time::{self, LocalZone, add_months, month_grid, next_half_hour, week_start},
     },
     contacts::SharedContactBook,
@@ -107,7 +114,10 @@ pub enum Menu {
     Calendars,
     /// The open event's calendar.
     EventCalendar,
+    /// "Add reminder" (CAL-33).
     Reminder,
+    /// The repeat presets (CAL-29).
+    Repeat,
     /// The date field and month under the header's title.
     GoToDate,
 }
@@ -228,26 +238,33 @@ fn with_send(op: CalOp, send: SendUpdates) -> CalOp {
             scope,
             send_updates: send,
         },
+        CalOp::Split {
+            id,
+            before,
+            after,
+            new,
+            ..
+        } => CalOp::Split {
+            id,
+            before,
+            after,
+            new,
+            send_updates: send,
+        },
         op => op,
     }
 }
 
-/// "This and following" as Google takes it, in order: the series ends
-/// (`If-Match` on its etag), then the new series goes in (CAL-11 id).
+/// "This and following" as Google takes it: one op, which ends the series
+/// (`If-Match` on its etag) and only then puts in the new one (CAL-11 id).
 fn split_ops(before: &Event, old: &Event, new: &Event) -> Vec<CalOp> {
-    vec![
-        CalOp::Patch {
-            id: old.id.clone(),
-            before: before.clone(),
-            after: old.clone(),
-            scope: SeriesScope::Following,
-            send_updates: SendUpdates::None,
-        },
-        CalOp::Insert {
-            event: new.clone(),
-            send_updates: SendUpdates::None,
-        },
-    ]
+    vec![CalOp::Split {
+        id: old.id.clone(),
+        before: before.clone(),
+        after: old.clone(),
+        new: new.clone(),
+        send_updates: SendUpdates::None,
+    }]
 }
 
 /// What a delete or a series split took out, to put back on undo.
@@ -268,6 +285,23 @@ pub struct Removal {
 pub enum CalendarEvent {
     /// A delete or a series split: the app shows a toast that can undo it.
     Undoable { message: String, removal: Removal },
+}
+
+/// Calendar settings changed in Pigeon; `None` follows Google (CAL-41).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CalendarPrefs {
+    pub time_24h: Option<bool>,
+    pub event_minutes: Option<u32>,
+}
+
+/// "Add Google Meet" for the open event (CAL-34).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MeetState {
+    /// The calendar takes Meet, and the event has none.
+    Offer,
+    Adding,
+    /// Google didn't make it; asking again uses the same request id.
+    Failed,
 }
 
 pub struct CalendarView {
@@ -308,7 +342,19 @@ pub struct CalendarView {
     pending_rsvp: Option<(String, RsvpStatus)>,
     _rsvp_timer: Option<Task<()>>,
     pub guest_prompt: Option<GuestPrompt>,
-    /// Repaints every half minute so the current-time line moves.
+    /// The user's Google Calendar settings (CAL-41).
+    pub google: GoogleSettings,
+    pub prefs: CalendarPrefs,
+    /// Reminder notifications (CAL-33), checked on every tick.
+    reminders: Scheduler,
+    /// The clock the scheduler compares with the wall clock; it stops
+    /// while the Mac sleeps.
+    started: Instant,
+    /// Meet requests asked for, by event id: the id stays the same on a
+    /// retry (CAL-34).
+    meet_requests: std::collections::HashMap<String, String>,
+    /// Repaints every half minute so the current-time line moves, and
+    /// checks the reminders.
     _tick: Task<()>,
     _closing: Option<Task<()>>,
     _autoscroll: Option<Task<()>>,
@@ -322,6 +368,15 @@ impl EventEmitter<CalendarEvent> for CalendarView {}
 pub fn occurrence_key(occurrence: &Occurrence, part: i64) -> u64 {
     let minutes = occurrence.start.and_utc().timestamp() / 60;
     ((occurrence.event as u64) << 40) ^ ((minutes as u64) << 8) ^ (part as u64 & 0xff)
+}
+
+/// A reminder fell due.
+fn fire_reminder(reminder: &DueReminder) {
+    // W5→W1: notify
+    eprintln!(
+        "Pigeon: reminder: {} at {}",
+        reminder.title, reminder.key.start
+    );
 }
 
 /// The start of an event's next occurrence from today, or of its last one.
@@ -358,7 +413,11 @@ impl CalendarView {
                 cx.background_executor()
                     .timer(StdDuration::from_secs(30))
                     .await;
-                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                let ticked = this.update(cx, |this, cx| {
+                    this.check_reminders(cx);
+                    cx.notify();
+                });
+                if ticked.is_err() {
                     break;
                 }
             }
@@ -367,7 +426,21 @@ impl CalendarView {
             InputState::new(window, cx).placeholder("Go to date: nov 12, next fri, tomorrow")
         });
         let date_events = cx.subscribe_in(&date_input, window, Self::on_date_input_event);
-        let this = Self {
+        // Google's settings are read with the calendars (CAL-41).
+        let backend_events = cx.subscribe(&backend, |this, _, event: &BackendEvent, cx| {
+            if matches!(
+                event,
+                BackendEvent::CalendarsChanged | BackendEvent::SignedIn
+            ) {
+                this.load_google(cx);
+            }
+            if matches!(event, BackendEvent::SignedIn | BackendEvent::SignedOut) {
+                this.reminders = Scheduler::new(this.backend.read(cx).fired_reminders());
+            }
+        });
+        let google = backend.read(cx).calendar_settings();
+        let fired = backend.read(cx).fired_reminders();
+        let mut this = Self {
             data,
             view: ViewKind::Week,
             anchor: today(),
@@ -392,11 +465,19 @@ impl CalendarView {
             pending_rsvp: None,
             _rsvp_timer: None,
             guest_prompt: None,
+            google,
+            prefs: CalendarPrefs::default(),
+            reminders: Scheduler::new(fired),
+            started: Instant::now(),
+            meet_requests: Default::default(),
             _tick: tick,
             _closing: None,
             _autoscroll: None,
-            _subscriptions: vec![date_events],
+            _subscriptions: vec![date_events, backend_events],
         };
+        this.apply_display();
+        // The first check only starts the clock: nothing missed fires.
+        this.check_reminders(cx);
         this.scroll_to_morning();
         this
     }
@@ -866,6 +947,12 @@ impl CalendarView {
         if before == after {
             return;
         }
+        // No longer repeating: its occurrences changed on their own go.
+        if before.recurrence.is_some() && after.recurrence.is_none() {
+            self.data
+                .events
+                .retain(|e| e.recurring_event_id.as_deref() != Some(id.as_str()));
+        }
         let mut ops = Vec::new();
         if after.calendar != before.calendar {
             ops.push(CalOp::Move {
@@ -1048,6 +1135,8 @@ impl CalendarView {
         // The calendar's default reminders until the user picks one, as in
         // Google Calendar.
         let reminder_minutes = calendar.and_then(|c| c.default_reminder);
+        // Google's "Automatically add Google Meet" (CAL-34).
+        let auto_meet = self.google.auto_add_meet && calendar.is_some_and(|c| c.allows_meet());
         let calendar = calendar.map(|c| c.id.clone()).unwrap_or_default();
         let (start, end) = if all_day {
             let first = start.date();
@@ -1060,9 +1149,15 @@ impl CalendarView {
             (start, end.max(start + Duration::minutes(15)))
         };
         let id = self.new_id();
+        let meet_request = auto_meet.then(|| {
+            let request = self.new_id();
+            self.meet_requests.insert(id.clone(), request.clone());
+            request
+        });
         let event = Event {
             id: id.clone(),
             calendar,
+            meet_request,
             start,
             end,
             all_day,
@@ -1692,6 +1787,103 @@ impl CalendarView {
         cx.notify();
     }
 
+    // Google's settings, reminders and quick add (W5).
+
+    fn load_google(&mut self, cx: &mut Context<Self>) {
+        let google = self.backend.read(cx).calendar_settings();
+        if google != self.google {
+            self.google = google;
+            self.apply_display();
+            cx.notify();
+        }
+    }
+
+    /// Saved settings, at launch: the day shown last (CAL-23) and the
+    /// calendar settings changed in Pigeon.
+    pub fn apply_saved(&mut self, saved: &crate::settings::Saved) {
+        if let Some(date) = saved.calendar_date {
+            self.anchor = date;
+        }
+        self.prefs = CalendarPrefs {
+            time_24h: saved.time_24h,
+            event_minutes: saved.event_minutes,
+        };
+        self.apply_display();
+    }
+
+    /// The week's first day and the clock follow the settings.
+    pub fn apply_display(&mut self) {
+        time::set_first_weekday(self.google.first_weekday());
+        time::set_24_hour(self.uses_24_hour());
+        quick_add::set_default_minutes(self.event_minutes());
+    }
+
+    pub fn uses_24_hour(&self) -> bool {
+        self.prefs
+            .time_24h
+            .or(self.google.format_24h)
+            .unwrap_or(false)
+    }
+
+    /// A new event's length.
+    pub fn event_minutes(&self) -> u32 {
+        self.prefs
+            .event_minutes
+            .or(self.google.default_event_minutes)
+            .unwrap_or(60)
+    }
+
+    /// This Mac's zone, and Google's when it differs.
+    pub fn time_zone_note(&self) -> String {
+        let mac = LocalZone::system().name;
+        match self.zone_mismatch() {
+            Some(google) => format!(
+                "{mac}. Google Calendar is set to {google}; events show at this Mac's times."
+            ),
+            None => mac.to_string(),
+        }
+    }
+
+    /// Google's zone, when it isn't this Mac's.
+    pub fn zone_mismatch(&self) -> Option<&str> {
+        self.google
+            .time_zone
+            .as_deref()
+            .filter(|&z| z != LocalZone::system().name)
+    }
+
+    /// Show the reminders that fell due since the last tick (CAL-33).
+    fn check_reminders(&mut self, cx: &mut Context<Self>) {
+        let due = self.reminders.tick(
+            &self.data,
+            self.google.remind_responded_only,
+            now(),
+            self.started.elapsed(),
+        );
+        for reminder in due {
+            self.backend.read(cx).mark_reminder_fired(&reminder.key);
+            fire_reminder(&reminder);
+        }
+    }
+
+    /// "New event: Lunch with Sam Fri 1pm" from ⌘K (CAL-39): the event,
+    /// open in the panel to confirm.
+    pub fn quick_add(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let quick = quick_add::parse(text, now(), self.event_minutes());
+        self.anchor = quick.start.date();
+        self.mini_month = None;
+        let id = self.create_event(quick.start, quick.end, quick.all_day, window, cx);
+        if let Some(event) = self.event_mut(&id) {
+            event.title = quick.title.clone();
+        }
+        if let Some(panel) = &self.panel {
+            let title = panel.title.clone();
+            title.update(cx, |input, cx| input.set_value(quick.title, window, cx));
+        }
+        self.settle_edit(cx);
+        cx.notify();
+    }
+
     // Action handlers.
 
     fn show_day(&mut self, _: &ShowDayView, _: &mut Window, cx: &mut Context<Self>) {
@@ -1816,7 +2008,8 @@ impl CalendarView {
         } else {
             time::at(day, 9, 0)
         };
-        self.create_event(start, start + Duration::hours(1), false, window, cx);
+        let length = Duration::minutes(self.event_minutes() as i64);
+        self.create_event(start, start + length, false, window, cx);
     }
 
     /// Enter: answers an open prompt with its first choice, or opens the
@@ -2242,6 +2435,9 @@ impl Render for CalendarView {
             .on_action(cx.listener(Self::delete_selected))
             .on_action(cx.listener(Self::close_event))
             .on_action(cx.listener(Self::toggle_calendars_menu))
+            .on_action(cx.listener(Self::add_google_meet))
+            .on_action(cx.listener(Self::set_repeat))
+            .on_action(cx.listener(Self::add_reminder))
             .relative()
             .flex_1()
             .min_w_0()
@@ -2320,7 +2516,7 @@ mod tests {
     use crate::calendar::Rule;
 
     #[test]
-    fn a_split_ends_the_series_then_inserts_the_new_one() {
+    fn a_split_is_one_op_that_ends_the_series_then_inserts() {
         let day = |n| time::at(NaiveDate::from_ymd_opt(2026, 11, n).unwrap(), 9, 0);
         let before = Event {
             id: "s1".into(),
@@ -2343,19 +2539,13 @@ mod tests {
             .collect();
         assert_eq!(
             ops,
-            [
-                CalOp::Patch {
-                    id: "s1".into(),
-                    before,
-                    after: old,
-                    scope: SeriesScope::Following,
-                    send_updates: SendUpdates::All,
-                },
-                CalOp::Insert {
-                    event: new,
-                    send_updates: SendUpdates::All,
-                },
-            ]
+            [CalOp::Split {
+                id: "s1".into(),
+                before,
+                after: old,
+                new,
+                send_updates: SendUpdates::All,
+            }]
         );
     }
 }

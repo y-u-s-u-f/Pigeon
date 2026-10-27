@@ -180,3 +180,19 @@ CREATE TABLE notified (
     at INTEGER NOT NULL,                 -- ms
     PRIMARY KEY (account, message_id)
 );
+
+-- migration: 130
+-- W5: every default reminder of a calendar (CAL-33, JSON [Reminder]), the
+-- conference types it allows (CAL-34, JSON [String]), and the reminders
+-- already shown, so none is shown twice.
+ALTER TABLE calendars ADD COLUMN default_reminders TEXT;
+ALTER TABLE calendars ADD COLUMN conference_types TEXT;
+CREATE TABLE fired_reminders (
+    account TEXT NOT NULL,
+    calendar_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    instance_start TEXT NOT NULL,        -- wall clock, local
+    offset_minutes INTEGER NOT NULL,
+    fired_at INTEGER NOT NULL,           -- ms
+    PRIMARY KEY (account, calendar_id, event_id, instance_start, offset_minutes)
+);

@@ -375,6 +375,15 @@ pub enum CalOp {
         calendar: String,
         selected: bool,
     },
+    // W5: "This and following" as one op, so the new series goes in only
+    // once the old one was shortened (`before` to `after`).
+    Split {
+        id: String,
+        before: Event,
+        after: Event,
+        new: Event,
+        send_updates: SendUpdates,
+    },
 }
 
 impl CalOp {
@@ -410,6 +419,7 @@ impl Op {
                 CalOp::Move { .. } => "calendar.move",
                 CalOp::Rsvp { .. } => "calendar.rsvp",
                 CalOp::SetSelected { .. } => "calendar.set_selected",
+                CalOp::Split { .. } => "calendar.split",
             },
         }
     }
@@ -434,6 +444,8 @@ impl Op {
                 | CalOp::Delete { id, .. }
                 | CalOp::Move { id, .. }
                 | CalOp::Rsvp { id, .. } => id.clone(),
+                // Both series: an undo's ops on either wait for it.
+                CalOp::Split { id, new, .. } => format!("{id},{}", new.id),
                 CalOp::SetSelected { calendar, .. } => format!("calendar:{calendar}"),
             },
         }

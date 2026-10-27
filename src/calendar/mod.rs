@@ -8,7 +8,10 @@
 //! `docs/ROADMAP.md`.
 
 pub mod layout;
+pub mod policy;
+pub mod quick_add;
 pub mod recurrence;
+pub mod reminders;
 pub mod time;
 
 use chrono::{DateTime, Duration, FixedOffset, NaiveDateTime};
@@ -17,7 +20,55 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::data::{Contact, hex_color};
 
+pub use policy::{Reminder, ReminderMethod};
 pub use recurrence::{Occurrence, Rule, occurrences};
+
+/// The user's Google Calendar settings (`settings.list`, CAL-41) that
+/// Pigeon follows. Defaults until the user changes the same thing in
+/// Pigeon.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GoogleSettings {
+    /// 0 Sunday, 1 Monday, 6 Saturday, as Google writes it.
+    pub week_start: Option<u8>,
+    pub format_24h: Option<bool>,
+    pub default_event_minutes: Option<u32>,
+    /// Add Google Meet to new events.
+    pub auto_add_meet: bool,
+    /// Remind only of events the user answered (or organizes).
+    pub remind_responded_only: bool,
+    /// Google's IANA zone for the user.
+    pub time_zone: Option<String>,
+}
+
+impl GoogleSettings {
+    /// From `settings.list`'s items (`{"id": …, "value": …}`).
+    pub fn from_items(items: &[(String, String)]) -> Self {
+        let mut out = Self::default();
+        for (id, value) in items {
+            match id.as_str() {
+                "weekStart" => out.week_start = value.parse().ok().filter(|d| *d <= 6),
+                "format24HourTime" => out.format_24h = value.parse().ok(),
+                "defaultEventLength" => {
+                    out.default_event_minutes = value.parse().ok().filter(|m| *m > 0)
+                }
+                "autoAddHangouts" => out.auto_add_meet = value == "true",
+                "remindOnRespondedEventsOnly" => out.remind_responded_only = value == "true",
+                "timezone" => out.time_zone = Some(value.clone()).filter(|z| !z.is_empty()),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    pub fn first_weekday(&self) -> chrono::Weekday {
+        match self.week_start {
+            Some(0) => chrono::Weekday::Sun,
+            Some(6) => chrono::Weekday::Sat,
+            _ => chrono::Weekday::Mon,
+        }
+    }
+}
 
 /// Which occurrences of a series a change or a delete applies to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,9 +100,36 @@ pub struct Calendar {
     /// The calendar's IANA zone.
     #[serde(default)]
     pub time_zone: Option<String>,
-    /// Minutes before, for events that use the calendar's default.
+    /// Minutes before, for events that use the calendar's default: the
+    /// earliest of `default_reminders`.
     #[serde(default)]
     pub default_reminder: Option<u32>,
+    /// Google's `defaultReminders`, all of them (CAL-33). Empty in demo
+    /// mode, where `default_reminder` is the one.
+    #[serde(default)]
+    pub default_reminders: Vec<Reminder>,
+    /// `conferenceProperties.allowedConferenceSolutionTypes` (CAL-34).
+    #[serde(default)]
+    pub conference_types: Vec<String>,
+}
+
+impl Calendar {
+    /// The reminders of events that use the calendar's defaults.
+    pub fn defaults(&self) -> Vec<Reminder> {
+        if self.default_reminders.is_empty() {
+            self.default_reminder
+                .map(Reminder::popup)
+                .into_iter()
+                .collect()
+        } else {
+            self.default_reminders.clone()
+        }
+    }
+
+    /// "Add Google Meet" is offered (CAL-34).
+    pub fn allows_meet(&self) -> bool {
+        self.conference_types.iter().any(|t| t == "hangoutsMeet")
+    }
 }
 
 /// What the user may do with a calendar's events (Google's `accessRole`).
@@ -186,9 +264,41 @@ pub struct Event {
     pub conference_uri: String,
     #[serde(default)]
     pub reminder_use_default: bool,
+    /// The event's own reminders, when it has several or an email one
+    /// (CAL-33); `reminder_minutes` is the earliest. Empty: just
+    /// `reminder_minutes`, as a notification. Set both with
+    /// `set_reminders`.
+    #[serde(default)]
+    pub reminders: Vec<Reminder>,
+    /// "Add Google Meet" asked for, not yet answered by Google: the
+    /// `createRequest`'s `requestId`, the same across retries (CAL-34).
+    #[serde(default)]
+    pub meet_request: Option<String>,
 }
 
 impl Event {
+    /// Its own reminders (not the calendar's defaults).
+    pub fn own_reminders(&self) -> Vec<Reminder> {
+        if self.reminders.is_empty() {
+            self.reminder_minutes
+                .map(Reminder::popup)
+                .into_iter()
+                .collect()
+        } else {
+            self.reminders.clone()
+        }
+    }
+
+    /// Its own reminders become `reminders`, sorted, without repeats.
+    pub fn set_reminders(&mut self, mut reminders: Vec<Reminder>) {
+        reminders.sort_by_key(|r| (r.minutes, r.method.key()));
+        reminders.dedup();
+        reminders.truncate(policy::MAX_REMINDERS);
+        self.reminder_use_default = false;
+        self.reminder_minutes = reminders.iter().map(|r| r.minutes).max();
+        self.reminders = reminders;
+    }
+
     pub fn duration(&self) -> Duration {
         self.end - self.start
     }
@@ -216,7 +326,9 @@ impl Event {
     /// (`new_id`) starts at `start` with `edited`'s fields and rule, a COUNT
     /// counting only what's left. Returns both. Occurrences changed on their
     /// own from `origin` on belong to neither. `None` from the first
-    /// occurrence, where "This and following" is the whole series.
+    /// occurrence, where "This and following" is the whole series. A new
+    /// rule in `edited` (CAL-29) is the new series' as set; no rule makes
+    /// it a single event.
     pub fn split(
         &self,
         origin: NaiveDateTime,
@@ -233,8 +345,12 @@ impl Event {
         old_rule.until = Some(origin);
         old_rule.count = None;
         old.exceptions.retain(|&e| e < origin);
-        let mut new_rule = edited.recurrence.clone().unwrap_or_else(|| rule.clone());
-        if let Some(count) = rule.count {
+        let mut new_rule = edited.recurrence.clone();
+        if let Some(new_rule) = &mut new_rule
+            && new_rule.same_pattern(rule)
+            && new_rule.count == rule.count
+            && let Some(count) = rule.count
+        {
             // COUNT counts the occurrences skipped too.
             let plain = Event {
                 exceptions: Vec::new(),
@@ -251,7 +367,8 @@ impl Event {
             id: new_id,
             start,
             end: start + edited.duration(),
-            recurrence: Some(new_rule),
+            recurrence: new_rule,
+            meet_request: None,
             exceptions: Vec::new(),
             recurring_event_id: None,
             original_start: None,
@@ -385,6 +502,33 @@ mod tests {
         assert_eq!((old_rule.until, old_rule.count), (Some(monday(16)), None));
         let new_rule = new.recurrence.unwrap();
         assert_eq!((new_rule.count, new_rule.until), (Some(4), None));
+    }
+
+    #[test]
+    fn split_with_a_new_repeat_takes_it_whole() {
+        let mut series = weekly();
+        series.recurrence.as_mut().unwrap().count = Some(6);
+        series.meet_request = Some("req".into());
+        let edited = Event {
+            recurrence: Some(Rule::daily()),
+            ..series.clone()
+        };
+        let (old, new) = series
+            .split(monday(16), monday(16), &edited, "n1".into())
+            .unwrap();
+        assert_eq!(old.recurrence.unwrap().until, Some(monday(16)));
+        // Not the old COUNT, adjusted: the new rule as set.
+        assert_eq!(new.recurrence, Some(Rule::daily()));
+        assert!(new.meet_request.is_none());
+        // No repeat: from the occurrence on, a single event.
+        let single = Event {
+            recurrence: None,
+            ..series.clone()
+        };
+        let (_, new) = series
+            .split(monday(16), monday(16), &single, "n2".into())
+            .unwrap();
+        assert!(new.recurrence.is_none() && !new.is_series());
     }
 
     #[test]

@@ -12,7 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use super::{
     Event,
-    time::{LocalZone, add_months, midnight, month_start, week_start},
+    time::{LocalZone, add_months, midnight, monday_of as week_start, month_start},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,9 +40,12 @@ pub struct Rule {
     /// instead.
     #[serde(default)]
     pub unsupported: bool,
-    /// The RRULE has parts this type doesn't hold, so `label` can't say it.
+    /// The RRULE has parts this type doesn't hold; `raw` says it.
     #[serde(default)]
     pub custom: bool,
+    /// A custom rule's RRULE value as Google wrote it, for `label`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
 }
 
 const WEEKDAYS: [Weekday; 5] = [
@@ -64,7 +67,27 @@ impl Rule {
             until: None,
             unsupported: false,
             custom: false,
+            raw: None,
         }
+    }
+
+    /// Repeats the same way, whatever its end.
+    pub fn same_pattern(&self, other: &Rule) -> bool {
+        (
+            self.freq,
+            self.interval.max(1),
+            &self.by_day,
+            &self.by_month_day,
+            self.custom,
+            &self.raw,
+        ) == (
+            other.freq,
+            other.interval.max(1),
+            &other.by_day,
+            &other.by_month_day,
+            other.custom,
+            &other.raw,
+        )
     }
 
     pub fn daily() -> Self {
@@ -114,12 +137,30 @@ impl Rule {
                 .all(|&d| self.by_day.iter().any(|&(n, w)| n.is_none() && w == d))
     }
 
-    /// "Every weekday", "Every 2 weeks", "Every week on Mon, Wed", "Every
-    /// month on the last Fri".
+    /// The rule in words, with its end: "Every weekday", "Every 2 weeks",
+    /// "Every week on Mon, Wed", "Every month on the last Fri, 10 times",
+    /// "Every day, until Dec 31, 2026". Custom rules from Google are said
+    /// from their RRULE.
     pub fn label(&self) -> String {
-        if self.custom {
-            return "Custom repeat".into();
+        let pattern = if self.custom {
+            self.raw
+                .as_deref()
+                .map_or_else(|| "Custom repeat".into(), describe_rrule)
+        } else {
+            self.pattern_label()
+        };
+        match (self.count, self.until) {
+            (Some(1), _) => format!("{pattern}, once"),
+            (Some(n), _) => format!("{pattern}, {n} times"),
+            (None, Some(until)) => format!(
+                "{pattern}, until {}",
+                (until - Duration::seconds(1)).format("%b %-d, %Y")
+            ),
+            (None, None) => pattern,
         }
+    }
+
+    fn pattern_label(&self) -> String {
         let n = self.interval.max(1);
         let unit = match self.freq {
             Freq::Daily => "day",
@@ -135,23 +176,28 @@ impl Rule {
         } else {
             format!("Every {n} {unit}s")
         };
-        if self.freq == Freq::Weekly && self.by_day.len() > 1 {
+        if self.freq == Freq::Weekly && !self.by_day.is_empty() {
             let mut days: Vec<Weekday> = self.by_day.iter().map(|&(_, d)| d).collect();
             days.sort_by_key(|d| d.num_days_from_monday());
             let days: Vec<String> = days.iter().map(|d| format!("{d:?}")).collect();
             return format!("{every} on {}", days.join(", "));
         }
         if self.freq == Freq::Monthly
-            && let [(Some(ord), day)] = self.by_day[..]
+            && let [(Some(n), day)] = self.by_day[..]
         {
-            let ord = match ord {
-                -1 => "last".to_string(),
-                1 => "1st".into(),
-                2 => "2nd".into(),
-                3 => "3rd".into(),
-                n => format!("{n}th"),
-            };
-            return format!("{every} on the {ord} {day:?}");
+            return format!("{every} on the {} {day:?}", ordinal(n as i32));
+        }
+        if self.freq == Freq::Monthly && !self.by_month_day.is_empty() {
+            let days: Vec<String> = self
+                .by_month_day
+                .iter()
+                .map(|&d| match d {
+                    -1 => "the last day".to_string(),
+                    d if d < 0 => format!("the {} day", ordinal(d as i32)),
+                    d => format!("day {d}"),
+                })
+                .collect();
+            return format!("{every} on {}", days.join(", "));
         }
         every
     }
@@ -221,6 +267,9 @@ impl Rule {
             Freq::Yearly => !rule.by_day.is_empty() || !rule.by_month_day.is_empty(),
         };
         rule.custom = rule.unsupported;
+        if rule.custom {
+            rule.raw = Some(value.to_string());
+        }
         Some(rule)
     }
 
@@ -361,6 +410,114 @@ impl Rule {
     }
 }
 
+/// "1st", "2nd", "last", "2nd to last".
+fn ordinal(n: i32) -> String {
+    let suffix = |n: i32| match (n % 10, n % 100) {
+        (1, x) if x != 11 => "st",
+        (2, x) if x != 12 => "nd",
+        (3, x) if x != 13 => "rd",
+        _ => "th",
+    };
+    match n {
+        -1 => "last".into(),
+        n if n < 0 => format!("{}{} to last", -n, suffix(-n)),
+        n => format!("{n}{}", suffix(n)),
+    }
+}
+
+/// Any RRULE value in words, for rules Pigeon can't edit: "Every year in
+/// Nov on the 4th Thu", "Every month on the last weekday".
+fn describe_rrule(value: &str) -> String {
+    let mut freq = "";
+    let mut interval = 1u32;
+    let (mut days, mut months, mut month_days, mut set_pos) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut other = false;
+    for part in value.split(';') {
+        let Some((key, val)) = part.split_once('=') else {
+            continue;
+        };
+        let list = || val.split(',').map(str::trim);
+        match key.to_ascii_uppercase().as_str() {
+            "FREQ" => freq = val,
+            "INTERVAL" => interval = val.parse().unwrap_or(1),
+            "BYDAY" => days = list().filter_map(parse_by_day).collect(),
+            "BYMONTH" => {
+                months = list()
+                    .filter_map(|m| m.parse::<u32>().ok())
+                    .filter_map(|m| NaiveDate::from_ymd_opt(2000, m, 1))
+                    .map(|d| d.format("%b").to_string())
+                    .collect()
+            }
+            "BYMONTHDAY" => month_days = list().filter_map(|d| d.parse::<i32>().ok()).collect(),
+            "BYSETPOS" => set_pos = list().filter_map(|d| d.parse::<i32>().ok()).collect(),
+            "COUNT" | "UNTIL" | "WKST" => {}
+            _ => other = true,
+        }
+    }
+    let unit = match freq {
+        "SECONDLY" => "second",
+        "MINUTELY" => "minute",
+        "HOURLY" => "hour",
+        "DAILY" => "day",
+        "WEEKLY" => "week",
+        "MONTHLY" => "month",
+        "YEARLY" => "year",
+        _ => return "Custom repeat".into(),
+    };
+    let mut out = if interval > 1 {
+        format!("Every {interval} {unit}s")
+    } else {
+        format!("Every {unit}")
+    };
+    if !months.is_empty() {
+        out.push_str(&format!(" in {}", months.join(", ")));
+    }
+    let weekdays = days.len() == 5
+        && WEEKDAYS
+            .iter()
+            .all(|w| days.iter().any(|&(n, d)| n.is_none() && d == *w));
+    match (set_pos.as_slice(), days.is_empty()) {
+        ([pos], false) => {
+            let what = if weekdays {
+                "weekday".to_string()
+            } else {
+                let names: Vec<String> = days.iter().map(|(_, d)| format!("{d:?}")).collect();
+                names.join(" or ")
+            };
+            out.push_str(&format!(" on the {} {what}", ordinal(*pos)));
+        }
+        (_, false) => {
+            let names: Vec<String> = days
+                .iter()
+                .map(|&(n, d)| match n {
+                    Some(n) => format!("the {} {d:?}", ordinal(n as i32)),
+                    None => format!("{d:?}"),
+                })
+                .collect();
+            out.push_str(&format!(" on {}", names.join(", ")));
+        }
+        _ => {}
+    }
+    if !month_days.is_empty() {
+        let names: Vec<String> = month_days
+            .iter()
+            .map(|&d| {
+                if d < 0 {
+                    format!("the {} day", ordinal(d))
+                } else {
+                    format!("day {d}")
+                }
+            })
+            .collect();
+        out.push_str(&format!(" on {}", names.join(", ")));
+    }
+    if other {
+        out.push_str(" (custom)");
+    }
+    out
+}
+
 fn parse_weekday(code: &str) -> Option<Weekday> {
     Some(match code {
         "MO" => Weekday::Mon,
@@ -430,6 +587,7 @@ pub fn parse_recurrence(lines: &[String], all_day: bool, zone: &LocalZone) -> Re
                 None => {
                     out.rule = Some(Rule {
                         custom: true,
+                        raw: Some(value.to_string()),
                         ..Rule::daily()
                     });
                     unsupported = true;
@@ -915,5 +1073,37 @@ mod tests {
             assert!(!rule.unsupported, "{line}");
             assert_eq!(rule.to_rrule(all_day, &z), line);
         }
+    }
+
+    #[test]
+    fn rules_in_words() {
+        let z = zone();
+        let words = |value: &str| Rule::parse(value, false, &z).unwrap().label();
+        assert_eq!(words("FREQ=WEEKLY;BYDAY=TU"), "Every week on Tue");
+        assert_eq!(
+            words("FREQ=MONTHLY;BYDAY=-1FR;COUNT=4"),
+            "Every month on the last Fri, 4 times"
+        );
+        assert_eq!(
+            words("FREQ=DAILY;UNTIL=20261231T075959Z"),
+            "Every day, until Dec 31, 2026"
+        );
+        assert_eq!(
+            words("FREQ=MONTHLY;BYMONTHDAY=15;INTERVAL=2"),
+            "Every 2 months on day 15"
+        );
+        // Ones Pigeon can't edit, from their RRULE.
+        assert_eq!(
+            words("FREQ=YEARLY;BYMONTH=11;BYDAY=4TH"),
+            "Every year in Nov on the 4th Thu"
+        );
+        assert_eq!(
+            words("FREQ=MONTHLY;BYSETPOS=-1;BYDAY=MO,TU,WE,TH,FR;COUNT=3"),
+            "Every month on the last weekday, 3 times"
+        );
+        assert_eq!(words("FREQ=YEARLY;BYWEEKNO=20"), "Every year (custom)");
+        assert_eq!(words("FREQ=HOURLY;INTERVAL=4"), "Every 4 hours");
+        assert_eq!(ordinal(-2), "2nd to last");
+        assert_eq!(ordinal(11), "11th");
     }
 }

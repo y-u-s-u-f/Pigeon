@@ -140,6 +140,11 @@ actions!(
         SaveOriginal,
         CopyOriginal,
         CloseOriginal,
+        // W5: calendar (docs/BACKEND_SPRINT_2.md).
+        AddGoogleMeet,
+        SetRepeat,
+        AddReminder,
+        NewEventFromText,
     ]
 );
 
@@ -365,6 +370,11 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-t", calendar::GoToDate, Some(CALENDAR)),
         KeyBinding::new("g d", calendar::GoToDate, Some(CAL)),
         KeyBinding::new("c", NewEvent, Some(CAL)),
+        // W5.
+        KeyBinding::new("shift-c", NewEventFromText, Some(CAL)),
+        KeyBinding::new("shift-g", AddGoogleMeet, Some(CAL)),
+        KeyBinding::new("shift-r", SetRepeat, Some(CAL)),
+        KeyBinding::new("shift-a", AddReminder, Some(CAL)),
         KeyBinding::new("enter", OpenEvent, Some(CAL)),
         KeyBinding::new("e", OpenEvent, Some(CAL)),
         KeyBinding::new("delete", DeleteEvent, Some(CAL)),
@@ -651,6 +661,11 @@ pub const COMMANDS: &[Command] = commands! {
     Navigation: "Toggle Sidebar", PanelLeft, ToggleSidebar;
     Navigation: "Show / Hide Archived in Inbox", Archive, ToggleArchivedSection if Inbox;
     CalendarEvents: "New Event", Plus, NewEvent;
+    // W5.
+    CalendarEvents: "New Event from Text…", Plus, NewEventFromText;
+    CalendarEvents: "Add Google Meet", Video, AddGoogleMeet;
+    CalendarEvents: "Repeat…", Repeat, SetRepeat;
+    CalendarEvents: "Add Reminder…", Bell, AddReminder;
     CalendarEvents: "Open Event", Calendar, OpenEvent;
     CalendarEvents: "Delete Event", Trash, DeleteEvent;
     CalendarEvents: "Close Event", X, CloseEvent;
