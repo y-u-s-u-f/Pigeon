@@ -19,7 +19,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Planned features](#3-planned-features-pln) | 3 | 0 | 0 | 3 |
 | [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 2 | 3 | 3 | 8 |
 | [Folders and labels](#51-folders-and-labels-fol) | 6 | 0 | 6 | 12 |
-| [Thread list](#52-thread-list-lst) | 0 | 1 | 8 | 9 |
+| [Thread list](#52-thread-list-lst) | 0 | 0 | 9 | 9 |
 | [Reading pane](#53-reading-pane-rdr) | 1 | 0 | 7 | 8 |
 | [Message actions](#54-message-and-thread-actions-act) | 0 | 0 | 7 | 7 |
 | [Compose and sending](#55-compose-and-sending-cmp) | 0 | 1 | 12 | 13 |
@@ -30,14 +30,14 @@ To update: change the status cell in the area's table, then the counts below.
 | [Images and attachments](#510-images-and-attachments-att) | 3 | 1 | 3 | 7 |
 | [Links](#511-links-lnk) | 2 | 0 | 1 | 3 |
 | [Mail settings](#512-mail-settings-mst) | 10 | 0 | 0 | 10 |
-| [Calendar](#6-calendar-cal) | 18 | 5 | 19 | 42 |
-| [Sync and push](#71-sync-and-push-syn) | 2 | 1 | 4 | 7 |
+| [Calendar](#6-calendar-cal) | 18 | 4 | 20 | 42 |
+| [Sync and push](#71-sync-and-push-syn) | 2 | 0 | 5 | 7 |
 | [Notifications and background](#72-notifications-and-background-ntf) | 3 | 0 | 0 | 3 |
 | [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 0 | 2 | 3 | 5 |
 | [Storage and persistence](#81-storage-and-persistence-per) | 0 | 0 | 3 | 3 |
 | [Command palette](#82-command-palette-pal) | 0 | 0 | 3 | 3 |
-| [Data model](#83-data-model-dat) | 1 | 6 | 0 | 7 |
-| **Overall** | **59** | **20** | **97** | **176** |
+| [Data model](#83-data-model-dat) | 1 | 3 | 3 | 7 |
+| **Overall** | **59** | **14** | **103** | **176** |
 
 ## Contents
 
@@ -260,7 +260,7 @@ The user's own plans, not driven by Google's APIs.
 | LST-6 | Unread count in the list header | 🟢 Fully linked | `labels.get` |
 | LST-7 | Pagination and lazy loading | 🟢 Fully linked | `pageToken`, `maxResults` |
 | LST-8 | Live refresh and new mail in the list | 🟢 Fully linked | `history.list` (SYN-2) |
-| LST-9 | Empty-result text | 🟡 Partially done | None |
+| LST-9 | Empty-result text | 🟢 Fully linked | None |
 
 #### LST-1 Thread rows
 
@@ -868,7 +868,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | CAL-33 | Several reminders and default reminders | ⚪ Not done | `reminders.overrides` (`popup`, `email`), `calendarList.defaultReminders` |
 | CAL-34 | Create Google Meet links | ⚪ Not done | `conferenceData.createRequest` (`conferenceDataVersion=1`) |
 | CAL-39 | Quick add from text | ⚪ Not done | `events.quickAdd` |
-| CAL-40 | Move an event to another calendar | 🟡 Partially done | `events.move` |
+| CAL-40 | Move an event to another calendar | 🟢 Fully linked | `events.move` |
 | **Recurrence** | | | |
 | CAL-5 | Recurring events | 🟢 Fully linked | `recurrence` (RRULE, EXDATE), `events.instances`, `singleEvents` |
 | CAL-6 | This event or all events | 🟢 Fully linked | Instance `events.patch`; series split with `UNTIL` |
@@ -1142,7 +1142,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | SYN-1 | Gmail full sync | 🟢 Fully linked | `threads.list` / `messages.list` + batched `get`; store `historyId` |
 | SYN-2 | Gmail partial sync | 🟢 Fully linked | `history.list` (`startHistoryId`, `historyTypes`) |
 | SYN-3 | Gmail push | ⚪ Not done | `watch`, `stop`, Cloud Pub/Sub |
-| SYN-4 | Calendar incremental sync | 🟡 Partially done | `events.list` / `calendarList.list` with `syncToken` |
+| SYN-4 | Calendar incremental sync | 🟢 Fully linked | `events.list` / `calendarList.list` with `syncToken` |
 | SYN-5 | Calendar push | ⚪ Not done | `events.watch`, `calendarList.watch`, `acl.watch`, `settings.watch`, `channels.stop` |
 | SYN-6 | Contacts sync | 🟢 Fully linked | `people.connections.list`, `otherContacts.list` with `syncToken` |
 | SYN-7 | Batching, quotas and backoff | 🟢 Fully linked | HTTP batch; `429` / `403 rateLimitExceeded` |
@@ -1301,10 +1301,10 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
 | DAT-1 | JSON as the data source | 🟡 Partially done | Replaced by SYN data |
-| DAT-2 | Thread model: one folder per thread | 🟡 Partially done | Gmail per-message `labelIds` |
+| DAT-2 | Thread model: one folder per thread | 🟢 Fully linked | Gmail per-message `labelIds` |
 | DAT-3 | Message model: missing fields | 🟡 Partially done | `Message` resource |
-| DAT-4 | Threading headers | 🟡 Partially done | `payload.headers` |
-| DAT-5 | Local IDs for drafts and sent messages | 🟡 Partially done | Draft `id`, message `id`, `threadId` |
+| DAT-4 | Threading headers | 🟢 Fully linked | `payload.headers` |
+| DAT-5 | Local IDs for drafts and sent messages | 🟢 Fully linked | Draft `id`, message `id`, `threadId` |
 | DAT-6 | Search index rebuild cost | 🟡 Partially done | None |
 | DAT-7 | Import and insert messages | ⚪ Not done | `messages.import`, `messages.insert` |
 
