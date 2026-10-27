@@ -440,73 +440,80 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 #### CMP-1 New message
 
 - **Today:** `c` or palette "Compose New Message" opens an empty draft in the reading pane ("New Message"). `compose()` (`src/app/compose.rs`), `Composer` (`src/ui/composer.rs`). In memory until saved (DRF-1).
-- **Needs:** A server draft on first save (DRF-6); account choice when there are several (ACC-4); From alias choice (MST-1).
+- **Needs:** A tester pass on the real account (T2b); account choice when there are several (ACC-4); From alias choice (MST-1).
+- **Notes:** With Google (W6), saving it creates a Gmail draft (DRF-1) and sending goes through `messages.send` (CMP-8). From is the primary address and the account's name.
 - **Notes:** No signature (MST-2).
 
 #### CMP-2 Reply
 
 - **Today:** `r`, toolbar, palette. Draft opens under the conversation; subject "Re: …" unless it already starts with "re:". `reply_content()` (`src/app/compose.rs`): if the last message is from the user, reply to its recipients, else to its sender. `reply_to` links the thread.
-- **Needs:** `messages.send` with `threadId`, `In-Reply-To` and `References` headers, and a matching `Subject` (Gmail's threading rules). See DAT-4.
-- **Notes:** Earlier participants are ignored.
+- **Needs:** A tester pass (T2b). Verified on the real account (W6): the reply lands in the same Gmail thread.
+- **Notes:** Earlier participants are ignored. With Google (W6) the send carries `threadId` and `In-Reply-To`/`References` built from the thread's last stored message (`mime::reply_threading()`, `src/backend/mime.rs`); a reply goes to the last message's `Reply-To` when it has one.
 
 #### CMP-3 Reply all
 
 - **Today:** `a`, toolbar, palette. To: sender plus the last message's recipients, minus the user; Cc: its Cc minus anyone in To. Dedupe by email, case-insensitive.
-- **Needs:** As CMP-2, plus honouring `Reply-To` (ignored today).
+- **Needs:** A tester pass (T2b).
+- **Notes:** `Reply-To` is honoured (W6): its addresses replace the sender's in To (`reply_content()`).
 - **Notes:** Mailing lists and no-reply senders are included as is.
 
 #### CMP-4 Forward
 
 - **Today:** `f`, toolbar, palette. Subject "Fwd: …" unless it starts with "fwd:"/"fw:". The original is quoted with From, Date, Subject, To. No `reply_to`, so it opens alone and sending creates a new Sent thread (CMP-11).
-- **Needs:** A new message without `threadId`, `In-Reply-To` or `References`. Include the original's attachments (ATT-7).
+- **Needs:** A tester pass (T2b). Include the original's attachments (ATT-7).
+- **Notes:** With Google (W6) a forward is a new message: no `threadId`, `In-Reply-To` or `References`; the quote goes as a `<blockquote>` in the HTML part (CMP-10).
 
 #### CMP-5 Recipient fields
 
 - **Today:** To, Cc, Bcc as chips. Comma, semicolon or Enter commits; an unfinished address commits on send; Tab moves between fields; Backspace on empty removes the last chip; a chip without `@` is red. `Recipients`, `commit()`, `parse_address()` (`Name <addr>` or a bare address with `@` and a dotted domain).
-- **Needs:** Server rejection reaches the user (CMP-12). Local parsing is only a first check.
+- **Needs:** A tester pass (T2b). Local parsing is only a first check; Gmail's rejection reaches the user as "Not sent: …" (CMP-12).
 
 #### CMP-6 Show Cc and Bcc
 
 - **Today:** `cmd-shift-c`, the "Cc Bcc" link, or palette. `show_cc_bcc()`; `DraftContent::bcc`.
-- **Needs:** Gmail: include `Bcc` in the `raw` message and Gmail strips it on delivery. SMTP: `RCPT TO` only.
+- **Needs:** A tester pass (T2b). SMTP: `RCPT TO` only.
+- **Notes (W6):** `Bcc` goes in the `raw` message; Gmail strips it on delivery.
 - **Notes:** Bcc is kept on drafts and the sent copy, but the reader doesn't show it (RDR-4).
 
 #### CMP-7 Subject and formatted body
 
 - **Today:** Subject (hidden for replies, which keep the thread's). Markdown body styled as you type (bold, italic, strikethrough, `<u>underline</u>`, code, headings, lists, quotes, links); syntax stays visible, dimmed. Formatting bar and Gmail shortcuts (`cmd-b`, `cmd-i`, `cmd-u`, `cmd-shift-x`, `cmd-e`, `cmd-k`, `cmd-shift-7`/`8`/`9`, `cmd-\`). Enter continues lists; Tab/Shift-Tab indent; Page Up/Down move by page. `Composer` (`src/ui/composer.rs`), `src/ui/rich_editor.rs`, `src/markdown.rs`. On send and save, `markdown::to_html()` (`DraftContent::body_html()`) makes `Message::html`.
-- **Needs:** A MIME message: `multipart/alternative` with `text/plain` and `text/html`; base64url-encode it into `raw`. Plain part: the markdown as typed or `html::plain_text`; use the same for the snippet. Encode non-ASCII subjects and names (RFC 2047).
-- **Notes:** Typed raw HTML is sent as text except `<u>`/`</u>`. No inline images. A reply that changes the subject doesn't change the thread's.
+- **Needs:** A tester pass (T2b): formatting intact in Gmail web.
+- **Notes:** With Google (W6), `mime::build_message()` (`src/backend/mime.rs`, `mail-builder`) makes `multipart/alternative`: `text/plain` is the markdown as typed, `text/html` is `markdown::to_html()`; non-ASCII subjects and names are RFC 2047-encoded; base64url into `raw`. Typed raw HTML is sent as text except `<u>`/`</u>`. No inline images. A reply that changes the subject doesn't change the thread's.
 
 #### CMP-8 Send
 
-- **Today:** `cmd-enter` anywhere in the draft or list, Send button, palette. The draft closes, the message goes to Sent (or the thread), toast "Message sent" with Undo for 5 s (UND-1). `send_message()` (`src/app/compose.rs`), `Outgoing::to_message()` (`src/backend/mod.rs`): `date` from the local clock, `snippet` from the first 140 characters of the body's text. It queues `MailOp::Send`, which demo mode applies to its in-memory store after the undo window. Nothing leaves the app.
-- **Needs:** `messages.send` with `raw` (or `drafts.send` for a saved draft); use the upload endpoint for large messages. Show "sent" only after Gmail accepts it. Hold the send for the undo window (UND-1). Take `date` and `snippet` from the server response.
+- **Today:** `cmd-enter` anywhere in the draft or list, Send button, palette. The draft closes, the message goes to Sent (or the thread), toast "Sending…" with Undo for 5 s (UND-1), then "Message sent" once it went. `send_message()` (`src/app/compose.rs`), `Outgoing::to_message()` (`src/backend/mod.rs`). It queues `MailOp::Send`, held for the undo window. With Google (W6) `commit_compose()` (`src/backend/compose.rs`) sends it: `drafts.send` for a draft saved in Gmail, else `messages.send`, both through the upload endpoint (`uploadType=multipart`) above 5 MB; at the user's quota priority. Demo mode applies it to its in-memory store.
+- **Needs:** A tester pass (T2b). Verified on the real account (W6): new, reply, draft send.
+- **Notes:** `date` and `snippet` stay local until the next sync refetches the thread.
 
 #### CMP-9 Send validation
 
 - **Today:** No recipients: "Add at least one recipient" under To. Invalid address: "“zzz” isn't an email address". Typed text becomes the best contact or the address as typed. Subject and body aren't checked. `Composer::validate()`, `DraftContent::has_recipients()`.
-- **Needs:** Server reasons: invalid recipient, sender not allowed, size over limit, quota.
-- **Notes:** Subject and empty-body warnings aren't built.
+- **Needs:** A tester pass (T2b).
+- **Notes:** Subject and empty-body warnings aren't built. Attachments over 25 MB in all are refused: "Attachments are over Gmail’s 25 MB limit" under the attachments, when attaching and on send (W6). Gmail's own reasons come back as "Not sent: …" (CMP-12).
 
 #### CMP-10 Forward quote block
 
 - **Today:** "Forwarded message" block with From, Date, Subject, To, then the body. `Quoted` (display) and `html()` (`<blockquote>`) in `src/ui/composer.rs`. Kept on the draft (`DraftOrigin::quoted`, `src/data.rs`) so reopened forwards show it (DRF-3).
-- **Needs:** Send the quote as HTML in the format other clients expect (or attach the original as `message/rfc822`).
+- **Needs:** A tester pass (T2b).
+- **Notes (W6):** Sent as a `<blockquote>` in the HTML part; the plain part has only the note. A forward draft saved in Gmail keeps the quote only locally (`DraftOrigin::quoted`).
 
 #### CMP-11 Reply appends to the thread
 
 - **Today:** `send_message()` pushes a reply into the `reply_to` thread, or a new Sent thread if it's gone. Forwards always make a new Sent thread.
-- **Needs:** Gmail `threadId` on the sent message plus headers (CMP-2). IMAP: `In-Reply-To` and `References`.
+- **Needs:** A tester pass (T2b). IMAP: `In-Reply-To` and `References`.
+- **Notes (W6):** The reply's thread gets the sent copy under Gmail's ids at once (CMP-13). A reply to a thread still `sent-local-*` (its own send not yet committed) goes without `threadId` and threads by its headers.
 
 #### CMP-12 Send failure feedback
 
-- **Today:** Not built. `Composer::set_error()` and the footer error text only show recipient errors, but can carry the server's message.
-- **Needs:** Send errors with a readable reason, failed messages back to the draft or kept in an outbox (PER-2), and a retry.
+- **Today:** With Google (W6), a send Gmail turns down (after the transport's retries) goes back to Drafts as a draft (`draft-local-*`, or the draft it was sent from), leaves the conversation it was shown in, and shows the toast "Not sent: <Gmail's reason>" (for example "Not sent: Invalid To header", checked on the real account). `send()` in `src/backend/compose.rs`.
+- **Needs:** A tester pass (T2b). No retry button; reopening the draft and sending again is the retry.
 
 #### CMP-13 Sent copy on the server
 
-- **Today:** The Sent thread is made in memory by `send_message()`.
-- **Needs:** Gmail labels sent messages `SENT` itself. IMAP: `APPEND` to Sent unless the server does. Dedupe on `Message-ID` (DAT-4).
+- **Today:** The Sent thread is made in memory by `send_message()`. With Google (W6), once Gmail answers, the sent copy is stored under its message and thread ids with the Message-ID it went with and Gmail's labels; a new thread's `sent-local-*` id is swapped for Gmail's (`IdReplaced`), then `ThreadsChanged` reloads it, so the history poll finds the same message instead of a second one.
+- **Needs:** A tester pass (T2b). IMAP: `APPEND` to Sent unless the server does.
 
 ### 5.6 Drafts (DRF)
 
@@ -522,24 +529,25 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 #### DRF-1 Save on close or navigation
 
 - **Today:** A changed draft is saved when closed (`Esc`, toolbar "Close and save draft", palette "Close Draft") or when the user moves elsewhere; toast "Saved to Drafts" (no Undo). Unchanged drafts aren't saved. `stash_composer()`, `save_draft()` (`src/app/compose.rs`), which also queues `MailOp::SaveDraft` (an `Outgoing`, `src/backend/mod.rs`); demo mode stores it in its in-memory store. Drafts are one-message `Thread`s with IDs `draft-local-<uuid>` (DAT-5).
-- **Needs:** `drafts.create`, then `drafts.update` with the stored draft ID (IMAP: `APPEND` to Drafts and delete the old copy).
-- **Notes:** Quitting loses unsaved changes (PER-2).
+- **Needs:** A tester pass (T2b). IMAP: `APPEND` to Drafts and delete the old copy.
+- **Notes:** Quitting loses unsaved changes (PER-2). With Google (W6) `SaveDraft` stores the draft locally first, then `drafts.create` (or `drafts.update` with the stored draft id) with `X-Pigeon-Markdown: 1` and, for replies, `threadId` and threading headers; the local id stays, `drafts.draft_id` and the message id are stored so the drafts sync sees it unchanged. A failed save keeps the local text and toasts "Couldn't save the draft to Gmail: …"; there's no automatic retry yet.
 
 #### DRF-2 Drafts list
 
 - **Today:** Rows show "To: <first recipient>", "(no recipients)", "(no subject)". The sidebar shows the count. With Google (W3) the Drafts step lists `drafts.list` (up to 500) and fetches each changed draft's message with `messages.get format=metadata`: each draft is a Drafts thread `draft-<draft id>` (a reply draft keeps `origin.reply_to` = its thread), its draft id stored in `drafts.draft_id`; drafts gone from Gmail go. Re-read when history touches a draft. Demo: six starter drafts.
-- **Needs:** A tester pass (T1a). Opening one with its body and markdown is W6 (DRF-3, DRF-6).
+- **Needs:** A tester pass (T1a). Opening one with its body and markdown: DRF-3 (W6).
 
 #### DRF-3 Open and edit a draft
 
 - **Today:** Selecting a Drafts thread opens it in the composer ("Draft") via `open_draft()`. Drafts saved here keep their markdown in `DraftOrigin::markdown` and reopen with it; JSON drafts reopen from their HTML as plain text (`html::plain_text`). Kind, reply target and forward quote are kept in `DraftOrigin`. Replying again to a thread with a reply draft reopens that draft (`reply_draft_of()`).
-- **Needs:** `drafts.get` with full content, attachments and headers. Store the markdown with the draft so formatting survives (for example as the `text/plain` part or a custom part other clients ignore). Keep the draft's link to its thread (`threadId`) and the quote as a separate part.
-- **Notes:** Drafts written elsewhere have only HTML and lose formatting unless HTML is converted to markdown. Draft search doesn't match text only in the quote. Draft attachments keep metadata only (ATT-6).
+- **Needs:** A tester pass (T2b).
+- **Notes:** With Google (W6), opening a Gmail draft whose text isn't here yet fetches it with `drafts.get format=raw` (`Backend::fetch_draft()`, `src/backend/compose.rs`) instead of the message-body fetch; a draft written here (`X-Pigeon-Markdown: 1`) gets its markdown back from the `text/plain` part (`mime::parse_draft()`), one written in Gmail opens as its plain text. The composer fills in when it arrives, unless the user has already typed (`Composer::load()`). Formatting of drafts written elsewhere is lost (no HTML-to-markdown). Draft search doesn't match text only in the quote. Attachments of a Gmail draft are sent again from the draft itself.
 
 #### DRF-4 Discard a draft
 
 - **Today:** `cmd-shift-d`, toolbar trash, palette. Removed with toast "Draft discarded" and Undo; an unchanged new draft is dropped silently. `discard_draft()`.
-- **Needs:** `drafts.delete` (permanent, not Trash), delayed until the undo window ends or recreated on Undo (UND-2).
+- **Needs:** A tester pass (T2b).
+- **Notes (W6):** `DeleteDraft` removes the local copy, then `drafts.delete` (permanent) after the undo window (UND-2).
 
 #### DRF-5 Save while typing
 
@@ -548,8 +556,8 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 #### DRF-6 Sync drafts with the server
 
-- **Today:** Not built.
-- **Needs:** Two-way sync via `drafts.list` and history (SYN-2). Replace `draft-local-N` with the server draft ID after the first save (DAT-5). A conflict rule: last write wins, or keep both.
+- **Today:** Drafts from Gmail come with the mail sync (DRF-2, W3). Drafts saved here go to Gmail (DRF-1) and keep their `draft-local-*` id, linked to the Gmail draft by `drafts.draft_id` (W6). Last write wins: a draft edited elsewhere reloads, but an open draft's text is never replaced once the user has typed (DRF-3).
+- **Needs:** A tester pass (T2b): a draft written in Gmail web appears, edits sync.
 - **Notes:** `drafts.update` replaces the draft's message, so its message ID changes on every save; track the draft ID, not the message ID.
 
 ### 5.7 Undo (UND)
@@ -562,14 +570,15 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 #### UND-1 Undo send
 
-- **Today:** Toast "Message sent" with Undo (`cmd-z`, `z`, palette) for 5 s (`TOAST_DURATION`). Undo removes the message from Sent or the thread, restores the draft and reopens the composer. `UndoAction::Send` (`src/app.rs`), `undo()` (`src/app/compose.rs`). The send is a `MailOp::Send` the outbox holds for the 5 s (PER-2); Undo cancels it, or says "Already sent" if it went.
-- **Needs:** The outbox's Google commit (W6). Gmail's own "undo send" isn't in the API, so the hold is ours.
+- **Today:** Toast "Sending…" with Undo (`cmd-z`, `z`, palette) for 5 s (`TOAST_DURATION`), then "Message sent". Undo removes the message from Sent or the thread, restores the draft and reopens the composer. `UndoAction::Send` (`src/app.rs`), `undo()` (`src/app/compose.rs`). The send is a `MailOp::Send` the outbox holds for the 5 s (PER-2); Undo cancels it, or says "Already sent" if it went. With Google the held send is committed by W6 (CMP-8).
+- **Needs:** A tester pass (T2b). Gmail's own "undo send" isn't in the API, so the hold is ours.
 - **Notes:** Once sent it can't be recalled.
 
 #### UND-2 Undo discard
 
 - **Today:** Toast "Draft discarded" with Undo for 5 s; Undo puts the draft back and reopens it. `UndoAction::Discard`. Discarding a saved draft queues a delayed `MailOp::DeleteDraft`; Undo cancels it, or saves the draft again if it already went.
-- **Needs:** The delayed `drafts.delete` committed to Gmail (W6). A never-saved draft only needs the composer back.
+- **Needs:** A tester pass (T2b). A never-saved draft only needs the composer back.
+- **Notes (W6):** The delayed `drafts.delete` is committed to Gmail; Undo after it went creates the draft again.
 
 #### UND-3 Undo for other actions
 
@@ -729,8 +738,9 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 #### ATT-6 Attach files to a new message
 
-- **Today:** The paperclip opens a file picker (multi-select); dropping files also attaches. Chips with icon, name, size and ×; kept on the draft and shown on the sent copy. `attach_paths()`, `Attachment::from_file()` (name, size, MIME from extension). Only metadata is read; bytes are never read or sent.
-- **Needs:** Read the files into the MIME message; use `uploadType=multipart` or `resumable` on `messages.send` / `drafts.create` / `drafts.update` for large ones. Show progress and Gmail's 25 MB message limit (larger files as Drive links, see §9).
+- **Today:** The paperclip opens a file picker (multi-select); dropping files also attaches. Chips with icon, name, size and ×; kept on the draft and shown on the sent copy. `attach_paths()`, `Attachment::from_file()` (name, size, MIME from extension), `Attachment::path`. More than 25 MB in all is refused ("Attachments are over Gmail’s 25 MB limit"). With Google (W6) the files are read from disk when the draft is saved or the message sent and go in a `multipart/mixed` message, through `uploadType=multipart` above 5 MB; files of a draft opened from Gmail are taken from that draft.
+- **Needs:** A tester pass (T2b). Progress for big uploads; `resumable` uploads; larger files as Drive links (see §9).
+- **Notes:** A file moved or deleted before sending fails the send ("Not sent: couldn't read “x”"). Demo mode reads nothing.
 
 #### ATT-7 Forward keeps attachments
 
@@ -1291,8 +1301,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### DAT-4 Threading headers
 
-- **Today:** No `Message-ID`, `In-Reply-To`, `References` or `Reply-To`; replies link only by the in-memory `reply_to` thread ID.
-- **Needs:** Store them for every message; set them on replies (CMP-2, CMP-3); dedupe the sent copy on `Message-ID` (CMP-13). Without them replies won't thread in other clients.
+- **Today:** Stored for every synced message (W3, without angle brackets). With Google (W6) every message sent or saved gets a new `Message-ID` on the sender's domain (`mime::new_message_id()`); replies carry `In-Reply-To` = the parent's id and `References` = its chain plus its id (`mime::reply_threading()`), checked on the real account; the sent copy is stored with its `Message-ID` (CMP-13).
+- **Needs:** A tester pass (T2b).
 
 #### DAT-5 Local IDs for drafts and sent messages
 

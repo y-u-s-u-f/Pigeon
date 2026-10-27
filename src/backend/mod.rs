@@ -18,6 +18,7 @@
 
 pub mod auth;
 pub mod calendar;
+pub mod compose;
 pub mod demo;
 pub mod gmail;
 pub mod http;
@@ -714,6 +715,10 @@ impl Backend {
     /// emits `ThreadsChanged` once they're stored. Demo bodies are all
     /// there already.
     pub fn fetch_body(&mut self, thread_id: &str, cx: &mut Context<Self>) {
+        // W6: a Gmail draft comes whole, from drafts.get (DRF-3).
+        if self.fetch_draft(thread_id, cx) {
+            return;
+        }
         self.fetch_bodies(thread_id, cx);
     }
 
@@ -766,7 +771,7 @@ impl Backend {
         let wait = Duration::from_millis((due - now_ms()).max(0) as u64);
         self._worker = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(wait).await;
-            let Ok(Some((store, account, demo, due))) = this.update(cx, |this, _| {
+            let Ok(Some((store, account, demo, due, transport))) = this.update(cx, |this, _| {
                 let due = this.outbox.take_due(now_ms()).ok()?;
                 this.committing = true;
                 Some((
@@ -774,6 +779,7 @@ impl Backend {
                     this.email().to_string(),
                     this.is_demo(),
                     due,
+                    this.transport(),
                 ))
             }) else {
                 return;
@@ -782,25 +788,41 @@ impl Backend {
             let results = cx
                 .background_executor()
                 .spawn(async move {
+                    // W6: drafts and sends, at the user's priority.
+                    let compose_gmail =
+                        transport.map(|t| gmail::Gmail::new(Arc::new(compose::UserCalls(t))));
                     due.into_iter()
                         .map(|(id, op)| {
                             // W5: Google commits go through gmail.rs and
                             // calendar.rs here.
-                            let result = if demo {
-                                match &op {
+                            let (result, events) = if demo {
+                                let result = match &op {
                                     Op::Mail(op) => store.apply_mail_op(&account, op),
                                     Op::Calendar(op) => store.apply_cal_op(&account, &me, op),
-                                }
+                                };
+                                (result, Vec::new())
+                            } else if let (Op::Mail(op), Some(gmail)) = (&op, &compose_gmail)
+                                && compose::handles(op)
+                            {
+                                // W6: drafts and sends.
+                                compose::commit_compose(gmail, &store, &account, op)
                             } else {
-                                Err(anyhow::anyhow!("not connected to Google yet"))
+                                (
+                                    Err(anyhow::anyhow!("not connected to Google yet")),
+                                    Vec::new(),
+                                )
                             };
-                            (id, result)
+                            (id, result, events)
                         })
                         .collect::<Vec<_>>()
                 })
                 .await;
             this.update(cx, |this, cx| {
-                for (id, result) in results {
+                for (id, result, events) in results {
+                    // W6: what the commit changed, before it's reported.
+                    for event in events {
+                        cx.emit(event);
+                    }
                     match result {
                         Ok(()) => {
                             this.outbox.finish(id).ok();

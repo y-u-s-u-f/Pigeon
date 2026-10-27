@@ -7,11 +7,33 @@ use gpui::{AppContext as _, Context, Entity, Window, point, px};
 use super::{ComposeKind, Mode, PigeonApp, UndoAction};
 use crate::{
     actions::*,
-    backend::{MailOp, Outgoing, gmail},
-    data::{Contact, Folder, Quote, Thread, full_date},
+    backend::{MailOp, OpId, Outgoing, gmail},
+    data::{Body, Contact, Folder, Quote, Thread, full_date},
     html,
-    ui::composer::{Composer, ComposerEvent, DraftContent, Quoted},
+    ui::composer::{
+        ATTACHMENT_LIMIT, ATTACHMENT_LIMIT_ERROR, Composer, ComposerEvent, DraftContent, Quoted,
+        attachments_size,
+    },
 };
+
+/// What a Drafts thread holds, for the composer.
+fn draft_content(thread: &Thread) -> DraftContent {
+    let message = thread.last_message();
+    DraftContent {
+        to: message.to.clone(),
+        cc: message.cc.clone(),
+        bcc: message.bcc.clone(),
+        subject: thread.subject.clone(),
+        // As typed, when it was written here or recovered; otherwise its text.
+        body: thread
+            .origin
+            .as_ref()
+            .map(|o| o.markdown.clone())
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| html::plain_text(&html::parse(message.html()))),
+        attachments: message.attachments.clone(),
+    }
+}
 
 impl PigeonApp {
     /// Delete in Drafts discards the draft, like the discard button, then
@@ -116,6 +138,12 @@ impl PigeonApp {
     ) -> (DraftContent, Option<Quoted>) {
         let last = thread.last_message();
         let mine = self.data.is_me(&last.from);
+        // Answers go where the sender asked (Reply-To), else to them.
+        let sender = if mine || last.reply_to.is_empty() {
+            std::slice::from_ref(&last.from)
+        } else {
+            last.reply_to.as_slice()
+        };
         let mut to: Vec<Contact> = Vec::new();
         let mut cc: Vec<Contact> = Vec::new();
         let add = |list: &mut Vec<Contact>, contact: &Contact, all: &[Contact]| {
@@ -129,9 +157,9 @@ impl PigeonApp {
         };
         match kind {
             ComposeKind::Reply if mine => last.to.iter().for_each(|c| add(&mut to, c, &[])),
-            ComposeKind::Reply => add(&mut to, &last.from, &[]),
+            ComposeKind::Reply => sender.iter().for_each(|c| add(&mut to, c, &[])),
             ComposeKind::ReplyAll => {
-                for c in [&last.from].into_iter().chain(&last.to) {
+                for c in sender.iter().chain(&last.to) {
                     add(&mut to, c, &[]);
                 }
                 for c in &last.cc {
@@ -203,20 +231,9 @@ impl PigeonApp {
         cx: &mut Context<Self>,
     ) {
         let thread = &self.data.threads[ix];
-        let message = thread.last_message();
-        let content = DraftContent {
-            to: message.to.clone(),
-            cc: message.cc.clone(),
-            bcc: message.bcc.clone(),
-            subject: thread.subject.clone(),
-            // As typed, when it was written here; otherwise its text.
-            body: thread
-                .origin
-                .as_ref()
-                .map(|o| o.markdown.clone())
-                .unwrap_or_else(|| html::plain_text(&html::parse(message.html()))),
-            attachments: message.attachments.clone(),
-        };
+        let content = draft_content(thread);
+        // A Gmail draft's text comes when it's fetched (DRF-3).
+        let awaiting_body = !matches!(thread.last_message().body, Body::Loaded { .. });
         let origin = thread.origin.as_ref();
         let kind = origin.map_or(ComposeKind::New, |o| o.kind);
         let reply_to = origin.and_then(|o| o.reply_to.clone());
@@ -226,11 +243,59 @@ impl PigeonApp {
         let draft_id = Some(thread.id.clone());
         let book = self.contact_book.clone();
         let composer = cx.new(|cx| {
-            Composer::new(
+            let mut composer = Composer::new(
                 kind, content, reply_to, draft_id, quoted, inline, book, window, cx,
-            )
+            );
+            composer.awaiting_body = awaiting_body;
+            composer
         });
         self.set_composer(composer, cx);
+    }
+
+    /// The open draft's text arrived from Gmail: show it, unless the user
+    /// has started writing (DRF-6: never over their edits).
+    pub(super) fn refresh_open_draft(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        let Some((composer, _)) = &self.composer else {
+            return;
+        };
+        let c = composer.read(cx);
+        let Some(id) = c
+            .draft_id
+            .clone()
+            .filter(|id| c.awaiting_body && ids.contains(id))
+        else {
+            return;
+        };
+        if !c.is_pristine(cx) {
+            return;
+        }
+        let Some(thread) = self.data.thread_ix(&id).map(|ix| &self.data.threads[ix]) else {
+            return;
+        };
+        if !matches!(thread.last_message().body, Body::Loaded { .. }) {
+            return;
+        }
+        let content = draft_content(thread);
+        composer.clone().update(cx, |c, cx| c.load(content, cx));
+    }
+
+    /// "Sending…" went: "Message sent", unless another toast took its place.
+    pub(super) fn on_send_committed(&mut self, op: OpId, cx: &mut Context<Self>) {
+        let Some(ix) = self.sends.iter().position(|s| *s == op) else {
+            return;
+        };
+        self.sends.remove(ix);
+        let replaces = match &self.toast {
+            None => true,
+            Some(toast) => match &toast.undo {
+                None => true,
+                Some(UndoAction::Send { op: sent, .. }) => *sent == op,
+                Some(_) => false,
+            },
+        };
+        if replaces {
+            self.show_toast("Message sent", None, cx);
+        }
     }
 
     pub(super) fn set_composer(&mut self, composer: Entity<Composer>, cx: &mut Context<Self>) {
@@ -353,6 +418,12 @@ impl PigeonApp {
             });
             return;
         }
+        if attachments_size(&content.attachments) > ATTACHMENT_LIMIT {
+            composer.update(cx, |c, cx| {
+                c.set_attachment_error(ATTACHMENT_LIMIT_ERROR, cx)
+            });
+            return;
+        }
         let html = c.html(cx);
         let draft = self.outgoing(c, content, html);
         let message = draft.to_message(vec![gmail::SENT.into()]);
@@ -413,8 +484,9 @@ impl PigeonApp {
             self.selected = None;
         }
         self.close_composer(window, cx);
+        self.sends.push(op);
         self.show_toast(
-            "Message sent",
+            "Sending…",
             Some(UndoAction::Send {
                 thread_id,
                 appended,
@@ -520,11 +592,20 @@ impl PigeonApp {
                     self.show_toast("Already sent", None, cx);
                     return;
                 }
+                self.sends.retain(|s| *s != op);
                 self.update_threads(|data| {
                     if let Some(ix) = data.thread_ix(&thread_id) {
                         if appended {
+                            // The message sent here, even if a sync has
+                            // reloaded the thread since.
                             let thread = &mut data.threads[ix];
-                            thread.messages.pop();
+                            if let Some(m) = thread
+                                .messages
+                                .iter()
+                                .rposition(|m| m.id.starts_with("local-"))
+                            {
+                                thread.messages.remove(m);
+                            }
                             thread.reindex();
                         } else {
                             data.threads.remove(ix);

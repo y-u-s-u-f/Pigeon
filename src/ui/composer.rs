@@ -253,6 +253,11 @@ pub struct Composer {
     /// Frames left to bring the caret into view; layout can lag an edit.
     reveal_tries: u8,
     initial: DraftContent,
+    /// A Gmail draft opened before its text arrived (DRF-3): the text goes
+    /// in when it does, unless the user has started editing.
+    pub awaiting_body: bool,
+    /// Text that arrived, put in at the next frame.
+    pending: Option<DraftContent>,
     book: SharedContactBook,
     _subscriptions: Vec<Subscription>,
 }
@@ -373,9 +378,44 @@ impl Composer {
             body_caret,
             reveal_tries: 0,
             initial: content,
+            awaiting_body: false,
+            pending: None,
             book,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// The draft's text arrived: show it, as if it had opened with it.
+    pub fn load(&mut self, content: DraftContent, cx: &mut Context<Self>) {
+        self.awaiting_body = false;
+        self.pending = Some(content);
+        cx.notify();
+    }
+
+    fn apply_pending(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(content) = self.pending.take() else {
+            return;
+        };
+        for (r, chips) in self
+            .recipients
+            .iter_mut()
+            .zip([&content.to, &content.cc, &content.bcc])
+        {
+            r.chips = chips.clone();
+        }
+        self.show_cc_bcc |= !content.cc.is_empty() || !content.bcc.is_empty();
+        let subject = content.subject.clone();
+        self.subject
+            .update(cx, |s, cx| s.set_value(subject, window, cx));
+        let text = content.body.clone();
+        self.body.update(cx, |body, cx| {
+            body.set_selected_range(0..body.text().len(), cx);
+            body.replace(text, window, cx);
+            body.set_selected_range(0..0, cx);
+        });
+        self.attachments = content.attachments.clone();
+        self.initial = content;
+        cx.notify();
     }
 
     /// Whether the subject is a field of its own; replies keep the thread's.
@@ -1125,6 +1165,7 @@ impl Composer {
 
     // Attachments.
 
+    /// Files over Gmail's limit, all together, aren't attached.
     fn attach_paths(&mut self, paths: &[std::path::PathBuf], cx: &mut Context<Self>) {
         for path in paths {
             let Ok(meta) = std::fs::metadata(path) else {
@@ -1133,13 +1174,25 @@ impl Composer {
             if !meta.is_file() {
                 continue;
             }
+            if attachments_size(&self.attachments) + meta.len() > ATTACHMENT_LIMIT {
+                self.error = Some((Field::Body, ATTACHMENT_LIMIT_ERROR.into()));
+                continue;
+            }
             let name = path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            self.attachments
-                .push(Attachment::from_file(name, meta.len()));
+            self.attachments.push(Attachment {
+                path: path.to_string_lossy().into_owned(),
+                ..Attachment::from_file(name, meta.len())
+            });
         }
+        cx.notify();
+    }
+
+    /// Show `error` under the attachments.
+    pub fn set_attachment_error(&mut self, error: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.error = Some((Field::Body, error.into()));
         cx.notify();
     }
 
@@ -1165,7 +1218,22 @@ impl Composer {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement> {
-        if self.attachments.is_empty() {
+        let error = self
+            .error
+            .as_ref()
+            .filter(|(at, _)| *at == Field::Body)
+            .map(|(_, error)| {
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_XS)
+                    .text_size(TEXT_SM)
+                    .text_color(theme.danger)
+                    .child(icon(Icon::OctagonAlert, px(13.), theme.danger))
+                    .child(error.clone())
+            });
+        if self.attachments.is_empty() && error.is_none() {
             return None;
         }
         let chips = self.attachments.iter().enumerate().map(|(ix, attachment)| {
@@ -1208,6 +1276,13 @@ impl Composer {
                         .child(icon(Icon::X, px(12.), theme.text_faint))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.attachments.remove(ix);
+                            if this
+                                .error
+                                .as_ref()
+                                .is_some_and(|(at, _)| *at == Field::Body)
+                            {
+                                this.error = None;
+                            }
                             cx.notify();
                         })),
                 )
@@ -1218,7 +1293,8 @@ impl Composer {
                 .flex()
                 .flex_wrap()
                 .gap(SPACE_SM)
-                .children(chips),
+                .children(chips)
+                .children(error),
         )
     }
 }
@@ -1357,6 +1433,9 @@ impl Composer {
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
+        if self.pending.is_some() {
+            cx.defer_in(window, Self::apply_pending);
+        }
         self.palette.set(Palette::new(&theme));
         self.body_rows = self.body.read(cx).display_map().wrap_row_count();
         // How lines wrap is known once the body is laid out: grow then, if
@@ -1660,6 +1739,14 @@ fn recipient_ix(field: Field) -> usize {
 
 fn recipient_field(ix: usize) -> Field {
     [Field::To, Field::Cc, Field::Bcc][ix]
+}
+
+/// Gmail's limit on what a message carries.
+pub const ATTACHMENT_LIMIT: u64 = 25 * 1024 * 1024;
+pub const ATTACHMENT_LIMIT_ERROR: &str = "Attachments are over Gmail’s 25 MB limit";
+
+pub fn attachments_size(attachments: &[Attachment]) -> u64 {
+    attachments.iter().map(|a| a.size_bytes).sum()
 }
 
 /// "Name <a@b.c>" or a bare address.

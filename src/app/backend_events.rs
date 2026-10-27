@@ -48,6 +48,8 @@ impl PigeonApp {
         if !gone.is_empty() {
             self.on_threads_removed(&gone, cx);
         }
+        // W6: a Gmail draft's text arrived for the open composer.
+        self.refresh_open_draft(ids, cx);
         cx.notify();
     }
 
@@ -197,11 +199,15 @@ impl PigeonApp {
         cx.notify();
     }
 
-    fn on_op_committed(&mut self, _op: OpId, _cx: &mut Context<Self>) {}
+    fn on_op_committed(&mut self, op: OpId, cx: &mut Context<Self>) {
+        // W6: "Sending…" becomes "Message sent".
+        self.on_send_committed(op, cx);
+    }
 
     /// The backend put the server's state back already (as `ThreadsChanged`
     /// or `EventsChanged`); say why.
-    fn on_op_failed(&mut self, _op: OpId, message: &str, cx: &mut Context<Self>) {
+    fn on_op_failed(&mut self, op: OpId, message: &str, cx: &mut Context<Self>) {
+        self.sends.retain(|s| *s != op);
         self.show_toast(message.to_string(), None, cx);
     }
 

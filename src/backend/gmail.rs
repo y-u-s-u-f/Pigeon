@@ -551,6 +551,155 @@ impl Gmail {
     }
 }
 
+// drafts and send (W6) ---------------------------------------------------
+// https://developers.google.com/gmail/api/guides/sending,
+// https://developers.google.com/gmail/api/guides/drafts
+
+const UPLOAD: &str = "https://gmail.googleapis.com/upload/gmail/v1/users/me";
+
+/// Above this, a message goes through the upload endpoint instead of as
+/// base64 in JSON.
+pub const SIMPLE_UPLOAD_LIMIT: usize = 5 * 1024 * 1024;
+
+pub mod send_cost {
+    pub const MESSAGES_SEND: u32 = 100;
+    pub const DRAFTS_CREATE: u32 = 10;
+    pub const DRAFTS_UPDATE: u32 = 15;
+    pub const DRAFTS_GET: u32 = 5;
+    pub const DRAFTS_SEND: u32 = 100;
+    pub const DRAFTS_DELETE: u32 = 10;
+}
+
+/// What a write of a whole message goes to: its path under the API, the
+/// draft it is (for updates and sends) and the thread it joins.
+fn message_write(
+    method: &'static str,
+    path: &str,
+    draft_id: Option<&str>,
+    raw: &[u8],
+    thread_id: Option<&str>,
+    cost: u32,
+) -> Request {
+    use base64::Engine as _;
+    // Sends take a Message; drafts calls a Draft holding one.
+    let is_draft = path.starts_with("/drafts");
+    let wrap = |mut message: serde_json::Value| {
+        if let Some(t) = thread_id {
+            message["threadId"] = t.into();
+        }
+        if !is_draft {
+            return message;
+        }
+        let mut draft = serde_json::json!({ "message": message });
+        if let Some(id) = draft_id {
+            draft["id"] = id.into();
+        }
+        draft
+    };
+    if raw.len() <= SIMPLE_UPLOAD_LIMIT {
+        let raw = base64::engine::general_purpose::URL_SAFE.encode(raw);
+        return Request::json(
+            method,
+            format!("{API}{path}"),
+            &wrap(serde_json::json!({ "raw": raw })),
+            cost,
+        );
+    }
+    let boundary = "pigeon_upload";
+    let mut body = format!(
+        "--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{}\r\n\
+         --{boundary}\r\nContent-Type: message/rfc822\r\n\r\n",
+        wrap(serde_json::json!({}))
+    )
+    .into_bytes();
+    body.extend_from_slice(raw);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    Request {
+        method,
+        url: format!("{UPLOAD}{path}?uploadType=multipart"),
+        headers: vec![(
+            "Content-Type".into(),
+            format!("multipart/related; boundary={boundary}"),
+        )],
+        body,
+        cost,
+    }
+}
+
+pub fn send_request(raw: &[u8], thread_id: Option<&str>) -> Request {
+    message_write(
+        "POST",
+        "/messages/send",
+        None,
+        raw,
+        thread_id,
+        send_cost::MESSAGES_SEND,
+    )
+}
+
+pub fn draft_create_request(raw: &[u8], thread_id: Option<&str>) -> Request {
+    message_write(
+        "POST",
+        "/drafts",
+        None,
+        raw,
+        thread_id,
+        send_cost::DRAFTS_CREATE,
+    )
+}
+
+pub fn draft_update_request(draft_id: &str, raw: &[u8], thread_id: Option<&str>) -> Request {
+    message_write(
+        "PUT",
+        &format!("/drafts/{}", enc(draft_id)),
+        Some(draft_id),
+        raw,
+        thread_id,
+        send_cost::DRAFTS_UPDATE,
+    )
+}
+
+/// Sends the draft as `raw` says now.
+pub fn draft_send_request(draft_id: &str, raw: &[u8], thread_id: Option<&str>) -> Request {
+    message_write(
+        "POST",
+        "/drafts/send",
+        Some(draft_id),
+        raw,
+        thread_id,
+        send_cost::DRAFTS_SEND,
+    )
+}
+
+pub fn draft_get_raw_request(draft_id: &str) -> Request {
+    Request::get(
+        format!("{API}/drafts/{}?format=raw", enc(draft_id)),
+        send_cost::DRAFTS_GET,
+    )
+}
+
+pub fn draft_delete_request(draft_id: &str) -> Request {
+    Request {
+        method: "DELETE",
+        ..Request::get(
+            format!("{API}/drafts/{}", enc(draft_id)),
+            send_cost::DRAFTS_DELETE,
+        )
+    }
+}
+
+impl Gmail {
+    /// A call answered with no body (a delete): gone already counts.
+    pub fn call_empty(&self, request: &Request) -> Result<(), GmailError> {
+        let response = self.transport.send(request)?;
+        if response.is_success() || response.status == 404 {
+            return Ok(());
+        }
+        parse::<serde_json::Value>(&response).map(|_| ())
+    }
+}
+// end drafts and send (W6) -----------------------------------------------
+
 // Gmail → model.
 
 /// A label for the sidebar, from Gmail's. Labels without a colour get

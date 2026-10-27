@@ -181,6 +181,8 @@ pub struct PigeonApp {
     /// The message `n` and `p` move between, in the selected thread.
     pub focused_message: Option<usize>,
     pub toast: Option<Toast>,
+    /// Sends waiting to go, for "Message sent" once they have (W6).
+    sends: Vec<OpId>,
     // Mail lists and search; see `app/mail.rs`.
     /// Threads picked for a bulk action, by id. While any are, the reader
     /// shows the bulk actions instead of a conversation.
@@ -308,6 +310,7 @@ impl PigeonApp {
             search_query: Query::default(),
             focused_message: None,
             toast: None,
+            sends: Vec::new(),
             checked: HashSet::new(),
             select_anchor: None,
             hovered_thread: None,
