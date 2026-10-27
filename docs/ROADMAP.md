@@ -17,10 +17,10 @@ To update: change the status cell in the area's table, then the counts below.
 | Section | ⚪ Not done | 🟡 Partially done | 🟢 Fully linked | Total |
 | --- | --- | --- | --- | --- |
 | [Planned features](#3-planned-features-pln) | 3 | 0 | 0 | 3 |
-| [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 6 | 2 | 0 | 8 |
+| [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 2 | 6 | 0 | 8 |
 | [Folders and labels](#51-folders-and-labels-fol) | 6 | 6 | 0 | 12 |
-| [Thread list](#52-thread-list-lst) | 2 | 7 | 0 | 9 |
-| [Reading pane](#53-reading-pane-rdr) | 2 | 6 | 0 | 8 |
+| [Thread list](#52-thread-list-lst) | 1 | 8 | 0 | 9 |
+| [Reading pane](#53-reading-pane-rdr) | 1 | 7 | 0 | 8 |
 | [Message actions](#54-message-and-thread-actions-act) | 0 | 7 | 0 | 7 |
 | [Compose and sending](#55-compose-and-sending-cmp) | 1 | 12 | 0 | 13 |
 | [Drafts](#56-drafts-drf) | 2 | 4 | 0 | 6 |
@@ -31,13 +31,13 @@ To update: change the status cell in the area's table, then the counts below.
 | [Links](#511-links-lnk) | 2 | 1 | 0 | 3 |
 | [Mail settings](#512-mail-settings-mst) | 10 | 0 | 0 | 10 |
 | [Calendar](#6-calendar-cal) | 19 | 23 | 0 | 42 |
-| [Sync and push](#71-sync-and-push-syn) | 7 | 0 | 0 | 7 |
+| [Sync and push](#71-sync-and-push-syn) | 3 | 4 | 0 | 7 |
 | [Notifications and background](#72-notifications-and-background-ntf) | 3 | 0 | 0 | 3 |
-| [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 5 | 0 | 0 | 5 |
-| [Storage and persistence](#81-storage-and-persistence-per) | 2 | 1 | 0 | 3 |
+| [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 3 | 2 | 0 | 5 |
+| [Storage and persistence](#81-storage-and-persistence-per) | 1 | 1 | 1 | 3 |
 | [Command palette](#82-command-palette-pal) | 0 | 3 | 0 | 3 |
 | [Data model](#83-data-model-dat) | 2 | 5 | 0 | 7 |
-| **Overall** | **82** | **94** | **0** | **176** |
+| **Overall** | **69** | **106** | **1** | **176** |
 
 ## Contents
 
@@ -58,7 +58,7 @@ To update: change the status cell in the area's table, then the counts below.
 
 Principles are in [`AGENTS.md`](../AGENTS.md): blazing fast and light (no webviews, no heavy dependencies), keyboard-centric (every action has a shortcut and is in ⌘K), minimal and flat on translucent glass, YAGNI.
 
-**Current phase: front end on placeholder data; backend sprint 1 planned** in [`BACKEND_SPRINT_1.md`](BACKEND_SPRINT_1.md): link every 🟡 item to Google (Gmail, Calendar, People APIs and OAuth). A dev sign-in for the user's account is stored (Keychain + `~/Library/Application Support/Pigeon/`).
+**Current phase: linked to Google; demo mode on placeholder data.** Backend sprint 1 ([`BACKEND_SPRINT_1.md`](BACKEND_SPRINT_1.md)) is under way: Phases 0–1 (foundation, sign-in, Gmail read, Calendar read) are merged; write actions, compose, contacts, search and states come next. `PIGEON_DEMO=1` runs on the placeholder data.
 
 - Mail comes from `assets/mailbox.json`, loaded once by `MailData::load()` (`src/data.rs`). Calendar comes from `assets/calendar.json`, loaded by `CalendarData::load()` (`src/calendar/mod.rs`). Both are called from `main()`.
 - There is no network, sync, sending or storage code in `src/`.
@@ -110,11 +110,11 @@ The user's own plans, not driven by Google's APIs.
 | --- | --- | --- | --- |
 | ACC-1 | Account card | 🟡 Partially done | Gmail `getProfile`; People `people.get` (`people/me`) |
 | ACC-2 | Identity of "me" | 🟡 Partially done | Gmail `settings.sendAs.list` |
-| ACC-3 | Add, sign in to and remove accounts | ⚪ Not done | OAuth 2.0 for desktop apps (loopback + PKCE) |
+| ACC-3 | Add, sign in to and remove accounts | 🟡 Partially done | OAuth 2.0 for desktop apps (loopback + PKCE) |
 | ACC-4 | Account switcher and multiple accounts | ⚪ Not done | One OAuth grant per account |
-| ACC-5 | Per-account sync status | ⚪ Not done | Sync state from SYN |
-| ACC-6 | Scopes and consent | ⚪ Not done | OAuth scopes, incremental and granular consent |
-| ACC-7 | Token refresh, revoke and sign out | ⚪ Not done | OAuth token and revoke endpoints |
+| ACC-5 | Per-account sync status | 🟡 Partially done | Sync state from SYN |
+| ACC-6 | Scopes and consent | 🟡 Partially done | OAuth scopes, incremental and granular consent |
+| ACC-7 | Token refresh, revoke and sign out | 🟡 Partially done | OAuth token and revoke endpoints |
 | ACC-8 | Google Cloud project and app verification | ⚪ Not done | OAuth consent screen, scope verification |
 
 #### ACC-1 Account card
@@ -258,7 +258,7 @@ The user's own plans, not driven by Google's APIs.
 | LST-5 | Keyboard list navigation | 🟡 Partially done | `threads.get` on demand |
 | LST-6 | Unread count in the list header | 🟡 Partially done | `labels.get` |
 | LST-7 | Pagination and lazy loading | ⚪ Not done | `pageToken`, `maxResults` |
-| LST-8 | Live refresh and new mail in the list | ⚪ Not done | `history.list` (SYN-2) |
+| LST-8 | Live refresh and new mail in the list | 🟡 Partially done | `history.list` (SYN-2) |
 | LST-9 | Empty-result text | 🟡 Partially done | None |
 
 #### LST-1 Thread rows
@@ -318,7 +318,7 @@ The user's own plans, not driven by Google's APIs.
 | RDR-3 | Expand and collapse older messages | 🟡 Partially done | Per-message `snippet` |
 | RDR-4 | Message header | 🟡 Partially done | `messages.get` headers |
 | RDR-5 | Message body rendering | 🟡 Partially done | `messages.get` `payload` parts |
-| RDR-6 | Fetch a message body on demand | ⚪ Not done | `messages.get` (`format=full`) |
+| RDR-6 | Fetch a message body on demand | 🟡 Partially done | `messages.get` (`format=full`) |
 | RDR-7 | Message navigation and reader focus | 🟡 Partially done | None |
 | RDR-8 | Show original (raw message) | ⚪ Not done | `messages.get` (`format=raw`) |
 
@@ -1111,13 +1111,13 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| SYN-1 | Gmail full sync | ⚪ Not done | `threads.list` / `messages.list` + batched `get`; store `historyId` |
-| SYN-2 | Gmail partial sync | ⚪ Not done | `history.list` (`startHistoryId`, `historyTypes`) |
+| SYN-1 | Gmail full sync | 🟡 Partially done | `threads.list` / `messages.list` + batched `get`; store `historyId` |
+| SYN-2 | Gmail partial sync | 🟡 Partially done | `history.list` (`startHistoryId`, `historyTypes`) |
 | SYN-3 | Gmail push | ⚪ Not done | `watch`, `stop`, Cloud Pub/Sub |
-| SYN-4 | Calendar incremental sync | ⚪ Not done | `events.list` / `calendarList.list` with `syncToken` |
+| SYN-4 | Calendar incremental sync | 🟡 Partially done | `events.list` / `calendarList.list` with `syncToken` |
 | SYN-5 | Calendar push | ⚪ Not done | `events.watch`, `calendarList.watch`, `acl.watch`, `settings.watch`, `channels.stop` |
 | SYN-6 | Contacts sync | ⚪ Not done | `people.connections.list`, `otherContacts.list` with `syncToken` |
-| SYN-7 | Batching, quotas and backoff | ⚪ Not done | HTTP batch; `429` / `403 rateLimitExceeded` |
+| SYN-7 | Batching, quotas and backoff | 🟡 Partially done | HTTP batch; `429` / `403 rateLimitExceeded` |
 
 #### SYN-1 Gmail full sync
 
@@ -1178,10 +1178,10 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| STA-1 | Initial load and loading states | ⚪ Not done | None |
+| STA-1 | Initial load and loading states | 🟡 Partially done | None |
 | STA-2 | Action failure and rollback | ⚪ Not done | API error responses |
 | STA-3 | Offline mode and queued changes | ⚪ Not done | None |
-| STA-4 | Expired sign-in | ⚪ Not done | OAuth `invalid_grant`, 401 |
+| STA-4 | Expired sign-in | 🟡 Partially done | OAuth `invalid_grant`, 401 |
 | STA-5 | Conflicts with server changes | ⚪ Not done | ETags, `historyId`, `syncToken` |
 
 #### STA-1 Initial load and loading states
@@ -1216,9 +1216,9 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| PER-1 | Local mailbox store | ⚪ Not done | Holds SYN data |
+| PER-1 | Local mailbox store | 🟡 Partially done | Holds SYN data |
 | PER-2 | Outbox and drafts that survive quit | ⚪ Not done | None |
-| PER-3 | Persisted UI state and settings | 🟡 Partially done | None |
+| PER-3 | Persisted UI state and settings | 🟢 Fully linked | None |
 
 #### PER-1 Local mailbox store
 
