@@ -22,9 +22,9 @@ To update: change the status cell in the area's table, then the counts below.
 | [Thread list](#52-thread-list-lst) | 1 | 3 | 5 | 9 |
 | [Reading pane](#53-reading-pane-rdr) | 1 | 4 | 3 | 8 |
 | [Message actions](#54-message-and-thread-actions-act) | 0 | 7 | 0 | 7 |
-| [Compose and sending](#55-compose-and-sending-cmp) | 0 | 5 | 8 | 13 |
-| [Drafts](#56-drafts-drf) | 1 | 2 | 3 | 6 |
-| [Undo](#57-undo-und) | 0 | 2 | 1 | 3 |
+| [Compose and sending](#55-compose-and-sending-cmp) | 0 | 3 | 10 | 13 |
+| [Drafts](#56-drafts-drf) | 1 | 1 | 4 | 6 |
+| [Undo](#57-undo-und) | 0 | 1 | 2 | 3 |
 | [Search](#58-search-src) | 1 | 8 | 0 | 9 |
 | [Contacts](#59-contacts-con) | 6 | 0 | 2 | 8 |
 | [Images and attachments](#510-images-and-attachments-att) | 3 | 4 | 0 | 7 |
@@ -37,7 +37,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Storage and persistence](#81-storage-and-persistence-per) | 1 | 1 | 1 | 3 |
 | [Command palette](#82-command-palette-pal) | 0 | 3 | 0 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 6 | 0 | 7 |
-| **Overall** | **63** | **69** | **44** | **176** |
+| **Overall** | **63** | **65** | **48** | **176** |
 
 ## Contents
 
@@ -424,8 +424,8 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
 | CMP-1 | New message | 🟢 Fully linked | `drafts.create` |
-| CMP-2 | Reply | 🟡 Partially done | `messages.send` with `threadId` |
-| CMP-3 | Reply all | 🟡 Partially done | As CMP-2 |
+| CMP-2 | Reply | 🟢 Fully linked | `messages.send` with `threadId` |
+| CMP-3 | Reply all | 🟢 Fully linked | As CMP-2 |
 | CMP-4 | Forward | 🟢 Fully linked | `messages.send` (no `threadId`) |
 | CMP-5 | Recipient fields | 🟢 Fully linked | Server validation on send |
 | CMP-6 | Show Cc and Bcc | 🟡 Partially done | `raw` MIME; Gmail delivers Bcc |
@@ -522,7 +522,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 | DRF-1 | Save on close or navigation | 🟢 Fully linked | `drafts.create`, `drafts.update` |
 | DRF-2 | Drafts list | 🟢 Fully linked | `drafts.list` |
 | DRF-3 | Open and edit a draft | 🟢 Fully linked | `drafts.get` |
-| DRF-4 | Discard a draft | 🟡 Partially done | `drafts.delete` |
+| DRF-4 | Discard a draft | 🟢 Fully linked | `drafts.delete` |
 | DRF-5 | Save while typing | ⚪ Not done | `drafts.update` (debounced) |
 | DRF-6 | Sync drafts with the server | 🟡 Partially done | `drafts.list`, `history.list` |
 
@@ -565,7 +565,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
 | UND-1 | Undo send | 🟢 Fully linked | Hold `messages.send` for the window |
-| UND-2 | Undo discard | 🟡 Partially done | Delay `drafts.delete` |
+| UND-2 | Undo discard | 🟢 Fully linked | Delay `drafts.delete` |
 | UND-3 | Undo for other actions | 🟡 Partially done | Delay or invert `threads.modify` |
 
 #### UND-1 Undo send
