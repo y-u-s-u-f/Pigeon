@@ -19,7 +19,7 @@ A macOS email and calendar client in Rust + GPUI (`gpui-kit` 0.8, imported as `g
 ## Workflow
 
 1. One or more `implementer` agents make the changes. If there's a lot, split by non-overlapping files.
-2. A separate `tester` agent tests with Cua Driver.
+2. A separate tester tests in Codex: the main agent runs `codex exec -m gpt-6.1-terra` in a background shell, with Codex's built-in computer use (no subagents, no Cua Driver).
 3. A fresh `implementer` fixes what the tester reports. Re-test as needed.
 
 Don't have one agent implement, test and fix in a loop. Subagents don't commit; the main agent does.
@@ -31,7 +31,7 @@ Don't have one agent implement, test and fix in a loop. Subagents don't commit; 
 ## Running and testing
 
 - Run with `scripts/run.sh` (release build, signed with the local `Pigeon Dev` identity so the Keychain keeps trusting it across rebuilds; plain `cargo run --release` works but the Keychain asks again after every build). `PIGEON_DEMO=1` runs on the placeholder data. Agents running in parallel build with their own `CARGO_TARGET_DIR` in `/private/var/folders/sc/26v_9jsx0s9_fkjttv6jzjdh0000gn/T/opencode`.
-- GUI testing uses the Cua Driver MCP only (not its CLI), scoped to Pigeon's pid and window. Never send input to other apps. Never change system appearance or wallpaper; test dark mode in a scratch copy.
+- GUI testing uses Codex's built-in computer use, scoped to Pigeon's pid and window. Launch the test copy with `open -n -a <Pigeon.app> --env PIGEON_DATA_DIR=… --env …` (a `&` child dies with Codex's shell, and computer use would launch Pigeon without the environment), then check it with `ps eww -p <pid>`. Never send input to other apps. Never change system appearance or wallpaper; test dark mode in a scratch copy.
 
 ## Questions to the user
 
