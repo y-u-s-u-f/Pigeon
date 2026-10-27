@@ -20,14 +20,14 @@ To update: change the status cell in the area's table, then the counts below.
 | [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 2 | 3 | 3 | 8 |
 | [Folders and labels](#51-folders-and-labels-fol) | 5 | 1 | 6 | 12 |
 | [Thread list](#52-thread-list-lst) | 0 | 0 | 9 | 9 |
-| [Reading pane](#53-reading-pane-rdr) | 1 | 0 | 7 | 8 |
+| [Reading pane](#53-reading-pane-rdr) | 0 | 1 | 7 | 8 |
 | [Message actions](#54-message-and-thread-actions-act) | 0 | 0 | 7 | 7 |
 | [Compose and sending](#55-compose-and-sending-cmp) | 0 | 1 | 12 | 13 |
 | [Drafts](#56-drafts-drf) | 1 | 0 | 5 | 6 |
 | [Undo](#57-undo-und) | 0 | 0 | 3 | 3 |
 | [Search](#58-search-src) | 1 | 0 | 8 | 9 |
 | [Contacts](#59-contacts-con) | 6 | 0 | 2 | 8 |
-| [Images and attachments](#510-images-and-attachments-att) | 3 | 1 | 3 | 7 |
+| [Images and attachments](#510-images-and-attachments-att) | 0 | 4 | 3 | 7 |
 | [Links](#511-links-lnk) | 2 | 0 | 1 | 3 |
 | [Mail settings](#512-mail-settings-mst) | 10 | 0 | 0 | 10 |
 | [Calendar](#6-calendar-cal) | 18 | 4 | 20 | 42 |
@@ -37,7 +37,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Storage and persistence](#81-storage-and-persistence-per) | 0 | 2 | 3 | 5 |
 | [Command palette](#82-command-palette-pal) | 0 | 0 | 3 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 3 | 3 | 7 |
-| **Overall** | **55** | **21** | **103** | **179** |
+| **Overall** | **51** | **25** | **103** | **179** |
 
 ## Contents
 
@@ -324,7 +324,7 @@ The user's own plans, not driven by Google's APIs.
 | RDR-5 | Message body rendering | 🟢 Fully linked | `messages.get` `payload` parts |
 | RDR-6 | Fetch a message body on demand | 🟢 Fully linked | `messages.get` (`format=full`) |
 | RDR-7 | Message navigation and reader focus | 🟢 Fully linked | None |
-| RDR-8 | Show original (raw message) | ⚪ Not done | `messages.get` (`format=raw`) |
+| RDR-8 | Show original (raw message) | 🟡 Partially done | `messages.get` (`format=raw`) |
 
 #### RDR-1 Opening a thread marks it read
 
@@ -712,12 +712,12 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
 | ATT-1 | Remote images | 🟢 Fully linked | None (HTTP fetch or proxy) |
-| ATT-2 | Inline (`cid:`) images | ⚪ Not done | `payload.parts` `Content-ID`, `messages.attachments.get` |
+| ATT-2 | Inline (`cid:`) images | 🟡 Partially done | `payload.parts` `Content-ID`, `messages.attachments.get` |
 | ATT-3 | Attachment list in messages | 🟢 Fully linked | `payload.parts` (`filename`, `body.attachmentId`) |
-| ATT-4 | Open and download an attachment | ⚪ Not done | `messages.attachments.get` |
+| ATT-4 | Open and download an attachment | 🟡 Partially done | `messages.attachments.get` |
 | ATT-5 | Attachment icon in the list | 🟢 Fully linked | `has:attachment`, `payload.parts` |
 | ATT-6 | Attach files to a new message | 🟡 Partially done | `messages.send` / `drafts.*` upload (`multipart` or `resumable`) |
-| ATT-7 | Forward keeps attachments | ⚪ Not done | `messages.attachments.get` + re-attach |
+| ATT-7 | Forward keeps attachments | 🟡 Partially done | `messages.attachments.get` + re-attach |
 
 #### ATT-1 Remote images
 
