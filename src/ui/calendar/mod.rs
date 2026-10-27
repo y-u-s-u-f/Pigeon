@@ -315,6 +315,8 @@ pub struct CalendarView {
     pub anchor: NaiveDate,
     pub selected: Option<Selection>,
     pub panel: Option<EventPanel>,
+    /// The panel's event was reloaded; its fields catch up on render.
+    panel_stale: bool,
     /// The panel sliding shut, drawn until its animation ends.
     closing_panel: Option<EventPanel>,
     pub menu: Option<Menu>,
@@ -428,6 +430,7 @@ impl CalendarView {
             anchor: today(),
             selected: None,
             panel: None,
+            panel_stale: false,
             closing_panel: None,
             menu: None,
             prompt: None,
@@ -2396,6 +2399,9 @@ impl CalendarView {
 impl Render for CalendarView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
+        if self.panel_stale {
+            self.reload_panel(window, cx);
+        }
         let open = self.panel.is_some();
         let panel = match (&self.panel, &self.closing_panel) {
             (Some(panel), _) | (None, Some(panel)) => self.render_panel(panel, window, cx),

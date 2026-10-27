@@ -423,6 +423,35 @@ impl EventPanel {
             }
         }
     }
+
+    /// Show `event` as stored, after a reload; a date or time being typed
+    /// stays.
+    fn reload(&mut self, event: &Event, window: &mut Window, cx: &mut Context<CalendarView>) {
+        let values = [
+            (&self.title, &event.title),
+            (&self.location, &event.location),
+            (&self.video, &event.video_link),
+        ];
+        for (input, value) in values {
+            if input.read(cx).value().as_ref() != value.as_str() {
+                input.update(cx, |input, cx| input.set_value(value.clone(), window, cx));
+            }
+        }
+        if self.notes.read(cx).value().as_ref() != event.description.as_str() {
+            let notes = event.description.clone();
+            self.notes
+                .update(cx, |input, cx| input.set_value(notes, window, cx));
+        }
+        if !event.is_series() {
+            self.occurrence = event.start;
+        }
+        let typing = self
+            .focused_field(window, cx)
+            .is_some_and(|f| f.is_date() || f.is_time());
+        if !typing {
+            self.sync_times(event, window, cx);
+        }
+    }
 }
 
 impl CalendarView {
@@ -450,6 +479,46 @@ impl CalendarView {
         };
         if let Some(panel) = &mut self.panel {
             panel.sync_times(&event, window, cx);
+        }
+    }
+
+    /// The store's copies of `ids` replaced the app's (`on_events_changed`,
+    /// which skips events with a local edit): after a failed write, say.
+    /// The open panel shows its event's on the next render.
+    pub fn events_reloaded(&mut self, ids: &[String]) {
+        if self
+            .panel
+            .as_ref()
+            .is_some_and(|p| ids.contains(&p.event_id))
+        {
+            self.panel_stale = true;
+        }
+        let Some(selected) = &self.selected else {
+            return;
+        };
+        if ids.contains(&selected.event_id)
+            && let Some(event) = self.event(&selected.event_id)
+            && !event.is_series()
+        {
+            let start = event.start;
+            if let Some(selected) = &mut self.selected {
+                selected.start = start;
+            }
+        }
+    }
+
+    pub(crate) fn reload_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.panel_stale = false;
+        let Some(event) = self
+            .panel
+            .as_ref()
+            .and_then(|p| self.event(&p.event_id))
+            .cloned()
+        else {
+            return;
+        };
+        if let Some(panel) = &mut self.panel {
+            panel.reload(&event, window, cx);
         }
     }
 

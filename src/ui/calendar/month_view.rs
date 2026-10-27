@@ -344,6 +344,7 @@ impl CalendarView {
         let past = occurrence.end <= now();
         let look = Look::of(event.my_status(&self.data.account));
         let hover = theme.event_fill_hover(color);
+        let read_only = !self.can_edit(&event.id);
         let clipped_left = item.bar
             && (start > item.start || occurrence.start < week_start + Duration::days(start as i64));
         let clipped_right = item.bar
@@ -436,12 +437,20 @@ impl CalendarView {
             .h(px(SLOT - 2.))
             .pl(px(if clipped_left { 0. } else { 4. }))
             .pr(px(if clipped_right { 0. } else { 5. }))
-            .child(
+            .child(if read_only {
+                pill.on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event, window, cx| {
+                        cx.stop_propagation();
+                        this.press_read_only(occurrence, event, window, cx)
+                    }),
+                )
+            } else {
                 pill.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.click_occurrence(occurrence, window, cx)
-                    })),
-            )
+                    }))
+            })
             .into_any_element()
     }
 }

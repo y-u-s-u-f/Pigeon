@@ -696,6 +696,7 @@ impl CalendarView {
             && occurrence.start.time().hour() + occurrence.start.minute() > 0)
             .then(|| compact_time_label(occurrence.start.time()));
         let single_view = self.view == ViewKind::Day;
+        let read_only = !self.can_edit(&event.id);
 
         div()
             .absolute()
@@ -738,10 +739,22 @@ impl CalendarView {
                             .text_color(text)
                             .child(event.display_title().to_string()),
                     )
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.click_occurrence(occurrence, window, cx)
-                    })),
+                    .map(|d| {
+                        if read_only {
+                            d.on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, event, window, cx| {
+                                    cx.stop_propagation();
+                                    this.press_read_only(occurrence, event, window, cx)
+                                }),
+                            )
+                        } else {
+                            d.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.click_occurrence(occurrence, window, cx)
+                                }))
+                        }
+                    }),
             )
             .into_any_element()
     }

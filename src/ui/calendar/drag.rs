@@ -8,7 +8,8 @@
 //! press that never moves past a few pixels is a click: on an event it
 //! selects and opens it, on empty space it does nothing. A double click on
 //! empty space makes a 30-minute event. Escape cancels a drag. Events the
-//! user can't change (CAL-22) don't move; pressing them is a click. A move
+//! user can't change (CAL-22) don't move, here or in the all-day lane and
+//! the Month view (`press_read_only`); pressing them is a click. A move
 //! or resize goes to Google at once (CAL-21).
 
 use chrono::{Duration, NaiveDate, NaiveDateTime};
@@ -223,6 +224,24 @@ impl CalendarView {
                 occurrence,
                 grab: pointer - occurrence.start,
             }
+        };
+        self.begin_drag(kind, event.position, cx);
+    }
+
+    /// A press on a read-only event in the all-day lane or the Month view,
+    /// which don't drag: dragging it still says why once (CAL-22), and the
+    /// release is a click.
+    pub(crate) fn press_read_only(
+        &mut self,
+        occurrence: Occurrence,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_grid(window, cx);
+        let kind = DragKind::Move {
+            occurrence,
+            grab: Duration::zero(),
         };
         self.begin_drag(kind, event.position, cx);
     }

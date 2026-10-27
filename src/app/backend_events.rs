@@ -151,7 +151,9 @@ impl PigeonApp {
     /// copy in each, under one id. Selection and the view stay put: they
     /// go by id and date.
     /// An event changed here and not yet committed keeps the app's copy
-    /// (CAL-29): the commit of its last change reloads it.
+    /// (CAL-29): the commit of its last change reloads it. A failed write
+    /// is no longer queued, so Google's version comes back, into the open
+    /// panel too.
     fn on_events_changed(&mut self, ids: &[String], cx: &mut Context<Self>) {
         let queued = self.backend.read(cx).queued_events();
         let calendar = self.calendar.read(cx);
@@ -181,6 +183,7 @@ impl PigeonApp {
                 }
             });
             calendar.data.events.append(&mut fresh);
+            calendar.events_reloaded(ids);
             cx.notify();
         });
         if !gone.is_empty() {
