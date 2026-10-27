@@ -19,7 +19,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Planned features](#3-planned-features-pln) | 3 | 0 | 0 | 3 |
 | [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 2 | 3 | 3 | 8 |
 | [Folders and labels](#51-folders-and-labels-fol) | 6 | 2 | 4 | 12 |
-| [Thread list](#52-thread-list-lst) | 1 | 3 | 5 | 9 |
+| [Thread list](#52-thread-list-lst) | 0 | 4 | 5 | 9 |
 | [Reading pane](#53-reading-pane-rdr) | 1 | 4 | 3 | 8 |
 | [Message actions](#54-message-and-thread-actions-act) | 0 | 7 | 0 | 7 |
 | [Compose and sending](#55-compose-and-sending-cmp) | 0 | 3 | 10 | 13 |
@@ -37,7 +37,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Storage and persistence](#81-storage-and-persistence-per) | 0 | 2 | 1 | 3 |
 | [Command palette](#82-command-palette-pal) | 0 | 3 | 0 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 6 | 0 | 7 |
-| **Overall** | **60** | **64** | **52** | **176** |
+| **Overall** | **59** | **65** | **52** | **176** |
 
 ## Contents
 
@@ -258,7 +258,7 @@ The user's own plans, not driven by Google's APIs.
 | LST-4 | Archived section in the Inbox | 🟡 Partially done | `threads.list` (`q=-in:inbox`) |
 | LST-5 | Keyboard list navigation | 🟢 Fully linked | `threads.get` on demand |
 | LST-6 | Unread count in the list header | 🟢 Fully linked | `labels.get` |
-| LST-7 | Pagination and lazy loading | ⚪ Not done | `pageToken`, `maxResults` |
+| LST-7 | Pagination and lazy loading | 🟡 Partially done | `pageToken`, `maxResults` |
 | LST-8 | Live refresh and new mail in the list | 🟡 Partially done | `history.list` (SYN-2) |
 | LST-9 | Empty-result text | 🟡 Partially done | None |
 
