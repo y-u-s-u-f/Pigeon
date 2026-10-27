@@ -326,7 +326,7 @@ impl PigeonApp {
                         this.show_toast(message.clone(), Some(undo), cx);
                     }
                     // W6 (CAL-22, CON-5).
-                    CalendarEvent::Refused(why) => this.show_toast(why.clone(), None, cx),
+                    CalendarEvent::Refused(why) => this.show_error_toast(why.clone(), cx),
                     CalendarEvent::ShowContact(contact) => {
                         this.show_contact(contact.clone(), window, cx)
                     }
