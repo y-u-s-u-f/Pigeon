@@ -276,6 +276,18 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", composer::BodyEnter, Some(COMPOSER_INPUT)),
         KeyBinding::new("tab", composer::BodyIndent, Some(COMPOSER_INPUT)),
         KeyBinding::new("shift-tab", composer::BodyOutdent, Some(COMPOSER_INPUT)),
+        KeyBinding::new("pageup", composer::BodyPageUp, Some(COMPOSER_INPUT)),
+        KeyBinding::new("pagedown", composer::BodyPageDown, Some(COMPOSER_INPUT)),
+        KeyBinding::new(
+            "shift-pageup",
+            composer::BodySelectPageUp,
+            Some(COMPOSER_INPUT),
+        ),
+        KeyBinding::new(
+            "shift-pagedown",
+            composer::BodySelectPageDown,
+            Some(COMPOSER_INPUT),
+        ),
         KeyBinding::new("down", composer::SuggestNext, Some(RECIPIENTS_INPUT)),
         KeyBinding::new("up", composer::SuggestPrev, Some(RECIPIENTS_INPUT)),
         KeyBinding::new("ctrl-n", composer::SuggestNext, Some(RECIPIENTS_INPUT)),

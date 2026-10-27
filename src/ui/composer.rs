@@ -15,10 +15,15 @@ use gpui::{
     FontWeight, InteractiveElement, IntoElement, MouseButton, ParentElement, PathPromptOptions,
     Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled, Subscription,
     Window, actions, anchored,
-    base::input::RopeExt as _,
+    base::{
+        actions::{SelectDown, SelectUp},
+        input::RopeExt as _,
+    },
     component::{
         ActiveTheme as _,
-        input::{BufferPoint, Editor, EditorState, Input, InputEvent, InputState},
+        input::{
+            BufferPoint, Editor, EditorState, Input, InputEvent, InputState, MoveDown, MoveUp,
+        },
         scroll::ScrollableElement as _,
     },
     deferred, div,
@@ -69,6 +74,11 @@ actions!(
         BodyEnter,
         BodyIndent,
         BodyOutdent,
+        // Page Up and Down in the body, by a page of the draft's scroll.
+        BodyPageUp,
+        BodyPageDown,
+        BodySelectPageUp,
+        BodySelectPageDown,
     ]
 );
 
@@ -794,6 +804,61 @@ impl Composer {
         match self.edit_lines(cx, |text, sel| markdown::indent(text, sel, outdent)) {
             Some(edit) => self.apply(edit, window, cx),
             None => self.move_focus(!outdent, window, cx),
+        }
+    }
+
+    fn body_page_up(&mut self, _: &BodyPageUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.body_page(-1, false, window, cx);
+    }
+
+    fn body_page_down(&mut self, _: &BodyPageDown, window: &mut Window, cx: &mut Context<Self>) {
+        self.body_page(1, false, window, cx);
+    }
+
+    fn body_select_page_up(
+        &mut self,
+        _: &BodySelectPageUp,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.body_page(-1, true, window, cx);
+    }
+
+    fn body_select_page_down(
+        &mut self,
+        _: &BodySelectPageDown,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.body_page(1, true, window, cx);
+    }
+
+    /// The body is as tall as its text, so its own page is all of it: move
+    /// by the rows that fit in the draft's scroll instead, less one to keep
+    /// context. The caret-following scroll then turns the page.
+    fn body_page(&mut self, dir: i8, select: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.body_focused(window, cx) {
+            return cx.propagate();
+        }
+        let scroll = if self.inline {
+            self.outer_scroll.as_ref()
+        } else {
+            Some(&self.scroll)
+        };
+        let (Some(scroll), Some(line_height)) = (scroll, self.body.read(cx).line_height()) else {
+            return;
+        };
+        let rows = ((scroll.bounds().size.height / line_height) as usize)
+            .saturating_sub(1)
+            .max(1);
+        let action: Box<dyn gpui::Action> = match (dir < 0, select) {
+            (true, false) => Box::new(MoveUp),
+            (false, false) => Box::new(MoveDown),
+            (true, true) => Box::new(SelectUp),
+            (false, true) => Box::new(SelectDown),
+        };
+        for _ in 0..rows {
+            window.dispatch_action(action.boxed_clone(), cx);
         }
     }
 
@@ -1659,6 +1724,10 @@ impl Render for Composer {
             .on_action(cx.listener(Self::body_enter))
             .on_action(cx.listener(Self::body_indent))
             .on_action(cx.listener(Self::body_outdent))
+            .on_action(cx.listener(Self::body_page_up))
+            .on_action(cx.listener(Self::body_page_down))
+            .on_action(cx.listener(Self::body_select_page_up))
+            .on_action(cx.listener(Self::body_select_page_down))
             .map(|this| {
                 let composer = cx.entity().downgrade();
                 on_format_actions(this, move |format, window, cx| {
