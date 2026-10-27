@@ -1,0 +1,166 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Menu bar panel: pick a design</title>
+<style>
+  *{box-sizing:border-box}
+  .wrap{display:flex;flex-direction:column;gap:12px}
+  .controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}
+  .desc{font-size:.9em;min-height:2.6em}
+  /* fake desktop */
+  .desk{position:relative;height:600px;border-radius:12px;overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;font-size:13px;
+    -webkit-font-smoothing:antialiased}
+  .desk.dark{background:radial-gradient(120% 90% at 20% 10%,#3b4a7a 0%,#1d2340 45%,#120f1f 100%);color:#f4f4f7}
+  .desk.light{background:radial-gradient(120% 90% at 20% 10%,#c9d8ff 0%,#e9d9f4 50%,#f6e9de 100%);color:#141417}
+  .mbar{height:26px;display:flex;align-items:center;gap:16px;padding:0 12px;font-size:13px;font-weight:500;
+    backdrop-filter:blur(30px);-webkit-backdrop-filter:blur(30px)}
+  .dark .mbar{background:rgba(20,20,26,.45);color:#f4f4f7}
+  .light .mbar{background:rgba(255,255,255,.45);color:#141417}
+  .mbar .sp{flex:1}
+  .mbar .item{display:flex;align-items:center;gap:6px;padding:2px 7px;border-radius:5px}
+  .mbar .item.on{background:var(--hl)}
+  .dark{--hl:rgba(255,255,255,.18)}
+  .light{--hl:rgba(0,0,0,.12)}
+  .glyph{position:relative;width:18px;height:16px;display:inline-block}
+  .glyph .dot{position:absolute;right:-2px;top:0;width:6px;height:6px;border-radius:50%;background:#7aa5ff;box-shadow:0 0 0 1.5px var(--mb)}
+  .dark .glyph .dot{--mb:#1b1c26} .light .glyph .dot{--mb:#eef0fb;background:#1d5bd1}
+  .nextm{font-variant-numeric:tabular-nums;opacity:.95}
+  /* panel */
+  .panel{position:absolute;top:32px;right:118px;width:352px;border-radius:12px;overflow:hidden;
+    backdrop-filter:blur(40px) saturate(1.6);-webkit-backdrop-filter:blur(40px) saturate(1.6)}
+  .dark .panel{--bg:rgba(30,30,36,.74);--text:#f4f4f7;--muted:#b8b8c1;--faint:#9a9aa4;--border:rgba(255,255,255,.08);
+    --hover:rgba(255,255,255,.06);--sel:rgba(122,165,255,.22);--card:rgba(255,255,255,.05);--chip:rgba(255,255,255,.07);
+    --accent:#7aa5ff;--accentText:#0b1530;--kbd:rgba(255,255,255,.06);--kbdB:rgba(255,255,255,.09);--kbdT:#b8b8c1;--now:#ff5f57;
+    background:var(--bg);box-shadow:0 0 0 .5px rgba(255,255,255,.16),0 18px 50px rgba(0,0,0,.55)}
+  .light .panel{--bg:rgba(250,250,252,.78);--text:#141417;--muted:#48484f;--faint:#5a5a62;--border:rgba(0,0,0,.08);
+    --hover:rgba(0,0,0,.04);--sel:rgba(29,91,209,.11);--card:rgba(255,255,255,.55);--chip:rgba(0,0,0,.05);
+    --accent:#1d5bd1;--accentText:#fff;--kbd:rgba(0,0,0,.04);--kbdB:rgba(0,0,0,.08);--kbdT:#48484f;--now:#e5483b;
+    background:var(--bg);box-shadow:0 0 0 .5px rgba(0,0,0,.14),0 18px 50px rgba(0,0,0,.22)}
+  .panel{color:var(--text)}
+  .row{display:flex;align-items:center;gap:8px}
+  .sec{font-size:11px;font-weight:600;color:var(--faint);letter-spacing:.02em;padding:10px 14px 4px;display:flex;justify-content:space-between}
+  .muted{color:var(--muted)} .faint{color:var(--faint)}
+  .tab{font-variant-numeric:tabular-nums}
+  .kbd{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border-radius:5px;
+    font-size:11px;background:var(--kbd);box-shadow:inset 0 0 0 1px var(--kbdB);color:var(--kbdT)}
+  .btn{border:0;border-radius:8px;padding:6px 12px;font:inherit;font-weight:600;cursor:pointer;display:inline-flex;gap:6px;align-items:center}
+  .btn.accent{background:var(--accent);color:var(--accentText)}
+  .btn.accent .kbd{background:rgba(0,0,0,.12);box-shadow:none;color:inherit;opacity:.8}
+  .btn.ghost{background:var(--chip);color:var(--text)}
+  .ev{display:flex;align-items:center;gap:10px;padding:6px 14px;border-radius:8px;margin:0 6px}
+  .ev:hover,.mail:hover{background:var(--hover)}
+  .ev .t{width:44px;color:var(--muted);font-size:12px;text-align:right;flex:none}
+  .ev .bar{width:3px;align-self:stretch;border-radius:2px;flex:none}
+  .ev .ti{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ev .lo{font-size:12px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mail{display:flex;gap:8px;padding:6px 14px;border-radius:8px;margin:0 6px;align-items:flex-start}
+  .mail .u{width:6px;height:6px;border-radius:50%;margin-top:6px;flex:none}
+  .mail .who{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+  .mail.read .who{font-weight:500;color:var(--muted)}
+  .mail .sub{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mail .tm{font-size:11px;color:var(--faint);flex:none}
+  .sel{background:var(--sel)!important}
+  .foot{display:flex;align-items:center;gap:12px;padding:8px 14px;border-top:1px solid var(--border);font-size:12px;color:var(--muted)}
+  .foot .sp{flex:1}
+  .hero{margin:10px 10px 4px;padding:12px;border-radius:12px;background:var(--card);box-shadow:inset 0 0 0 1px var(--border)}
+  .chip{font-size:11px;padding:2px 7px;border-radius:6px;background:var(--chip);color:var(--muted)}
+  .seg{display:flex;background:var(--chip);border-radius:8px;padding:2px;margin:10px 12px 4px}
+  .seg button{flex:1;border:0;background:transparent;color:var(--muted);font:inherit;font-weight:500;padding:5px;border-radius:6px;cursor:pointer}
+  .seg button.on{background:var(--card);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.15),inset 0 0 0 1px var(--border)}
+  .strip{position:relative;height:30px;margin:4px 14px 6px;border-radius:6px;background:var(--chip)}
+  .strip .blk{position:absolute;top:5px;bottom:5px;border-radius:4px}
+  .strip .now{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--now);border-radius:1px}
+  .hours{display:flex;justify-content:space-between;margin:0 14px;font-size:10px;color:var(--faint)}
+  .divider{height:1px;background:var(--border);margin:6px 0}
+  .title{font-size:15px;font-weight:600}
+  .badge{font-size:11px;font-weight:600;padding:1px 6px;border-radius:9px;background:var(--chip);color:var(--muted)}
+  .pick{display:flex;flex-direction:column;gap:8px}
+  .oc-options{grid-template-columns:repeat(3,1fr)}
+  @media (max-width:560px){.panel{right:8px;left:8px;width:auto}.oc-options{grid-template-columns:1fr}}
+</style></head>
+<body>
+<div class="wrap">
+  <div class="controls">
+    <div class="oc-segmented" id="opts">
+      <button data-o="A" aria-pressed="true">A · Agenda first</button>
+      <button data-o="B">B · Tabs</button>
+      <button data-o="C">C · One list</button>
+    </div>
+    <div class="oc-segmented" id="modes">
+      <button data-m="dark" aria-pressed="true">Dark</button>
+      <button data-m="light">Light</button>
+    </div>
+  </div>
+  <div class="desc oc-muted" id="desc"></div>
+  <div class="desk dark" id="desk">
+    <div class="mbar">
+      <span style="font-weight:700">Finder</span><span>File</span><span>Edit</span><span>View</span>
+      <span class="sp"></span>
+      <span class="item nextm" id="nextm"></span>
+      <span class="item on" id="pg"><span class="glyph">
+        <svg width="18" height="16" viewBox="0 0 18 16" fill="currentColor"><path d="M2 9.5c0-3.6 2.9-6.5 6.5-6.5 1.1 0 2.1.3 3 .8L15.8 2l-1.6 3.5c.5.8.8 1.8.8 2.8v.2L17 9.6l-2.3.4C13.9 12.4 11.4 14 8.5 14H3.2L5 12.2C3.2 11.6 2 10.7 2 9.5Zm8.6-3.3a.9.9 0 1 0 0 1.8.9.9 0 0 0 0-1.8Z"/></svg>
+        <span class="dot"></span></span></span>
+      <span class="tab">Tue 27 Oct 10:48</span>
+    </div>
+    <div class="panel" id="panel"></div>
+  </div>
+  <div class="pick">
+    <div class="oc-options" id="choice">
+      <button class="oc-option" data-c="A" aria-pressed="true"><b>A · Agenda first</b><br><span class="oc-muted">Next meeting card, today, mail</span></button>
+      <button class="oc-option" data-c="B"><b>B · Tabs</b><br><span class="oc-muted">Join bar, Today / Mail</span></button>
+      <button class="oc-option" data-c="C"><b>C · One list</b><br><span class="oc-muted">Day strip, Raycast-style list</span></button>
+    </div>
+    <label class="oc-field">Comments (optional)
+      <textarea class="oc-input" id="notes" rows="2" placeholder="e.g. A, but with C's day strip"></textarea></label>
+    <label class="oc-field" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" class="oc-switch" id="nm" checked> Show the next meeting next to the icon (“Design review in 12m”)</label>
+    <div><button class="oc-button" id="send">Use this design</button></div>
+  </div>
+</div>
+<script>
+const C={blue:'#4f7df3',green:'#3fb37f',purple:'#9b6cf0',orange:'#f0a046'};
+const later=[['11:00','Design review','Google Meet · 4 guests',C.blue],['12:30','Lunch with Sam','Café Rumi',C.green],['14:00','1:1 with Priya','Zoom',C.purple],['16:30','Pigeon sprint sync','Room 3B',C.orange]];
+const mail=[[1,'Priya Raman','Q4 roadmap: final draft for review','10:41'],[1,'GitHub','[pigeon] PR #212: menu bar panel','10:22'],[1,'Sam Ortiz','Lunch tomorrow instead?','9:58'],[0,'Linear','3 issues assigned to you','9:30'],[0,'Mom','Photos from the weekend','8:12'],[0,'Stripe','Your October invoice','Yesterday']];
+const k=s=>`<span class="kbd">${s}</span>`;
+const evRows=(rows,selFirst)=>rows.map((e,i)=>`<div class="ev${selFirst&&i==0?' sel':''}"><span class="t tab">${e[0]}</span><span class="bar" style="background:${e[3]}"></span><div style="min-width:0;flex:1"><div class="ti">${e[1]}</div><div class="lo">${e[2]}</div></div>${selFirst&&i==0?k('↵'):''}</div>`).join('');
+const mailRows=(rows,sel)=>rows.map((m,i)=>`<div class="mail${m[0]?'':' read'}${sel===i?' sel':''}"><span class="u" style="background:${m[0]?'var(--accent)':'transparent'}"></span><div style="min-width:0;flex:1"><div class="row"><span class="who">${m[1]}</span><span class="tm tab">${m[3]}</span></div><div class="sub">${m[2]}</div></div></div>`).join('');
+const foot=`<div class="foot"><span>${k('C')} Compose</span><span>${k('N')} Event</span><span class="sp"></span><span>${k('⌘O')} Open Pigeon</span></div>`;
+let tabB='today';
+const P={
+A:()=>`<div class="row" style="padding:12px 14px 0;justify-content:space-between"><span class="title">Tuesday, Oct 27</span><span class="faint" style="font-size:11px">Synced just now</span></div>
+<div class="hero"><div class="row" style="justify-content:space-between"><span class="chip" style="color:var(--accent)">in 12 min</span><span class="faint tab" style="font-size:12px">11:00 – 11:45</span></div>
+<div style="font-size:15px;font-weight:600;margin:8px 0 2px">Design review</div><div class="muted" style="font-size:12px">Google Meet · Priya, Sam and 2 others</div>
+<div class="row" style="margin-top:10px"><button class="btn accent">Join meeting ${k('J')}</button><button class="btn ghost">Details</button></div></div>
+<div class="sec"><span>LATER TODAY</span><span>3 events</span></div>${evRows(later.slice(1))}
+<div class="sec"><span>RECENT MAIL</span><span>3 unread</span></div>${mailRows(mail.slice(0,4),0)}${foot}`,
+B:()=>`<div class="row" style="margin:10px 10px 0;padding:8px 10px;border-radius:10px;background:var(--sel);gap:10px"><span class="bar" style="width:3px;height:30px;border-radius:2px;background:${C.blue}"></span><div style="flex:1;min-width:0"><div style="font-weight:600">Design review</div><div class="muted tab" style="font-size:12px">Starts in 12 min · Google Meet</div></div><button class="btn accent">Join ${k('J')}</button></div>
+<div class="seg"><button data-t="today" class="${tabB=='today'?'on':''}">Today <span class="badge">4</span></button><button data-t="mail" class="${tabB=='mail'?'on':''}">Mail <span class="badge">3</span></button></div>
+${tabB=='today'?`<div class="sec"><span>TUESDAY, OCT 27</span><span>${k('⇥')} switch</span></div>${evRows(later,true)}<div class="sec"><span>TOMORROW</span></div>${evRows([['9:30','Standup','Google Meet',C.blue]])}`
+:`<div class="sec"><span>PRIMARY</span><span>${k('E')} archive · ${k('⇧I')} read</span></div>${mailRows(mail,0)}`}${foot}`,
+C:()=>`<div class="row" style="padding:12px 14px 4px;justify-content:space-between"><span class="title">Today</span><span class="faint tab" style="font-size:12px">Tue 27 Oct · 10:48</span></div>
+<div class="strip">${[[9.5,9.75,C.blue,.45],[11,11.75,C.blue,1],[12.5,13.5,C.green,1],[14,14.5,C.purple,1],[16.5,17,C.orange,1]].map(b=>`<span class="blk" style="left:${(b[0]-8)/10*100}%;width:${(b[1]-b[0])/10*100}%;background:${b[2]};opacity:${b[3]}"></span>`).join('')}<span class="now" style="left:${(10.8-8)/10*100}%"></span></div>
+<div class="hours"><span>8</span><span>10</span><span>12</span><span>2</span><span>4</span><span>6</span></div>
+<div class="sec"><span>NEXT · IN 12 MIN</span></div>${evRows([later[0]],true)}
+<div class="sec"><span>LATER</span></div>${evRows(later.slice(1))}
+<div class="sec"><span>MAIL</span><span>3 unread</span></div>${mailRows(mail.slice(0,4),-1)}
+<div class="foot"><span class="glyph" style="color:var(--muted);transform:scale(.85)"><svg width="18" height="16" viewBox="0 0 18 16" fill="currentColor"><path d="M2 9.5c0-3.6 2.9-6.5 6.5-6.5 1.1 0 2.1.3 3 .8L15.8 2l-1.6 3.5c.5.8.8 1.8.8 2.8v.2L17 9.6l-2.3.4C13.9 12.4 11.4 14 8.5 14H3.2L5 12.2C3.2 11.6 2 10.7 2 9.5Z"/></svg></span><span>Synced</span><span class="sp"></span><span style="color:var(--text);font-weight:500">Join meeting</span>${k('↵')}<span style="width:1px;height:14px;background:var(--border)"></span><span>Actions</span>${k('⌘K')}</div>`};
+const D={A:'A big card for the next meeting with a Join button, then the rest of today and your recent mail in one scroll. Most at a glance; the tallest panel.',
+B:'A Join bar on top only when a meeting is near, then Today and Mail as tabs (Tab switches). Each list gets more room; mail is one key away.',
+C:'A day strip shows the whole day at a glance, then one keyboard list of events and mail. The footer shows what Enter does for the selected row, like Raycast. Densest.'};
+let opt='A',mode='dark';
+function draw(){document.getElementById('desk').className='desk '+mode;
+ document.getElementById('panel').innerHTML=P[opt]();document.getElementById('desc').textContent=D[opt];
+ document.getElementById('nextm').innerHTML=document.getElementById('nm').checked?'Design review in 12m':'';
+ document.getElementById('panel').querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{tabB=b.dataset.t;draw()});}
+function seg(id,attr,set){const el=document.getElementById(id);el.querySelectorAll('button').forEach(b=>b.onclick=()=>{el.querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',x===b));set(b.dataset[attr]);draw()})}
+seg('opts','o',v=>{opt=v;document.querySelectorAll('#choice .oc-option').forEach(x=>x.setAttribute('aria-pressed',x.dataset.c===v))});
+seg('modes','m',v=>mode=v);
+let choice='A';
+document.querySelectorAll('#choice .oc-option').forEach(b=>b.onclick=()=>{choice=b.dataset.c;document.querySelectorAll('#choice .oc-option').forEach(x=>x.setAttribute('aria-pressed',x===b));opt=choice;document.querySelectorAll('#opts button').forEach(x=>x.setAttribute('aria-pressed',x.dataset.o===choice));draw()});
+document.getElementById('nm').onchange=draw;
+const send=document.getElementById('send');
+send.onclick=async()=>{send.disabled=true;const notes=document.getElementById('notes').value.trim();const nm=document.getElementById('nm').checked;
+ try{await openchamber.submit({design:choice,comments:notes,nextMeetingInMenuBar:nm},`Design ${choice}${notes?': '+notes:''}`)}catch(e){send.disabled=false}};
+if(window.openchamber&&openchamber.answer){const a=openchamber.answer;choice=opt=a.design;send.disabled=true;document.getElementById('notes').value=a.comments||'';document.getElementById('nm').checked=a.nextMeetingInMenuBar;
+ document.querySelectorAll('#choice .oc-option').forEach(x=>x.setAttribute('aria-pressed',x.dataset.c===choice));document.querySelectorAll('#opts button').forEach(x=>x.setAttribute('aria-pressed',x.dataset.o===choice));}
+draw();
+</script>
+</body></html>

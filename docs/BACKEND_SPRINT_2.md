@@ -152,6 +152,14 @@ Answered by the user, 2026-10-27:
 6. **Read-only calendar test:** the main agent may subscribe to a public holidays calendar for CAL-22 and remove it afterwards.
 7. **CAL-23:** the calendar reopens on the last date viewed, not today.
 8. **Publishing the Google app:** not required to start; it can wait until the user's next sign-in (section 5).
+9. **Menu bar design (W7a):** design A, "Agenda first". From the top:
+   - the date and the sync status;
+   - a card for the next meeting: a countdown chip, the time, the title, the video service and guests, and Join (`j`) and Details buttons;
+   - "Later today": time, calendar colour bar, title and location;
+   - "Recent mail": about 4 Primary threads, each with an unread dot, sender, subject and time;
+   - a footer with Compose (`c`), New event (`n`) and Open Pigeon (⌘O).
+
+   The next meeting shows next to the icon by default ("Design review in 12m"). The mockup is in `docs/design/menubar.html`.
 
 ## 7. Done
 
