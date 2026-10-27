@@ -1,6 +1,6 @@
 //! Account card, system folders and labels.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use gpui::{
     AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ParentElement,
@@ -11,13 +11,108 @@ use gpui::{
 use super::{HEADER_HEIGHT, avatar, icon, icon_button, window_drag_area};
 use crate::ui::style::*;
 use crate::{
-    actions::ToggleSidebar,
+    actions::{NewLabel, ToggleHiddenLabels, ToggleSidebar},
     app::{Nav, PigeonApp},
     assets::Icon,
-    backend::gmail,
-    data::{Contact, Folder},
+    backend::{
+        categories::{Category, CategoryCounts, in_category},
+        gmail,
+        labels::label_tree,
+    },
+    data::{Contact, Folder, Label, ListVisibility, Thread},
     theme::Theme,
 };
+
+/// W4b: the Inbox's other categories, as views under it (FOL-11).
+const CATEGORIES: [(Category, Icon); 4] = [
+    (Category::Social, Icon::Users),
+    (Category::Promotions, Icon::Tag),
+    (Category::Updates, Icon::Bell),
+    (Category::Forums, Icon::Layers),
+];
+
+/// The categories the sidebar lists: those with threads in the Inbox or
+/// unread ones on the server, and the one open.
+pub fn shown_categories(threads: &[Thread], counts: &CategoryCounts, open: Nav) -> Vec<Category> {
+    CATEGORIES
+        .iter()
+        .map(|&(c, _)| c)
+        .filter(|&c| {
+            open == Nav::Category(c)
+                || counts.unread(c) > 0
+                || threads
+                    .iter()
+                    .any(|t| t.folder == Folder::Inbox && in_category(t, c))
+        })
+        .collect()
+}
+
+/// A label the sidebar lists (FOL-9, FOL-10).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LabelRow {
+    /// Index into the labels.
+    pub ix: usize,
+    pub depth: usize,
+    pub name: String,
+    pub children: usize,
+    pub folded: bool,
+}
+
+/// The labels the sidebar lists, as a tree, and how many it leaves out
+/// for their visibility. A label shows when it's set to, or while unread
+/// for "show if unread", or while open, or with `show_hidden`; children
+/// show under a parent that shows and isn't folded.
+pub fn label_rows(
+    labels: &[Label],
+    folded: &HashSet<String>,
+    show_hidden: bool,
+    unread: impl Fn(usize) -> usize,
+    open: Option<usize>,
+) -> (Vec<LabelRow>, usize) {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Out {
+        Shown,
+        Folded,
+        Hidden,
+    }
+    let mut state: HashMap<usize, Out> = HashMap::new();
+    let (mut rows, mut hidden) = (Vec::new(), 0);
+    for node in label_tree(labels) {
+        let label = &labels[node.ix];
+        let parent = node.parent.map(|p| state[&p]);
+        let visible = show_hidden
+            || open == Some(node.ix)
+            || match label.list_visibility {
+                ListVisibility::Show => true,
+                ListVisibility::ShowIfUnread => unread(node.ix) > 0,
+                ListVisibility::Hide => false,
+            };
+        let out = match parent {
+            Some(Out::Folded) => Out::Folded,
+            Some(Out::Hidden) => Out::Hidden,
+            _ if !visible => Out::Hidden,
+            _ => Out::Shown,
+        };
+        match out {
+            Out::Shown => {
+                let is_folded = node.children > 0 && folded.contains(&label.id);
+                state.insert(node.ix, if is_folded { Out::Folded } else { Out::Shown });
+                rows.push(LabelRow {
+                    ix: node.ix,
+                    depth: node.depth,
+                    name: node.name,
+                    children: node.children,
+                    folded: is_folded,
+                });
+                continue;
+            }
+            Out::Hidden => hidden += 1,
+            Out::Folded => {}
+        }
+        state.insert(node.ix, out);
+    }
+    (rows, hidden)
+}
 
 const FOLDERS: [(Nav, &str, Icon); 7] = [
     (Nav::Folder(Folder::Inbox), "Inbox", Icon::Inbox),
@@ -47,9 +142,12 @@ pub struct ServerCounts {
 
 impl PigeonApp {
     /// The Gmail label whose count a view shows, if Gmail counts it.
+    /// W4b: the Inbox and its categories count with W4a's numbers, under
+    /// these keys.
     fn counted_label(&self, nav: Nav) -> Option<&str> {
         match nav {
-            Nav::Folder(Folder::Inbox) => Some(gmail::INBOX),
+            Nav::Folder(Folder::Inbox) => Some(category_key(Category::Primary)),
+            Nav::Category(c) => Some(category_key(c)),
             Nav::Folder(Folder::Spam) => Some(gmail::SPAM),
             Nav::Label(ix) => self.data.labels.get(ix).map(|l| l.id.as_str()),
             _ => None,
@@ -66,9 +164,17 @@ impl PigeonApp {
 
     /// Take Gmail's counts from the store, as of the threads loaded now.
     pub fn refresh_server_counts(&mut self, cx: &gpui::App) {
-        let counts = self.backend.read(cx).label_counts();
+        let mut counts = self.backend.read(cx).label_counts();
+        let categories = *self.backend.read(cx).category_counts();
+        for c in Category::ALL {
+            counts.insert(
+                category_key(c).to_string(),
+                (categories.unread(c).into(), 0),
+            );
+        }
         let navs = [Nav::Folder(Folder::Inbox), Nav::Folder(Folder::Spam)]
             .into_iter()
+            .chain(CATEGORIES.iter().map(|&(c, _)| Nav::Category(c)))
             .chain((0..self.data.labels.len()).map(Nav::Label));
         let mut by_label = HashMap::new();
         for nav in navs {
@@ -121,27 +227,92 @@ impl PigeonApp {
             email: self.data.account.email.clone(),
         };
 
-        let folders = FOLDERS
-            .iter()
-            .map(|&(nav, name, glyph)| {
-                self.nav_item(nav, name.into(), Marker::Icon(glyph), &theme, cx)
-            })
-            .collect::<Vec<_>>();
-        let labels = self
-            .data
-            .labels
-            .iter()
-            .enumerate()
-            .map(|(ix, label)| {
-                self.nav_item(
-                    Nav::Label(ix),
-                    label.name.clone().into(),
-                    Marker::Dot(label.color),
-                    &theme,
-                    cx,
-                )
-            })
-            .collect::<Vec<_>>();
+        let categories = shown_categories(
+            &self.data.threads,
+            self.backend.read(cx).category_counts(),
+            self.nav,
+        );
+        let mut folders = Vec::new();
+        for &(nav, name, glyph) in &FOLDERS {
+            folders.push(
+                self.nav_item(nav, name.into(), Marker::Icon(glyph), 0, &theme, cx)
+                    .into_any_element(),
+            );
+            if nav == Nav::Folder(Folder::Inbox) {
+                for &category in &categories {
+                    let glyph = CATEGORIES
+                        .iter()
+                        .find(|(c, _)| *c == category)
+                        .map_or(Icon::Inbox, |(_, g)| *g);
+                    folders.push(
+                        self.nav_item(
+                            Nav::Category(category),
+                            category.name().into(),
+                            Marker::Icon(glyph),
+                            1,
+                            &theme,
+                            cx,
+                        )
+                        .into_any_element(),
+                    );
+                }
+            }
+        }
+        let open = match self.nav {
+            Nav::Label(ix) => Some(ix),
+            _ => None,
+        };
+        let (rows, hidden) = label_rows(
+            &self.data.labels,
+            &self.labels_ui.folded,
+            self.labels_ui.show_hidden,
+            |ix| self.view_unread(Nav::Label(ix)),
+            open,
+        );
+        let mut labels: Vec<AnyElement> = rows
+            .into_iter()
+            .map(|row| self.label_item(row, &theme, cx))
+            .collect();
+        if hidden > 0 || self.labels_ui.show_hidden {
+            let text = if self.labels_ui.show_hidden {
+                "Leave out hidden labels".to_string()
+            } else {
+                format!("{hidden} hidden")
+            };
+            labels.push(
+                focusable_control(div().id("hidden-labels"), &theme)
+                    .role(gpui::Role::Button)
+                    .aria_label(text.clone())
+                    .h(px(26.))
+                    .px(SPACE_MD)
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_SM)
+                    .rounded(RADIUS_MD)
+                    .text_size(TEXT_SM)
+                    .text_color(theme.text_faint)
+                    .hover(|s| s.bg(theme.hover_bg))
+                    .child(icon(
+                        if self.labels_ui.show_hidden {
+                            Icon::ChevronUp
+                        } else {
+                            Icon::ChevronDown
+                        },
+                        px(14.),
+                        theme.text_faint,
+                    ))
+                    .child(text)
+                    .tooltip(|window, cx| {
+                        Tooltip::new("Show or leave out hidden labels")
+                            .action(&ToggleHiddenLabels, None)
+                            .build(window, cx)
+                    })
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(ToggleHiddenLabels), cx)
+                    })
+                    .into_any_element(),
+            );
+        }
 
         div()
             .relative()
@@ -231,15 +402,82 @@ impl PigeonApp {
                     .child(
                         div()
                             .pt(SPACE_LG)
-                            .pb(SPACE_SM)
-                            .px(SPACE_MD)
+                            .pb(SPACE_XS)
+                            .pl(SPACE_MD)
+                            .flex()
+                            .items_center()
+                            .justify_between()
                             .text_size(TEXT_XS)
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme.text_faint)
-                            .child("Labels"),
+                            .child("Labels")
+                            .child(
+                                icon_button(
+                                    "new-label",
+                                    Icon::Plus,
+                                    "New label",
+                                    Box::new(NewLabel),
+                                    &theme,
+                                )
+                                .size(px(22.)),
+                            ),
                     )
                     .children(labels),
             )
+    }
+
+    /// W4b: a label row, nested and foldable, with its context menu.
+    fn label_item(&self, row: LabelRow, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let label = &self.data.labels[row.ix];
+        let ix = row.ix;
+        let item = self.nav_item(
+            Nav::Label(ix),
+            row.name.clone().into(),
+            Marker::Dot(label.color),
+            row.depth,
+            theme,
+            cx,
+        );
+        item.when(row.children > 0, |this| {
+            let name = row.name.clone();
+            this.aria_expanded(!row.folded).child(
+                div()
+                    .id(("fold-label", ix))
+                    .role(gpui::Role::Button)
+                    .aria_label(format!(
+                        "{} sublabels of {name}",
+                        if row.folded { "Show" } else { "Hide" }
+                    ))
+                    .size(px(18.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(RADIUS_SM)
+                    .hover(|s| s.bg(theme.selected_bg))
+                    .child(icon(
+                        if row.folded {
+                            Icon::ChevronRight
+                        } else {
+                            Icon::ChevronDown
+                        },
+                        px(12.),
+                        theme.text_faint,
+                    ))
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.toggle_label_folded(ix, cx);
+                    })),
+            )
+        })
+        .on_mouse_down(
+            gpui::MouseButton::Right,
+            cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                this.show_label_menu(ix, event.position, window, cx)
+            }),
+        )
+        .into_any_element()
     }
 
     fn nav_item(
@@ -247,15 +485,17 @@ impl PigeonApp {
         nav: Nav,
         name: gpui::SharedString,
         marker: Marker,
+        depth: usize,
         theme: &Theme,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> gpui::Stateful<gpui::Div> {
         let active = self.nav == nav;
         let count = self.nav_count(nav);
         let id = match nav {
             Nav::Folder(folder) => ("nav-folder", folder as usize),
             Nav::Starred => ("nav-starred", 0),
             Nav::Label(ix) => ("nav-label", ix),
+            Nav::Category(c) => ("nav-category", c as usize),
         };
 
         focusable_control(div().id(id), theme)
@@ -263,7 +503,8 @@ impl PigeonApp {
             .aria_label(name.clone())
             .aria_selected(active)
             .h(px(30.))
-            .px(SPACE_MD)
+            .pl(SPACE_MD + SPACE_LG * depth as f32)
+            .pr(SPACE_MD)
             .flex()
             .items_center()
             .gap(SPACE_SM)
@@ -326,6 +567,133 @@ impl PigeonApp {
                     }
                 }),
             )
-            .into_any_element()
+    }
+}
+
+fn category_key(category: Category) -> &'static str {
+    match category {
+        Category::Primary => "category:primary",
+        Category::Social => "category:social",
+        Category::Promotions => "category:promotions",
+        Category::Updates => "category:updates",
+        Category::Forums => "category:forums",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{app::nav_holds, data::Message};
+
+    fn thread(id: &str, folder: Folder, labels: &[&str], unread: bool) -> Thread {
+        let message = Message {
+            label_ids: labels.iter().map(|l| l.to_string()).collect(),
+            ..Message::new(Contact::default())
+        };
+        let mut t = Thread::local(id.into(), id.into(), folder, vec![message], None);
+        t.unread = unread;
+        t
+    }
+
+    #[test]
+    fn the_inbox_shows_primary_and_the_categories_their_own() {
+        let threads = [
+            thread("p", Folder::Inbox, &["INBOX"], true),
+            thread(
+                "promo",
+                Folder::Inbox,
+                &["INBOX", "CATEGORY_PROMOTIONS"],
+                true,
+            ),
+            thread("upd", Folder::Inbox, &["INBOX", "CATEGORY_UPDATES"], false),
+            thread("old", Folder::Archive, &["CATEGORY_SOCIAL"], false),
+        ];
+        let shown = |nav| -> Vec<&str> {
+            threads
+                .iter()
+                .filter(|t| nav_holds(nav, t, &[]))
+                .map(|t| t.id.as_str())
+                .collect()
+        };
+        assert_eq!(shown(Nav::Folder(Folder::Inbox)), ["p"]);
+        assert_eq!(shown(Nav::Category(Category::Promotions)), ["promo"]);
+        assert_eq!(shown(Nav::Category(Category::Updates)), ["upd"]);
+        // Archived Social mail isn't in the Inbox's Social.
+        assert!(shown(Nav::Category(Category::Social)).is_empty());
+        let counts = crate::backend::categories::local_counts(&threads);
+        assert_eq!(counts.unread(Category::Primary), 1);
+        assert_eq!(counts.unread(Category::Promotions), 1);
+        assert_eq!(counts.text(Category::Updates), None);
+        // Updates has a thread though none unread; Social and Forums
+        // have neither, unless open.
+        let inbox = Nav::Folder(Folder::Inbox);
+        assert_eq!(
+            shown_categories(&threads, &counts, inbox),
+            [Category::Promotions, Category::Updates]
+        );
+        assert_eq!(
+            shown_categories(&threads, &counts, Nav::Category(Category::Forums)),
+            [Category::Promotions, Category::Updates, Category::Forums]
+        );
+        // Unread on the server only (older than the cache).
+        let promo_only = &threads[..1];
+        assert_eq!(
+            shown_categories(promo_only, &counts, inbox),
+            [Category::Promotions]
+        );
+    }
+
+    fn labels(spec: &[(&str, ListVisibility)]) -> Vec<Label> {
+        spec.iter()
+            .enumerate()
+            .map(|(ix, (name, v))| Label {
+                list_visibility: *v,
+                ..Label::new(format!("L{ix}"), *name, gpui::black())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn label_rows_fold_and_follow_visibility() {
+        use ListVisibility::*;
+        let l = labels(&[
+            ("Work", Show),
+            ("Work/Clients", Show),
+            ("Work/Clients/Acme", Show),
+            ("Quiet", ShowIfUnread),
+            ("Secret", Hide),
+            ("Secret/Inner", Show),
+        ]);
+        let names = |rows: &[LabelRow]| -> Vec<(usize, String)> {
+            rows.iter().map(|r| (r.depth, r.name.clone())).collect()
+        };
+        let none = HashSet::new();
+        let (rows, hidden) = label_rows(&l, &none, false, |_| 0, None);
+        assert_eq!(
+            names(&rows),
+            [
+                (0, "Work".into()),
+                (1, "Clients".into()),
+                (2, "Acme".into())
+            ]
+        );
+        // Quiet (read), Secret and its child.
+        assert_eq!(hidden, 3);
+        // Unread shows "show if unread"; open shows a hidden one.
+        let (rows, hidden) = label_rows(&l, &none, false, |ix| (ix == 3) as usize, Some(4));
+        let shown: Vec<usize> = rows.iter().map(|r| r.ix).collect();
+        assert_eq!(shown, [3, 4, 5, 0, 1, 2]);
+        assert_eq!(hidden, 0);
+        // Folding Work keeps it, without its children; not counted hidden.
+        let folded: HashSet<String> = ["L0".to_string()].into();
+        let (rows, hidden) = label_rows(&l, &folded, false, |_| 0, None);
+        assert_eq!(names(&rows), [(0, "Work".into())]);
+        assert!(rows[0].folded);
+        assert_eq!(rows[0].children, 1);
+        assert_eq!(hidden, 3);
+        // Everything, with show hidden.
+        let (rows, hidden) = label_rows(&l, &none, true, |_| 0, None);
+        assert_eq!(rows.len(), 6);
+        assert_eq!(hidden, 0);
     }
 }

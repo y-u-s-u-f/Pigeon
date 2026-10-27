@@ -26,6 +26,7 @@ pub mod gmail;
 pub mod health;
 pub mod http;
 pub mod images;
+pub mod labels;
 pub mod mime;
 pub mod new_mail;
 pub mod outbox;

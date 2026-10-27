@@ -23,6 +23,7 @@ const MAIL_GROUPS: &[Group] = &[
     Group::Navigation,
     Group::GoTo,
     Group::Conversation,
+    Group::Labels,
     Group::Selection,
     Group::Compose,
     Group::Invite,

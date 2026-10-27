@@ -37,6 +37,7 @@ impl PigeonApp {
             Nav::Folder(folder) => folder.title().into(),
             Nav::Starred => "Starred".into(),
             Nav::Label(ix) => self.data.labels[ix].name.clone().into(),
+            Nav::Category(category) => category.name().into(),
         }
     }
 
@@ -105,7 +106,18 @@ impl PigeonApp {
         let asking_gmail = self.server_search.state == ServerState::Waiting;
         // "Load older" alone (W9) still leaves the view empty.
         let empty = self.rows.iter().all(|r| *r == Row::LoadOlder);
-        let body = if empty && searching && asking_gmail {
+        // W4b (SRC-9): only Gmail answers these, and it can't be asked.
+        let needs_gmail = searching
+            && self.search_query.gmail_only()
+            && (!self.server_search.available || self.server_search.state == ServerState::Offline);
+        let body = if empty && needs_gmail {
+            empty_state(
+                Icon::Search,
+                "This search needs a connection to Gmail",
+                Some("Gmail answers searches with after:, OR, negation and the like"),
+                &theme,
+            )
+        } else if empty && searching && asking_gmail {
             // W9 (SRC-7): nothing here, but Gmail may have some.
             empty_state(Icon::Search, "Searching Gmail…", None, &theme)
         } else if empty && searching {
@@ -195,12 +207,7 @@ impl PigeonApp {
 
     /// Whether the view's first page has loaded from Gmail (STA-1).
     fn view_loaded(&self, cx: &gpui::App) -> bool {
-        let view = match self.nav {
-            Nav::Folder(folder) => crate::backend::ViewKey::Folder(folder),
-            Nav::Starred => crate::backend::ViewKey::Starred,
-            Nav::Label(ix) => crate::backend::ViewKey::Label(self.data.labels[ix].id.clone()),
-        };
-        self.backend.read(cx).view_loaded(&view)
+        self.backend.read(cx).view_loaded(&self.view_key())
     }
 
     /// "in Inbox", or where an `in:` operator or the scope chip points.
@@ -232,6 +239,9 @@ impl PigeonApp {
         );
         let note = match self.server_search.state {
             ServerState::Waiting => Some("Searching Gmail…"),
+            ServerState::Offline if self.search_query.gmail_only() => {
+                Some("Offline: this search needs a connection")
+            }
             ServerState::Offline => Some("Offline: downloaded mail only"),
             ServerState::Failed => Some("Couldn't search Gmail"),
             _ => None,
@@ -667,10 +677,12 @@ impl PigeonApp {
 
         // Labels as dots (Linear-style): the subject keeps its room. The
         // reader shows them as chips.
+        // W4b (FOL-10): only labels set to show in the conversation list.
         let labels: Vec<_> = thread
             .labels
             .iter()
             .filter_map(|id| self.data.label(id))
+            .filter(|l| l.in_message_list)
             .collect();
         let label_dots = (!labels.is_empty()).then(|| {
             let names = labels
@@ -713,6 +725,17 @@ impl PigeonApp {
                 .gap(SPACE_SM)
                 .when(thread.has_attachments(), |this| {
                     this.child(icon(Icon::Paperclip, px(13.), secondary))
+                })
+                .when(thread.important, |this| {
+                    // W4b (FOL-12): Gmail's Important marker.
+                    this.child(
+                        div()
+                            .id(("important", thread_ix))
+                            .role(gpui::Role::Image)
+                            .aria_label("Important")
+                            .child(icon(Icon::Important, px(13.), theme.star))
+                            .tooltip(|window, cx| Tooltip::new("Important").build(window, cx)),
+                    )
                 })
                 .when(thread.starred, |this| {
                     this.child(icon(Icon::StarFilled, px(13.), theme.star))

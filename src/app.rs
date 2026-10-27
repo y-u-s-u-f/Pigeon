@@ -3,10 +3,12 @@
 mod attachments;
 mod backend_events;
 mod compose;
+mod labels;
 mod mail;
 pub mod menu_bar;
 pub mod shell;
 pub mod today;
+pub use labels::LabelCommand;
 pub use mail::{Density, SearchSuggestion};
 
 use std::{
@@ -82,6 +84,25 @@ pub enum Nav {
     Starred,
     /// Index into `MailData::labels`.
     Label(usize),
+    /// W4b: an Inbox category but Primary, which the Inbox itself shows
+    /// (FOL-11).
+    Category(crate::backend::categories::Category),
+}
+
+/// Whether a view shows the thread. W4b: the Inbox shows Primary, each
+/// other category its own (FOL-11).
+pub fn nav_holds(nav: Nav, thread: &Thread, labels: &[crate::data::Label]) -> bool {
+    use crate::backend::categories::{Category, in_category};
+    match nav {
+        Nav::Folder(Folder::Sent) => thread.in_sent(),
+        Nav::Folder(Folder::Inbox) => {
+            thread.folder == Folder::Inbox && in_category(thread, Category::Primary)
+        }
+        Nav::Folder(folder) => thread.folder == folder,
+        Nav::Starred => thread.starred && !thread.is_hidden(),
+        Nav::Label(ix) => !thread.is_hidden() && thread.labels.contains(&labels[ix].id),
+        Nav::Category(category) => thread.folder == Folder::Inbox && in_category(thread, category),
+    }
 }
 
 /// One row of the thread list.
@@ -234,6 +255,8 @@ pub struct PigeonApp {
     pub server_search: crate::search::ServerSearch,
     /// W2 (RDR-8): the source shown in place of the conversation.
     pub original: Option<ui::reader::Original>,
+    /// W4b: folded labels, hidden ones shown, a name being typed.
+    pub labels_ui: labels::LabelsUi,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -350,6 +373,7 @@ impl PigeonApp {
             server_counts: Default::default(),
             server_search: Default::default(),
             original: None,
+            labels_ui: Default::default(),
             _subscriptions: vec![
                 settings_events,
                 appearance,
@@ -365,6 +389,12 @@ impl PigeonApp {
         };
         this.apply_settings(saved, window, cx);
         this.server_search.available = this.backend.read(cx).can_search();
+        this.labels_ui.folded = this
+            .backend
+            .read(cx)
+            .collapsed_labels()
+            .into_iter()
+            .collect();
         this.refresh_rows(false);
         this.refresh_server_counts(cx);
         this
@@ -441,14 +471,7 @@ impl PigeonApp {
     }
 
     pub fn nav_contains(&self, nav: Nav, thread: &Thread) -> bool {
-        match nav {
-            Nav::Folder(Folder::Sent) => thread.in_sent(),
-            Nav::Folder(folder) => thread.folder == folder,
-            Nav::Starred => thread.starred && !thread.is_hidden(),
-            Nav::Label(ix) => {
-                !thread.is_hidden() && thread.labels.contains(&self.data.labels[ix].id)
-            }
-        }
+        nav_holds(nav, thread, &self.data.labels)
     }
 
     /// Recompute the list rows for the current nav. With `keep_scroll`, only
@@ -470,11 +493,13 @@ impl PigeonApp {
                 None => self.nav_contains(self.nav, thread),
             }
         };
+        // W4b (SRC-9): Gmail alone answers some queries.
+        let gmail_only = self.search_query.gmail_only();
         let mut rows: Vec<Row> = if searching {
             // W9: with what Gmail found (SRC-5).
             self.server_search
                 .merge(threads, in_view, |t| {
-                    self.search_query.matches(t, &self.data)
+                    !gmail_only && self.search_query.matches(t, &self.data)
                 })
                 .into_iter()
                 .map(Row::Thread)
@@ -1382,6 +1407,10 @@ impl PigeonApp {
                 .calendar
                 .update(cx, |c, cx| c.quick_add(text, window, cx));
         }
+        // W4b: a label's name, typed.
+        if let PaletteEvent::Text(text) = event {
+            return self.label_name_typed(text, window, cx);
+        }
         let PaletteEvent::Run(command) = event else {
             return;
         };
@@ -1420,6 +1449,7 @@ impl PigeonApp {
                 window.dispatch_action(action, cx)
             }
             PaletteCommand::MoveTo(folder) => self.move_to(folder, window, cx),
+            PaletteCommand::Label(command) => self.run_label_command(command, window, cx),
             PaletteCommand::ToggleLabel(ix) => self.toggle_label(ix, cx),
             PaletteCommand::Nav(nav) => self.set_nav(nav, cx),
             PaletteCommand::Thread(ix) => self.reveal_thread(ix, window, cx),
@@ -1731,6 +1761,7 @@ impl Render for PigeonApp {
             .on_action(cx.listener(Self::load_images))
             .on_action(cx.listener(Self::load_older))
             .map(|this| self.on_mail_actions(this, cx))
+            .map(|this| self.on_label_actions(this, cx))
             .map(|this| self.on_attachment_actions(this, cx))
             .on_drag_move(cx.listener(Self::resize_pane))
             .relative()

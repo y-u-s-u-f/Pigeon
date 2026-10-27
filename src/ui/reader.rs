@@ -207,6 +207,25 @@ impl PigeonApp {
             } else {
                 icon_button("star", Icon::Star, "Star", Box::new(ToggleStar), theme)
             })
+            .child(if thread.important {
+                // W4b (FOL-12).
+                icon_button_tinted(
+                    "important",
+                    Icon::Important,
+                    theme.star,
+                    "Mark as not important",
+                    Box::new(ToggleImportant),
+                    theme,
+                )
+            } else {
+                icon_button(
+                    "important",
+                    Icon::Important,
+                    "Mark as important",
+                    Box::new(ToggleImportant),
+                    theme,
+                )
+            })
             .child(more_button(theme).on_click(cx.listener(
                 |this, event: &gpui::ClickEvent, window, cx| {
                     this.show_thread_menu(event.position(), false, window, cx)

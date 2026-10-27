@@ -24,12 +24,77 @@ pub struct Account {
     pub aliases: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Label {
     pub id: String,
+    /// The whole name; `/` nests it under the label named before it
+    /// (FOL-9).
     pub name: String,
     #[serde(deserialize_with = "hex_color")]
     pub color: Hsla,
+    /// W4b (FOL-10): Gmail's `labelListVisibility`, for the sidebar.
+    #[serde(default)]
+    pub list_visibility: ListVisibility,
+    /// Gmail's `messageListVisibility`: whether rows show it.
+    #[serde(default = "yes")]
+    pub in_message_list: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Label {
+    pub fn new(id: impl Into<String>, name: impl Into<String>, color: Hsla) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            color,
+            list_visibility: ListVisibility::Show,
+            in_message_list: true,
+        }
+    }
+}
+
+/// Where the sidebar lists a label: Gmail's `labelListVisibility`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ListVisibility {
+    #[default]
+    Show,
+    ShowIfUnread,
+    Hide,
+}
+
+impl ListVisibility {
+    pub const ALL: [ListVisibility; 3] = [
+        ListVisibility::Show,
+        ListVisibility::ShowIfUnread,
+        ListVisibility::Hide,
+    ];
+
+    pub fn gmail(self) -> &'static str {
+        match self {
+            ListVisibility::Show => "labelShow",
+            ListVisibility::ShowIfUnread => "labelShowIfUnread",
+            ListVisibility::Hide => "labelHide",
+        }
+    }
+
+    pub fn from_gmail(value: Option<&str>) -> Self {
+        match value {
+            Some("labelShowIfUnread") => ListVisibility::ShowIfUnread,
+            Some("labelHide") => ListVisibility::Hide,
+            _ => ListVisibility::Show,
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            ListVisibility::Show => "Show",
+            ListVisibility::ShowIfUnread => "Show if unread",
+            ListVisibility::Hide => "Hide",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,6 +168,9 @@ pub struct Thread {
     pub labels: Vec<String>,
     pub starred: bool,
     pub unread: bool,
+    /// W4b (FOL-12): Gmail's IMPORTANT label.
+    #[serde(default)]
+    pub important: bool,
     /// Oldest first.
     pub messages: Vec<Message>,
     /// Every Gmail label on the thread as last stored, system ones too (the
@@ -529,6 +597,7 @@ impl Thread {
             labels: Vec::new(),
             starred: false,
             unread: false,
+            important: false,
             messages,
             label_ids: Vec::new(),
             history_id: None,

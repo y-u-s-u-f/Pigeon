@@ -182,7 +182,7 @@ The user's own plans, not driven by Google's APIs.
 | FOL-8 | Empty Trash and permanent delete | ⚪ Not done | `threads.delete`, `messages.delete`, `messages.batchDelete` |
 | FOL-9 | Nested labels | ⚪ Not done | Label names with `/` |
 | FOL-10 | Label visibility | ⚪ Not done | Label `labelListVisibility`, `messageListVisibility` |
-| FOL-11 | Inbox categories | 🟡 Partially done | Backend done (sprint 2 W4a): per-message categories, unread counts, `category:` view queries. Views pending (W4b) |
+| FOL-11 | Inbox categories | 🟡 Partially done | Backend (W4a) and views (W4b): the Inbox shows Primary; Social, Promotions, Updates, Forums under it. Tester pass pending |
 | FOL-12 | Important marker | ⚪ Not done | `IMPORTANT` label |
 
 #### FOL-1 System folders and go-to shortcuts
@@ -217,9 +217,9 @@ The user's own plans, not driven by Google's APIs.
 
 #### FOL-6 Create, rename, recolour and delete labels
 
-- **Today:** Not built; labels are read once from JSON.
-- **Needs:** `labels.create`, `labels.patch` / `update`, `labels.delete` (IMAP: `CREATE`, `RENAME`, `DELETE`).
-- **Notes:** Gmail only accepts colours from a fixed palette. Deleting a label removes it from every message. New labels add palette entries (PAL-3).
+- **Today (sprint 2 W4b):** ⌘K "New Label…" (`L N`, also the sidebar's "+"), "Rename Label…" (`L R`), "Change Label Color…" (`L C`), "Delete Label…" (`L D`), also from a label's right-click menu in the sidebar. They act on the open label, else ask which one. The palette turns into a name field for new and renamed labels. Colours: nine curated pairs (`backend::labels::COLORS`), background and text both from Gmail's allowed palette (tested). Rename also renames every child (`Work/…`): names are checked for collisions first (`plan_rename`), the parent goes first; if a child fails, labels are read again (`labels.list`) and the toast names the ones not renamed. Delete asks first, offering "with its N sublabels" or "only this one", and never touches mail (Gmail takes the label off; the store does the same). The sidebar changes at once; on failure the labels reload from the store, which only changes once Gmail answered. Demo mode changes the in-memory store. `src/backend/labels.rs`, `src/app/labels.rs`.
+- **Needs:** A tester pass on the real account (labels named `Pigeon Test …`). IMAP: `CREATE`, `RENAME`, `DELETE`.
+- **Notes:** Label changes go to Gmail at once (`labels.create`, `labels.patch`, `labels.delete`, at the user's priority) rather than through the outbox: a new label needs Gmail's id first and a rename goes parent, then children. Offline they're refused with "Label changes need a connection" and nothing changes. Needs `gmail.modify`. New labels add palette entries (PAL-3).
 
 #### FOL-7 Report spam and not spam
 
@@ -235,21 +235,25 @@ The user's own plans, not driven by Google's APIs.
 
 #### FOL-9 Nested labels
 
-- **Needs:** Gmail nests labels by name (`Work/Clients`). Show them as a tree in the sidebar and the label palette.
+- **Today (sprint 2 W4b):** Labels nest by name (`Work/Clients` under `Work`, when `Work` exists; otherwise the whole name shows at the top), sorted by name at each level (`labels::label_tree`). The sidebar indents children and folds a parent with its chevron, the context menu, or ⌘K "Fold / Unfold Sublabels" (`L F`). The `l` picker lists the tree indented; a folded parent's children show once you type. Folded labels are kept with the settings (`collapsed_labels`), demo mode too.
+- **Needs:** A tester pass.
 
 #### FOL-10 Label visibility
 
-- **Needs:** Respect `labelListVisibility` (`labelShow`, `labelShowIfUnread`, `labelHide`) in the sidebar and `messageListVisibility` on rows; allow changing them via `labels.patch`.
+- **Today (sprint 2 W4b):** The sidebar follows `labelListVisibility`: "show if unread" labels show while they have unread mail, hidden ones (and their children) don't, except the open one; a "N hidden" row (`L H`) lists them too. Rows show label dots only for labels whose `messageListVisibility` is "show"; the reader shows all. Change both from a label's right-click menu ("In Label List", "In Conversation List") or ⌘K "Label Visibility…" (`L V`), through `labels.patch`. Stored in the `labels` table (schema block 150); hidden labels are now loaded too, so the label picker and `label:` search see them.
+- **Needs:** A tester pass.
 
 #### FOL-11 Inbox categories
 
 - **Needs:** Gmail's category labels (`CATEGORY_PERSONAL`, `CATEGORY_SOCIAL`, `CATEGORY_PROMOTIONS`, `CATEGORY_UPDATES`, `CATEGORY_FORUMS`) as Inbox tabs or filters, and the `category:` search operator (SRC-9).
 - **Built (backend, sprint 2 W4a):** `src/backend/categories.rs`. A message is Primary unless it carries `CATEGORY_SOCIAL`, `_PROMOTIONS`, `_UPDATES` or `_FORUMS` (`category_of`); a thread is in a category when any of its Inbox messages is (`in_category`). Unread Inbox threads per category (`Backend::category_counts`, `CountsChanged`) come from `threads.list labelIds=INBOX,UNREAD q=category:<x>` with ids only, up to 500 ("500+"): at launch and after a sync whose history touched the Inbox, 50 quota units per refresh; kept in `sync_state` so launch shows the last ones at once. Demo mode counts the store (some demo senders get categories in code). `ViewKey::Category` asks Gmail for `in:inbox category:<x>` for "Load older", and the full sync also lists Primary's first page that way.
-- **Still to do (W4b):** the Inbox shows Primary; Social, Promotions, Updates and Forums as views under Inbox with the counts, `g` chords and ⌘K entries.
+- **Views (sprint 2 W4b):** The Inbox shows Primary (`app::nav_holds`), its count and the rail's are Primary's unread (the Dock badge's number, moved at once by reads here until the next count). Social (`g o`), Promotions (`g p`), Updates (`g u`) and Forums (`g f`) are views under Inbox in the sidebar with their unread counts, and in ⌘K ("Go to …"); a category with no Inbox threads and no unread is left out. Their "Load older" pages ask `in:inbox category:<x>`, the Inbox's `category:primary`. Searching the Inbox, and `in:inbox`, still covers every category, as Gmail does.
+- **Needs:** A tester pass on the real account.
 
 #### FOL-12 Important marker
 
-- **Needs:** Show and toggle the `IMPORTANT` label (`threads.modify`); `is:important` in search (SRC-9).
+- **Today (sprint 2 W4b):** `Thread::important` comes from the `IMPORTANT` label. Rows show an amber marker; the reader's toolbar has a toggle. "Mark as Important / Not Important" in ⌘K, the thread menu and `=` (or `+`, as in Gmail) adds or takes off `IMPORTANT` with `threads.modify` through the outbox, at once like a star. `is:important` searches Gmail (SRC-9).
+- **Needs:** A tester pass.
 
 ### 5.2 Thread list (LST)
 
@@ -655,7 +659,8 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 #### SRC-9 More Gmail operators
 
-- **Needs:** Parse and suggest more of Gmail's operators: `after:`/`before:`, `older_than:`/`newer_than:`, `larger:`/`smaller:`, `filename:`, `cc:`/`bcc:`, `list:`, `category:` (FOL-11), `is:important` (FOL-12), `has:drive`, `-` negation, `OR` and grouping. With server search most of these can pass through `q` untouched.
+- **Today (sprint 2 W4b):** A query with `after:`/`before:`, `older_than:`/`newer_than:`, `larger:`/`smaller:`, `filename:`, `cc:`/`bcc:`, `list:`, `category:`, `is:important`, a `-` negation, `OR`, or parentheses/braces goes to Gmail as typed (`Query::gmail_only`); an `in:` folder still sets the scope, and a view's own terms follow the query in parentheses. Its results are Gmail's only, without local matches (they'd be false ones). Each operator shows as a chip ("not from:bob", "OR", "( … )"). Offline, or in demo mode, it says such searches need a connection. The suggestions offer `after:`, `older_than:`, `larger:`, `is:important`, `category:`.
+- **Needs:** A tester pass. `has:drive` and other operators pass through only alongside one of the above; alone they're matched locally as text.
 
 ### 5.9 Contacts (CON)
 

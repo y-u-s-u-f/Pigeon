@@ -46,6 +46,7 @@ icons! {
     Forward => "forward",
     Help => "help",
     Image => "image",
+    Important => "important",
     Inbox => "inbox",
     Italic => "italic",
     Keyboard => "keyboard",

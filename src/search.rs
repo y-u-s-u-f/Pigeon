@@ -44,11 +44,88 @@ pub struct Query {
     terms: Vec<Term>,
     /// Set by `in:`; otherwise the current view is searched.
     pub scope: Option<Scope>,
+    /// W4b (SRC-9): the query as Gmail takes it, when it has operators only
+    /// Gmail can match (`gmail_only`): as typed, without the `in:` that
+    /// set `scope`.
+    gmail_q: Option<String>,
+    /// Their chips.
+    gmail_chips: Vec<String>,
+}
+
+/// Operators only Gmail can match (SRC-9); `is:important` too.
+const GMAIL_KEYS: [&str; 11] = [
+    "after",
+    "before",
+    "older_than",
+    "newer_than",
+    "larger",
+    "smaller",
+    "filename",
+    "cc",
+    "bcc",
+    "list",
+    "category",
+];
+
+/// A token only Gmail understands: one of `GMAIL_KEYS`, `is:important`,
+/// a `-` negation, `OR`, or grouping with parentheses or braces.
+fn gmail_only(token: &str) -> bool {
+    if token == "OR" || token.contains(['(', ')', '{', '}']) {
+        return true;
+    }
+    if token.len() > 1 && token.starts_with('-') {
+        return true;
+    }
+    match token.split_once(':') {
+        Some((key, value)) if !value.is_empty() => {
+            let key = key.to_lowercase();
+            GMAIL_KEYS.contains(&key.as_str())
+                || (key == "is" && value.eq_ignore_ascii_case("important"))
+        }
+        _ => false,
+    }
+}
+
+/// How a Gmail-only token reads as a chip: "not from:bob", "OR".
+fn gmail_chip(token: &str) -> Option<String> {
+    let bare = token.trim_matches(['(', ')', '{', '}']);
+    if bare.is_empty() {
+        return None;
+    }
+    Some(match bare.strip_prefix('-') {
+        Some(rest) if !rest.is_empty() => format!("not {rest}"),
+        _ => bare.to_string(),
+    })
 }
 
 impl Query {
     pub fn parse(input: &str) -> Self {
         let mut query = Query::default();
+        let raw = tokenize_raw(input);
+        if raw.iter().any(|t| gmail_only(t)) {
+            let operator = |t: &str| {
+                gmail_only(t)
+                    || (!sets_scope(t)
+                        && t.split_once(':')
+                            .is_some_and(|(k, v)| !k.is_empty() && !v.is_empty()))
+            };
+            let mut chips: Vec<String> = raw
+                .iter()
+                .filter(|t| operator(t))
+                .filter_map(|t| gmail_chip(t))
+                .collect();
+            if raw.iter().any(|t| t.contains(['(', ')', '{', '}'])) {
+                chips.push("( … )".into());
+            }
+            query.gmail_chips = chips;
+            query.gmail_q = Some(
+                raw.iter()
+                    .filter(|t| !sets_scope(t))
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        }
         for token in tokenize(input) {
             let (key, value) = match token.split_once(':') {
                 // An operator still waiting for its value, as it's typed.
@@ -102,10 +179,9 @@ impl Query {
     /// The operators the query recognized, as they read: "from: sarah",
     /// "is:unread", "in: Archive". Free text is left out.
     pub fn operators(&self) -> Vec<String> {
-        let mut out: Vec<String> = self
-            .terms
-            .iter()
-            .filter_map(|term| match term {
+        let mut out: Vec<String> = self.gmail_chips.clone();
+        out.extend(self.terms.iter().filter(|_| !self.gmail_only()).filter_map(
+            |term| match term {
                 Term::Text(_) => None,
                 Term::From(v) => Some(format!("from: {v}")),
                 Term::To(v) => Some(format!("to: {v}")),
@@ -114,8 +190,8 @@ impl Query {
                 Term::Unread => Some("is:unread".into()),
                 Term::Starred => Some("is:starred".into()),
                 Term::Attachment => Some("has:attachment".into()),
-            })
-            .collect();
+            },
+        ));
         if let Some(scope) = self.scope {
             out.push(match scope {
                 Scope::Folder(folder) => format!("in: {}", folder.title()),
@@ -128,6 +204,11 @@ impl Query {
 
     pub fn is_empty(&self) -> bool {
         self.terms.is_empty() && self.scope.is_none()
+    }
+
+    /// W4b (SRC-9): only Gmail can answer it, so only Gmail's results show.
+    pub fn gmail_only(&self) -> bool {
+        self.gmail_q.is_some()
     }
 
     /// The thread is where `scope` looks, the way Gmail's half of the search
@@ -163,6 +244,14 @@ impl Query {
             (Some(Scope::Folder(folder)), _) => GmailQuery::folder(folder)?,
             (None, Some(view)) => GmailQuery::view(view)?,
         };
+        // SRC-9: as typed, grouped so the view's own terms apply to all of it.
+        if let Some(q) = &self.gmail_q {
+            out.q = match out.q.as_str() {
+                "" => q.clone(),
+                scope => format!("({q}) {scope}"),
+            };
+            return Some(out);
+        }
         let mut parts: Vec<String> = self
             .terms
             .iter()
@@ -410,6 +499,52 @@ impl ServerSearch {
     }
 }
 
+/// An `in:` that `parse` takes as the scope: a folder, `all` or
+/// `anywhere`. `in:<label>` stays in the query.
+fn sets_scope(token: &str) -> bool {
+    token.split_once(':').is_some_and(|(key, value)| {
+        key.eq_ignore_ascii_case("in")
+            && matches!(
+                value.to_lowercase().as_str(),
+                "inbox"
+                    | "archive"
+                    | "archived"
+                    | "sent"
+                    | "drafts"
+                    | "draft"
+                    | "spam"
+                    | "trash"
+                    | "all"
+                    | "anywhere"
+            )
+    })
+}
+
+/// Splits on whitespace like `tokenize`, keeping the quotes, for Gmail.
+fn tokenize_raw(input: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    for c in input.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                current.push(c);
+            }
+            c if c.is_whitespace() && !quoted => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            c => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
 /// Splits on whitespace, keeping "quoted phrases" (also after `key:`) whole.
 fn tokenize(input: &str) -> Vec<String> {
     let mut tokens = Vec::new();
@@ -461,11 +596,141 @@ mod tests {
     }
 
     fn label(id: &str, name: &str) -> Label {
-        Label {
-            id: id.into(),
-            name: name.into(),
-            color: gpui::black(),
+        Label::new(id, name, gpui::black())
+    }
+
+    #[test]
+    fn gmail_only_operators_are_detected() {
+        for input in [
+            "after:2026/01/01",
+            "before:2026/01/01 budget",
+            "older_than:1y",
+            "newer_than:2d",
+            "larger:5M",
+            "smaller:100K",
+            "filename:pdf",
+            "cc:ana",
+            "bcc:ana",
+            "list:rust",
+            "category:promotions",
+            "is:important",
+            "-from:bob",
+            "-meeting",
+            "a OR b",
+            "(a b)",
+            "{a b}",
+        ] {
+            assert!(Query::parse(input).gmail_only(), "{input}");
         }
+        for input in [
+            "budget",
+            "from:bob",
+            "is:unread",
+            "e-mail",
+            "or",
+            "a - b",
+            "after:",
+        ] {
+            assert!(!Query::parse(input).gmail_only(), "{input}");
+        }
+        assert_eq!(
+            Query::parse("(from:ana OR from:bo) -is:unread larger:5M").operators(),
+            [
+                "from:ana",
+                "OR",
+                "from:bo",
+                "not is:unread",
+                "larger:5M",
+                "( … )"
+            ]
+        );
+    }
+
+    #[test]
+    fn gmail_only_queries_pass_through_with_the_view_scope() {
+        let labels = [label("Label_2", "Work")];
+        let q = |input: &str, view: Option<&ViewKey>| {
+            Query::parse(input).to_gmail_q(&labels, view).unwrap()
+        };
+        let just = |text: &str| GmailQuery {
+            q: text.into(),
+            ..Default::default()
+        };
+        let typed = r#"(from:ana OR from:"Bo Li") -is:unread"#;
+        // As typed, quotes and case kept.
+        assert_eq!(q(typed, None), just(typed));
+        // The Inbox's search looks everywhere, as before.
+        assert_eq!(q(typed, Some(&ViewKey::Folder(Folder::Inbox))), just(typed));
+        // A label view: by label id, the query untouched.
+        assert_eq!(
+            q(typed, Some(&ViewKey::Label("Label_2".into()))),
+            GmailQuery {
+                q: typed.into(),
+                label: Some("Label_2".into()),
+                include_spam_trash: false,
+            }
+        );
+        // A view with its own terms: the typed query grouped before them.
+        assert_eq!(
+            q("a OR b", Some(&ViewKey::Folder(Folder::Archive))),
+            just("(a OR b) -in:inbox -in:spam -in:trash -in:drafts")
+        );
+        assert_eq!(
+            q(
+                "-from:shop",
+                Some(&ViewKey::Category(
+                    crate::backend::categories::Category::Promotions
+                ))
+            ),
+            just("(-from:shop) in:inbox category:promotions")
+        );
+        // `in:` sets the scope and leaves the query; `in:<label>` stays.
+        assert_eq!(
+            q("after:2026/01/01 in:sent", Some(&ViewKey::Starred)),
+            GmailQuery {
+                q: "after:2026/01/01".into(),
+                label: Some("SENT".into()),
+                include_spam_trash: false,
+            }
+        );
+        assert_eq!(
+            q("in:inbox category:social", None),
+            GmailQuery {
+                q: "category:social".into(),
+                label: Some("INBOX".into()),
+                include_spam_trash: false,
+            }
+        );
+        assert_eq!(q("in:work -x", None), just("in:work -x"));
+    }
+
+    #[test]
+    fn gmail_only_results_skip_local_matches() {
+        let thread = |id: &str| {
+            Thread::local(
+                id.into(),
+                id.into(),
+                Folder::Inbox,
+                vec![crate::data::Message::new(Default::default())],
+                None,
+            )
+        };
+        let threads = [thread("a"), thread("b")];
+        let query = Query::parse("a OR b");
+        let mut search = ServerSearch::default();
+        let s = search.ask(Some(just_q("a OR b"))).unwrap();
+        // Nothing yet: local matches would be false ones.
+        let rows = |search: &ServerSearch| {
+            search.merge(&threads, |_| true, |t| !query.gmail_only() && t.id == "a")
+        };
+        assert!(rows(&search).is_empty());
+        assert!(search.answer(s, found(&["b"], 1, None)));
+        assert_eq!(rows(&search), [1]);
+        // Offline: said so; nothing local stands in.
+        let s = search.ask(Some(just_q("x OR y"))).unwrap();
+        assert!(search.answer(s, Err(GmailError::Network("down".into()))));
+        assert_eq!(search.state, ServerState::Offline);
+        assert!(rows(&search).is_empty());
     }
 
     #[test]

@@ -19,7 +19,12 @@ use nucleo_matcher::{
 use super::{binding_caps, icon, keycap, overlay_shadow};
 use crate::ui::style::*;
 use crate::{
-    actions::PALETTE, app::Nav, assets::Icon, calendar::quick_add, data::Folder, theme::Theme,
+    actions::PALETTE,
+    app::{LabelCommand, Nav},
+    assets::Icon,
+    calendar::quick_add,
+    data::Folder,
+    theme::Theme,
 };
 
 actions!(command_palette, [SelectNext, SelectPrev, Confirm, Dismiss]);
@@ -48,11 +53,15 @@ pub enum PaletteCommand {
     MoveTo(Folder),
     /// Add or remove a label, by index, on the selected threads (`l`).
     ToggleLabel(usize),
+    /// W4b: managing a label (FOL-6, FOL-10).
+    Label(LabelCommand),
 }
 
 pub enum Leading {
     Icon(Icon),
     Dot(Hsla),
+    /// W4b: a label's dot, indented by its depth in the tree (FOL-9).
+    Nested(Hsla, usize),
 }
 
 pub struct PaletteItem {
@@ -84,6 +93,8 @@ pub enum PaletteEvent {
     Dismiss,
     // W5: "New event: Lunch with Sam Fri 1pm", the text after the colon.
     QuickAdd(String),
+    /// W4b: the text typed into a prompt (`CommandPalette::prompt`).
+    Text(String),
 }
 
 pub struct CommandPalette {
@@ -100,6 +111,8 @@ pub struct CommandPalette {
     offers_quick_add: bool,
     /// The quick add row for the query: the text, its title and when.
     quick: Option<(String, SharedString, SharedString)>,
+    /// W4b: a prompt for a name: what Enter does with it, and a hint.
+    prompt: Option<(SharedString, SharedString)>,
     _input_events: Subscription,
 }
 
@@ -160,8 +173,32 @@ impl CommandPalette {
             empty_text,
             offers_quick_add,
             quick: None,
+            prompt: None,
             _input_events: input_events,
         };
+        this.update_matches(cx);
+        this
+    }
+
+    /// W4b: a field for a name rather than a list: Enter sends the text
+    /// (`PaletteEvent::Text`), shown as "`verb` “text”" with `hint`.
+    pub fn prompt(
+        initial: &str,
+        placeholder: SharedString,
+        verb: SharedString,
+        hint: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut this = Self::new(
+            Vec::new(),
+            initial,
+            placeholder,
+            "Type a name".into(),
+            window,
+            cx,
+        );
+        this.prompt = Some((verb, hint));
         this.update_matches(cx);
         this
     }
@@ -194,6 +231,16 @@ impl CommandPalette {
                     event.when_label(today).into(),
                 )
             });
+        if let Some((verb, hint)) = &self.prompt {
+            let text = query.trim();
+            self.quick = (!text.is_empty()).then(|| {
+                (
+                    text.to_string(),
+                    format!("{verb} “{text}”").into(),
+                    hint.clone(),
+                )
+            });
+        }
         if self.quick.is_some() {
             self.matches.push(Match {
                 entry: QUICK,
@@ -279,7 +326,11 @@ impl CommandPalette {
         if let Some(m) = self.matches.get(ix) {
             if m.entry == QUICK {
                 if let Some((text, _, _)) = &self.quick {
-                    cx.emit(PaletteEvent::QuickAdd(text.clone()));
+                    cx.emit(if self.prompt.is_some() {
+                        PaletteEvent::Text(text.clone())
+                    } else {
+                        PaletteEvent::QuickAdd(text.clone())
+                    });
                 }
                 return;
             }
@@ -340,6 +391,15 @@ impl CommandPalette {
                         )
                         .into_any_element(),
                         Leading::Dot(color) => div()
+                            .size(px(16.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(div().size(px(8.)).rounded_full().bg(color))
+                            .into_any_element(),
+                        Leading::Nested(color, depth) => div()
+                            .ml(SPACE_LG * depth as f32)
                             .size(px(16.))
                             .flex_none()
                             .flex()

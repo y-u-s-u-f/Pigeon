@@ -25,15 +25,20 @@ impl Store {
                 "user"
             };
             tx.execute(
-                "INSERT INTO labels (account, id, name, type, bg) VALUES (?1, ?2, ?3, ?4, ?5)
+                "INSERT INTO labels (account, id, name, type, bg, list_visibility, message_visibility)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT (account, id) DO UPDATE SET
-                    name = excluded.name, type = excluded.type, bg = excluded.bg",
+                    name = excluded.name, type = excluded.type, bg = excluded.bg,
+                    list_visibility = excluded.list_visibility,
+                    message_visibility = excluded.message_visibility",
                 params![
                     account,
                     label.id,
                     label.name,
                     kind,
-                    crate::data::to_hex(label.color)
+                    crate::data::to_hex(label.color),
+                    label.list_visibility.gmail(),
+                    message_visibility(label.in_message_list),
                 ],
             )?;
         }
@@ -41,23 +46,57 @@ impl Store {
         Ok(())
     }
 
-    /// The user's labels, by name.
+    /// The user's labels, hidden ones too (FOL-10), in the order stored.
     pub fn load_labels(&self, account: &str) -> anyhow::Result<Vec<Label>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, name, bg FROM labels WHERE account = ?1 AND type = 'user' ORDER BY rowid",
+            "SELECT id, name, bg, list_visibility, message_visibility FROM labels
+             WHERE account = ?1 AND type IN ('user', 'hidden') ORDER BY rowid",
         )?;
         let rows = stmt.query_map([account], |r| {
+            let color = r
+                .get::<_, Option<String>>(2)?
+                .and_then(|hex| crate::data::from_hex(&hex))
+                .unwrap_or(gpui::hsla(0.6, 0.1, 0.5, 1.));
             Ok(Label {
-                id: r.get(0)?,
-                name: r.get(1)?,
-                color: r
-                    .get::<_, Option<String>>(2)?
-                    .and_then(|hex| crate::data::from_hex(&hex))
-                    .unwrap_or(gpui::hsla(0.6, 0.1, 0.5, 1.)),
+                list_visibility: crate::data::ListVisibility::from_gmail(
+                    r.get::<_, Option<String>>(3)?.as_deref(),
+                ),
+                in_message_list: r.get::<_, Option<String>>(4)?.as_deref() != Some("hide"),
+                ..Label::new(r.get::<_, String>(0)?, r.get::<_, String>(1)?, color)
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// W4b: one label as Gmail answered a create or a change.
+    pub fn put_gmail_label(&self, account: &str, label: &gmail::GLabel) -> anyhow::Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        upsert_gmail_label(&tx, account, label)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// W4b: a label gone, and gone from the threads that had it, as Gmail
+    /// does when it deletes one: those threads, by id. The mail stays.
+    pub fn delete_label(&self, account: &str, id: &str) -> anyhow::Result<Vec<String>> {
+        self.conn().execute(
+            "DELETE FROM labels WHERE account = ?1 AND id = ?2",
+            params![account, id],
+        )?;
+        let ids: Vec<String> = {
+            let conn = self.conn();
+            let mut stmt = conn.prepare(
+                "SELECT id FROM threads WHERE account = ?1 AND instr(label_ids, ?2) > 0",
+            )?;
+            stmt.query_map(params![account, json(&id)], |r| r.get(0))?
+                .collect::<Result<_, _>>()?
+        };
+        if !ids.is_empty() {
+            self.modify(account, &ids, &[], &[id.to_string()])?;
+        }
+        Ok(ids)
     }
 
     /// Store threads whole (their messages, bodies and draft), replacing
@@ -205,6 +244,7 @@ impl Store {
                 folder: Folder::from_key(&r.get::<_, String>(3)?).unwrap_or(Folder::Archive),
                 unread: r.get(4)?,
                 starred: r.get(5)?,
+                important: label_ids.iter().any(|l| l == gmail::IMPORTANT),
                 labels: label_ids
                     .iter()
                     .filter(|l| !gmail::is_system_label(l))
@@ -338,31 +378,7 @@ impl Store {
             )?;
         }
         for label in labels {
-            let kind = if gmail::shows_label(label) {
-                "user"
-            } else if label.kind == "user" {
-                "hidden"
-            } else {
-                "system"
-            };
-            let model = gmail::label_from_gmail(label);
-            tx.execute(
-                "INSERT INTO labels (account, id, name, type, bg, threads_unread, threads_total)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT (account, id) DO UPDATE SET
-                    name = excluded.name, type = excluded.type, bg = excluded.bg,
-                    threads_unread = COALESCE(excluded.threads_unread, threads_unread),
-                    threads_total = COALESCE(excluded.threads_total, threads_total)",
-                params![
-                    account,
-                    label.id,
-                    label.name,
-                    kind,
-                    crate::data::to_hex(model.color),
-                    label.threads_unread.map(|n| n as i64),
-                    label.threads_total.map(|n| n as i64),
-                ],
-            )?;
+            upsert_gmail_label(&tx, account, label)?;
         }
         tx.commit()?;
         Ok(())
@@ -496,6 +512,50 @@ impl Store {
     }
 }
 
+/// Gmail's `messageListVisibility`.
+fn message_visibility(shown: bool) -> &'static str {
+    if shown { "show" } else { "hide" }
+}
+
+/// A label as Gmail lists it, with its counts when it has them: user
+/// labels (hidden ones too, FOL-10) for the sidebar, the rest for their
+/// counts.
+fn upsert_gmail_label(
+    tx: &Transaction,
+    account: &str,
+    label: &gmail::GLabel,
+) -> anyhow::Result<()> {
+    let kind = if label.kind == "user" {
+        "user"
+    } else {
+        "system"
+    };
+    let model = gmail::label_from_gmail(label);
+    tx.execute(
+        "INSERT INTO labels (account, id, name, type, bg, threads_unread, threads_total,
+            list_visibility, message_visibility)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT (account, id) DO UPDATE SET
+            name = excluded.name, type = excluded.type, bg = excluded.bg,
+            threads_unread = COALESCE(excluded.threads_unread, threads_unread),
+            threads_total = COALESCE(excluded.threads_total, threads_total),
+            list_visibility = excluded.list_visibility,
+            message_visibility = excluded.message_visibility",
+        params![
+            account,
+            label.id,
+            label.name,
+            kind,
+            crate::data::to_hex(model.color),
+            label.threads_unread.map(|n| n as i64),
+            label.threads_total.map(|n| n as i64),
+            model.list_visibility.gmail(),
+            message_visibility(model.in_message_list),
+        ],
+    )?;
+    Ok(())
+}
+
 /// Add and remove labels on every message of the thread, like
 /// `threads.modify`, and derive its flags, labels and folder again.
 pub fn modify_thread(thread: &mut Thread, add: &[String], remove: &[String], me: &Account) {
@@ -521,6 +581,7 @@ pub fn modify_thread(thread: &mut Thread, add: &[String], remove: &[String], me:
     let has = |label: &str| thread.label_ids.iter().any(|l| l == label);
     thread.unread = has(gmail::UNREAD);
     thread.starred = has(gmail::STARRED);
+    thread.important = has(gmail::IMPORTANT);
     if moves && thread.folder != Folder::Drafts {
         thread.folder = gmail::derive_folder(&thread.messages, me);
     }

@@ -196,3 +196,9 @@ CREATE TABLE fired_reminders (
     fired_at INTEGER NOT NULL,           -- ms
     PRIMARY KEY (account, calendar_id, event_id, instance_start, offset_minutes)
 );
+
+-- migration: 150
+-- Sprint 2 W4b (FOL-10): each user label's labelListVisibility and
+-- messageListVisibility, as Gmail spells them. NULL: shown.
+ALTER TABLE labels ADD COLUMN list_visibility TEXT;
+ALTER TABLE labels ADD COLUMN message_visibility TEXT;

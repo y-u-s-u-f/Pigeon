@@ -13,7 +13,7 @@ use super::{Mode, Nav, PigeonApp, Row, UndoAction};
 use crate::{
     actions::*,
     assets::Icon,
-    backend::{MailOp, Older, OpId, ViewKey, gmail},
+    backend::{MailOp, Older, OpId, ViewKey, categories::Category, gmail},
     data::{Folder, InviteMethod, Thread},
     search::{GmailQuery, NextSuggestion, PrevSuggestion, ServerState},
     ui::command_palette::{Leading, PaletteCommand, PaletteItem},
@@ -43,7 +43,7 @@ pub enum SearchSuggestion {
     },
 }
 
-const OPERATORS: [(&str, &str); 8] = [
+const OPERATORS: [(&str, &str); 13] = [
     ("from:", "Sender"),
     ("to:", "Recipient"),
     ("subject:", "Words in the subject"),
@@ -52,6 +52,12 @@ const OPERATORS: [(&str, &str); 8] = [
     ("is:starred", "Starred"),
     ("has:attachment", "Has attachments"),
     ("in:all", "Every folder but Spam and Trash"),
+    // W4b (SRC-9): Gmail answers these.
+    ("after:", "Sent after a date, like 2026/01/31"),
+    ("older_than:", "Older than 2d, 3m or 1y"),
+    ("larger:", "Bigger than a size, like 5M"),
+    ("is:important", "Marked important"),
+    ("category:", "An Inbox category, like promotions"),
 ];
 
 const RECENT_SEARCHES: usize = 5;
@@ -120,13 +126,10 @@ impl PigeonApp {
         self.reveal_selected();
     }
 
-    /// Unread threads in the Inbox, for the rail.
+    /// Unread threads in the Inbox, for the rail: Primary's, the number
+    /// the sidebar and the Dock show (FOL-11).
     pub fn inbox_unread(&self) -> usize {
-        self.data
-            .threads
-            .iter()
-            .filter(|t| t.folder == Folder::Inbox && t.unread)
-            .count()
+        self.view_unread(Nav::Folder(Folder::Inbox))
     }
 
     /// Scroll the selected thread's row into view. A row the list hasn't
@@ -554,7 +557,7 @@ impl PigeonApp {
     }
 
     /// Add and remove labels on threads (by index), at once.
-    fn queue_labels(
+    pub(super) fn queue_labels(
         &mut self,
         targets: &[usize],
         add: Vec<String>,
@@ -726,25 +729,8 @@ impl PigeonApp {
         if targets.is_empty() {
             return;
         }
-        let items = self
-            .data
-            .labels
-            .iter()
-            .enumerate()
-            .map(|(ix, label)| {
-                let on = targets
-                    .iter()
-                    .all(|&t| self.data.threads[t].labels.contains(&label.id));
-                PaletteItem {
-                    command: PaletteCommand::ToggleLabel(ix),
-                    title: label.name.clone().into(),
-                    subtitle: on.then(|| "Applied · ↵ removes it".into()),
-                    leading: Leading::Dot(label.color),
-                    binding: None,
-                    search_only: false,
-                }
-            })
-            .collect();
+        // W4b: as a tree (FOL-9).
+        let items = self.label_picker_items(&targets);
         self.show_palette(
             items,
             "",
@@ -809,6 +795,16 @@ impl PigeonApp {
         } else {
             menu.menu("Mark as Unread", Box::new(MarkUnread))
         };
+        // W4b (FOL-12).
+        let important = targets.iter().all(|&ix| self.data.threads[ix].important);
+        menu = menu.menu(
+            if important {
+                "Mark as Not Important"
+            } else {
+                "Mark as Important"
+            },
+            Box::new(ToggleImportant),
+        );
         if !draft {
             let mut folders = NativeMenu::new();
             for folder in Folder::ALL {
@@ -887,6 +883,7 @@ impl PigeonApp {
             When::Searching => mail && self.search_open,
             When::Selection => mail && !self.checked.is_empty(),
             When::Inbox => mail && self.nav == Nav::Folder(Folder::Inbox),
+            When::Labels => mail && !self.data.labels.is_empty(),
         }
     }
 
@@ -1062,6 +1059,9 @@ impl PigeonApp {
     /// The view the list shows, as the backend names it.
     pub(crate) fn view_key(&self) -> ViewKey {
         match self.nav {
+            // W4b: the Inbox shows Primary (FOL-11).
+            Nav::Folder(Folder::Inbox) => ViewKey::Category(Category::Primary),
+            Nav::Category(category) => ViewKey::Category(category),
             Nav::Folder(folder) => ViewKey::Folder(folder),
             Nav::Starred => ViewKey::Starred,
             Nav::Label(ix) => ViewKey::Label(self.data.labels[ix].id.clone()),
@@ -1072,7 +1072,12 @@ impl PigeonApp {
     /// settled for 300 ms (SRC-8). Local results show meanwhile; a newer
     /// query drops the answer to this one.
     pub(crate) fn search_gmail(&mut self, cx: &mut Context<Self>) {
-        let view = (!self.search_all).then(|| self.view_key());
+        // The Inbox's search covers all of it, every category and the
+        // archived threads (`refresh_rows`).
+        let view = (!self.search_all).then(|| match self.nav {
+            Nav::Folder(Folder::Inbox) => ViewKey::Folder(Folder::Inbox),
+            _ => self.view_key(),
+        });
         let query = (self.is_searching() && self.backend.read(cx).can_search())
             .then(|| {
                 self.search_query

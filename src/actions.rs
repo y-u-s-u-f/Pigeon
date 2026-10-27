@@ -148,8 +148,32 @@ actions!(
         // W7b: the menu bar.
         OpenMenuBarPanel,
         JoinNextMeeting,
+        // W4b: Inbox categories, labels and Important.
+        GoToSocial,
+        GoToPromotions,
+        GoToUpdates,
+        GoToForums,
+        ToggleImportant,
+        NewLabel,
+        RenameLabel,
+        ChangeLabelColor,
+        DeleteLabel,
+        ChangeLabelVisibility,
+        ToggleLabelFolded,
+        ToggleHiddenLabels,
     ]
 );
+
+/// W4b (FOL-10): where the sidebar lists the open label; from its context
+/// menu.
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(namespace = pigeon, no_json)]
+pub struct SetLabelListVisibility(pub crate::data::ListVisibility);
+
+/// W4b (FOL-10): whether rows show the open label.
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(namespace = pigeon, no_json)]
+pub struct SetLabelMessageVisibility(pub bool);
 
 /// W2: open one attachment of the selected conversation, by message and
 /// attachment index; from its chip and the picker.
@@ -473,6 +497,21 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-o", menu_bar::OpenPigeon, Some(MENU_BAR)),
         KeyBinding::new("escape", menu_bar::Close, Some(MENU_BAR)),
         KeyBinding::new("cmd-w", menu_bar::Close, Some(MENU_BAR)),
+        // W4b: the Inbox's other categories, Important (Gmail's `+` and
+        // `=`), and labels under `L`.
+        KeyBinding::new("g o", GoToSocial, Some(MAIL)),
+        KeyBinding::new("g p", GoToPromotions, Some(MAIL)),
+        KeyBinding::new("g u", GoToUpdates, Some(MAIL)),
+        KeyBinding::new("g f", GoToForums, Some(MAIL)),
+        KeyBinding::new("+", ToggleImportant, Some(MAIL)),
+        KeyBinding::new("=", ToggleImportant, Some(MAIL)),
+        KeyBinding::new("shift-l n", NewLabel, Some(MAIL)),
+        KeyBinding::new("shift-l r", RenameLabel, Some(MAIL)),
+        KeyBinding::new("shift-l c", ChangeLabelColor, Some(MAIL)),
+        KeyBinding::new("shift-l d", DeleteLabel, Some(MAIL)),
+        KeyBinding::new("shift-l v", ChangeLabelVisibility, Some(MAIL)),
+        KeyBinding::new("shift-l f", ToggleLabelFolded, Some(MAIL)),
+        KeyBinding::new("shift-l h", ToggleHiddenLabels, Some(MAIL)),
     ]);
 }
 
@@ -533,6 +572,8 @@ pub enum Group {
     CalendarNavigation,
     CalendarView,
     CalendarEvents,
+    /// W4b.
+    Labels,
 }
 
 impl Group {
@@ -548,6 +589,7 @@ impl Group {
             Group::CalendarNavigation => "Navigation",
             Group::CalendarView => "View",
             Group::CalendarEvents => "Events",
+            Group::Labels => "Labels",
         }
     }
 
@@ -599,6 +641,8 @@ pub enum When {
     Selection,
     /// The Inbox, with its archived section, is showing.
     Inbox,
+    /// W4b: the user has labels.
+    Labels,
 }
 
 macro_rules! commands {
@@ -728,4 +772,17 @@ pub const COMMANDS: &[Command] = commands! {
     // W7b: the menu bar.
     App: "Open Menu Bar Panel", Calendar, OpenMenuBarPanel;
     App: "Join Next Meeting", Video, JoinNextMeeting;
+    // W4b: Inbox categories, labels and Important.
+    GoTo: "Go to Social", Users, GoToSocial;
+    GoTo: "Go to Promotions", Tag, GoToPromotions;
+    GoTo: "Go to Updates", Bell, GoToUpdates;
+    GoTo: "Go to Forums", Layers, GoToForums;
+    Conversation: "Mark as Important / Not Important", Important, ToggleImportant if Thread;
+    Labels: "New Label…", Plus, NewLabel;
+    Labels: "Rename Label…", Tag, RenameLabel if Labels;
+    Labels: "Change Label Color…", Tag, ChangeLabelColor if Labels;
+    Labels: "Delete Label…", Trash, DeleteLabel if Labels;
+    Labels: "Label Visibility…", Tag, ChangeLabelVisibility if Labels;
+    Labels: "Fold / Unfold Sublabels", ChevronRight, ToggleLabelFolded if Labels;
+    Labels: "Show / Hide Hidden Labels", Tag, ToggleHiddenLabels if Labels;
 };

@@ -131,6 +131,9 @@ pub struct GLabel {
     pub kind: String,
     #[serde(default)]
     pub label_list_visibility: Option<String>,
+    /// W4b (FOL-10): "show" or "hide".
+    #[serde(default)]
+    pub message_list_visibility: Option<String>,
     #[serde(default)]
     pub threads_total: Option<u64>,
     #[serde(default)]
@@ -144,6 +147,8 @@ pub struct GLabel {
 pub struct LabelColor {
     #[serde(default)]
     pub background_color: Option<String>,
+    #[serde(default)]
+    pub text_color: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -782,6 +787,46 @@ pub fn thread_untrash_request(id: &str) -> Request {
 
 // end writes (W5)
 
+// labels (W4b, FOL-6): create, change and delete user labels.
+
+pub mod label_cost {
+    pub const CREATE: u32 = 5;
+    pub const PATCH: u32 = 5;
+    pub const DELETE: u32 = 5;
+}
+
+/// A new user label, shown in the label and message lists.
+pub fn label_create_request(name: &str) -> Request {
+    Request::json(
+        "POST",
+        format!("{API}/labels"),
+        &serde_json::json!({
+            "name": name,
+            "labelListVisibility": "labelShow",
+            "messageListVisibility": "show",
+        }),
+        label_cost::CREATE,
+    )
+}
+
+/// Some of a label's fields: its name, colour or visibility.
+pub fn label_patch_request(id: &str, fields: &serde_json::Value) -> Request {
+    Request::json(
+        "PATCH",
+        format!("{API}/labels/{}", enc(id)),
+        fields,
+        label_cost::PATCH,
+    )
+}
+
+/// The label goes; the mail it was on stays.
+pub fn label_delete_request(id: &str) -> Request {
+    Request {
+        method: "DELETE",
+        ..Request::get(format!("{API}/labels/{}", enc(id)), label_cost::DELETE)
+    }
+}
+
 // search (W9) --------------------------------------------------------------
 // Server search (SRC-7) and older pages of a view (LST-7): one page of
 // `threads.list`, then `threads.get` for what the store lacks.
@@ -901,9 +946,11 @@ pub fn label_from_gmail(label: &GLabel) -> Label {
         .or_else(|| crate::data::from_hex("#a4a9ad"))
         .expect("a valid colour");
     Label {
-        id: label.id.clone(),
-        name: label.name.clone(),
-        color,
+        list_visibility: crate::data::ListVisibility::from_gmail(
+            label.label_list_visibility.as_deref(),
+        ),
+        in_message_list: label.message_list_visibility.as_deref() != Some("hide"),
+        ..Label::new(label.id.clone(), label.name.clone(), color)
     }
 }
 
@@ -1057,6 +1104,7 @@ pub fn thread_from_gmail(t: &GThread, me: &Account) -> Option<Thread> {
             .collect(),
         starred: has(STARRED),
         unread: has(UNREAD),
+        important: has(IMPORTANT),
         messages,
         history_id: t.history_id,
         loaded: Loaded::Metadata,
