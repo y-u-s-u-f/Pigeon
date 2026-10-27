@@ -1044,9 +1044,11 @@ impl CalendarView {
             .find(|c| c.primary && c.visible)
             .or_else(|| calendars.iter().filter(writable).find(|c| c.visible))
             .or_else(|| calendars.iter().find(writable))
-            .or(calendars.first())
-            .map(|c| c.id.clone())
-            .unwrap_or_default();
+            .or(calendars.first());
+        // The calendar's default reminders until the user picks one, as in
+        // Google Calendar.
+        let reminder_minutes = calendar.and_then(|c| c.default_reminder);
+        let calendar = calendar.map(|c| c.id.clone()).unwrap_or_default();
         let (start, end) = if all_day {
             let first = start.date();
             let last = (end - Duration::minutes(1)).date().max(first);
@@ -1066,7 +1068,8 @@ impl CalendarView {
             all_day,
             organizer: self.data.me(),
             organizer_self: true,
-            reminder_minutes: Some(10),
+            reminder_minutes,
+            reminder_use_default: true,
             busy: true,
             ..Event::default()
         };

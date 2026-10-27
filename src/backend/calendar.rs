@@ -1046,8 +1046,14 @@ fn attendees_json(event: &Event, raw: Option<&Value>) -> Value {
     Value::Array(out)
 }
 
-fn reminders_json(minutes: Option<u32>) -> Value {
-    let overrides: Vec<Value> = minutes
+/// The calendar's default reminders, or the one the user picked ("No
+/// reminder" is no overrides).
+fn reminders_json(event: &Event) -> Value {
+    if event.reminder_use_default {
+        return json!({ "useDefault": true });
+    }
+    let overrides: Vec<Value> = event
+        .reminder_minutes
         .map(|m| json!({ "method": "popup", "minutes": m }))
         .into_iter()
         .collect();
@@ -1087,8 +1093,11 @@ pub fn patch_body(
     if !after.attendees_omitted && emails(before) != emails(after) {
         body.insert("attendees".into(), attendees_json(after, raw));
     }
-    if before.reminder_minutes != after.reminder_minutes {
-        body.insert("reminders".into(), reminders_json(after.reminder_minutes));
+    // On the default, only which default it is can differ (another calendar).
+    if before.reminder_use_default != after.reminder_use_default
+        || (!after.reminder_use_default && before.reminder_minutes != after.reminder_minutes)
+    {
+        body.insert("reminders".into(), reminders_json(after));
     }
     if before.busy != after.busy {
         let transparency = if after.busy { "opaque" } else { "transparent" };
@@ -1114,7 +1123,7 @@ pub fn insert_body(event: &Event, zone: &LocalZone) -> Value {
         "description": description,
         "start": time_json(event.start, event, zone, false),
         "end": time_json(event.end, event, zone, false),
-        "reminders": reminders_json(event.reminder_minutes),
+        "reminders": reminders_json(event),
         "transparency": if event.busy { "opaque" } else { "transparent" },
     });
     if !event.attendees.is_empty() {
@@ -2580,6 +2589,81 @@ mod tests {
         assert_eq!(sent["start"]["dateTime"], "2026-10-28T19:00:00Z");
         assert_eq!(sent["reminders"]["overrides"][0]["minutes"], 10);
         assert_eq!(stored(&store, &event.id).etag, "\"n\"");
+    }
+
+    /// A series from Google with `reminders`, on a calendar defaulting to 30.
+    fn series_with(reminders: &str) -> Event {
+        let raw: Value = serde_json::from_str(&SERIES.replace(
+            r#""summary":"Standup","#,
+            &format!(r#""summary":"Standup","reminders":{reminders},"#),
+        ))
+        .unwrap();
+        let Some(Item::Event(e)) = event_from_google(&raw, CAL, Some(30), &zone()) else {
+            panic!("not an event");
+        };
+        e
+    }
+
+    #[test]
+    fn split_keeps_the_series_reminders() {
+        let origin = at(d(2026, 11, 4), 10, 0);
+        let split = |series: &Event| {
+            let (_, new) = series.split(origin, origin, series, "n1".into()).unwrap();
+            insert_body(&new, &zone())["reminders"].clone()
+        };
+        let default = series_with(r#"{"useDefault":true}"#);
+        assert_eq!(split(&default), json!({"useDefault":true}));
+        let explicit =
+            series_with(r#"{"useDefault":false,"overrides":[{"method":"popup","minutes":5}]}"#);
+        assert_eq!(
+            split(&explicit),
+            json!({"useDefault":false,"overrides":[{"method":"popup","minutes":5}]})
+        );
+    }
+
+    #[test]
+    fn new_event_reminders() {
+        let new = Event {
+            id: "n".into(),
+            calendar: CAL.into(),
+            start: at(d(2026, 10, 28), 12, 0),
+            end: at(d(2026, 10, 28), 13, 0),
+            reminder_minutes: Some(30),
+            reminder_use_default: true,
+            ..Event::default()
+        };
+        let reminders = |e: &Event| insert_body(e, &zone())["reminders"].clone();
+        assert_eq!(reminders(&new), json!({"useDefault":true}));
+        let picked = Event {
+            reminder_minutes: Some(15),
+            reminder_use_default: false,
+            ..new.clone()
+        };
+        assert_eq!(
+            reminders(&picked),
+            json!({"useDefault":false,"overrides":[{"method":"popup","minutes":15}]})
+        );
+        let none = Event {
+            reminder_minutes: None,
+            reminder_use_default: false,
+            ..new.clone()
+        };
+        assert_eq!(reminders(&none), json!({"useDefault":false,"overrides":[]}));
+        // Picking the default's own value still makes it explicit; another
+        // calendar's default is no write.
+        let same = Event {
+            reminder_use_default: false,
+            ..new.clone()
+        };
+        assert_eq!(
+            patch_body(&new, &same, None, &zone())["reminders"],
+            json!({"useDefault":false,"overrides":[{"method":"popup","minutes":30}]})
+        );
+        let other_default = Event {
+            reminder_minutes: Some(10),
+            ..new.clone()
+        };
+        assert!(patch_body(&new, &other_default, None, &zone()).is_empty());
     }
 
     #[test]

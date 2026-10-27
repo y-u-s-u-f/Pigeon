@@ -955,7 +955,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-9 Create an event
 
-- **Today:** `c` or the header "+" creates one at the next half hour (today or the selected day), opens it, focuses the title. Dragging or double-clicking the grid also creates (CAL-21). Goes to the first visible calendar, 10-minute reminder, busy, user as organizer. `new_event()`, `create_event()`. An untitled new event is dropped when its panel closes, without a toast.
+- **Today:** `c` or the header "+" creates one at the next half hour (today or the selected day), opens it, focuses the title. Dragging or double-clicking the grid also creates (CAL-21). Goes to the first visible calendar, its default reminder (CAL-15), busy, user as organizer. `new_event()`, `create_event()`. An untitled new event is dropped when its panel closes, without a toast.
 - **Today (writes, W7):** `events.insert` once the new event has a title (on leaving the panel or after 1.5 s idle; `CalendarView::unsent`); an untitled one never reaches Google. With guests it asks "Send invitations to guests?" first (CAL-13).
 - **Needs:** A tester pass on the real account (T2c).
 - **Notes:** A default-calendar setting isn't built.
@@ -983,7 +983,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 #### CAL-15 Reminders
 
 - **Today:** One reminder (none, at start, 5, 10, 15, 30 min, 1 h, 1 day). `reminder_minutes`. Nothing fires.
-- **Today (writes, W7):** Saved as `reminders` `{useDefault: false, overrides: [{popup, m}]}`; "No reminder" is `useDefault: false` with no overrides. Written only when changed, so a calendar default stays in use until the user picks one.
+- **Today (writes, W7):** Saved as `reminders` `{useDefault: false, overrides: [{popup, m}]}`; "No reminder" is `useDefault: false` with no overrides. Written only when changed, so a calendar default stays in use until the user picks one (`Event::reminder_use_default`; picking any row, even the default's own value, makes it explicit). Inserts carry the same setting (`reminders_json()`): a new event (`c`, drag) starts on its calendar's default (`useDefault: true`, shown as that calendar's default, following the calendar picker) as in Google Calendar; the new series of a "This and following" split and an Undo re-insert keep the original's default or overrides.
 - **Needs:** A tester pass (T2c). Schedule macOS notifications, also after restart and with the window closed (NTF-3). Several reminders: CAL-33.
 
 #### CAL-16 Busy and free

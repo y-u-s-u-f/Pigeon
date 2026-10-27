@@ -800,19 +800,28 @@ impl CalendarView {
                         crate::calendar::AccessRole::Owner | crate::calendar::AccessRole::Writer
                     )
                 };
-                if let Some(id) = self
+                if let Some((id, default)) = self
                     .data
                     .calendars
                     .get(ix)
                     .filter(writable)
-                    .map(|c| c.id.clone())
+                    .map(|c| (c.id.clone(), c.default_reminder))
                 {
-                    self.edit_event(cx, |e| e.calendar = id);
+                    self.edit_event(cx, |e| {
+                        e.calendar = id;
+                        // Defaults are per calendar.
+                        if e.reminder_use_default {
+                            e.reminder_minutes = default;
+                        }
+                    });
                 }
             }
             Menu::Reminder => {
                 if let Some(&minutes) = REMINDERS.get(ix) {
-                    self.edit_event(cx, |e| e.reminder_minutes = minutes);
+                    self.edit_event(cx, |e| {
+                        e.reminder_minutes = minutes;
+                        e.reminder_use_default = false;
+                    });
                 }
             }
             Menu::Calendars | Menu::GoToDate => {}
