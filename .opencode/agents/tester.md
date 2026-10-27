@@ -1,7 +1,7 @@
 ---
 description: Tests Pigeon by driving the running app with Cua Driver (computer use). Reports findings with repro steps and screenshots; never edits source code.
 mode: subagent
-model: openai/gpt-6.1-terra
+model: openai/gpt-6.1-sol
 permissions:
   - action: edit
     resource: "*"
