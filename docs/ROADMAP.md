@@ -34,10 +34,10 @@ To update: change the status cell in the area's table, then the counts below.
 | [Sync and push](#71-sync-and-push-syn) | 2 | 5 | 0 | 7 |
 | [Notifications and background](#72-notifications-and-background-ntf) | 3 | 0 | 0 | 3 |
 | [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 0 | 5 | 0 | 5 |
-| [Storage and persistence](#81-storage-and-persistence-per) | 1 | 1 | 1 | 3 |
+| [Storage and persistence](#81-storage-and-persistence-per) | 0 | 2 | 1 | 3 |
 | [Command palette](#82-command-palette-pal) | 0 | 3 | 0 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 6 | 0 | 7 |
-| **Overall** | **61** | **63** | **52** | **176** |
+| **Overall** | **60** | **64** | **52** | **176** |
 
 ## Contents
 
@@ -1249,7 +1249,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
 | PER-1 | Local mailbox store | 🟡 Partially done | Holds SYN data |
-| PER-2 | Outbox and drafts that survive quit | ⚪ Not done | None |
+| PER-2 | Outbox and drafts that survive quit | 🟡 Partially done | None |
 | PER-3 | Persisted UI state and settings | 🟢 Fully linked | None |
 
 #### PER-1 Local mailbox store
