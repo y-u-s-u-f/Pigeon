@@ -109,7 +109,7 @@ impl Store {
                          WHERE e.account = m.account AND e.ical_uid = b.invite_uid
                          ORDER BY e.recurring_event_id IS NOT NULL
                          LIMIT 1)),
-                    b.invite_uid
+                    b.invite_uid, b.invite_details
              FROM messages m
              LEFT JOIN bodies b ON b.account = m.account AND b.message_id = m.id
              WHERE m.account = ?1
@@ -140,6 +140,11 @@ impl Store {
                     .ok()
                     .flatten()
                     .unwrap_or_default(),
+                details: r
+                    .get::<_, Option<String>>(20)
+                    .ok()
+                    .flatten()
+                    .and_then(|j| serde_json::from_str(&j).ok()),
             });
             let message = Message {
                 id: r.get(1)?,
@@ -462,10 +467,12 @@ impl Store {
             };
             message.body = Body::Loaded { html: parsed.html };
             message.attachments = parsed.attachments;
+            let details = parsed.invite_details;
             message.invite = parsed.invite.map(|(ical_uid, method)| Invite {
                 event_id: String::new(),
                 method,
                 ical_uid,
+                details,
             });
         }
         thread.loaded = loaded(&thread);
@@ -625,6 +632,15 @@ fn write_thread(tx: &Transaction, account: &str, thread: &Thread) -> anyhow::Res
                     }),
                     invite.map(|i| i.event_id.as_str()),
                     html.len() as i64,
+                ],
+            )?;
+            // W10 (CAL-20).
+            tx.execute(
+                "UPDATE bodies SET invite_details = ?3 WHERE account = ?1 AND message_id = ?2",
+                params![
+                    account,
+                    message.id,
+                    invite.and_then(|i| i.details.as_ref()).map(json),
                 ],
             )?;
         }

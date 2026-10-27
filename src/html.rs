@@ -1,5 +1,6 @@
 //! Email HTML, parsed once into a small tree of blocks with styled inline
-//! runs. `ui::html_view` renders it. Nothing here runs scripts or loads URLs.
+//! runs. `ui::html_view` renders it. Nothing here runs scripts or loads URLs;
+//! images keep their `src` for the reader to load when the user asks (ATT-1).
 
 use std::{
     cell::RefCell,
@@ -35,6 +36,15 @@ pub enum Block {
     Table(Table),
     Image {
         alt: SharedString,
+        /// A safe `http(s)` address (see `is_safe_image_url`) or a `cid:`
+        /// reference; empty otherwise.
+        src: SharedString,
+        /// The `width` and `height` attributes, in px.
+        width: Option<f32>,
+        height: Option<f32>,
+        /// The link it sits in.
+        link: Option<SharedString>,
+        align: Align,
     },
     /// A link styled as a button: a call to action.
     Button {
@@ -141,7 +151,7 @@ pub fn plain_text(doc: &Document) -> String {
                         push_blocks(&cell.blocks, out);
                     }
                 }
-                Block::Image { alt } => push_par(alt, out),
+                Block::Image { alt, .. } => push_par(alt, out),
                 Block::Button { label, .. } => push_par(label, out),
                 Block::Rule => {}
             }
@@ -315,18 +325,33 @@ impl Parser {
                 None => self.walk_children(node, ctx),
             },
             "img" => {
-                // Tracking pixels and spacers carry nothing worth a placeholder.
-                let tiny = |name| {
+                // Tracking pixels and spacers carry nothing worth a
+                // placeholder, and are never loaded.
+                let css = attr(&attrs, "style").unwrap_or_default();
+                let size = |name| {
                     attr(&attrs, name)
-                        .and_then(|v| v.trim_end_matches("px").parse::<f32>().ok())
-                        .is_some_and(|v| v <= 2.)
+                        .or_else(|| css_value(css, name))
+                        .and_then(|v| v.trim().trim_end_matches("px").parse::<f32>().ok())
                 };
-                if tiny("width") || tiny("height") {
+                let (width, height) = (size("width"), size("height"));
+                let hidden = css_value(css, "display").is_some_and(|v| v.contains("none"));
+                if width.is_some_and(|v| v <= 2.) || height.is_some_and(|v| v <= 2.) || hidden {
                     return;
                 }
                 self.flush(TextKind::Paragraph, parent.align);
                 let alt = attr(&attrs, "alt").unwrap_or_default().trim().to_string();
-                self.blocks.push(Block::Image { alt: alt.into() });
+                let src = attr(&attrs, "src")
+                    .map(str::trim)
+                    .filter(|src| is_safe_image_url(src) || is_cid(src))
+                    .unwrap_or_default();
+                self.blocks.push(Block::Image {
+                    alt: alt.into(),
+                    src: src.to_string().into(),
+                    width,
+                    height,
+                    link: ctx.style.link.clone(),
+                    align: parent.align,
+                });
             }
             "hr" => {
                 self.flush(TextKind::Paragraph, parent.align);
@@ -530,7 +555,7 @@ fn text_len(blocks: &[Block]) -> usize {
                 .flatten()
                 .map(|c| text_len(&c.blocks))
                 .sum(),
-            Block::Image { alt } => alt.len(),
+            Block::Image { alt, .. } => alt.len(),
             Block::Button { label, .. } => label.len(),
             Block::Rule => 0,
         })
@@ -660,6 +685,78 @@ fn find_urls(text: &str) -> Vec<(Range<usize>, String)> {
         }
     }
     found
+}
+
+/// The remote images a document shows, each once, in order (ATT-1).
+pub fn remote_images(doc: &Document) -> Vec<SharedString> {
+    fn walk(blocks: &[Block], out: &mut Vec<SharedString>) {
+        for block in blocks {
+            match block {
+                Block::Image { src, .. } if is_safe_image_url(src) && !out.contains(src) => {
+                    out.push(src.clone())
+                }
+                Block::List { items, .. } => items.iter().for_each(|item| walk(item, out)),
+                Block::Quote(blocks) => walk(blocks, out),
+                Block::Table(table) => table
+                    .rows
+                    .iter()
+                    .flatten()
+                    .for_each(|cell| walk(&cell.blocks, out)),
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&doc.blocks, &mut out);
+    out
+}
+
+fn is_cid(src: &str) -> bool {
+    src.get(..4).is_some_and(|s| s.eq_ignore_ascii_case("cid:"))
+}
+
+/// An image address the reader may fetch when asked: `http(s)` to a named
+/// public host. No credentials, no `localhost` or `.local` names and no IP
+/// literals in loopback, private or link-local ranges (or IPv6 at all).
+pub fn is_safe_image_url(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    let Some(rest) = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    if url.len() > 4096 || url.chars().any(char::is_whitespace) {
+        return false;
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.contains('@') || authority.starts_with('[') {
+        return false;
+    }
+    let host = authority.split(':').next().unwrap_or_default();
+    let host = host.trim_end_matches('.');
+    if host.is_empty()
+        || !host.contains('.')
+        || host == "localhost"
+        || [".localhost", ".local", ".internal", ".home.arpa"]
+            .iter()
+            .any(|suffix| host.ends_with(suffix))
+    {
+        return false;
+    }
+    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+        let [a, b, ..] = ip.octets();
+        return !(ip.is_loopback()
+            || ip.is_private()
+            || ip.is_link_local()
+            || ip.is_unspecified()
+            || ip.is_broadcast()
+            || ip.is_multicast()
+            || a == 0
+            || (a == 100 && (64..128).contains(&b)));
+    }
+    // A host that is all digits and dots but not an address (`127.1`).
+    !host.chars().all(|c| c.is_ascii_digit() || c == '.')
 }
 
 fn is_safe_url(url: &str) -> bool {
@@ -909,6 +1006,71 @@ mod tests {
         };
         assert!(table.rows[0][0].background.is_some());
         assert!(table.rows[0][1].background.is_none());
+    }
+
+    #[test]
+    fn images_keep_their_src() {
+        let doc = parse(
+            r#"<a href="https://shop.io"><img src="https://cdn.shop.io/hero.png" alt="Sale"
+                 width="600" height="300"></a>
+               <img src="https://t.io/open.gif" width="1" height="1">
+               <img src="https://t.io/p.gif" style="width:1px;height:1px">
+               <img src="https://t.io/h.gif" style="display:none">
+               <img src="cid:logo@x">
+               <img src="javascript:alert(1)" alt="x">
+               <img src="https://cdn.shop.io/hero.png">"#,
+        );
+        let images: Vec<_> = doc
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Image {
+                    src, width, link, ..
+                } => Some((src.to_string(), *width, link.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(images.len(), 4, "tracking pixels are dropped: {images:?}");
+        assert_eq!(images[0].0, "https://cdn.shop.io/hero.png");
+        assert_eq!(images[0].1, Some(600.));
+        assert_eq!(images[0].2.as_deref(), Some("https://shop.io"));
+        assert_eq!(images[1].0, "cid:logo@x");
+        assert_eq!(images[2].0, "", "unsafe schemes lose their src");
+        assert_eq!(remote_images(&doc), ["https://cdn.shop.io/hero.png"]);
+    }
+
+    #[test]
+    fn image_url_rules() {
+        for ok in [
+            "https://cdn.example.com/a.png",
+            "http://example.com/a.png?x=1",
+            "https://8.8.8.8/a.png",
+            "https://example.com:8443/a",
+        ] {
+            assert!(is_safe_image_url(ok), "{ok}");
+        }
+        for bad in [
+            "javascript:alert(1)",
+            "data:image/png;base64,AAAA",
+            "file:///etc/passwd",
+            "cid:logo",
+            "https://localhost/a.png",
+            "https://printer.local/a.png",
+            "https://127.0.0.1/a.png",
+            "https://10.0.0.5/a.png",
+            "https://192.168.1.1/a.png",
+            "https://172.16.0.1/a.png",
+            "https://169.254.169.254/latest",
+            "https://100.64.0.1/a",
+            "https://0.0.0.0/a",
+            "https://127.1/a",
+            "https://[::1]/a.png",
+            "https://user:pw@example.com/a.png",
+            "https://intranet/a.png",
+            "https://exa mple.com/a.png",
+        ] {
+            assert!(!is_safe_image_url(bad), "{bad}");
+        }
     }
 
     #[test]

@@ -347,7 +347,7 @@ The user's own plans, not driven by Google's APIs.
 
 #### RDR-5 Message body rendering
 
-- **Today:** HTML is drawn natively (headings, lists, quotes, tables, links, emphasis, code, simple colours); scripts, styles, iframes and form controls dropped; images become placeholders (ATT-1). `html::parse()` (`src/html.rs`), `src/ui/html_view.rs`, cached by hash in `HtmlCache`. Message text is selectable. With Google the body comes from `messages.get format=raw` parsed by `mail-parser` (`mime::parse_message()`, W3): charsets, transfer encodings, the `text/html` part of `multipart/alternative`, plain text converted to HTML when there's no HTML.
+- **Today:** HTML is drawn natively (headings, lists, quotes, tables, links, emphasis, code, simple colours); scripts, styles, iframes and form controls dropped; images load when the user asks (ATT-1). `html::parse()` (`src/html.rs`), `src/ui/html_view.rs`, cached by hash in `HtmlCache`. Message text is selectable. With Google the body comes from `messages.get format=raw` parsed by `mail-parser` (`mime::parse_message()`, W3): charsets, transfer encodings, the `text/html` part of `multipart/alternative`, plain text converted to HTML when there's no HTML.
 - **Needs:** A tester pass on real newsletters and replies (T1a). `cid:` parts per ATT-2.
 - **Notes:** Unknown tags keep their text only.
 
@@ -712,13 +712,13 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 #### ATT-1 Remote images
 
-- **Today:** Images show as a bordered box with an icon and the alt text (or "Image"); never downloaded, since GPUI here only has `NullHttpClient`. Tracking pixels (≤ 2 px) are dropped. `Block::Image` (`src/html.rs`) keeps only `alt`; `Renderer::block()` (`src/ui/html_view.rs`) draws the box.
-- **Needs:** Load on demand or through a proxy so the user's IP and opens aren't exposed; cache results. The setting is in: Settings › Mail › Load remote images, Ask / Always / Never (W11, saved as `remote_images`).
-- **Notes:** Needs an HTTP client dependency or the backend.
+- **Today:** `Block::Image` (`src/html.rs`) keeps `src` (only safe `http(s)` addresses, or `cid:`), the `width`/`height` attributes, the link around it and its alignment; tracking pixels (≤ 2 px, by attribute or inline style) and `display:none` images are dropped. Images load only when asked: a "Load images" bar above each message with remote images (Settings › Images = Ask, the default), the `cmd-shift-i` "Load Images" command (the whole conversation), or Always. Never shows no bar (the command still loads). `html::is_safe_image_url()` allows `http(s)` to named public hosts only (no credentials, `localhost`, `.local`/`.internal`, private, loopback or link-local IPv4, IPv6 literals). `backend/images.rs` fetches with its own `ureq` agent: HTTPS only (`http://` is upgraded), no cookies, no referer, `Accept` image types, 10 MB cap, 30 s timeout, at most 4 at a time, off the main thread; the type and size are sniffed from the bytes (PNG, JPEG, GIF, WebP; SVG and the rest aren't shown). Kept in the store's `images` table, newest first within 64 MB (`store/images.rs`), cleared on sign-out. Drawn with GPUI's `img()` at the attribute or natural width, scaled down to fit (`LoadedImages`, `Renderer::block()` in `src/ui/html_view.rs`; the bar in `src/ui/reader.rs`). Not in demo mode (no network; the command says so).
+- **Needs:** Nothing more from Google; a proxy would hide the user's IP from senders (later). The setting is Settings › Mail › Load remote images, Ask / Always / Never (saved as `remote_images`).
+- **Notes:** Which messages were allowed is kept in memory only, so the bar asks again after a relaunch (images come from the cache then). An image that fails isn't retried until relaunch. `cid:` images stay placeholders (ATT-2).
 
 #### ATT-2 Inline (`cid:`) images
 
-- **Today:** Shown as ATT-1 placeholders; `is_safe_url()` rejects `cid:`.
+- **Today:** Shown as ATT-1 placeholders; `Block::Image` keeps the `cid:` reference (W10) but nothing resolves it yet.
 - **Needs:** Find the part whose `Content-ID` matches, fetch it (`messages.attachments.get` if it has an `attachmentId`), hand it to the renderer. IMAP: `BODYSTRUCTURE` + `BODY[part]`.
 
 #### ATT-3 Attachment list in messages
@@ -1075,9 +1075,9 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-20 Invite emails linked to events
 
-- **Today:** An invitation mail shows a card above its body: title, time, repeat rule, location, video link with Join, organizer and head count, in the calendar's colour, plus a mini timeline of the user's other events that day naming busy overlaps ("Conflicts with …"). Yes / Maybe / No (`shift-y`, `shift-m`, `shift-n`) answer it; "Open in Calendar" (`shift-c`). A cancellation shows a muted card with "Remove from calendar" (`shift-x`, with Undo). In the palette and `?` sheet. `Message::invite` (`Invite { event_id, method }`, `request`/`cancel`) in `src/data.rs`; `src/ui/invite.rs` reads `CalendarView::data` and answers via `set_rsvp()`, so card and grid stay in step.
-- **Needs:** Find the event by `iCalUID` (`events.list` with `iCalUID`); Google usually adds invitations sent to Gmail to the calendar itself. For non-Google invites, parse `text/calendar` parts (iMIP `REQUEST`, `CANCEL`, `REPLY`) and `events.import` a private copy. Answers write as CAL-14. "Remove from calendar" deletes only the user's copy and sends nothing.
-- **Notes:** The card shows the next occurrence from today; an invite whose event is gone says "This event is no longer in your calendar". Conflicts count only the user's own busy, non-declined events, not shared calendars.
+- **Today:** An invitation mail shows a card above its body: title, time, repeat rule, location, video link with Join, organizer and head count, in the calendar's colour, plus a mini timeline of the user's other events that day naming busy overlaps ("Conflicts with …"). Yes / Maybe / No (`shift-y`, `shift-m`, `shift-n`) answer it; "Open in Calendar" (`shift-c`). In the palette and `?` sheet. `Message::invite` (`Invite { event_id, method, ical_uid, details }`) in `src/data.rs`; `src/ui/invite.rs` reads `CalendarView::data` and answers via `set_rsvp()`, so card and grid stay in step. With Google (W10): the `text/calendar` part's UID and METHOD (W3) resolve to the stored event by `ical_uid` (`load_threads`); one not stored is looked up once per UID with `events.list iCalUID=` on the primary calendar (`calendar::fetch_by_ical_uid()`, `Backend::find_invite_event()`), stored, and the thread reloads with its card. Answers go through `CalOp::Rsvp` (only the user's attendee, `sendUpdates=all`). A cancellation shows CANCELLED with "Remove from calendar" (`shift-x`), which deletes only the user's copy with `sendUpdates=none` and no decline (`Backend::remove_cancelled_event()`, `calendar::remove_own_copy()`). When the event can't be found, a read-only card shows what the iCalendar part says: title, time (UTC converted to local; TZID times as wall times), location, organizer (`mime::parse_ics_details()`, kept in `bodies.invite_details`, migration 090).
+- **Needs:** For non-Google invites, `events.import` a private copy (iMIP `REQUEST`, `CANCEL`, `REPLY`). A tester pass on a real invitation (T3b).
+- **Notes:** The card shows the next occurrence from today. Conflicts count only the user's own busy, non-declined events, not shared calendars. Cancellations aren't looked up (Google lists no cancelled events), and "Remove from calendar" has no Undo. A just-sent invitation can take a few seconds to reach the primary calendar; a lookup that finds nothing isn't retried until relaunch, but the next calendar sync and reopening the thread find it.
 
 #### CAL-32 Optional guests, RSVP notes, extra guests and rooms
 
@@ -1254,7 +1254,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 #### PER-1 Local mailbox store
 
 - **Today:** SQLite (`rusqlite`, bundled) in `src/backend/store/`: `Store` (one connection behind a mutex, WAL, file 0600 in a 0700 folder), the full schema as migration block 001 in `schema.sql` (settings, labels, threads, messages, bodies, drafts, calendars, events, contacts, sync_state, outbox, images; account-scoped tables keyed by `account`), and reads and writes for mail (`store/mail.rs`), calendar (`store/calendar.rs`, events kept whole as JSON in `model`), contacts (`store/contacts.rs`) and the outbox (`store/outbox.rs`). Demo mode uses an in-memory store seeded from the JSON (`backend/demo.rs`); the UI's `MailData` and `CalendarData` are built from the store at launch (`Backend::load_mail()`, `load_calendar()`).
-- **Needs:** Google mode on the file store at `~/Library/Application Support/Pigeon/pigeon.sqlite` (or `$PIGEON_DATA_DIR`) once W2 signs in; syncs writing to it (SYN-1/2/4/6); body eviction (300 MB LRU) and the image cache (ATT-1). Later migrations go in their reserved blocks (`docs/BACKEND_SPRINT_1.md`, 4.2).
+- **Needs:** Google mode on the file store at `~/Library/Application Support/Pigeon/pigeon.sqlite` (or `$PIGEON_DATA_DIR`) once W2 signs in; syncs writing to it (SYN-1/2/4/6); body eviction (300 MB LRU). The image cache (ATT-1) is in (W10, 64 MB). Later migrations go in their reserved blocks (`docs/BACKEND_SPRINT_1.md`, 4.2).
 
 #### PER-2 Outbox and drafts that survive quit
 
@@ -1280,7 +1280,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 - **Today:** `cmd-k` or `cmd-shift-p` lists every command in `COMMANDS` (`src/actions.rs`) with its shortcut and runs the same handlers. `open_palette()`, `palette_items()`, `on_palette_event()` (`src/app.rs`). Unavailable commands are left out (`When`, `command_available()` in `src/app/mail.rs`). Recent commands first on an empty query (in memory, PER-3). Each `Group` has a `scope()` (Mail, Calendar, Global); the palette and `?` sheet list the current mode's commands plus global ones. `v` and `l` open it scoped to folders or labels.
 - **Needs:** Each command inherits its action's needs: ACT-1–6, CMP-1–4, CMP-8, DRF-1, DRF-4, UND-1–3, ACT-1a, FOL-5, CAL-9, CAL-10. Navigation, view and app commands need none.
-- **Notes:** Sign In with Google, Sign Out and Use Demo Data work (W2: ACC-3, ACC-7). The backend's other commands are in already, doing nothing (or saying so in a toast) until their workstream lands: Sync Now (`cmd-r`, also File › Sync Now; SYN-2), Retry Loading Message (RDR-6), Load Images (`cmd-shift-i`, ATT-1), Load Older Conversations (LST-7).
+- **Notes:** Sign In with Google, Sign Out and Use Demo Data work (W2: ACC-3, ACC-7). The backend's other commands are in already, doing nothing (or saying so in a toast) until their workstream lands: Sync Now (`cmd-r`, also File › Sync Now; SYN-2), Retry Loading Message (RDR-6), Load Older Conversations (LST-7).
 
 #### PAL-2 Thread search in the palette
 

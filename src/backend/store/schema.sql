@@ -165,3 +165,8 @@ CREATE TABLE images (
     bytes BLOB NOT NULL,
     fetched_at INTEGER NOT NULL
 );
+
+-- migration: 090
+-- W10 (CAL-20): what an invitation's iCalendar part says (JSON
+-- InviteDetails), for a read-only card when its event isn't stored.
+ALTER TABLE bodies ADD COLUMN invite_details TEXT;

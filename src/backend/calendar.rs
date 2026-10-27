@@ -1752,6 +1752,196 @@ impl Writer<'_> {
     }
 }
 
+// Invitations (W10, CAL-20) ----------------------------------------------
+//
+// An invitation email names its event by iCalendar UID. The store resolves
+// it to a stored event (`load_threads`); one not stored yet is looked up on
+// the primary calendar with `events.list iCalUID=` and stored. "Remove from
+// calendar" on a cancellation deletes the user's copy with
+// `sendUpdates=none`: the organizer already called it off, so nobody hears.
+
+/// The primary calendar's id: where invitations land.
+fn primary_calendar(store: &Store, account: &str) -> String {
+    store
+        .load_calendars(account)
+        .ok()
+        .and_then(|c| c.into_iter().find(|c| c.primary).map(|c| c.id))
+        .unwrap_or_else(|| account.to_string())
+}
+
+/// Look `ical_uid` up on the primary calendar and store what Google has.
+/// Blocking. Empty changes: Google has no such event there.
+pub fn fetch_by_ical_uid(
+    transport: &dyn Transport,
+    store: &Store,
+    account: &str,
+    ical_uid: &str,
+) -> anyhow::Result<CalendarChanges> {
+    fetch_by_ical_uid_at(
+        transport,
+        store,
+        account,
+        ical_uid,
+        &LocalZone::system(),
+        Utc::now(),
+    )
+}
+
+fn fetch_by_ical_uid_at(
+    transport: &dyn Transport,
+    store: &Store,
+    account: &str,
+    ical_uid: &str,
+    zone: &LocalZone,
+    now: DateTime<Utc>,
+) -> anyhow::Result<CalendarChanges> {
+    let calendar = primary_calendar(store, account);
+    let url = format!(
+        "{API}/calendars/primary/events?iCalUID={}&maxResults=50&timeZone={}",
+        enc(ical_uid),
+        enc(zone.name)
+    );
+    let what = "Couldn't look the invitation up";
+    let Listing::Items { items, .. } = list_all::<Value>(transport, &url, what)? else {
+        return Err(anyhow!("{what}: Google answered 410"));
+    };
+    let default_reminder = store
+        .calendars_to_sync(account)?
+        .into_iter()
+        .find(|(id, _)| *id == calendar)
+        .and_then(|(_, r)| r);
+    let pass = CalendarPass {
+        transport,
+        store,
+        account,
+        calendar: &calendar,
+        default_reminder,
+        zone,
+        now,
+    };
+    let mut touched = BTreeSet::new();
+    pass.apply(&items, false, &mut touched)?;
+    let mut changes = CalendarChanges::default();
+    let ids: Vec<String> = touched.into_iter().collect();
+    let present: BTreeSet<String> = store
+        .load_events(account, &ids)?
+        .into_iter()
+        .map(|e| e.id)
+        .collect();
+    for id in ids {
+        if present.contains(&id) {
+            changes.changed.push(id);
+        } else {
+            changes.removed.push(id);
+        }
+    }
+    Ok(changes)
+}
+
+/// Take the user's copy of `id` off their calendar without telling anyone.
+/// Blocking. Gone already counts as done.
+pub fn remove_own_copy(transport: &dyn Transport, calendar: &str, id: &str) -> anyhow::Result<()> {
+    let url = format!(
+        "{API}/calendars/{}/events/{}?sendUpdates=none",
+        enc(calendar),
+        enc(id)
+    );
+    let response = transport.send(&Request {
+        method: "DELETE",
+        ..Request::get(url, COST)
+    })?;
+    if !response.is_success() && !matches!(response.status, 404 | 410) {
+        return Err(api_error("Couldn't remove the event", &response));
+    }
+    Ok(())
+}
+
+impl super::Backend {
+    /// An invitation's event, by its iCalendar UID (CAL-20): if the store
+    /// has it, the threads holding the invitation reload and find it; if
+    /// not, Google is asked once, and what it has is stored. Demo
+    /// invitations are linked already.
+    pub fn find_invite_event(&mut self, ical_uid: &str, cx: &mut gpui::Context<Self>) {
+        if ical_uid.is_empty() || self.is_demo() {
+            return;
+        }
+        let account = self.email().to_string();
+        let store = self.store.clone();
+        let uid = ical_uid.to_string();
+        if !store
+            .events_with_uid(&account, &uid)
+            .unwrap_or_default()
+            .is_empty()
+        {
+            let threads = store
+                .threads_with_invite(&account, &uid)
+                .unwrap_or_default();
+            if !threads.is_empty() {
+                cx.emit(BackendEvent::ThreadsChanged(threads));
+            }
+            return;
+        }
+        let Some(transport) = self.transport() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let changes =
+                        fetch_by_ical_uid(&UserPriority(transport), &store, &account, &uid)?;
+                    let threads = store.threads_with_invite(&account, &uid)?;
+                    anyhow::Ok((changes, threads))
+                })
+                .await;
+            this.update(cx, |_, cx| match result {
+                Ok((changes, threads)) => {
+                    if changes.changed.is_empty() {
+                        return;
+                    }
+                    for event in changes.backend_events() {
+                        cx.emit(event);
+                    }
+                    if !threads.is_empty() {
+                        cx.emit(BackendEvent::ThreadsChanged(threads));
+                    }
+                }
+                Err(e) => eprintln!("Pigeon: {e:#}"),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// "Remove from calendar" on a cancelled invitation: the user's copy
+    /// goes, at once here and then at Google, with `sendUpdates=none`.
+    pub fn remove_cancelled_event(&mut self, id: &str, cx: &mut gpui::Context<Self>) {
+        let account = self.email().to_string();
+        let ids = vec![id.to_string()];
+        let calendar = self
+            .store
+            .load_events(&account, &ids)
+            .ok()
+            .and_then(|e| e.into_iter().next())
+            .map(|e| e.calendar);
+        if let Err(e) = self.store.delete_events(&account, &ids) {
+            eprintln!("Pigeon: couldn't remove the event: {e:#}");
+        }
+        cx.emit(BackendEvent::EventsRemoved(ids));
+        let (Some(transport), Some(calendar)) = (self.transport(), calendar) else {
+            return;
+        };
+        let id = id.to_string();
+        cx.background_executor()
+            .spawn(async move {
+                if let Err(e) = remove_own_copy(&UserPriority(transport), &calendar, &id) {
+                    eprintln!("Pigeon: {e:#}");
+                }
+            })
+            .detach();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2573,5 +2763,111 @@ mod tests {
         assert!(requests[1].url.ends_with("?sendUpdates=none"));
         assert_eq!(done.changes.removed, ["inv"]);
         assert!(store.load_events(ME, &["inv".into()]).unwrap().is_empty());
+    }
+    #[test]
+    fn invites_resolve_by_uid_cached_or_from_google() {
+        use crate::data::{Body, Folder, Invite, InviteMethod, Message, Thread};
+        let invite_json = r#"{"id":"inv9","etag":"\"v\"","status":"confirmed","summary":"[Pigeon test] Planning",
+            "iCalUID":"plan-uid@google.com","organizer":{"email":"boss@example.com"},
+            "start":{"dateTime":"2026-10-28T10:00:00-07:00"},"end":{"dateTime":"2026-10-28T11:00:00-07:00"},
+            "attendees":[{"email":"boss@example.com","organizer":true,"responseStatus":"accepted"},
+                         {"email":"me@example.com","self":true,"responseStatus":"needsAction"}]}"#;
+        let store = seeded(&[]);
+        let thread_with = |uid: &str| {
+            let mut message = Message::new(Contact {
+                name: "Boss".into(),
+                email: "boss@example.com".into(),
+            });
+            message.id = format!("m-{uid}");
+            message.body = Body::Loaded {
+                html: "<p>Invite</p>".into(),
+            };
+            message.invite = Some(Invite {
+                event_id: String::new(),
+                method: InviteMethod::Request,
+                ical_uid: uid.into(),
+                details: None,
+            });
+            Thread::local(
+                format!("t-{uid}"),
+                "Invite".into(),
+                Folder::Inbox,
+                vec![message],
+                None,
+            )
+        };
+        store
+            .put_threads(
+                ME,
+                &[
+                    thread_with("plan-uid@google.com"),
+                    thread_with("e1@google.com"),
+                ],
+            )
+            .unwrap();
+        let invite_of = |thread: &str| {
+            store.load_threads(ME, &[thread.to_string()]).unwrap()[0].messages[0]
+                .invite
+                .clone()
+                .unwrap()
+        };
+        assert_eq!(invite_of("t-plan-uid@google.com").event_id, "");
+
+        // Cached: resolved by the store, no request.
+        let cached = SINGLE.replace(
+            r#""status":"confirmed""#,
+            r#""status":"confirmed","iCalUID":"e1@google.com""#,
+        );
+        let raw: Value = serde_json::from_str(&cached).unwrap();
+        let Some(Item::Event(e)) = event_from_google(&raw, CAL, None, &zone()) else {
+            panic!()
+        };
+        store
+            .put_google_events(ME, &[(e, raw.to_string())])
+            .unwrap();
+        assert_eq!(invite_of("t-e1@google.com").event_id, "e1");
+        assert_eq!(store.events_with_uid(ME, "e1@google.com").unwrap(), ["e1"]);
+
+        // Not cached: events.list iCalUID= on the primary calendar.
+        let page = format!(r#"{{"items":[{invite_json}]}}"#);
+        let fake = FakeTransport::new().on(
+            "GET",
+            "/calendar/v3/calendars/primary/events",
+            &[("iCalUID", "plan-uid%40google.com")],
+            &[(200, page.as_str())],
+        );
+        let changes =
+            fetch_by_ical_uid_at(&fake, &store, ME, "plan-uid@google.com", &zone(), now()).unwrap();
+        assert_eq!(changes.changed, ["inv9"]);
+        assert_eq!(fake.requests().len(), 1);
+        assert_eq!(invite_of("t-plan-uid@google.com").event_id, "inv9");
+        assert_eq!(
+            store
+                .threads_with_invite(ME, "plan-uid@google.com")
+                .unwrap(),
+            ["t-plan-uid@google.com"]
+        );
+        let event = stored(&store, "inv9");
+        assert_eq!(event.my_status(ME), Some(RsvpStatus::NeedsAction));
+
+        // Google has none: nothing changes.
+        let fake = FakeTransport::new().on(
+            "GET",
+            "/calendar/v3/calendars/primary/events",
+            &[],
+            &[(200, r#"{"items":[]}"#)],
+        );
+        let changes =
+            fetch_by_ical_uid_at(&fake, &store, ME, "gone@google.com", &zone(), now()).unwrap();
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn removing_a_cancelled_invite_tells_nobody() {
+        let fake = FakeTransport::new().on("DELETE", &format!("{CAL_PATH}/inv"), &[], &[(410, "")]);
+        remove_own_copy(&fake, CAL, "inv").unwrap();
+        let requests = fake.requests();
+        assert_eq!(requests.len(), 1, "no decline first");
+        assert!(requests[0].url.ends_with("?sendUpdates=none"));
     }
 }

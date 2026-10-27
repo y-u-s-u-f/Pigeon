@@ -1,10 +1,10 @@
 //! The reading pane: toolbar, subject, and the thread as a conversation.
 
-use std::rc::Rc;
+use std::{rc::Rc, sync::Arc};
 
 use gpui::{
     AnyElement, Context, ElementId, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, Window, base::TextSelection,
+    SharedString, StatefulInteractiveElement, Styled, Window, base::TextSelection,
     component::scroll::ScrollableElement as _, div, prelude::FluentBuilder as _, px, relative,
 };
 
@@ -21,6 +21,7 @@ use crate::{
     assets::Icon,
     data::{Body, Contact, Folder, Message, Thread, file_size, full_date},
     html::Document,
+    settings::RemoteImages,
     theme::Theme,
 };
 
@@ -419,6 +420,7 @@ impl PigeonApp {
         });
         let folds = has_card && body.blocks.iter().any(super::invite::is_invite_summary);
         let show_all = !folds || self.invite_details_open;
+        let images_bar = self.message_images(message, &body, cx);
 
         let attachments = message
             .attachments
@@ -567,9 +569,13 @@ impl PigeonApp {
                             .as_ref()
                             .map(|invite| self.render_invite(invite, theme, cx)),
                     )
+                    .when_some(images_bar, |this, hidden| {
+                        this.child(render_images_bar(ix, &message.id, hidden, theme, cx))
+                    })
                     .child(match &message.body {
                         Body::Loaded { .. } => {
-                            render_body(&body, show_all, selection, theme).into_any_element()
+                            render_body(&body, show_all, selection, &self.images, theme)
+                                .into_any_element()
                         }
                         Body::Failed(reason) => render_body_failed(ix, reason, theme),
                         Body::NotLoaded | Body::Loading => render_body_loading(theme),
@@ -812,6 +818,7 @@ fn render_body(
     doc: &Document,
     all: bool,
     selection: html_view::Selection,
+    images: &html_view::LoadedImages,
     theme: &Theme,
 ) -> impl IntoElement {
     div()
@@ -822,8 +829,138 @@ fn render_body(
             doc,
             theme,
             Some(selection),
+            Some(images),
             |block| all || !super::invite::is_invite_summary(block),
         ))
+}
+
+// Remote images (W10, ATT-1).
+
+impl PigeonApp {
+    /// A message's remote images: fetched (after this frame) once the user
+    /// let them load, or always per the setting. Returns how many are
+    /// hidden when the "Load images" bar should ask.
+    fn message_images(
+        &self,
+        message: &Message,
+        body: &Document,
+        cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        if !matches!(message.body, Body::Loaded { .. }) || self.backend.read(cx).is_demo() {
+            return None;
+        }
+        let remote = crate::html::remote_images(body);
+        if remote.is_empty() {
+            return None;
+        }
+        let setting = self.remote_images_setting();
+        let allowed = setting == RemoteImages::Always || self.images.allowed.contains(&message.id);
+        if !allowed {
+            return (setting == RemoteImages::Ask).then_some(remote.len());
+        }
+        let missing: Vec<SharedString> = remote
+            .into_iter()
+            .filter(|url| !self.images.requested.contains(url))
+            .collect();
+        if !missing.is_empty() {
+            let this = cx.entity().downgrade();
+            cx.defer(move |cx| {
+                this.update(cx, |this, cx| this.fetch_images(missing, cx))
+                    .ok();
+            });
+        }
+        None
+    }
+
+    /// Let a message's remote images load.
+    pub(crate) fn allow_images(&mut self, message_id: &str, cx: &mut Context<Self>) {
+        if self.images.allowed.insert(message_id.to_string()) {
+            cx.notify();
+        }
+    }
+
+    fn fetch_images(&mut self, mut urls: Vec<SharedString>, cx: &mut Context<Self>) {
+        urls.retain(|url| self.images.requested.insert(url.clone()));
+        if urls.is_empty() {
+            return;
+        }
+        let task = self.backend.update(cx, |b, cx| {
+            b.fetch_images(urls.iter().map(|u| u.to_string()).collect(), cx)
+        });
+        cx.spawn(async move |this, cx| {
+            let fetched = task.await;
+            this.update(cx, |this, cx| {
+                for (url, image) in fetched {
+                    let Some(image) = image else { continue };
+                    let Some(format) = gpui::ImageFormat::from_mime_type(image.mime) else {
+                        continue;
+                    };
+                    this.images.ready.insert(
+                        url.into(),
+                        html_view::ReadyImage {
+                            image: Arc::new(gpui::Image::from_bytes(format, image.bytes)),
+                            width: image.width as f32,
+                            height: image.height as f32,
+                        },
+                    );
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+
+/// Above a message whose remote images wait for the user (ATT-1).
+fn render_images_bar(
+    ix: usize,
+    message_id: &str,
+    hidden: usize,
+    theme: &Theme,
+    cx: &mut Context<PigeonApp>,
+) -> AnyElement {
+    let id = message_id.to_string();
+    div()
+        .id(("images-bar", ix))
+        .role(gpui::Role::Region)
+        .aria_label("Remote images hidden")
+        .mb(SPACE_MD)
+        .px(SPACE_MD)
+        .py(SPACE_SM)
+        .flex()
+        .items_center()
+        .gap(SPACE_SM)
+        .rounded(RADIUS_MD)
+        .bg(theme.chip_bg)
+        .text_size(TEXT_SM)
+        .text_color(theme.text_muted)
+        .child(icon(Icon::Image, px(14.), theme.text_faint))
+        .child(div().flex_1().min_w_0().child(match hidden {
+            1 => "1 remote image is hidden to protect your privacy".to_string(),
+            n => format!("{n} remote images are hidden to protect your privacy"),
+        }))
+        .child(
+            focusable_control(div().id(("images-load", ix)), theme)
+                .role(gpui::Role::Button)
+                .aria_label("Load images")
+                .flex_none()
+                .h(HIT_TARGET)
+                .px(SPACE_MD)
+                .flex()
+                .items_center()
+                .gap(SPACE_SM)
+                .rounded(RADIUS_MD)
+                .border_1()
+                .border_color(theme.border)
+                .hover(|s| s.bg(theme.selected_bg))
+                .text_color(theme.text)
+                .font_weight(FontWeight::MEDIUM)
+                .child("Load images")
+                .child(super::keycap("⇧⌘I", theme))
+                .on_click(cx.listener(move |this, _, _, cx| this.allow_images(&id, cx))),
+        )
+        .into_any_element()
 }
 
 /// In place of a body still on its way (RDR-6).

@@ -5,8 +5,11 @@
 
 mod calendar;
 mod contacts;
+mod images;
 mod mail;
 mod outbox;
+
+pub use images::IMAGE_CACHE_CAP;
 
 use std::{
     path::Path,
@@ -131,6 +134,8 @@ impl Store {
                 [account],
             )?;
         }
+        // W10: images aren't per account; none outlive a sign-out.
+        tx.execute("DELETE FROM images", [])?;
         tx.commit()?;
         Ok(())
     }

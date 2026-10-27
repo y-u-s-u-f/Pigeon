@@ -23,6 +23,7 @@ pub mod demo;
 pub mod gmail;
 pub mod health;
 pub mod http;
+pub mod images;
 pub mod mime;
 pub mod outbox;
 pub mod people;

@@ -1,12 +1,16 @@
 //! Renders a parsed email body (`crate::html`) as native GPUI elements.
 
-use std::rc::Rc;
+use std::{
+    collections::{HashMap, HashSet},
+    rc::Rc,
+    sync::Arc,
+};
 
 use gpui::{
     AnyElement, Div, FontStyle, FontWeight, HighlightStyle, Hsla, InteractiveElement as _,
     InteractiveText, IntoElement, ParentElement, SharedString, StatefulInteractiveElement as _,
-    StrikethroughStyle, Styled, StyledText, UnderlineStyle, base::TextSelection,
-    component::tooltip::Tooltip, div, prelude::FluentBuilder as _, px, relative,
+    StrikethroughStyle, Styled, StyledImage as _, StyledText, UnderlineStyle, base::TextSelection,
+    component::tooltip::Tooltip, div, img, prelude::FluentBuilder as _, px, relative,
 };
 
 use super::selectable::{OnClear, Selectable};
@@ -20,7 +24,25 @@ const MONO: &str = "Menlo";
 const BLOCK_GAP: gpui::Pixels = SPACE_MD;
 
 pub fn render(doc: &Document, theme: &Theme) -> impl IntoElement {
-    render_filtered(doc, theme, None, |_| true)
+    render_filtered(doc, theme, None, None, |_| true)
+}
+
+/// Remote images (ATT-1): the messages whose images the user let load, and
+/// the images fetched so far, by address.
+#[derive(Default)]
+pub struct LoadedImages {
+    /// Message ids.
+    pub allowed: HashSet<String>,
+    /// Addresses asked for, loaded or not, so each goes out once.
+    pub requested: HashSet<SharedString>,
+    pub ready: HashMap<SharedString, ReadyImage>,
+}
+
+pub struct ReadyImage {
+    pub image: Arc<gpui::Image>,
+    /// Its size in pixels.
+    pub width: f32,
+    pub height: f32,
 }
 
 /// Makes a rendered document's text selectable.
@@ -36,6 +58,7 @@ pub fn render_filtered(
     doc: &Document,
     theme: &Theme,
     selection: Option<Selection>,
+    images: Option<&LoadedImages>,
     keep: impl Fn(&Block) -> bool,
 ) -> impl IntoElement {
     let mut renderer = Renderer {
@@ -44,6 +67,7 @@ pub fn render_filtered(
         list_depth: 0,
         selection,
         next_text: 0,
+        images,
     };
     let blocks = doc
         .blocks
@@ -63,6 +87,8 @@ struct Renderer<'a> {
     selection: Option<Selection>,
     /// Counts the selectable texts, for their ids and reading order.
     next_text: u64,
+    /// The images loaded; the rest show as placeholders.
+    images: Option<&'a LoadedImages>,
 }
 
 impl Renderer<'_> {
@@ -147,8 +173,56 @@ impl Renderer<'_> {
                 .child(self.blocks(blocks, BLOCK_GAP))
                 .into_any_element(),
             Block::Table(table) => self.table(table),
-            // Remote images aren't loaded (see ATT-1 in `docs/ROADMAP.md`).
-            Block::Image { alt } => div()
+            Block::Image {
+                alt,
+                src,
+                width,
+                height,
+                link,
+                align,
+            } if self.images.is_some_and(|i| i.ready.contains_key(src)) => {
+                let ready = &self.images.expect("checked").ready[src];
+                let shown_width = width.unwrap_or(ready.width).max(1.);
+                let ratio = match (width, height) {
+                    (Some(w), Some(h)) if *h > 0. => w / h,
+                    _ => ready.width / ready.height.max(1.),
+                };
+                let id = self.next_id;
+                self.next_id += 1;
+                let picture = div()
+                    .id(("html-image", id))
+                    .role(gpui::Role::Image)
+                    .aria_label(if alt.is_empty() {
+                        SharedString::from("Image")
+                    } else {
+                        alt.clone()
+                    })
+                    .w_full()
+                    .max_w(px(shown_width))
+                    .aspect_ratio(ratio)
+                    .child(
+                        img(ready.image.clone())
+                            .size_full()
+                            .object_fit(gpui::ObjectFit::Contain),
+                    )
+                    .when_some(link.clone(), |d, url| {
+                        let tip = url.clone();
+                        d.cursor_pointer()
+                            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                            .on_click(move |_, _, cx| cx.open_url(&url))
+                    });
+                div()
+                    .flex()
+                    .map(|d| match align {
+                        Align::Left => d,
+                        Align::Center => d.justify_center(),
+                        Align::Right => d.justify_end(),
+                    })
+                    .child(picture)
+                    .into_any_element()
+            }
+            // Not loaded: remote ones wait for the user (ATT-1).
+            Block::Image { alt, .. } => div()
                 .max_w_full()
                 .flex()
                 .items_center()

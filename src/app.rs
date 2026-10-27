@@ -167,6 +167,10 @@ pub struct PigeonApp {
     pub list_state: ListState,
     pub reader_scroll: ScrollHandle,
     pub html_cache: crate::html::HtmlCache,
+    /// Remote images let load and fetched (W10, ATT-1).
+    pub images: ui::html_view::LoadedImages,
+    /// Invitations' UIDs already looked up in Google Calendar (W10, CAL-20).
+    pub invite_lookups: HashSet<String>,
     /// The reading pane has keyboard focus (after `o`): arrows scroll it and
     /// escape returns to the list.
     pub reader_focused: bool,
@@ -301,6 +305,8 @@ impl PigeonApp {
             list_state: ListState::new(0, ListAlignment::Top, px(400.)),
             reader_scroll: ScrollHandle::new(),
             html_cache: Default::default(),
+            images: Default::default(),
+            invite_lookups: Default::default(),
             reader_focused: false,
             focus_handle,
             palette: None,
@@ -758,11 +764,28 @@ impl PigeonApp {
         self.backend.update(cx, |b, cx| b.fetch_body(&id, cx));
     }
 
+    /// W10 (ATT-1): load the selected conversation's remote images.
     fn load_images(&mut self, _: &LoadImages, _: &mut Window, cx: &mut Context<Self>) {
-        // W10 (ATT-1): load the selected message's remote images.
         if self.backend.read(cx).is_demo() {
-            self.show_toast("Loading remote images isn't available yet", None, cx);
+            self.show_toast("Remote images don't load on the placeholder data", None, cx);
+            return;
         }
+        let Some(ix) = self.selected else {
+            return;
+        };
+        let ids: Vec<String> = self.data.threads[ix]
+            .messages
+            .iter()
+            .map(|m| m.id.clone())
+            .collect();
+        for id in ids {
+            self.allow_images(&id, cx);
+        }
+    }
+
+    /// Settings › Images (ATT-1).
+    pub(crate) fn remote_images_setting(&self) -> crate::settings::RemoteImages {
+        self.saved.remote_images
     }
 
     fn load_older(&mut self, _: &LoadOlderConversations, _: &mut Window, cx: &mut Context<Self>) {

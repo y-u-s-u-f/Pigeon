@@ -3,6 +3,9 @@
 //! Maybe / No. A cancellation gets a muted card that removes the event.
 //! Answers go to the calendar (`CalendarView::set_rsvp`), so the grid shows
 //! them, and the card reads the calendar, so answers given there show here.
+//! An invitation whose event isn't stored is looked up in Google Calendar
+//! by its UID; until then, or if it isn't there, a read-only card shows what
+//! the invitation's iCalendar part says (CAL-20).
 
 use chrono::{Duration, NaiveDateTime};
 use gpui::{
@@ -23,7 +26,7 @@ use crate::{
         occurrences,
         time::{self, date_label, time_range_label},
     },
-    data::{Invite, InviteMethod},
+    data::{Invite, InviteDetails, InviteMethod},
     theme::Theme,
     ui::calendar::{next_start, today},
 };
@@ -103,23 +106,70 @@ impl PigeonApp {
         else {
             return;
         };
-        self.calendar
-            .update(cx, |c, cx| c.delete_event(&invite.event_id, window, cx));
-        // Deleting can hand focus to the calendar, which isn't showing.
+        // Only the user's copy goes, and nobody is told: the organizer
+        // called it off already (CAL-20). The card then says it's removed.
+        if self
+            .calendar
+            .read(cx)
+            .data
+            .event_ix(&invite.event_id)
+            .is_none()
+        {
+            return;
+        }
+        self.backend
+            .update(cx, |b, cx| b.remove_cancelled_event(&invite.event_id, cx));
         window.focus(&self.focus_handle, cx);
         cx.notify();
+    }
+
+    /// Ask Google Calendar for an invitation's event that isn't stored,
+    /// once per UID (CAL-20). Not for a cancellation: Google lists no
+    /// cancelled events, so there's nothing to find.
+    fn look_up_invite(&self, invite: &Invite, cx: &mut Context<Self>) {
+        if invite.method == InviteMethod::Cancel
+            || invite.ical_uid.is_empty()
+            || self.invite_lookups.contains(&invite.ical_uid)
+            || self.backend.read(cx).is_demo()
+        {
+            return;
+        }
+        let uid = invite.ical_uid.clone();
+        let this = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            this.update(cx, |this, cx| {
+                if this.invite_lookups.insert(uid.clone()) {
+                    this.backend
+                        .update(cx, |b, cx| b.find_invite_event(&uid, cx));
+                }
+            })
+            .ok();
+        });
     }
 
     pub(crate) fn render_invite(
         &self,
         invite: &Invite,
         theme: &Theme,
-        cx: &Context<Self>,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
+        if self
+            .calendar
+            .read(cx)
+            .data
+            .event_ix(&invite.event_id)
+            .is_none()
+        {
+            self.look_up_invite(invite, cx);
+        }
+        let cx: &Context<Self> = cx;
         let calendar = self.calendar.read(cx);
         let data = &calendar.data;
         let event = data.event_ix(&invite.event_id).map(|ix| &data.events[ix]);
         let Some(event) = event else {
+            if let Some(details) = &invite.details {
+                return render_ics_card(invite.method, details, theme);
+            }
             let text = match invite.method {
                 InviteMethod::Request => "This event is no longer in your calendar.",
                 InviteMethod::Cancel => "Removed from your calendar.",
@@ -200,24 +250,7 @@ impl PigeonApp {
             .when(cancelled, |d| d.line_through().text_color(theme.text_muted))
             .child(event.display_title().to_string());
 
-        let when = if event.all_day {
-            let last = (end - Duration::days(1)).date().max(start.date());
-            if last == start.date() {
-                format!("{} · All day", date_label(start.date(), today()))
-            } else {
-                format!(
-                    "{} – {}",
-                    date_label(start.date(), today()),
-                    date_label(last, today())
-                )
-            }
-        } else {
-            format!(
-                "{} · {}",
-                date_label(start.date(), today()),
-                time_range_label(start.time(), end.time())
-            )
-        };
+        let when = when_label(start, end, event.all_day);
         let detail = |glyph: Icon, text: String| {
             div()
                 .flex()
@@ -629,6 +662,113 @@ impl PigeonApp {
                 .into_any_element(),
         )
     }
+}
+
+/// "Tomorrow · 10:00 – 11:00 AM", or the days of an all-day event.
+fn when_label(start: NaiveDateTime, end: NaiveDateTime, all_day: bool) -> String {
+    if all_day {
+        let last = (end - Duration::days(1)).date().max(start.date());
+        if last == start.date() {
+            format!("{} · All day", date_label(start.date(), today()))
+        } else {
+            format!(
+                "{} – {}",
+                date_label(start.date(), today()),
+                date_label(last, today())
+            )
+        }
+    } else {
+        format!(
+            "{} · {}",
+            date_label(start.date(), today()),
+            time_range_label(start.time(), end.time())
+        )
+    }
+}
+
+/// An invitation whose event isn't in the calendar: what its iCalendar
+/// part says, with nothing to answer (CAL-20).
+fn render_ics_card(method: InviteMethod, details: &InviteDetails, theme: &Theme) -> AnyElement {
+    let cancelled = method == InviteMethod::Cancel;
+    let line = |glyph: Icon, text: String| {
+        div()
+            .flex()
+            .items_center()
+            .gap(SPACE_SM)
+            .min_w_0()
+            .text_size(TEXT_BASE)
+            .text_color(theme.text_muted)
+            .child(icon(glyph, px(14.), theme.text_faint))
+            .child(div().min_w_0().truncate().child(text))
+    };
+    let when = details.start.map(|start| {
+        let end = details.end.unwrap_or(start).max(start);
+        when_label(start, end, details.all_day)
+    });
+    let organizer = if details.organizer.email.is_empty() {
+        None
+    } else {
+        Some(details.organizer.display_name().to_string())
+    };
+    let title = if details.title.trim().is_empty() {
+        "(No title)".to_string()
+    } else {
+        details.title.clone()
+    };
+    card(theme.text_faint, theme)
+        .id("invite-ics")
+        .role(gpui::Role::Region)
+        .aria_label(format!(
+            "{}: {title}",
+            if cancelled { "Cancelled" } else { "Invitation" }
+        ))
+        .child(
+            div()
+                .text_size(TEXT_XS)
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(if cancelled {
+                    theme.danger
+                } else {
+                    theme.text_faint
+                })
+                .child(if cancelled { "CANCELLED" } else { "INVITATION" }),
+        )
+        .child(
+            div()
+                .mt(SPACE_XS)
+                .text_size(TEXT_LG)
+                .font_weight(FontWeight::SEMIBOLD)
+                .line_height(relative(1.3))
+                .when(cancelled, |d| d.line_through().text_color(theme.text_muted))
+                .child(title),
+        )
+        .child(
+            div()
+                .mt(SPACE_MD)
+                .flex()
+                .flex_col()
+                .gap(SPACE_SM)
+                .children(when.map(|w| line(Icon::Clock, w)))
+                .when(!details.location.is_empty(), |d| {
+                    d.child(line(Icon::MapPin, details.location.clone()))
+                })
+                .children(organizer.map(|o| line(Icon::Users, format!("Organized by {o}")))),
+        )
+        .child(
+            div()
+                .mt(SPACE_MD)
+                .pt(SPACE_MD)
+                .border_t_1()
+                .border_color(theme.border)
+                .text_size(TEXT_SM)
+                .text_color(theme.text_faint)
+                .child(if cancelled {
+                    "Not in your calendar."
+                } else {
+                    "Not in your calendar, so it can't be answered here."
+                }),
+        )
+        .into_any_element()
 }
 
 /// A line of an invitation's body that its card already shows: "When: …",

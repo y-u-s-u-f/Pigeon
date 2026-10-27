@@ -266,6 +266,22 @@ pub struct Invite {
     /// The `text/calendar` part's UID.
     #[serde(default)]
     pub ical_uid: String,
+    /// What the `text/calendar` part itself says, for a read-only card
+    /// when the event isn't in the calendar (CAL-20).
+    #[serde(default)]
+    pub details: Option<InviteDetails>,
+}
+
+/// An invitation's event as its iCalendar part describes it. Times are
+/// local wall times.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct InviteDetails {
+    pub title: String,
+    pub start: Option<chrono::NaiveDateTime>,
+    pub end: Option<chrono::NaiveDateTime>,
+    pub all_day: bool,
+    pub location: String,
+    pub organizer: Contact,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
