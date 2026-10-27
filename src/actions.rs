@@ -26,7 +26,11 @@ use crate::{
     search,
     ui::{
         calendar::{self, GoToDate, NextDay, PrevDay, ToggleWeekNumbers, event_panel},
-        command_palette, composer,
+        command_palette,
+        composer::{
+            self, BulletedList, ClearFormatting, FormatBold, FormatCode, FormatItalic,
+            FormatStrikethrough, FormatUnderline, InsertLink, NumberedList, QuoteLines,
+        },
     },
 };
 
@@ -249,6 +253,24 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-z", Undo, Some(MAIL)),
         KeyBinding::new("tab", composer::NextField, Some(COMPOSER)),
         KeyBinding::new("shift-tab", composer::PrevField, Some(COMPOSER)),
+        // Formatting the body, like Gmail. The composer passes them on from
+        // its other fields, so there ⌘K is still the palette and ⌘\ the
+        // sidebar. On a US layout ⌘⇧7 arrives as ⌘&, and so on.
+        KeyBinding::new("cmd-b", composer::FormatBold, Some(COMPOSER)),
+        KeyBinding::new("cmd-i", composer::FormatItalic, Some(COMPOSER)),
+        KeyBinding::new("cmd-u", composer::FormatUnderline, Some(COMPOSER)),
+        KeyBinding::new("cmd-shift-x", composer::FormatStrikethrough, Some(COMPOSER)),
+        KeyBinding::new("cmd-e", composer::FormatCode, Some(COMPOSER)),
+        KeyBinding::new("cmd-k", composer::InsertLink, Some(COMPOSER)),
+        KeyBinding::new("cmd-&", composer::NumberedList, Some(COMPOSER)),
+        KeyBinding::new("cmd-*", composer::BulletedList, Some(COMPOSER)),
+        KeyBinding::new("cmd-(", composer::QuoteLines, Some(COMPOSER)),
+        KeyBinding::new("cmd-\\", composer::ClearFormatting, Some(COMPOSER)),
+        // The editor takes these itself, so they bind inside it, where they
+        // win; the composer passes them on outside lists.
+        KeyBinding::new("enter", composer::BodyEnter, Some(COMPOSER_INPUT)),
+        KeyBinding::new("tab", composer::BodyIndent, Some(COMPOSER_INPUT)),
+        KeyBinding::new("shift-tab", composer::BodyOutdent, Some(COMPOSER_INPUT)),
         KeyBinding::new("down", composer::SuggestNext, Some(RECIPIENTS_INPUT)),
         KeyBinding::new("up", composer::SuggestPrev, Some(RECIPIENTS_INPUT)),
         KeyBinding::new("ctrl-n", composer::SuggestNext, Some(RECIPIENTS_INPUT)),
@@ -485,6 +507,16 @@ pub const COMMANDS: &[Command] = commands! {
     Compose: "Show Cc and Bcc", Mail, ShowCcBcc if Draft;
     Compose: "Close Draft (Saves to Drafts)", FilePen, CloseDraft if Draft;
     Compose: "Discard Draft", Trash, DiscardDraft if Draft;
+    Compose: "Bold", Bold, FormatBold if Draft;
+    Compose: "Italic", Italic, FormatItalic if Draft;
+    Compose: "Underline", Underline, FormatUnderline if Draft;
+    Compose: "Strikethrough", Strikethrough, FormatStrikethrough if Draft;
+    Compose: "Code", Code, FormatCode if Draft;
+    Compose: "Insert Link", Link, InsertLink if Draft;
+    Compose: "Bulleted List", List, BulletedList if Draft;
+    Compose: "Numbered List", ListOrdered, NumberedList if Draft;
+    Compose: "Quote", TextQuote, QuoteLines if Draft;
+    Compose: "Clear Formatting", RemoveFormatting, ClearFormatting if Draft;
     Conversation: "Undo", Undo, Undo if Undo;
     Conversation: "Archive", Archive, Archive if Thread;
     Conversation: "Delete", Trash, Delete if Thread;

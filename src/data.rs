@@ -94,6 +94,8 @@ pub struct Thread {
 #[derive(Clone, Debug)]
 pub struct DraftOrigin {
     pub kind: ComposeKind,
+    /// The body as typed, in markdown; the message holds it as HTML.
+    pub markdown: String,
     /// The thread a reply answers, by id.
     pub reply_to: Option<String>,
     pub quoted: Option<Quote>,

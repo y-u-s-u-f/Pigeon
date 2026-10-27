@@ -4,6 +4,7 @@ mod assets;
 mod calendar;
 mod data;
 mod html;
+mod markdown;
 mod search;
 mod theme;
 mod ui;

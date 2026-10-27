@@ -4582,6 +4582,7 @@ dependencies = [
  "chrono",
  "gpui-kit",
  "html5ever",
+ "markdown",
  "markup5ever_rcdom",
  "nucleo-matcher",
  "serde",

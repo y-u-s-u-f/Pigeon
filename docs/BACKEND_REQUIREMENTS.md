@@ -344,19 +344,19 @@ Drafts are described in section 7. Undo of a send is described in section 8.
 - **Backend needs:** Bcc must be sent in the envelope only, not in the message headers. Gmail: the `raw` message is built without Bcc. SMTP: `RCPT TO` for Bcc recipients.
 - **Notes:** The Bcc addresses are kept on the saved draft and on the sent message, but the reader does not show them (see RDR-4).
 
-### CMP-7 Subject and plain-text body
+### CMP-7 Subject and formatted body
 
-- **Feature:** Subject field (not shown for replies, which keep the thread's subject). Body is a plain text editor that grows as you type. Pressing `Tab` moves focus between fields.
-- **Today:** `Composer` in `src/ui/composer.rs`. The body is saved as HTML built by `html::from_plain_text()`. Forward quotes are added with `html()` in `Composer`.
-- **Backend needs:** Build a MIME message: `text/plain` and `text/html` in `multipart/alternative`. Set `Content-Type` and encode non-ASCII subjects and names correctly.
-- **Notes:** There is no formatting toolbar. Rich text is not built (not listed as a feature). Subject is stored on the thread, so a reply that changes it does not change the thread's subject.
+- **Feature:** Subject field (not shown for replies, which keep the thread's subject). The body is written in markdown and styled as you type (bold, italic, strikethrough, `<u>underline</u>`, code, headings, lists, quotes, links); the syntax stays visible, dimmed. A formatting bar above the send row and Gmail's shortcuts (`cmd-b`, `cmd-i`, `cmd-u`, `cmd-shift-x`, `cmd-e` code, `cmd-k` link, `cmd-shift-7` / `8` / `9` numbered list, bulleted list, quote, `cmd-\` clear formatting) wrap or unwrap the selection. Enter continues a list, Tab and Shift-Tab indent it. Elsewhere `Tab` moves focus between fields.
+- **Today:** `Composer` in `src/ui/composer.rs`, with the editor in `src/ui/rich_editor.rs` and the markdown helpers in `src/markdown.rs`. On send and on saving a draft the body becomes HTML with `markdown::to_html()` (`DraftContent::body_html()`); forward quotes are added with `html()` in `Composer`. The message's `html` is that HTML, so the reader shows it formatted.
+- **Backend needs:** Build a MIME message: `text/plain` and `text/html` in `multipart/alternative`. The HTML part is `Message::html`. The plain part should be the markdown as typed (readable as is) or the HTML's text (`html::plain_text`); pick one and use it for the snippet too. Set `Content-Type` and encode non-ASCII subjects and names correctly.
+- **Notes:** Raw HTML typed into the body is sent as text, except `<u>` and `</u>`. Images can't be inserted. Subject is stored on the thread, so a reply that changes it does not change the thread's subject.
 
 ### CMP-8 Send
 
 - **Feature:** Shortcut `cmd-enter`, from anywhere in the draft or the list. Send button in the composer footer. Palette "Send". The draft closes, the message goes to Sent (or is added to the thread for a reply), and a "Message sent" toast appears with Undo for 5 seconds (see UND-1).
 - **Today:** In memory. `send_message()` in `src/app.rs` builds the message with `message_from()` and changes `data.threads`. Nothing leaves the app.
 - **Backend needs:** Send through the account's provider. Gmail: `messages.send` with the `raw` message (or `drafts.send`). IMAP: SMTP `MAIL FROM`, `RCPT TO`, `DATA`, plus the sent copy (CMP-13). The UI must not show "sent" until the server accepts the message. See the notes below and UND-1.
-- **Notes:** The undo window (5 seconds, `TOAST_DURATION` in `src/app.rs`) means the real send can be held for that time. Otherwise undo can only cancel a message that has already gone. `message_from()` sets `date` to the local clock and `snippet` to the first 140 characters of the plain body. The server should set the real date, and the snippet should come from the same text.
+- **Notes:** The undo window (5 seconds, `TOAST_DURATION` in `src/app.rs`) means the real send can be held for that time. Otherwise undo can only cancel a message that has already gone. `message_from()` sets `date` to the local clock and `snippet` to the first 140 characters of the body's text (its HTML without tags, so no markdown syntax). The server should set the real date, and the snippet should come from the same text.
 
 ### CMP-9 Send validation
 
@@ -414,9 +414,9 @@ Drafts are described in section 7. Undo of a send is described in section 8.
 ### DRF-3 Open and edit a draft
 
 - **Feature:** Selecting a Drafts thread opens it in the composer, with the title "Draft". Edits follow DRF-1.
-- **Today:** `open_draft()` in `src/app.rs` rebuilds the composer from the stored message. The body is taken from the draft's HTML as plain text (`html::plain_text`). The draft's kind, reply target and forwarded quote are kept in `DraftOrigin` on the thread (`src/data.rs`), so reopening restores the same kind and quote block. A forward draft reopens as a forward, and sending it creates a new thread (CMP-4).
-- **Backend needs:** Fetch the draft's full content, including attachments and headers, when it is opened.
-- **Notes:** Replying again to a thread that has a reply draft reopens that draft instead of starting a second one (`reply_draft_of()` in `src/app.rs`); the backend must keep the draft's link to its thread. Attachments on drafts keep only their metadata (ATT-6). Rich HTML is lost on reopening. The forwarded quote is not in the draft's body, so draft search does not match text that only appears in the quote. The backend's draft storage should keep the quote as a separate part, as the app does now.
+- **Today:** `open_draft()` in `src/app.rs` rebuilds the composer from the stored message. A draft saved here keeps its body as typed, in markdown, on `DraftOrigin::markdown` (`src/data.rs`), and reopens with it; the message's `html` is made from it. A draft from the JSON has no markdown, so its body is taken from its HTML as plain text (`html::plain_text`). The draft's kind, reply target and forwarded quote are kept in `DraftOrigin` on the thread (`src/data.rs`), so reopening restores the same kind and quote block. A forward draft reopens as a forward, and sending it creates a new thread (CMP-4).
+- **Backend needs:** Fetch the draft's full content, including attachments and headers, when it is opened. Store the markdown with the draft so formatting survives reopening: for example as the `text/plain` part, or a custom header or part that other clients ignore. Drafts written in other clients have only HTML and reopen as plain text, losing their formatting, unless HTML is converted to markdown.
+- **Notes:** Replying again to a thread that has a reply draft reopens that draft instead of starting a second one (`reply_draft_of()` in `src/app.rs`); the backend must keep the draft's link to its thread. Attachments on drafts keep only their metadata (ATT-6). The HTML of drafts written elsewhere is lost on reopening (see above). The forwarded quote is not in the draft's body, so draft search does not match text that only appears in the quote. The backend's draft storage should keep the quote as a separate part, as the app does now.
 
 ### DRF-4 Discard a draft
 
@@ -1057,7 +1057,7 @@ Backend status is "Not started" for every item, because no backend code exists. 
 | CMP-4 Forward | Compose & sending | In memory | Not started |
 | CMP-5 Recipient fields | Compose & sending | Local parsing only | Not started |
 | CMP-6 Show Cc and Bcc | Compose & sending | In memory | Not started |
-| CMP-7 Subject and plain-text body | Compose & sending | In memory | Not started |
+| CMP-7 Subject and formatted body | Compose & sending | In memory | Not started |
 | CMP-8 Send | Compose & sending | In memory | Not started |
 | CMP-9 Send validation | Compose & sending | In memory (recipients only) | Not started |
 | CMP-10 Forward quote block | Compose & sending | Local HTML | Not started |

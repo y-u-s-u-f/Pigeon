@@ -4,15 +4,21 @@
 //! (see `PigeonApp`), so they work from the palette too; this view owns only
 //! the editing.
 
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    ops::Range,
+    rc::Rc,
+};
 
 use gpui::{
     AppContext as _, Context, Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable as _,
     FontWeight, InteractiveElement, IntoElement, MouseButton, ParentElement, PathPromptOptions,
     Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled, Subscription,
     Window, actions, anchored,
+    base::input::RopeExt as _,
     component::{
-        input::{Input, InputEvent, InputState, Textarea, TextareaState},
+        ActiveTheme as _,
+        input::{BufferPoint, Editor, EditorState, Input, InputEvent, InputState},
         scroll::ScrollableElement as _,
     },
     deferred, div,
@@ -24,7 +30,10 @@ use nucleo_matcher::{
     pattern::{AtomKind, CaseMatching, Normalization, Pattern},
 };
 
-use super::{attachment_icon, avatar, html_view, icon, keycap};
+use super::{
+    attachment_icon, avatar, html_view, icon, keycap,
+    rich_editor::{self, Palette},
+};
 use crate::ui::style::*;
 use crate::{
     actions::{COMPOSER, DiscardDraft, RECIPIENTS, SendMessage, ShowCcBcc},
@@ -32,6 +41,7 @@ use crate::{
     assets::Icon,
     data::{Attachment, Contact, file_size},
     html::{self, Document},
+    markdown::{self, Edit, Inline, LineKind},
     theme::Theme,
 };
 
@@ -44,8 +54,104 @@ actions!(
         SuggestPrev,
         RemoveLastRecipient,
         DismissSuggestions,
+        // Formatting the body (see `Format`).
+        FormatBold,
+        FormatItalic,
+        FormatUnderline,
+        FormatStrikethrough,
+        FormatCode,
+        InsertLink,
+        BulletedList,
+        NumberedList,
+        QuoteLines,
+        ClearFormatting,
+        // Enter, Tab and Shift-Tab in the body: lists first, then as usual.
+        BodyEnter,
+        BodyIndent,
+        BodyOutdent,
     ]
 );
+
+/// What a formatting button or shortcut does to the body's markdown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+    Inline(Inline),
+    Lines(LineKind),
+    Link,
+    Clear,
+}
+
+impl Format {
+    /// The toolbar, in order: icon, name, action.
+    const TOOLBAR: [(Format, Icon, &'static str); 10] = [
+        (Format::Inline(Inline::Bold), Icon::Bold, "Bold"),
+        (Format::Inline(Inline::Italic), Icon::Italic, "Italic"),
+        (
+            Format::Inline(Inline::Underline),
+            Icon::Underline,
+            "Underline",
+        ),
+        (
+            Format::Inline(Inline::Strike),
+            Icon::Strikethrough,
+            "Strikethrough",
+        ),
+        (Format::Link, Icon::Link, "Link"),
+        (Format::Lines(LineKind::Bullet), Icon::List, "Bulleted list"),
+        (
+            Format::Lines(LineKind::Numbered),
+            Icon::ListOrdered,
+            "Numbered list",
+        ),
+        (Format::Lines(LineKind::Quote), Icon::TextQuote, "Quote"),
+        (Format::Inline(Inline::Code), Icon::Code, "Code"),
+        (Format::Clear, Icon::RemoveFormatting, "Clear formatting"),
+    ];
+
+    fn action(self) -> Box<dyn gpui::Action> {
+        match self {
+            Format::Inline(Inline::Bold) => Box::new(FormatBold),
+            Format::Inline(Inline::Italic) => Box::new(FormatItalic),
+            Format::Inline(Inline::Underline) => Box::new(FormatUnderline),
+            Format::Inline(Inline::Strike) => Box::new(FormatStrikethrough),
+            Format::Inline(Inline::Code) => Box::new(FormatCode),
+            Format::Link => Box::new(InsertLink),
+            Format::Lines(LineKind::Bullet) => Box::new(BulletedList),
+            Format::Lines(LineKind::Numbered) => Box::new(NumberedList),
+            Format::Lines(LineKind::Quote) => Box::new(QuoteLines),
+            Format::Clear => Box::new(ClearFormatting),
+        }
+    }
+}
+
+/// Registers the formatting actions on `el`, each calling `f` with what it
+/// does. The composer handles them while it has focus; the app, for the
+/// palette, when it doesn't.
+pub fn on_format_actions<E: InteractiveElement>(
+    el: E,
+    f: impl Fn(Format, &mut Window, &mut gpui::App) + Clone + 'static,
+) -> E {
+    macro_rules! on {
+        ($el:expr, $($action:ident => $format:expr),*) => {
+            $el$(.on_action({
+                let f = f.clone();
+                move |_: &$action, window, cx| f($format, window, cx)
+            }))*
+        };
+    }
+    on!(el,
+        FormatBold => Format::Inline(Inline::Bold),
+        FormatItalic => Format::Inline(Inline::Italic),
+        FormatUnderline => Format::Inline(Inline::Underline),
+        FormatStrikethrough => Format::Inline(Inline::Strike),
+        FormatCode => Format::Inline(Inline::Code),
+        InsertLink => Format::Link,
+        BulletedList => Format::Lines(LineKind::Bullet),
+        NumberedList => Format::Lines(LineKind::Numbered),
+        QuoteLines => Format::Lines(LineKind::Quote),
+        ClearFormatting => Format::Clear
+    )
+}
 
 const MAX_SUGGESTIONS: usize = 6;
 
@@ -231,6 +337,11 @@ pub struct DraftContent {
 }
 
 impl DraftContent {
+    /// The body as HTML.
+    pub fn body_html(&self) -> String {
+        markdown::to_html(&self.body)
+    }
+
     pub fn has_recipients(&self) -> bool {
         !(self.to.is_empty() && self.cc.is_empty() && self.bcc.is_empty())
     }
@@ -292,12 +403,22 @@ pub struct Composer {
     recipients: [Recipients; 3],
     show_cc_bcc: bool,
     subject: Entity<InputState>,
-    body: Entity<TextareaState>,
+    /// Markdown, styled as it's typed (see `rich_editor`).
+    body: Entity<EditorState>,
+    /// The body's rows when last laid out, to grow it when they change.
+    body_rows: usize,
+    palette: Rc<Cell<Palette>>,
     attachments: Vec<Attachment>,
     /// The problem, and the field it's shown under.
     error: Option<(Field, SharedString)>,
     /// Scrolls the fields of a draft alone in the pane, above its send row.
     scroll: ScrollHandle,
+    /// Scrolls a draft under its conversation: the conversation's.
+    pub outer_scroll: Option<ScrollHandle>,
+    /// The body's caret and length when last seen, to follow the caret.
+    body_caret: (usize, usize),
+    /// Frames left to bring the caret into view; layout can lag an edit.
+    reveal_tries: u8,
     initial: DraftContent,
     book: Rc<ContactBook>,
     _subscriptions: Vec<Subscription>,
@@ -318,7 +439,6 @@ impl Composer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let standalone = !inline;
         let mut subscriptions = Vec::new();
         let recipients = [
             (Field::To, &content.to),
@@ -355,17 +475,38 @@ impl Composer {
                 }
             }),
         );
+        let palette = Rc::new(Cell::new(Palette::new(Theme::of(cx))));
         let body = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .auto_grow(if standalone { 14 } else { 5 }, 100_000)
-                .placeholder(match kind {
-                    ComposeKind::Forward => "Add a note…",
-                    _ => "Write your message…",
-                })
-                .default_value(content.body.clone())
+            let placeholder = match kind {
+                ComposeKind::Forward => "Add a note…",
+                _ => "Write your message…",
+            };
+            rich_editor::state(
+                placeholder,
+                content.body.clone(),
+                palette.clone(),
+                window,
+                cx,
+            )
         });
+        // Sized to its rows, the body never scrolls itself: whatever moves the
+        // caret, the draft's scroll follows it.
+        subscriptions.push(cx.observe_in(&body, window, |this, body, window, cx| {
+            let body = body.read(cx);
+            let caret = (body.cursor(), body.text().len());
+            if caret != this.body_caret {
+                this.body_caret = caret;
+                this.reveal_caret(window, cx);
+            }
+        }));
         subscriptions.push(cx.subscribe(&body, |this: &mut Self, body, event, cx| {
             if let InputEvent::Change = event {
+                // The body's height follows its rows.
+                let rows = body.read(cx).display_map().wrap_row_count();
+                if rows != this.body_rows {
+                    this.body_rows = rows;
+                    cx.notify();
+                }
                 let body = body.read(cx);
                 let at_end = body.cursor() >= body.text().len();
                 // A growing draft alone in the pane keeps its end in view.
@@ -375,6 +516,10 @@ impl Composer {
                 cx.emit(ComposerEvent::Edited { at_end });
             }
         }));
+        let body_caret = {
+            let body = body.read(cx);
+            (body.cursor(), body.text().len())
+        };
 
         Self {
             kind,
@@ -386,9 +531,14 @@ impl Composer {
             recipients,
             subject,
             body,
+            body_rows: 0,
+            palette,
             attachments: content.attachments.clone(),
             error: None,
             scroll: ScrollHandle::new(),
+            outer_scroll: None,
+            body_caret,
+            reveal_tries: 0,
             initial: content,
             book,
             _subscriptions: subscriptions,
@@ -545,9 +695,14 @@ impl Composer {
             && now.body == self.initial.body.trim_end()
     }
 
+    /// Whether one of the draft's fields has focus.
+    pub fn is_focused(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.focused_field(window, cx).is_some()
+    }
+
     /// The body as HTML, with the forwarded message quoted under it.
     pub fn html(&self, cx: &gpui::App) -> String {
-        let mut out = html::from_plain_text(&self.content(cx).body);
+        let mut out = self.content(cx).body_html();
         if let Some(quoted) = &self.quoted {
             out.push_str("<blockquote><p>---------- Forwarded message ----------");
             for (label, value) in &quoted.header {
@@ -558,6 +713,88 @@ impl Composer {
             out.push_str("</blockquote>");
         }
         out
+    }
+
+    // Formatting.
+
+    /// Applies `format` to the body's selection, and puts the caret back in
+    /// the body.
+    pub fn format(&mut self, format: Format, window: &mut Window, cx: &mut Context<Self>) {
+        let edit = self.edit_lines(cx, |text, sel| {
+            Some(match format {
+                Format::Inline(kind) => markdown::toggle_inline(text, sel, kind),
+                Format::Lines(kind) => markdown::toggle_lines(text, sel, kind),
+                Format::Link => markdown::toggle_link(text, sel),
+                Format::Clear => markdown::clear_formatting(text, sel),
+            })
+        });
+        if let Some(edit) = edit {
+            self.apply(edit, window, cx);
+        }
+        self.focus_field(Field::Body, window, cx);
+    }
+
+    /// `f`'s edit of the lines the selection is on, given just those lines,
+    /// so a long body isn't copied for each one.
+    fn edit_lines(
+        &self,
+        cx: &gpui::App,
+        f: impl FnOnce(&str, Range<usize>) -> Option<Edit>,
+    ) -> Option<Edit> {
+        let body = self.body.read(cx);
+        let text = body.text();
+        let sel = body.selected_range();
+        let start = text.line_start_offset(text.offset_to_point(sel.start).row);
+        let end = text.line_end_offset(text.offset_to_point(sel.end).row);
+        let lines = text.slice(start..end).to_string();
+        f(&lines, sel.start - start..sel.end - start).map(|edit| edit.shifted(start))
+    }
+
+    fn apply(&mut self, edit: Edit, window: &mut Window, cx: &mut Context<Self>) {
+        self.body.update(cx, |body, cx| {
+            if !(edit.range.is_empty() && edit.text.is_empty()) {
+                body.set_selected_range(edit.range, cx);
+                body.replace(edit.text, window, cx);
+            }
+            body.set_selected_range(edit.selection, cx);
+        });
+    }
+
+    fn body_focused(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.body.focus_handle(cx).is_focused(window)
+    }
+
+    /// Enter in a list or quote continues it; anywhere else it's the
+    /// editor's own.
+    fn body_enter(&mut self, _: &BodyEnter, window: &mut Window, cx: &mut Context<Self>) {
+        let edit = self
+            .body_focused(window, cx)
+            .then(|| self.edit_lines(cx, markdown::enter))
+            .flatten();
+        match edit {
+            Some(edit) => self.apply(edit, window, cx),
+            None => cx.propagate(),
+        }
+    }
+
+    /// Tab in a list indents it; elsewhere in the body it moves on, as in
+    /// the other fields.
+    fn body_indent(&mut self, _: &BodyIndent, window: &mut Window, cx: &mut Context<Self>) {
+        self.body_tab(false, window, cx);
+    }
+
+    fn body_outdent(&mut self, _: &BodyOutdent, window: &mut Window, cx: &mut Context<Self>) {
+        self.body_tab(true, window, cx);
+    }
+
+    fn body_tab(&mut self, outdent: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.body_focused(window, cx) {
+            return cx.propagate();
+        }
+        match self.edit_lines(cx, |text, sel| markdown::indent(text, sel, outdent)) {
+            Some(edit) => self.apply(edit, window, cx),
+            None => self.move_focus(!outdent, window, cx),
+        }
     }
 
     // Recipients.
@@ -1085,9 +1322,149 @@ impl Composer {
     }
 }
 
+impl Composer {
+    /// Bring the body's caret into view over the next frames.
+    fn reveal_caret(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reveal_tries == 0 {
+            cx.on_next_frame(window, Self::reveal_step);
+        }
+        self.reveal_tries = 4;
+    }
+
+    /// Scroll just enough to show the caret with a row to spare, then check
+    /// again next frame, as an edit can still change the layout.
+    fn reveal_step(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reveal_tries == 0 {
+            return;
+        }
+        let scroll = if self.inline {
+            self.outer_scroll.as_ref()
+        } else {
+            Some(&self.scroll)
+        };
+        let body = self.body.read(cx);
+        let (Some(scroll), Some(line_height), Some(text)) =
+            (scroll, body.line_height(), body.text_bounds())
+        else {
+            self.reveal_tries = 0;
+            return;
+        };
+        let view = scroll.bounds();
+        let point = body.text().offset_to_point(body.cursor());
+        let row = body
+            .display_map()
+            .buffer_pos_to_display_pos(BufferPoint::new(point.row, point.column))
+            .row;
+        let top = text.top() + line_height * row as f32 - line_height;
+        let bottom = top + line_height * 3.;
+        let mut offset = scroll.offset();
+        let delta = if view.size.height < line_height * 3. {
+            px(0.)
+        } else if top < view.top() {
+            view.top() - top
+        } else if bottom > view.bottom() {
+            view.bottom() - bottom
+        } else {
+            px(0.)
+        };
+        if delta == px(0.) {
+            self.reveal_tries = 0;
+            return;
+        }
+        offset.y = (offset.y + delta).min(px(0.));
+        scroll.set_offset(offset);
+        self.reveal_tries -= 1;
+        cx.on_next_frame(window, Self::reveal_step);
+        cx.notify();
+    }
+
+    fn render_body(
+        &self,
+        window: &Window,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        // The editor scrolls on its own; sized to its rows, it grows like a
+        // textarea and the draft scrolls instead.
+        const PADDING_Y: f32 = 8.;
+        let min_rows = if self.inline { 5 } else { 14 };
+        let rows = self.body_rows.max(min_rows);
+        let line_height = self
+            .body
+            .read(cx)
+            .line_height()
+            .unwrap_or_else(|| TEXT_MD.to_pixels(window.rem_size()) * 1.55);
+        let height = line_height * rows as f32 + px(PADDING_Y * 2.);
+        // Cancels the editor's own padding, so text lines up with the field
+        // labels.
+        div().pt(SPACE_SM).ml(px(-12.)).mr(px(-10.)).child(
+            Editor::new(&self.body)
+                .appearance(false)
+                .aria_label("Message body")
+                .h(height)
+                .font_family(cx.theme().font_family.clone())
+                .text_size(TEXT_MD)
+                .line_height(relative(1.55))
+                .text_color(theme.text),
+        )
+    }
+
+    fn render_format_bar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("format-bar")
+            .role(gpui::Role::Toolbar)
+            .aria_label("Formatting")
+            .flex()
+            .items_center()
+            .gap(SPACE_2XS)
+            .children(
+                Format::TOOLBAR
+                    .iter()
+                    .enumerate()
+                    .map(|(ix, &(format, glyph, name))| {
+                        let action = format.action();
+                        div()
+                            .id(("format", ix))
+                            .role(gpui::Role::Button)
+                            .aria_label(name)
+                            .size(HIT_TARGET)
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(RADIUS_SM)
+                            .hover(|s| s.bg(theme.hover_bg))
+                            .active(|s| s.bg(theme.selected_bg))
+                            .child(icon(glyph, px(15.), theme.icon))
+                            // Keeps the body's focus and selection.
+                            .on_mouse_down(MouseButton::Left, |_, window, _| {
+                                window.prevent_default()
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.format(format, window, cx)
+                            }))
+                            .tooltip(move |window, cx| {
+                                gpui::component::tooltip::Tooltip::new(name)
+                                    .action(action.as_ref(), None)
+                                    .build(window, cx)
+                            })
+                    }),
+            )
+    }
+}
+
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
+        self.palette.set(Palette::new(&theme));
+        self.body_rows = self.body.read(cx).display_map().wrap_row_count();
+        // How lines wrap is known once the body is laid out: grow then, if
+        // they wrapped differently.
+        cx.on_next_frame(window, |this, _, cx| {
+            if this.body.read(cx).display_map().wrap_row_count() != this.body_rows {
+                cx.notify();
+            }
+        });
         let standalone = !self.inline;
 
         let title = match (self.kind, self.draft_id.is_some()) {
@@ -1141,7 +1518,7 @@ impl Render for Composer {
                 .child(div().ml(SPACE_2XS).child(label))
         };
 
-        let footer = div()
+        let send_row = div()
             .flex()
             .items_center()
             .gap(SPACE_MD)
@@ -1208,6 +1585,13 @@ impl Render for Composer {
                 ))
             });
 
+        let footer = div()
+            .flex()
+            .flex_col()
+            .gap(SPACE_SM)
+            .child(self.render_format_bar(&theme, cx))
+            .child(send_row);
+
         let fields = div()
             .flex()
             .flex_col()
@@ -1257,16 +1641,7 @@ impl Render for Composer {
                         ),
                 )
             })
-            .child(
-                // Cancels the textarea's own padding, so text lines up with
-                // the field labels.
-                div()
-                    .pt(SPACE_SM)
-                    .mx(px(-10.))
-                    .text_size(TEXT_MD)
-                    .line_height(relative(1.55))
-                    .child(Textarea::new(&self.body).appearance(false)),
-            )
+            .child(self.render_body(window, &theme, cx))
             .children(self.render_attachments(&theme, cx))
             .children(quoted);
 
@@ -1281,6 +1656,24 @@ impl Render for Composer {
             .on_action(cx.listener(Self::suggest_prev))
             .on_action(cx.listener(Self::remove_last_recipient))
             .on_action(cx.listener(Self::dismiss_suggestions))
+            .on_action(cx.listener(Self::body_enter))
+            .on_action(cx.listener(Self::body_indent))
+            .on_action(cx.listener(Self::body_outdent))
+            .map(|this| {
+                let composer = cx.entity().downgrade();
+                on_format_actions(this, move |format, window, cx| {
+                    let Some(composer) = composer.upgrade() else {
+                        return;
+                    };
+                    // Only in the body: elsewhere ⌘K is the palette, ⌘\ the
+                    // sidebar.
+                    if composer.read(cx).body_focused(window, cx) {
+                        composer.update(cx, |c, cx| c.format(format, window, cx));
+                    } else {
+                        cx.propagate();
+                    }
+                })
+            })
             // Files dropped anywhere on the draft are attached.
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 this.attach_paths(paths.paths(), cx)

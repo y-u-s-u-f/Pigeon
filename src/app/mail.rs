@@ -95,6 +95,22 @@ impl PigeonApp {
             .on_action(cx.listener(|this, _: &PrevSuggestion, window, cx| {
                 this.step_search_suggestion(false, window, cx)
             }))
+            .map(|root| {
+                // From the palette, which leaves focus outside the draft.
+                // With focus in the draft, the composer already passed it on.
+                let app = cx.entity().downgrade();
+                crate::ui::composer::on_format_actions(root, move |format, window, cx| {
+                    let composer = app
+                        .upgrade()
+                        .and_then(|app| Some(app.read(cx).composer.as_ref()?.0.clone()));
+                    match composer {
+                        Some(composer) if !composer.read(cx).is_focused(window, cx) => {
+                            composer.update(cx, |c, cx| c.format(format, window, cx))
+                        }
+                        _ => cx.propagate(),
+                    }
+                })
+            })
     }
 
     /// Unread threads in the Inbox, for the rail.

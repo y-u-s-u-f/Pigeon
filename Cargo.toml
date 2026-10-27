@@ -16,6 +16,8 @@ anyhow = "1"
 html5ever = "0.27"
 markup5ever_rcdom = "0.3"
 nucleo-matcher = "0.3"
+# Already built for gpui-component's markdown view; turns drafts into HTML.
+markdown = "1"
 
 [profile.release]
 opt-level = 3

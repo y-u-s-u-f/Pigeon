@@ -820,7 +820,12 @@ impl PigeonApp {
             cc: message.cc.clone(),
             bcc: message.bcc.clone(),
             subject: thread.subject.clone(),
-            body: html::plain_text(&html::parse(&message.html)),
+            // As typed, when it was written here; otherwise its text.
+            body: thread
+                .origin
+                .as_ref()
+                .map(|o| o.markdown.clone())
+                .unwrap_or_else(|| html::plain_text(&html::parse(&message.html))),
             attachments: message.attachments.clone(),
         };
         let origin = thread.origin.as_ref();
@@ -840,6 +845,10 @@ impl PigeonApp {
     }
 
     fn set_composer(&mut self, composer: Entity<Composer>, cx: &mut Context<Self>) {
+        let reader_scroll = self.reader_scroll.clone();
+        composer.update(cx, |composer, _| {
+            composer.outer_scroll = Some(reader_scroll)
+        });
         let events = cx.subscribe(&composer, |this, composer, event, cx| match event {
             ComposerEvent::Edited { at_end } => {
                 if *at_end && composer.read(cx).quoted.is_none() {
@@ -900,8 +909,8 @@ impl PigeonApp {
     }
 
     fn message_from(&self, content: &DraftContent, html: String) -> Message {
-        let snippet: String = content
-            .body
+        // From the text as shown, without the markdown's syntax.
+        let snippet: String = html::plain_text(&html::parse(&content.body_html()))
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
@@ -926,9 +935,10 @@ impl PigeonApp {
         let c = composer.read(cx);
         let content = c.content(cx);
         // The quote is kept on the origin, so the body holds only the note.
-        let message = self.message_from(&content, html::from_plain_text(&content.body));
+        let message = self.message_from(&content, content.body_html());
         let origin = DraftOrigin {
             kind: c.kind,
+            markdown: content.body.clone(),
             reply_to: c.reply_to.clone(),
             quoted: c.quoted.as_ref().map(|q| Quote {
                 header: q.header.clone(),

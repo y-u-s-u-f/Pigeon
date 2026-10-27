@@ -7,6 +7,7 @@ pub mod html_view;
 pub mod invite;
 pub mod rail;
 pub mod reader;
+pub mod rich_editor;
 pub mod shortcuts_help;
 pub mod sidebar;
 pub mod style;
