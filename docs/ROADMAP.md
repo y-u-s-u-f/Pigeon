@@ -20,8 +20,8 @@ To update: change the status cell in the area's table, then the counts below.
 | [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 2 | 3 | 3 | 8 |
 | [Folders and labels](#51-folders-and-labels-fol) | 6 | 2 | 4 | 12 |
 | [Thread list](#52-thread-list-lst) | 0 | 4 | 5 | 9 |
-| [Reading pane](#53-reading-pane-rdr) | 1 | 4 | 3 | 8 |
-| [Message actions](#54-message-and-thread-actions-act) | 0 | 7 | 0 | 7 |
+| [Reading pane](#53-reading-pane-rdr) | 1 | 3 | 4 | 8 |
+| [Message actions](#54-message-and-thread-actions-act) | 0 | 2 | 5 | 7 |
 | [Compose and sending](#55-compose-and-sending-cmp) | 0 | 3 | 10 | 13 |
 | [Drafts](#56-drafts-drf) | 1 | 1 | 4 | 6 |
 | [Undo](#57-undo-und) | 0 | 1 | 2 | 3 |
@@ -37,7 +37,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Storage and persistence](#81-storage-and-persistence-per) | 0 | 2 | 1 | 3 |
 | [Command palette](#82-command-palette-pal) | 0 | 3 | 0 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 6 | 0 | 7 |
-| **Overall** | **59** | **65** | **52** | **176** |
+| **Overall** | **59** | **59** | **58** | **176** |
 
 ## Contents
 
@@ -314,7 +314,7 @@ The user's own plans, not driven by Google's APIs.
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| RDR-1 | Opening a thread marks it read | 🟡 Partially done | `threads.modify` (remove `UNREAD`) |
+| RDR-1 | Opening a thread marks it read | 🟢 Fully linked | `threads.modify` (remove `UNREAD`) |
 | RDR-2 | Conversation view | 🟢 Fully linked | `threads.get` (`format=full`) |
 | RDR-3 | Expand and collapse older messages | 🟡 Partially done | Per-message `snippet` |
 | RDR-4 | Message header | 🟢 Fully linked | `messages.get` headers |
@@ -374,11 +374,11 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 | --- | --- | --- | --- |
 | ACT-1 | Archive and move to Inbox | 🟡 Partially done | `threads.modify` (`INBOX`); `threads.untrash` |
 | ACT-1a | Move to a folder | 🟡 Partially done | `threads.modify`, `threads.trash` |
-| ACT-2 | Delete | 🟡 Partially done | `threads.trash` |
-| ACT-3 | Star and unstar | 🟡 Partially done | `threads.modify` (`STARRED`) |
-| ACT-4 | Mark as unread | 🟡 Partially done | `threads.modify` / `messages.modify` (`UNREAD`) |
-| ACT-5 | Mark as read | 🟡 Partially done | `threads.modify` (`UNREAD`) |
-| ACT-6 | Bulk select and bulk actions | 🟡 Partially done | `messages.batchModify`, HTTP batch |
+| ACT-2 | Delete | 🟢 Fully linked | `threads.trash` |
+| ACT-3 | Star and unstar | 🟢 Fully linked | `threads.modify` (`STARRED`) |
+| ACT-4 | Mark as unread | 🟢 Fully linked | `threads.modify` / `messages.modify` (`UNREAD`) |
+| ACT-5 | Mark as read | 🟢 Fully linked | `threads.modify` (`UNREAD`) |
+| ACT-6 | Bulk select and bulk actions | 🟢 Fully linked | `messages.batchModify`, HTTP batch |
 
 #### ACT-1 Archive and move to Inbox
 
