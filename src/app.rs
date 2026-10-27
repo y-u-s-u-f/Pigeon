@@ -11,7 +11,7 @@ use std::{
 };
 
 use gpui::{
-    AppContext as _, Context, DragMoveEvent, Entity, FocusHandle, Focusable as _,
+    AppContext as _, Bounds, Context, DragMoveEvent, Entity, FocusHandle, Focusable as _,
     InteractiveElement, IntoElement, KeyContext, ListAlignment, ListOffset, ListState, MouseButton,
     ParentElement, Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
     Styled, Subscription, Task, Window,
@@ -499,9 +499,12 @@ impl PigeonApp {
             // selection, if it was showing, is kept on screen.
             let top = self.list_state.logical_scroll_top();
             let at_top = top.item_ix == 0 && top.offset_in_item == Pixels::ZERO;
-            let selected_shown = self
-                .selected_row()
-                .is_some_and(|row| self.list_state.bounds_for_item(row).is_some());
+            let selected_shown = self.selected_row().is_some_and(|row| {
+                on_screen(
+                    self.list_state.bounds_for_item(row),
+                    self.list_state.viewport_bounds(),
+                )
+            });
             self.list_state
                 .splice(prefix..old.len() - suffix, rows.len() - prefix - suffix);
             if at_top && prefix == 0 {
@@ -1819,5 +1822,33 @@ impl Render for PigeonApp {
             })
             .children(self.render_toast(cx))
             .children(self.render_overlay(window, cx))
+    }
+}
+
+/// Whether a list row overlaps the viewport. `bounds_for_item` also gives
+/// bounds for measured rows scrolled off below, so it alone can't tell.
+fn on_screen(row: Option<Bounds<Pixels>>, viewport: Bounds<Pixels>) -> bool {
+    row.is_some_and(|row| row.top() < viewport.bottom() && row.bottom() > viewport.top())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::size;
+
+    fn rect(top: f32, height: f32) -> Bounds<Pixels> {
+        Bounds::new(point(px(0.), px(top)), size(px(100.), px(height)))
+    }
+
+    #[test]
+    fn on_screen_only_when_overlapping_viewport() {
+        let viewport = rect(0., 500.);
+        assert!(on_screen(Some(rect(100., 40.)), viewport));
+        assert!(on_screen(Some(rect(480., 40.)), viewport));
+        // Measured earlier, now scrolled off below or above.
+        assert!(!on_screen(Some(rect(900., 40.)), viewport));
+        assert!(!on_screen(Some(rect(500., 40.)), viewport));
+        assert!(!on_screen(Some(rect(-40., 40.)), viewport));
+        assert!(!on_screen(None, viewport));
     }
 }
