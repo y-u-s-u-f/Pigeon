@@ -1,6 +1,6 @@
 # Pigeon
 
-A macOS email and calendar client in Rust + GPUI (`gpui-kit` 0.8, imported as `gpui`, with gpui-component). Front end only, on placeholder data in `assets/*.json`; changes live in memory. The backend comes later; record anything that will need it in `docs/BACKEND_REQUIREMENTS.md`.
+A macOS email and calendar client in Rust + GPUI (`gpui-kit` 0.8, imported as `gpui`, with gpui-component). Front end only, on placeholder data in `assets/*.json`; changes live in memory. The backend comes later; `docs/ROADMAP.md` tracks every feature, its status and what it will need from the backend. Keep it updated.
 
 ## Principles
 

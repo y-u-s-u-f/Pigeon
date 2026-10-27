@@ -14,7 +14,7 @@ You implement features and fix bugs in Pigeon, a Rust + GPUI macOS email and cal
 - Accessibility: give interactive and landmark elements `.role(..)` and `.aria_label(..)`.
 - Actions, keymap and the command table live in `src/actions.rs`.
 - Do not edit `assets/*.json` (placeholder data) unless explicitly asked.
-- Keep `docs/BACKEND_REQUIREMENTS.md` updated for anything that will need a backend.
+- Keep `docs/ROADMAP.md` updated: add or update the feature's entry and status, and anything that will need a backend.
 - Do not commit or push.
 
 ## Self-checks only

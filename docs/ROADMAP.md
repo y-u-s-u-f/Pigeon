@@ -1,0 +1,1328 @@
+# Pigeon roadmap
+
+One place for where the app stands and what comes next: every feature, its status, the Google API it maps to, what the front end does today and what the backend must provide. It replaces `docs/BACKEND_REQUIREMENTS.md`; the item IDs (ACC-1, CMP-7, CAL-4a, …) are unchanged, so references in code and docs still work.
+
+## Status legend
+
+| Status | Meaning |
+| --- | --- |
+| ⚪ Not done | Nothing built. |
+| 🟡 Partially done | Built in the front end on placeholder data (or in memory), not linked to a real backend. Every feature that exists in the front end today has this status, including ones that need no backend, until the app runs end to end on real data. |
+| 🟢 Fully linked | Works end to end with the real backend. Nothing has this status yet. |
+
+To update: change the status cell in the area's table, then the counts below.
+
+## Progress
+
+| Section | ⚪ Not done | 🟡 Partially done | 🟢 Fully linked | Total |
+| --- | --- | --- | --- | --- |
+| [Planned features](#3-planned-features-pln) | 2 | 0 | 0 | 2 |
+| [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 6 | 2 | 0 | 8 |
+| [Folders and labels](#51-folders-and-labels-fol) | 6 | 6 | 0 | 12 |
+| [Thread list](#52-thread-list-lst) | 2 | 7 | 0 | 9 |
+| [Reading pane](#53-reading-pane-rdr) | 2 | 6 | 0 | 8 |
+| [Message actions](#54-message-and-thread-actions-act) | 0 | 7 | 0 | 7 |
+| [Compose and sending](#55-compose-and-sending-cmp) | 1 | 12 | 0 | 13 |
+| [Drafts](#56-drafts-drf) | 2 | 4 | 0 | 6 |
+| [Undo](#57-undo-und) | 0 | 3 | 0 | 3 |
+| [Search](#58-search-src) | 1 | 8 | 0 | 9 |
+| [Contacts](#59-contacts-con) | 6 | 2 | 0 | 8 |
+| [Images and attachments](#510-images-and-attachments-att) | 3 | 4 | 0 | 7 |
+| [Links](#511-links-lnk) | 2 | 1 | 0 | 3 |
+| [Mail settings](#512-mail-settings-mst) | 10 | 0 | 0 | 10 |
+| [Calendar](#6-calendar-cal) | 19 | 23 | 0 | 42 |
+| [Sync and push](#71-sync-and-push-syn) | 7 | 0 | 0 | 7 |
+| [Notifications and background](#72-notifications-and-background-ntf) | 3 | 0 | 0 | 3 |
+| [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 5 | 0 | 0 | 5 |
+| [Storage and persistence](#81-storage-and-persistence-per) | 3 | 0 | 0 | 3 |
+| [Command palette](#82-command-palette-pal) | 0 | 3 | 0 | 3 |
+| [Data model](#83-data-model-dat) | 2 | 5 | 0 | 7 |
+| **Overall** | **82** | **93** | **0** | **175** |
+
+## Contents
+
+1. [Intro](#pigeon-roadmap) (above)
+2. [Principles and current phase](#2-principles-and-current-phase)
+3. [Planned features (PLN)](#3-planned-features-pln)
+4. [Accounts and sign-in (ACC)](#4-accounts-and-sign-in-acc)
+5. Mail: [FOL](#51-folders-and-labels-fol) · [LST](#52-thread-list-lst) · [RDR](#53-reading-pane-rdr) · [ACT](#54-message-and-thread-actions-act) · [CMP](#55-compose-and-sending-cmp) · [DRF](#56-drafts-drf) · [UND](#57-undo-und) · [SRC](#58-search-src) · [CON](#59-contacts-con) · [ATT](#510-images-and-attachments-att) · [LNK](#511-links-lnk) · [MST](#512-mail-settings-mst)
+6. [Calendar (CAL)](#6-calendar-cal)
+7. Sync and states: [SYN](#71-sync-and-push-syn) · [NTF](#72-notifications-and-background-ntf) · [STA](#73-loading-error-and-offline-states-sta)
+8. App-wide: [PER](#81-storage-and-persistence-per) · [PAL](#82-command-palette-pal) · [DAT](#83-data-model-dat) · [No backend need](#84-features-with-no-backend-need)
+9. [Adjacent Google APIs (later)](#9-adjacent-google-apis-optional-later)
+10. [Not planned or out of scope](#10-not-planned-or-out-of-scope)
+
+---
+
+## 2. Principles and current phase
+
+Principles are in [`AGENTS.md`](../AGENTS.md): blazing fast and light (no webviews, no heavy dependencies), keyboard-centric (every action has a shortcut and is in ⌘K), minimal and flat on translucent glass, YAGNI.
+
+**Current phase: front end on placeholder data.** Next: the backend, starting with Google (Gmail, Calendar, People APIs and OAuth).
+
+- Mail comes from `assets/mailbox.json`, loaded once by `MailData::load()` (`src/data.rs`). Calendar comes from `assets/calendar.json`, loaded by `CalendarData::load()` (`src/calendar/mod.rs`). Both are called from `main()`.
+- There is no network, sync, sending or storage code in `src/`.
+- Mail changes apply in memory to `PigeonApp::data` (`src/app.rs`); calendar changes to `CalendarView::data` (`src/ui/calendar/mod.rs`). Nothing is saved: quitting loses everything, drafts and sent messages included.
+- There is one account, from the `account` object in the JSON.
+
+**Reading the entries.** Each area has a table (ID, feature, status, Google API), then one entry per ID: **Today** (how it works now, with file and function), **Needs** (what the backend must provide) and **Notes** (edge cases). Gmail methods are written without the `users.` prefix (`threads.modify` is `users.threads.modify`). IMAP/SMTP equivalents are kept where useful, as Gmail also speaks IMAP with XOAUTH2.
+
+**Backend facts that shape everything** (from Google's docs):
+
+- For installed apps, Google recommends polling `history.list` for mail changes rather than push. Gmail push (`watch`) goes through Cloud Pub/Sub and Calendar push needs an HTTPS webhook, so both need a server. See SYN.
+- Most useful Gmail scopes (`gmail.modify`, `gmail.readonly`, `gmail.compose`, `gmail.settings.basic`) are *restricted*. They need Google's restricted-scope verification, and storing or sending that data through our own servers also triggers a security assessment. Keeping mail on the Mac avoids the assessment. See ACC-8.
+- Gmail labels are per message; Pigeon's model is per thread with one folder. See DAT-2.
+
+---
+
+## 3. Planned features (PLN)
+
+The user's own plans, not driven by Google's APIs.
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| PLN-1a | Vim mode: composing and editing | ⚪ Not done | None |
+| PLN-1b | Vim mode: navigating the app | ⚪ Not done | None |
+
+#### PLN-1a Vim mode while composing
+
+- **Idea:** Optional modal editing in the compose body: normal, insert and visual modes; motions; operators; text objects; registers; undo and redo; `:` commands such as `:w` to save the draft and, as a stretch, `:wq` to send. Off by default, toggled in Settings (a new row in `src/settings.rs`).
+- **Open questions:** How it fits the live-styled markdown editor (`src/ui/rich_editor.rs`) and its formatting shortcuts; where the mode indicator goes; whether it also applies to the subject, recipient and event-panel fields.
+
+#### PLN-1b Vim mode while navigating
+
+- **Idea:** Vim-style keys across the list, reader, calendar and settings: `hjkl`, `gg`/`G`, counts (`5j`), `/` search, building on the existing Gmail-style `j`/`k`. Same Settings toggle as PLN-1a, or its own.
+- **Open questions:** Conflicts with single-letter Gmail shortcuts (`e`, `s`, `l`, `v`, `x`, `a`, `r`, `c`, `n`/`p`, `g …` chords) in `src/actions.rs`; whether Vim mode replaces or layers over them; showing Vim bindings in ⌘K and the `?` sheet.
+
+> **More user features go here.** Add each as PLN-2, PLN-3, … with status ⚪ Not done.
+
+---
+
+## 4. Accounts and sign-in (ACC)
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| ACC-1 | Account card | 🟡 Partially done | Gmail `getProfile`; People `people.get` (`people/me`) |
+| ACC-2 | Identity of "me" | 🟡 Partially done | Gmail `settings.sendAs.list` |
+| ACC-3 | Add, sign in to and remove accounts | ⚪ Not done | OAuth 2.0 for desktop apps (loopback + PKCE) |
+| ACC-4 | Account switcher and multiple accounts | ⚪ Not done | One OAuth grant per account |
+| ACC-5 | Per-account sync status | ⚪ Not done | Sync state from SYN |
+| ACC-6 | Scopes and consent | ⚪ Not done | OAuth scopes, incremental and granular consent |
+| ACC-7 | Token refresh, revoke and sign out | ⚪ Not done | OAuth token and revoke endpoints |
+| ACC-8 | Google Cloud project and app verification | ⚪ Not done | OAuth consent screen, scope verification |
+
+#### ACC-1 Account card
+
+- **Today:** The sidebar shows name, email and an initials avatar; clicking does nothing. `render_sidebar()` in `src/ui/sidebar.rs` reads `data.account`. Settings › Accounts shows `MailData::me()` only. Avatar colour comes from the address (`Theme::avatar_color`).
+- **Needs:** The signed-in profile. Gmail `getProfile` gives `emailAddress`, `messagesTotal`, `threadsTotal` and `historyId` but no name; the name and photo come from People `people.get` with `resourceName=people/me` (`personFields=names,photos,emailAddresses`) or the OpenID userinfo.
+
+#### ACC-2 Identity of "me"
+
+- **Today:** `MailData::is_me()` and `me()` (`src/data.rs`) compare against the single `account.email`, ignoring case. The reader shows "me"; replies skip the user; Sent and Drafts rows show "To:".
+- **Needs:** Every address the user sends from: Gmail `settings.sendAs.list` (includes the primary). Check each message's `from` against all of them.
+- **Notes:** Aliases show as other people today. See MST-1.
+
+#### ACC-3 Add, sign in to and remove accounts
+
+- **Today:** Not built. The model holds exactly one account (`MailData::account`).
+- **Needs:** Google's desktop flow: open the system browser, loopback redirect (`http://127.0.0.1:<port>`) with PKCE, exchange the code, store tokens in the Keychain. Ask for mail, calendar and contacts scopes together (CAL-1). Removing an account revokes its token (ACC-7) and deletes its local data (PER-1).
+- **Notes:** IMAP/SMTP credentials would be the non-Google path. See DAT-2 for the one-account model.
+
+#### ACC-4 Account switcher and multiple accounts
+
+- **Today:** Not built. `PigeonApp::data` is a single `MailData`.
+- **Needs:** Several accounts, each with its own threads, labels, calendars, contacts and sync state. Every thread, draft and event knows its account. A switcher or a unified view with account badges.
+- **Notes:** IDs like `t-0001` are only unique inside one JSON file; they must be unique per account.
+
+#### ACC-5 Per-account sync status
+
+- **Today:** Not built. No "last synced" time or indicator.
+- **Needs:** Per account: last successful sync, current state, last error. Links to STA-1, STA-3.
+
+#### ACC-6 Scopes and consent
+
+- **Needs:** Pick the narrowest scopes that cover the features. Likely set: `gmail.modify` (read, label, send, trash; no permanent delete), `gmail.settings.basic` (filters, vacation, send-as, signatures), `calendar` or the narrower `calendar.events` + `calendar.calendarlist` + `calendar.calendars` + `calendar.acls` + `calendar.settings.readonly` + `calendar.freebusy`, `contacts` and `contacts.other.readonly` (and `directory.readonly` for Workspace), plus `openid email profile`. Permanent delete (FOL-8) needs `https://mail.google.com/`.
+- **Notes:** Users can untick scopes on the consent screen (granular consent). Read the granted scopes from the token response and turn off features that lack them. Ask for extra scopes later with incremental authorization (`include_granted_scopes=true`).
+
+#### ACC-7 Token refresh, revoke and sign out
+
+- **Needs:** Refresh the access token before it expires, retry once on 401, then show "sign in again" (STA-4). Sign out calls the revoke endpoint and deletes the Keychain item.
+- **Notes:** While the OAuth app is in "Testing" status, refresh tokens expire after 7 days.
+
+#### ACC-8 Google Cloud project and app verification
+
+- **Needs:** A Google Cloud project with the Gmail, Calendar and People APIs enabled, a desktop OAuth client, and a consent screen. Publishing to the public needs verification: restricted Gmail scopes need restricted-scope review; a security assessment is also needed if restricted data is stored on or sent through our servers.
+- **Notes:** This decides whether the backend is a local sync engine (data stays on the Mac) or a server. Push notifications (SYN-3, SYN-5) need a server.
+
+---
+
+## 5. Mail
+
+### 5.1 Folders and labels (FOL)
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| FOL-1 | System folders and go-to shortcuts | 🟡 Partially done | System labels `INBOX`, `SENT`, `DRAFT`, `SPAM`, `TRASH`, `STARRED`, `UNREAD` |
+| FOL-2 | Sidebar counts | 🟡 Partially done | `labels.get` (`threadsUnread`, `messagesUnread`) |
+| FOL-3 | Label list with colours | 🟡 Partially done | `labels.list`, label `color` |
+| FOL-4 | Label views | 🟡 Partially done | `threads.list` with `labelIds` |
+| FOL-5 | Apply and remove labels on a thread | 🟡 Partially done | `threads.modify` |
+| FOL-6 | Create, rename, recolour and delete labels | ⚪ Not done | `labels.create`, `labels.patch`, `labels.update`, `labels.delete` |
+| FOL-7 | Report spam and not spam | 🟡 Partially done | `threads.modify` (add or remove `SPAM`) |
+| FOL-8 | Empty Trash and permanent delete | ⚪ Not done | `threads.delete`, `messages.delete`, `messages.batchDelete` |
+| FOL-9 | Nested labels | ⚪ Not done | Label names with `/` |
+| FOL-10 | Label visibility | ⚪ Not done | Label `labelListVisibility`, `messageListVisibility` |
+| FOL-11 | Inbox categories | ⚪ Not done | `CATEGORY_PERSONAL`, `_SOCIAL`, `_PROMOTIONS`, `_UPDATES`, `_FORUMS` |
+| FOL-12 | Important marker | ⚪ Not done | `IMPORTANT` label |
+
+#### FOL-1 System folders and go-to shortcuts
+
+- **Today:** The sidebar lists Inbox, Starred, Sent, Drafts, Archive, Spam, Trash. Shortcuts `g i`, `g s`, `g t`, `g d`, `g a`, `g !`; Trash via the palette. `Folder` (`src/data.rs`) has six variants (Inbox, Archive, Sent, Drafts, Spam, Trash); each thread has one. Starred is a flag. `FOLDERS` in `src/ui/sidebar.rs`, `set_nav()` in `src/app.rs`.
+- **Needs:** Map Gmail labels to the six folders: `INBOX`, `SENT`, `DRAFT`, `SPAM`, `TRASH`, and "not in INBOX" for Archive (IMAP: special-use `\Sent`, `\Drafts`, `\Junk`, `\Trash`, `\Archive`). Unmapped folders must be handled, because `Folder` deserialization fails on unknown values.
+- **Notes:** See DAT-2 for the one-folder limit.
+
+#### FOL-2 Sidebar counts
+
+- **Today:** Computed from loaded threads in `nav_count()` (`src/ui/sidebar.rs`). Drafts shows the total; Inbox, Spam and labels show unread threads; others show nothing.
+- **Needs:** Server counts: `labels.get` returns `threadsUnread`, `messagesUnread`, `threadsTotal`, `messagesTotal` (`labels.list` doesn't). IMAP: `STATUS … UNSEEN`. Update on sync.
+- **Notes:** With paging (LST-7) loaded counts would be wrong.
+
+#### FOL-3 Label list with colours
+
+- **Today:** `MailData::labels` from JSON (ten labels); hex colours parsed by `hex_color()` (`src/data.rs`). Dots in the sidebar, chips in the reader.
+- **Needs:** `labels.list` (type `user`) with `color.backgroundColor` and `textColor`. IMAP has no colours; keep them locally.
+- **Notes:** `Thread::labels` holds label IDs; renames must keep IDs stable.
+
+#### FOL-4 Label views
+
+- **Today:** `Nav::Label(usize)` (`src/app.rs`); `nav_contains()` shows threads carrying the label, excluding Spam and Trash. `g l` or "Go to Label…" opens a label search.
+- **Needs:** `threads.list` with `labelIds` (and `pageToken`, LST-7). IMAP: folder or keyword search.
+- **Notes:** Label views include Sent, Drafts and Archive, as in Gmail.
+
+#### FOL-5 Apply and remove labels on a thread
+
+- **Today:** `l`, palette "Label…", Message › Label…, the toolbar "…" menu or a row's right-click toggle a label on the selected or checked threads (ACT-6). `l` opens the palette scoped to labels; applied ones say "Applied · ↵ removes it". The list shows up to three dots; the reader shows chips. `toggle_label()` and `open_label_palette()` in `src/app/mail.rs`: if every target has the label it's removed, otherwise added to all. No undo.
+- **Needs:** `threads.modify` with `addLabelIds` / `removeLabelIds` (IMAP: `UID COPY`/`MOVE`, or `STORE +X-GM-LABELS`). Optimistic update with rollback (STA-2).
+- **Notes:** Gmail labels are per message; `threads.modify` changes every message in the thread. See DAT-2.
+
+#### FOL-6 Create, rename, recolour and delete labels
+
+- **Today:** Not built; labels are read once from JSON.
+- **Needs:** `labels.create`, `labels.patch` / `update`, `labels.delete` (IMAP: `CREATE`, `RENAME`, `DELETE`).
+- **Notes:** Gmail only accepts colours from a fixed palette. Deleting a label removes it from every message. New labels add palette entries (PAL-3).
+
+#### FOL-7 Report spam and not spam
+
+- **Today:** Move to… › Spam (`v`, ACT-1a) puts a thread in Spam in memory; Archive (`e`) in Spam moves it to Inbox ("not spam"). No dedicated button or shortcut.
+- **Needs:** `threads.modify` adding `SPAM` (and removing `INBOX`), or removing `SPAM` and adding `INBOX`. IMAP: move to Junk.
+- **Notes:** Mapping `SPAM` to the Spam folder is done at sync (FOL-1).
+
+#### FOL-8 Empty Trash and permanent delete
+
+- **Today:** Not built. `delete()` (`src/app.rs`) moves to Trash and never removes; Delete does nothing in Trash.
+- **Needs:** `threads.delete`, `messages.delete`, `messages.batchDelete` (all need the `https://mail.google.com/` scope, ACC-6). Gmail purges Trash after 30 days on its own. IMAP: `\Deleted` + `EXPUNGE`.
+- **Notes:** Not reversible; needs a confirmation.
+
+#### FOL-9 Nested labels
+
+- **Needs:** Gmail nests labels by name (`Work/Clients`). Show them as a tree in the sidebar and the label palette.
+
+#### FOL-10 Label visibility
+
+- **Needs:** Respect `labelListVisibility` (`labelShow`, `labelShowIfUnread`, `labelHide`) in the sidebar and `messageListVisibility` on rows; allow changing them via `labels.patch`.
+
+#### FOL-11 Inbox categories
+
+- **Needs:** Gmail's category labels (`CATEGORY_PERSONAL`, `CATEGORY_SOCIAL`, `CATEGORY_PROMOTIONS`, `CATEGORY_UPDATES`, `CATEGORY_FORUMS`) as Inbox tabs or filters, and the `category:` search operator (SRC-9).
+
+#### FOL-12 Important marker
+
+- **Needs:** Show and toggle the `IMPORTANT` label (`threads.modify`); `is:important` in search (SRC-9).
+
+### 5.2 Thread list (LST)
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| LST-1 | Thread rows | 🟡 Partially done | `threads.list` + `threads.get` (`format=metadata`) |
+| LST-2 | Unread styling | 🟡 Partially done | `UNREAD` label |
+| LST-3 | Sort order | 🟡 Partially done | `threads.list` order |
+| LST-4 | Archived section in the Inbox | 🟡 Partially done | `threads.list` (`q=-in:inbox`) |
+| LST-5 | Keyboard list navigation | 🟡 Partially done | `threads.get` on demand |
+| LST-6 | Unread count in the list header | 🟡 Partially done | `labels.get` |
+| LST-7 | Pagination and lazy loading | ⚪ Not done | `pageToken`, `maxResults` |
+| LST-8 | Live refresh and new mail in the list | ⚪ Not done | `history.list` (SYN-2) |
+| LST-9 | Empty-result text | 🟡 Partially done | None |
+
+#### LST-1 Thread rows
+
+- **Today:** Sender (or "To: name" in Sent and Drafts), message count, attachment icon, star, date, subject, label dots, snippet of the last message. Compact density (View › Compact List) puts sender, subject and date on one line. `render_thread_row()` (`src/ui/thread_list.rs`); snippet from `Message::snippet` cleaned by `clean_snippet()`; date from `list_date()` (`src/data.rs`). Density is in memory (PER-3).
+- **Needs:** Per thread: subject, participants, message count, last date, snippet, unread, starred, has-attachment, labels. Gmail: `threads.list` then `threads.get` with `format=metadata` and `metadataHeaders` (batched, SYN-7). IMAP: `THREAD` or `References`, plus headers.
+- **Notes:** Gmail's thread `snippet` may differ from the last message's; pick one or rows change after sync.
+
+#### LST-2 Unread styling
+
+- **Today:** Blue dot, bold sender and subject. `Thread::unread`, flipped by `select_thread()`, `mark_read()`, `mark_unread()` (`src/app.rs`).
+- **Needs:** Thread unread = any message has `UNREAD` (IMAP: `\Seen` per message).
+- **Notes:** See ACT-4, ACT-5, DAT-3.
+
+#### LST-3 Sort order
+
+- **Today:** Newest first by last message. `MailData::load()` sorts once; `update_threads()` re-sorts all threads after every change (slow on large mailboxes).
+- **Needs:** Server order with a stable cursor (LST-7). Local order must match.
+
+#### LST-4 Archived section in the Inbox
+
+- **Today:** The Inbox ends with a collapsible "Archived" header and count (`Row::ArchivedHeader` in `refresh_rows()`, `src/app.rs`); palette "Show / Hide Archived in Inbox"; `archived_expanded` in memory.
+- **Needs:** Archived threads fetched separately (for example `q=-in:inbox -in:sent -in:drafts -in:spam -in:trash`), with a server count.
+
+#### LST-5 Keyboard list navigation
+
+- **Today:** `j`/`k` or arrows move; `Enter`/`o` open. `select_next()`, `select_prev()`, `select_thread()` (`src/app.rs`). Selecting marks read (RDR-1).
+- **Needs:** Load a selected thread's messages on demand when not loaded (RDR-6).
+
+#### LST-6 Unread count in the list header
+
+- **Today:** "N unread" from loaded rows (`render_thread_list()`).
+- **Needs:** Server count (FOL-2), matching the sidebar. They agree today only because both use loaded data.
+
+#### LST-7 Pagination and lazy loading
+
+- **Today:** Not built. The list is virtualised (`ListState`), but all 124 threads load at startup.
+- **Needs:** Cursor paging per view: `threads.list` `pageToken` and `maxResults` (up to 500). IMAP: UID ranges. Keep only visible and recent threads in memory.
+- **Notes:** Search, counts, contacts (CON-1) and palette search (PAL-2) assume full data and each need a server query once paging exists.
+
+#### LST-8 Live refresh and new mail in the list
+
+- **Today:** Not built.
+- **Needs:** The sync loop (SYN-2/SYN-3; IMAP IDLE). Insert new threads without losing selection or scroll; `refresh_rows(true)` already splices rows. Links to NTF-1, STA-5.
+
+#### LST-9 Empty-result text
+
+- **Today:** "Nothing in <view>", or "No results in <scope>" with a hint while searching (`render_thread_list()`).
+- **Needs:** A loaded / loading / empty state per list (STA-1) so "Nothing" doesn't flash before data arrives.
+
+### 5.3 Reading pane (RDR)
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| RDR-1 | Opening a thread marks it read | 🟡 Partially done | `threads.modify` (remove `UNREAD`) |
+| RDR-2 | Conversation view | 🟡 Partially done | `threads.get` (`format=full`) |
+| RDR-3 | Expand and collapse older messages | 🟡 Partially done | Per-message `snippet` |
+| RDR-4 | Message header | 🟡 Partially done | `messages.get` headers |
+| RDR-5 | Message body rendering | 🟡 Partially done | `messages.get` `payload` parts |
+| RDR-6 | Fetch a message body on demand | ⚪ Not done | `messages.get` (`format=full`) |
+| RDR-7 | Message navigation and reader focus | 🟡 Partially done | None |
+| RDR-8 | Show original (raw message) | ⚪ Not done | `messages.get` (`format=raw`) |
+
+#### RDR-1 Opening a thread marks it read
+
+- **Today:** `select_thread()` (`src/app.rs`) sets `unread = false` at once, also while moving through the list with keys and for Drafts.
+- **Needs:** `threads.modify` removing `UNREAD` (IMAP: `STORE +FLAGS (\Seen)`). Skip for drafts.
+- **Notes:** Consider a delay or a setting, as many clients do.
+
+#### RDR-2 Conversation view
+
+- **Today:** Subject, label chips, "N messages", every message oldest first, newest expanded. `render_conversation()` (`src/ui/reader.rs`). Messages sorted by `date` in `MailData::load()`.
+- **Needs:** All messages with order, flags and headers: `threads.get` `format=full` (or `metadata` plus RDR-6).
+- **Notes:** Date headers can be wrong; Gmail's `internalDate` is a safer sort key.
+
+#### RDR-3 Expand and collapse older messages
+
+- **Today:** Collapsed rows show sender, snippet, date; click to expand. `expanded_messages`, `toggle_message()`, cleared in `select_thread()`.
+- **Needs:** A snippet per message (Gmail `Message.snippet`). Expanded state could be saved (PER-3).
+
+#### RDR-4 Message header
+
+- **Today:** Sender name, email, "to … · cc …", full local date ("Sun, Oct 25, 9:12 AM") via `full_date()`. Bcc not shown. `render_message()`.
+- **Needs:** From, To, Cc, Bcc (sent only), Date with zone, Subject: `messages.get` `format=metadata` with `metadataHeaders`. IMAP: `ENVELOPE`.
+- **Notes:** Long recipient lists are shown in full.
+
+#### RDR-5 Message body rendering
+
+- **Today:** HTML is drawn natively (headings, lists, quotes, tables, links, emphasis, code, simple colours); scripts, styles, iframes and form controls dropped; images become placeholders (ATT-1). `html::parse()` (`src/html.rs`), `src/ui/html_view.rs`, cached by hash in `HtmlCache`. Message text is selectable.
+- **Needs:** The decoded HTML (or plain text) body: walk `payload.parts`, pick `text/html` in `multipart/alternative`, base64url-decode `body.data`, decode the charset. `cid:` parts per ATT-2.
+- **Notes:** Unknown tags keep their text only.
+
+#### RDR-6 Fetch a message body on demand
+
+- **Today:** Not built; every body is in memory.
+- **Needs:** `messages.get` `format=full` when a message is opened or expanded; a loading state (STA-1); cache bodies locally (PER-1). Lists use metadata only.
+
+#### RDR-7 Message navigation and reader focus
+
+- **Today:** `n`/`p` move between messages and expand; `o`/`Enter` focus the reader; `u`/`Esc` return; arrows scroll. `step_message()`, `open_thread()`, `back_to_list()`, `scroll_reader()` (`src/app.rs`).
+- **Needs:** Nothing beyond RDR-2 and RDR-6; `n`/`p` may land on an unloaded message.
+
+#### RDR-8 Show original
+
+- **Needs:** "Show original" view of the raw RFC 822 source (`messages.get` `format=raw`), useful for headers and debugging.
+
+### 5.4 Message and thread actions (ACT)
+
+Each action applies to the checked threads if any (ACT-6), otherwise the selected one (`targets()` in `src/app/mail.rs`). Hovering a row shows Archive, Delete, Mark read/unread and Star; right-click opens a native menu with those plus Reply, Forward, Move to, Label. Toolbar, shortcut and palette all dispatch the same action (`src/actions.rs`).
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| ACT-1 | Archive and move to Inbox | 🟡 Partially done | `threads.modify` (`INBOX`); `threads.untrash` |
+| ACT-1a | Move to a folder | 🟡 Partially done | `threads.modify`, `threads.trash` |
+| ACT-2 | Delete | 🟡 Partially done | `threads.trash` |
+| ACT-3 | Star and unstar | 🟡 Partially done | `threads.modify` (`STARRED`) |
+| ACT-4 | Mark as unread | 🟡 Partially done | `threads.modify` / `messages.modify` (`UNREAD`) |
+| ACT-5 | Mark as read | 🟡 Partially done | `threads.modify` (`UNREAD`) |
+| ACT-6 | Bulk select and bulk actions | 🟡 Partially done | `messages.batchModify`, HTTP batch |
+
+#### ACT-1 Archive and move to Inbox
+
+- **Today:** `e`, toolbar "Archive" (tooltip "Move to Inbox" for archived threads), palette. Selection advances (Settings › Mail › Auto-advance off clears it). `archive()`, `move_selected()` (`src/app.rs`); target from `Folder::archive_target()`: Inbox → Archive; Archive, Spam, Trash → Inbox; Sent and Drafts nothing (button hidden there). Follows each thread's own folder, also in Starred and label views.
+- **Needs:** `threads.modify` removing `INBOX`; back to Inbox adds it. Spam → Inbox is "not spam" (FOL-7); Trash → Inbox is `threads.untrash` plus adding `INBOX`. IMAP: `UID MOVE`.
+- **Notes:** Rollback on failure (STA-2).
+
+#### ACT-1a Move to a folder
+
+- **Today:** `v`, palette "Move to…", Message › Move to…, toolbar "…", right-click: Inbox, Archive, Spam or Trash (palette omits the current one). Undo toast. `move_to()`, `move_threads()`, `open_move_palette()` (`src/app/mail.rs`). Drafts are skipped; Sent can move.
+- **Needs:** The moves of ACT-1, ACT-2 and FOL-7.
+
+#### ACT-2 Delete
+
+- **Today:** `delete`, `backspace`, `#`, toolbar, palette. Moves to Trash and selects the next thread, with Undo (UND-3). In Drafts it discards the draft (DRF-4); in Trash it does nothing (button hidden). `delete()` (`src/app.rs`).
+- **Needs:** `threads.trash` (IMAP: `UID MOVE` to Trash).
+- **Notes:** Whether Delete in Trash means permanent delete is open (FOL-8).
+
+#### ACT-3 Star and unstar
+
+- **Today:** `s`, toolbar, palette; star on the row. Unstarring in Starred removes the row at once. `toggle_star()`; `Thread::starred`. Allowed in Spam and Trash; Starred hides those.
+- **Needs:** `threads.modify` adding or removing `STARRED` (IMAP: `\Flagged`).
+- **Notes:** Gmail stars messages; removing `STARRED` from the thread unstars all of them.
+
+#### ACT-4 Mark as unread
+
+- **Today:** `shift-u`, toolbar, palette. Selection stays. `mark_unread()`.
+- **Needs:** Add `UNREAD`: to every message (`threads.modify`) or only the last (`messages.modify`); decide which. IMAP: remove `\Seen`.
+- **Notes:** Opening the thread again marks it read (RDR-1).
+
+#### ACT-5 Mark as read
+
+- **Today:** `shift-i`, palette; no toolbar button. `mark_read()`.
+- **Needs:** `threads.modify` removing `UNREAD`.
+
+#### ACT-6 Bulk select and bulk actions
+
+- **Today:** `x` checks; `shift-j`/`shift-k` (or shift-arrows) extend; `cmd`-click toggles, `shift`-click ranges; row checkbox on hover; `Esc` clears. The reader shows "N conversations selected" with subjects and action buttons; all actions apply to all. No select-all. `PigeonApp::checked`; `render_selection_summary()` (`src/ui/reader.rs`).
+- **Needs:** `messages.batchModify` takes message IDs (up to 1,000), so expand threads to messages, or send one `threads.modify` per thread in an HTTP batch (SYN-7). IMAP: UID sets.
+- **Notes:** Partial failures must be handled by rollback (STA-2).
+
+### 5.5 Compose and sending (CMP)
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| CMP-1 | New message | 🟡 Partially done | `drafts.create` |
+| CMP-2 | Reply | 🟡 Partially done | `messages.send` with `threadId` |
+| CMP-3 | Reply all | 🟡 Partially done | As CMP-2 |
+| CMP-4 | Forward | 🟡 Partially done | `messages.send` (no `threadId`) |
+| CMP-5 | Recipient fields | 🟡 Partially done | Server validation on send |
+| CMP-6 | Show Cc and Bcc | 🟡 Partially done | `raw` MIME; Gmail delivers Bcc |
+| CMP-7 | Subject and formatted body | 🟡 Partially done | `raw` MIME (`multipart/alternative`) |
+| CMP-8 | Send | 🟡 Partially done | `messages.send`, `drafts.send` |
+| CMP-9 | Send validation | 🟡 Partially done | Send errors |
+| CMP-10 | Forward quote block | 🟡 Partially done | `raw` MIME |
+| CMP-11 | Reply appends to the thread | 🟡 Partially done | `threadId`, `In-Reply-To`, `References` |
+| CMP-12 | Send failure feedback | ⚪ Not done | Send errors |
+| CMP-13 | Sent copy on the server | 🟡 Partially done | `SENT` label (automatic) |
+
+#### CMP-1 New message
+
+- **Today:** `c` or palette "Compose New Message" opens an empty draft in the reading pane ("New Message"). `compose()` (`src/app.rs`), `Composer` (`src/ui/composer.rs`). In memory until saved (DRF-1).
+- **Needs:** A server draft on first save (DRF-6); account choice when there are several (ACC-4); From alias choice (MST-1).
+- **Notes:** No signature (MST-2).
+
+#### CMP-2 Reply
+
+- **Today:** `r`, toolbar, palette. Draft opens under the conversation; subject "Re: …" unless it already starts with "re:". `reply_content()` (`src/app.rs`): if the last message is from the user, reply to its recipients, else to its sender. `reply_to` links the thread.
+- **Needs:** `messages.send` with `threadId`, `In-Reply-To` and `References` headers, and a matching `Subject` (Gmail's threading rules). See DAT-4.
+- **Notes:** Earlier participants are ignored.
+
+#### CMP-3 Reply all
+
+- **Today:** `a`, toolbar, palette. To: sender plus the last message's recipients, minus the user; Cc: its Cc minus anyone in To. Dedupe by email, case-insensitive.
+- **Needs:** As CMP-2, plus honouring `Reply-To` (ignored today).
+- **Notes:** Mailing lists and no-reply senders are included as is.
+
+#### CMP-4 Forward
+
+- **Today:** `f`, toolbar, palette. Subject "Fwd: …" unless it starts with "fwd:"/"fw:". The original is quoted with From, Date, Subject, To. No `reply_to`, so it opens alone and sending creates a new Sent thread (CMP-11).
+- **Needs:** A new message without `threadId`, `In-Reply-To` or `References`. Include the original's attachments (ATT-7).
+
+#### CMP-5 Recipient fields
+
+- **Today:** To, Cc, Bcc as chips. Comma, semicolon or Enter commits; an unfinished address commits on send; Tab moves between fields; Backspace on empty removes the last chip; a chip without `@` is red. `Recipients`, `commit()`, `parse_address()` (`Name <addr>` or a bare address with `@` and a dotted domain).
+- **Needs:** Server rejection reaches the user (CMP-12). Local parsing is only a first check.
+
+#### CMP-6 Show Cc and Bcc
+
+- **Today:** `cmd-shift-c`, the "Cc Bcc" link, or palette. `show_cc_bcc()`; `DraftContent::bcc`.
+- **Needs:** Gmail: include `Bcc` in the `raw` message and Gmail strips it on delivery. SMTP: `RCPT TO` only.
+- **Notes:** Bcc is kept on drafts and the sent copy, but the reader doesn't show it (RDR-4).
+
+#### CMP-7 Subject and formatted body
+
+- **Today:** Subject (hidden for replies, which keep the thread's). Markdown body styled as you type (bold, italic, strikethrough, `<u>underline</u>`, code, headings, lists, quotes, links); syntax stays visible, dimmed. Formatting bar and Gmail shortcuts (`cmd-b`, `cmd-i`, `cmd-u`, `cmd-shift-x`, `cmd-e`, `cmd-k`, `cmd-shift-7`/`8`/`9`, `cmd-\`). Enter continues lists; Tab/Shift-Tab indent; Page Up/Down move by page. `Composer` (`src/ui/composer.rs`), `src/ui/rich_editor.rs`, `src/markdown.rs`. On send and save, `markdown::to_html()` (`DraftContent::body_html()`) makes `Message::html`.
+- **Needs:** A MIME message: `multipart/alternative` with `text/plain` and `text/html`; base64url-encode it into `raw`. Plain part: the markdown as typed or `html::plain_text`; use the same for the snippet. Encode non-ASCII subjects and names (RFC 2047).
+- **Notes:** Typed raw HTML is sent as text except `<u>`/`</u>`. No inline images. A reply that changes the subject doesn't change the thread's.
+
+#### CMP-8 Send
+
+- **Today:** `cmd-enter` anywhere in the draft or list, Send button, palette. The draft closes, the message goes to Sent (or the thread), toast "Message sent" with Undo for 5 s (UND-1). `send_message()`, `message_from()` (`src/app.rs`): `date` from the local clock, `snippet` from the first 140 characters of the HTML's text. Nothing leaves the app.
+- **Needs:** `messages.send` with `raw` (or `drafts.send` for a saved draft); use the upload endpoint for large messages. Show "sent" only after Gmail accepts it. Hold the send for the undo window (UND-1). Take `date` and `snippet` from the server response.
+
+#### CMP-9 Send validation
+
+- **Today:** No recipients: "Add at least one recipient" under To. Invalid address: "“zzz” isn't an email address". Typed text becomes the best contact or the address as typed. Subject and body aren't checked. `Composer::validate()`, `DraftContent::has_recipients()`.
+- **Needs:** Server reasons: invalid recipient, sender not allowed, size over limit, quota.
+- **Notes:** Subject and empty-body warnings aren't built.
+
+#### CMP-10 Forward quote block
+
+- **Today:** "Forwarded message" block with From, Date, Subject, To, then the body. `Quoted` (display) and `html()` (`<blockquote>`) in `src/ui/composer.rs`. Kept on the draft (`DraftOrigin::quoted`, `src/data.rs`) so reopened forwards show it (DRF-3).
+- **Needs:** Send the quote as HTML in the format other clients expect (or attach the original as `message/rfc822`).
+
+#### CMP-11 Reply appends to the thread
+
+- **Today:** `send_message()` pushes a reply into the `reply_to` thread, or a new Sent thread if it's gone. Forwards always make a new Sent thread.
+- **Needs:** Gmail `threadId` on the sent message plus headers (CMP-2). IMAP: `In-Reply-To` and `References`.
+
+#### CMP-12 Send failure feedback
+
+- **Today:** Not built. `Composer::set_error()` and the footer error text only show recipient errors, but can carry the server's message.
+- **Needs:** Send errors with a readable reason, failed messages back to the draft or kept in an outbox (PER-2), and a retry.
+
+#### CMP-13 Sent copy on the server
+
+- **Today:** The Sent thread is made in memory by `send_message()`.
+- **Needs:** Gmail labels sent messages `SENT` itself. IMAP: `APPEND` to Sent unless the server does. Dedupe on `Message-ID` (DAT-4).
+
+### 5.6 Drafts (DRF)
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| DRF-1 | Save on close or navigation | 🟡 Partially done | `drafts.create`, `drafts.update` |
+| DRF-2 | Drafts list | 🟡 Partially done | `drafts.list` |
+| DRF-3 | Open and edit a draft | 🟡 Partially done | `drafts.get` |
+| DRF-4 | Discard a draft | 🟡 Partially done | `drafts.delete` |
+| DRF-5 | Save while typing | ⚪ Not done | `drafts.update` (debounced) |
+| DRF-6 | Sync drafts with the server | ⚪ Not done | `drafts.list`, `history.list` |
+
+#### DRF-1 Save on close or navigation
+
+- **Today:** A changed draft is saved when closed (`Esc`, toolbar "Close and save draft", palette "Close Draft") or when the user moves elsewhere; toast "Saved to Drafts" (no Undo). Unchanged drafts aren't saved. `stash_composer()`, `save_draft()` (`src/app.rs`). Drafts are one-message `Thread`s with IDs `draft-local-N` (DAT-5).
+- **Needs:** `drafts.create`, then `drafts.update` with the stored draft ID (IMAP: `APPEND` to Drafts and delete the old copy).
+- **Notes:** Quitting loses unsaved changes (PER-2).
+
+#### DRF-2 Drafts list
+
+- **Today:** Six starter drafts from JSON plus new ones in memory. Rows show "To: <first recipient>", "(no recipients)", "(no subject)". The sidebar shows the count.
+- **Needs:** `drafts.list` (or `DRAFT` label) with recipients and subject.
+
+#### DRF-3 Open and edit a draft
+
+- **Today:** Selecting a Drafts thread opens it in the composer ("Draft") via `open_draft()`. Drafts saved here keep their markdown in `DraftOrigin::markdown` and reopen with it; JSON drafts reopen from their HTML as plain text (`html::plain_text`). Kind, reply target and forward quote are kept in `DraftOrigin`. Replying again to a thread with a reply draft reopens that draft (`reply_draft_of()`).
+- **Needs:** `drafts.get` with full content, attachments and headers. Store the markdown with the draft so formatting survives (for example as the `text/plain` part or a custom part other clients ignore). Keep the draft's link to its thread (`threadId`) and the quote as a separate part.
+- **Notes:** Drafts written elsewhere have only HTML and lose formatting unless HTML is converted to markdown. Draft search doesn't match text only in the quote. Draft attachments keep metadata only (ATT-6).
+
+#### DRF-4 Discard a draft
+
+- **Today:** `cmd-shift-d`, toolbar trash, palette. Removed with toast "Draft discarded" and Undo; an unchanged new draft is dropped silently. `discard_draft()`.
+- **Needs:** `drafts.delete` (permanent, not Trash), delayed until the undo window ends or recreated on Undo (UND-2).
+
+#### DRF-5 Save while typing
+
+- **Today:** Not built; a crash loses everything since the last close.
+- **Needs:** Debounced saves (for example 2 s after typing stops) to the local store (PER-1) and `drafts.update`; a "Saving…/Saved" state.
+
+#### DRF-6 Sync drafts with the server
+
+- **Today:** Not built.
+- **Needs:** Two-way sync via `drafts.list` and history (SYN-2). Replace `draft-local-N` with the server draft ID after the first save (DAT-5). A conflict rule: last write wins, or keep both.
+- **Notes:** `drafts.update` replaces the draft's message, so its message ID changes on every save; track the draft ID, not the message ID.
+
+### 5.7 Undo (UND)
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| UND-1 | Undo send | 🟡 Partially done | Hold `messages.send` for the window |
+| UND-2 | Undo discard | 🟡 Partially done | Delay `drafts.delete` |
+| UND-3 | Undo for other actions | 🟡 Partially done | Delay or invert `threads.modify` |
+
+#### UND-1 Undo send
+
+- **Today:** Toast "Message sent" with Undo (`cmd-z`, `z`, palette) for 5 s (`TOAST_DURATION`). Undo removes the message from Sent or the thread, restores the draft and reopens the composer. `UndoAction::Send` in `src/app.rs`.
+- **Needs:** An outbox that holds the message at least as long as the window, then sends. Gmail's own "undo send" isn't in the API, so the hold is ours.
+- **Notes:** Once sent it can't be recalled.
+
+#### UND-2 Undo discard
+
+- **Today:** Toast "Draft discarded" with Undo for 5 s; Undo puts the draft back and reopens it. `UndoAction::Discard`.
+- **Needs:** Delay `drafts.delete` until the window ends, or recreate the draft on Undo. A never-saved draft only needs the composer back.
+
+#### UND-3 Undo for other actions
+
+- **Today:** Archive, Delete and Move to (one or many) show "Archived" / "Moved 3 conversations to Trash" with Undo (`z`, `cmd-z`, button, palette) for 5 s; Undo restores folders and the selection. `UndoAction::Move`, `undo_move()` (`src/app/mail.rs`). Star, read state and labels have no undo; there's no undo stack.
+- **Needs:** A reversible action log: each change keeps its inverse until the window passes; the server call is queued or inverted.
+
+### 5.8 Search (SRC)
+
+Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` with lowercased subject, sender and recipient names and addresses (to, cc, bcc), snippets, plain-text bodies and attachment names. Matching is `Query::matches` in `src/search.rs`.
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| SRC-1 | Search bar and keys | 🟡 Partially done | `threads.list` with `q` |
+| SRC-2 | Default search scope | 🟡 Partially done | `labelIds`, `q` |
+| SRC-3 | Search operators | 🟡 Partially done | Gmail `q` operators |
+| SRC-4 | Scope operator `in:` | 🟡 Partially done | `in:`, `includeSpamTrash` |
+| SRC-5 | Text matching | 🟡 Partially done | Gmail full-text index |
+| SRC-6 | Result count | 🟡 Partially done | `resultSizeEstimate` |
+| SRC-7 | Full-mailbox search | 🟡 Partially done | `threads.list` with `q` |
+| SRC-8 | Live search while typing | 🟡 Partially done | Debounced `threads.list` |
+| SRC-9 | More Gmail operators | ⚪ Not done | Gmail `q` operators |
+
+#### SRC-1 Search bar and keys
+
+- **Today:** `/`, `cmd-f` or the list header icon opens the field; `Esc` clears and closes; `Enter` focuses results. Empty field: dropdown of operators and the last 5 searches; while typing `from:`/`to:`: matching contacts; arrows and Enter pick. A chip toggles scope ("Inbox"/"All mail"); recognised operators show as chips beside the count. `toggle_search()`, `close_search()`, `focus_results()` (`src/app.rs`); `search_suggestions()`, `remember_search()`, `toggle_search_scope()` (`src/app/mail.rs`); `render_search_bar()`, `render_search_suggestions()` (`src/ui/thread_list.rs`). Recent searches in memory (PER-3).
+- **Needs:** Server search (`threads.list` with `q`) or the local index (PER-1), and a "searching" state (STA-1).
+
+#### SRC-2 Default search scope
+
+- **Today:** Without `in:`, the current view (or all mail per Settings › Mail › Search scope); Inbox also covers Archive. `refresh_rows()` with `nav_contains()`.
+- **Needs:** Scope by `labelIds` or `q` (`in:inbox OR -in:inbox…`); Sent, Drafts, Spam and Trash search only themselves.
+
+#### SRC-3 Search operators
+
+- **Today:** `from:`, `to:`, `subject:`, `label:`, `is:unread`, `is:starred`, `has:attachment(s)`, quoted phrases (`from:"Sarah Chen"`), AND only. `Query::parse()`, `Term` (`src/search.rs`); substring matches; `label:` matches ID or alphanumeric name.
+- **Needs:** Pass the same operators in Gmail's `q` (IMAP: `SEARCH FROM/TO/SUBJECT/UNSEEN/FLAGGED`).
+- **Notes:** Gmail matches words, not substrings, so local and server results can differ for the same query.
+
+#### SRC-4 Scope operator `in:`
+
+- **Today:** `in:inbox`, `in:archive(d)`, `in:sent`, `in:draft(s)`, `in:spam`, `in:trash`, `in:anywhere`, `in:all`, `in:starred`, `in:<label>`. `Scope` (`src/search.rs`). `in:all` = everything but Spam and Trash; `in:anywhere` = everything.
+- **Needs:** The same meanings server-side: Gmail excludes Spam and Trash unless `includeSpamTrash=true` or `in:anywhere`.
+
+#### SRC-5 Text matching
+
+- **Today:** Plain words match `SearchIndex::all` (`Term::Text`).
+- **Needs:** Full-text over bodies and attachment names: Gmail's index; IMAP `TEXT` (slow); a local index (PER-1) for offline search.
+- **Notes:** Bodies are only in memory today; needed once RDR-6 lands.
+
+#### SRC-6 Result count
+
+- **Today:** "N results in <scope>" from `rows`.
+- **Needs:** Gmail's `resultSizeEstimate` is an estimate and can change between pages; show "about N" or a loading state.
+
+#### SRC-7 Full-mailbox search
+
+- **Today:** `in:all`/`in:anywhere` are complete because everything is loaded.
+- **Needs:** Server search over mail not yet synced; mark partial results (STA-3). The main reason search must move to the server once LST-7 exists.
+
+#### SRC-8 Live search while typing
+
+- **Today:** Every keystroke re-runs `Query::parse()` and `refresh_rows()` (`on_search_event()`), no debounce.
+- **Needs:** Debounced server requests; cancel or ignore stale responses.
+
+#### SRC-9 More Gmail operators
+
+- **Needs:** Parse and suggest more of Gmail's operators: `after:`/`before:`, `older_than:`/`newer_than:`, `larger:`/`smaller:`, `filename:`, `cc:`/`bcc:`, `list:`, `category:` (FOL-11), `is:important` (FOL-12), `has:drive`, `-` negation, `OR` and grouping. With server search most of these can pass through `q` untouched.
+
+### 5.9 Contacts (CON)
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| CON-1 | Recipient suggestions | 🟡 Partially done | `people.searchContacts`, `otherContacts.search`, `people.searchDirectoryPeople` |
+| CON-2 | Typed name and address resolution | 🟡 Partially done | As CON-1 |
+| CON-3 | Contact management | ⚪ Not done | `people.createContact`, `updateContact`, `deleteContact`, batch variants |
+| CON-4 | Contact photos | ⚪ Not done | `photos` person field; `updateContactPhoto`, `deleteContactPhoto` |
+| CON-5 | Contact card | ⚪ Not done | `people.get`, `people.getBatchGet` |
+| CON-6 | Contact groups | ⚪ Not done | `contactGroups.*`, `contactGroups.members.modify` |
+| CON-7 | Workspace directory | ⚪ Not done | `people.listDirectoryPeople`, `searchDirectoryPeople` |
+| CON-8 | Save a frequent address as a contact | ⚪ Not done | `otherContacts.copyOtherContactToMyContactsGroup` |
+
+#### CON-1 Recipient suggestions
+
+- **Today:** Recipient fields and the event panel's "Add guests" show up to six suggestions: prefix matches first, then word-prefix ("ch" finds Sarah Chen), then substring for 3+ letters, fuzzy only when nothing else matches. Automated senders (no-reply, notification, newsletter, alerts, receipts…) and spam senders are never suggested; added recipients are excluded. Arrows, `Ctrl-n`/`Ctrl-p`, Enter or click, Escape. The book is built once at startup from every non-Spam sender and recipient in the JSON, sorted by frequency (`MailData::contacts()`, `ContactBook::new()` in `PigeonApp::new()`); ranking in `ContactBook::suggest()` and `is_automated()` (`src/ui/composer.rs`). Shared as `Rc<ContactBook>` with every composer and the calendar.
+- **Needs:** A local cache filled from People `people.connections.list` (My Contacts) and `otherContacts.list` (addresses the user has mailed), kept fresh with their sync tokens (SYN-6), searched locally. For live lookups, `people.searchContacts` and `otherContacts.search` (send an empty warm-up query first, as Google advises). Add new addresses after each send (today they appear only after restart); changes must reach open composers.
+- **Notes:** Other Contacts tells us who the user has written to, a better signal than guessing "automated" from the local part.
+
+#### CON-2 Typed name and address resolution
+
+- **Today:** A typed address is used as is. A name followed by comma or semicolon takes `ContactBook::best()`; after a comma an unmatched name is dropped silently. On Enter, the highlighted suggestion is used if the text has no `@` or the user moved through the list; otherwise the typed address, or the error. `resolve()`, `commit()`.
+- **Needs:** Lookup via CON-1. Don't drop unmatched names silently: show an error or leave the text.
+
+#### CON-3 Contact management
+
+- **Today:** Not built.
+- **Needs:** People `createContact`, `updateContact` (needs the contact's `etag`), `deleteContact`; `batchCreateContacts`, `batchUpdateContacts`, `batchDeleteContacts` for bulk. A contacts screen or a "save contact" action.
+
+#### CON-4 Contact photos
+
+- **Today:** Initials avatars coloured by address (`avatar()` in `src/ui/mod.rs`) in the reader and the guest list.
+- **Needs:** Photos from the `photos` person field, cached locally; fall back to initials. Optional editing with `updateContactPhoto`, `deleteContactPhoto`.
+
+#### CON-5 Contact card
+
+- **Needs:** Clicking a sender or guest shows name, addresses, phone, organisation and recent threads. `people.get` / `getBatchGet` for details; recent threads from search (`from:` / `to:`).
+
+#### CON-6 Contact groups
+
+- **Needs:** List groups (`contactGroups.list`, `batchGet`), suggest a group in recipient fields and expand it to its members (`contactGroups.get` with `maxMembers`, then `people.getBatchGet`). Optional: create, rename, delete groups and change members (`contactGroups.create`, `update`, `delete`, `contactGroups.members.modify`).
+
+#### CON-7 Workspace directory
+
+- **Needs:** For Workspace accounts, colleagues from the domain directory: `people.searchDirectoryPeople` (live) and `people.listDirectoryPeople` (cache, with sync token). Needs `directory.readonly`.
+
+#### CON-8 Save a frequent address as a contact
+
+- **Needs:** "Add to contacts" on an Other Contact: `otherContacts.copyOtherContactToMyContactsGroup`.
+
+### 5.10 Images and attachments (ATT)
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| ATT-1 | Remote images | 🟡 Partially done | None (HTTP fetch or proxy) |
+| ATT-2 | Inline (`cid:`) images | ⚪ Not done | `payload.parts` `Content-ID`, `messages.attachments.get` |
+| ATT-3 | Attachment list in messages | 🟡 Partially done | `payload.parts` (`filename`, `body.attachmentId`) |
+| ATT-4 | Open and download an attachment | ⚪ Not done | `messages.attachments.get` |
+| ATT-5 | Attachment icon in the list | 🟡 Partially done | `has:attachment`, `payload.parts` |
+| ATT-6 | Attach files to a new message | 🟡 Partially done | `messages.send` / `drafts.*` upload (`multipart` or `resumable`) |
+| ATT-7 | Forward keeps attachments | ⚪ Not done | `messages.attachments.get` + re-attach |
+
+#### ATT-1 Remote images
+
+- **Today:** Images show as a bordered box with an icon and the alt text (or "Image"); never downloaded, since GPUI here only has `NullHttpClient`. Tracking pixels (≤ 2 px) are dropped. `Block::Image` (`src/html.rs`) keeps only `alt`; `Renderer::block()` (`src/ui/html_view.rs`) draws the box.
+- **Needs:** Load on demand or through a proxy so the user's IP and opens aren't exposed; cache results. A setting: always / ask / never.
+- **Notes:** Needs an HTTP client dependency or the backend.
+
+#### ATT-2 Inline (`cid:`) images
+
+- **Today:** Shown as ATT-1 placeholders; `is_safe_url()` rejects `cid:`.
+- **Needs:** Find the part whose `Content-ID` matches, fetch it (`messages.attachments.get` if it has an `attachmentId`), hand it to the renderer. IMAP: `BODYSTRUCTURE` + `BODY[part]`.
+
+#### ATT-3 Attachment list in messages
+
+- **Today:** Chips under each body: type icon (image, PDF/document, spreadsheet, archive, other), name, size ("393 KB"). `Message::attachments` (`Attachment { name, size_bytes, mime }`), `render_message()`, `file_size()`, `Attachment::kind()` (MIME then extension), `attachment_icon()`.
+- **Needs:** Per part: `filename`, `mimeType`, `body.size`, `body.attachmentId`.
+
+#### ATT-4 Open and download an attachment
+
+- **Today:** Chips are plain tags with no handler, hover or pointer.
+- **Needs:** `messages.attachments.get` (base64url data), cache, open with Quick Look or the default app, save via a file dialog, progress for large files.
+
+#### ATT-5 Attachment icon in the list
+
+- **Today:** Paperclip when any message has an attachment (`Thread::has_attachments()`).
+- **Needs:** A thread-level flag from metadata (parts with a `filename`).
+- **Notes:** Decide whether inline images count.
+
+#### ATT-6 Attach files to a new message
+
+- **Today:** The paperclip opens a file picker (multi-select); dropping files also attaches. Chips with icon, name, size and ×; kept on the draft and shown on the sent copy. `attach_paths()`, `Attachment::from_file()` (name, size, MIME from extension). Only metadata is read; bytes are never read or sent.
+- **Needs:** Read the files into the MIME message; use `uploadType=multipart` or `resumable` on `messages.send` / `drafts.create` / `drafts.update` for large ones. Show progress and Gmail's 25 MB message limit (larger files as Drive links, see §9).
+
+#### ATT-7 Forward keeps attachments
+
+- **Today:** Not built; `reply_content()` and `Quoted` carry only the quote.
+- **Needs:** Fetch the original's attachments (ATT-4) and attach them on send.
+
+### 5.11 Links (LNK)
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| LNK-1 | Open a link in the browser | 🟡 Partially done | None |
+| LNK-2 | Link safety checks | ⚪ Not done | None (optional Safe Browsing API) |
+| LNK-3 | `mailto:` links | ⚪ Not done | None |
+
+#### LNK-1 Open a link in the browser
+
+- **Today:** Works without a backend: `cx.open_url()` in `Renderer::text()` on an `InteractiveText`; tooltip shows the URL. Only `http`, `https`, `mailto`, `tel` are clickable (`is_safe_url()`). URLs open exactly as written, tracking and redirect wrappers included.
+
+#### LNK-2 Link safety checks
+
+- **Needs:** Warn on suspicious links and text/URL mismatches; optionally unwrap redirects and strip tracking parameters. Network checks must not block the click for long.
+
+#### LNK-3 `mailto:` links
+
+- **Today:** Passed to the system mail handler, not Pigeon's composer.
+- **Needs:** Open the composer with the address and `subject`, `body`, `cc`; pick the account (ACC-4). Optionally register Pigeon as the default mail app.
+
+### 5.12 Mail settings (MST)
+
+Gmail's `users.settings` resources. All need `gmail.settings.basic` unless noted.
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| MST-1 | Send-as aliases and From picker | ⚪ Not done | `settings.sendAs.list`, `get`, `patch`, `update` |
+| MST-2 | Signatures | ⚪ Not done | `sendAs.signature` via `settings.sendAs.patch` |
+| MST-3 | Vacation responder | ⚪ Not done | `settings.getVacation`, `updateVacation` |
+| MST-4 | Filters | ⚪ Not done | `settings.filters.list`, `get`, `create`, `delete` |
+| MST-5 | Forwarding and auto-forwarding | ⚪ Not done | `settings.forwardingAddresses.list`, `get`; `settings.getAutoForwarding` |
+| MST-6 | IMAP and POP settings | ⚪ Not done | `settings.getImap`, `updateImap`, `getPop`, `updatePop` |
+| MST-7 | Gmail display language | ⚪ Not done | `settings.getLanguage`, `updateLanguage` |
+| MST-8 | Delegates | ⚪ Not done | `settings.delegates.*` (service accounts only) |
+| MST-9 | S/MIME certificates | ⚪ Not done | `settings.sendAs.smimeInfo.*` |
+| MST-10 | Client-side encryption | ⚪ Not done | `settings.cse.identities.*`, `settings.cse.keypairs.*` |
+
+#### MST-1 Send-as aliases and From picker
+
+- **Needs:** `sendAs.list` for every address the user may send from (feeds ACC-2), a From picker in the composer that defaults to `isDefault` (or, for replies, the alias the mail was sent to), and the alias's `displayName` and `replyToAddress` on sent mail. Users can edit those with `patch`/`update`.
+- **Notes:** Creating, deleting and verifying aliases (`create`, `delete`, `verify`) are only available to Workspace service accounts with domain-wide delegation; send users to Gmail settings for that.
+
+#### MST-2 Signatures
+
+- **Needs:** Read each alias's `signature` (HTML) and insert it into new messages and replies; edit it in Settings and save with `sendAs.patch`. Gmail sanitises the HTML.
+- **Notes:** The composer writes markdown; the signature is HTML, so it needs its own rendering in the composer.
+
+#### MST-3 Vacation responder
+
+- **Needs:** Settings page for `VacationSettings`: on/off, subject, plain or HTML body, start and end time, contacts-only and domain-only.
+
+#### MST-4 Filters
+
+- **Needs:** List, create and delete filters: `criteria` (from, to, subject, query, negatedQuery, hasAttachment, size) and `action` (addLabelIds, removeLabelIds, forward). "Filter messages like this" from a thread.
+- **Notes:** The API has no filter update; edit = delete + create.
+
+#### MST-5 Forwarding and auto-forwarding
+
+- **Needs:** Show forwarding addresses (`forwardingAddresses.list`, `get`) and the auto-forwarding state (`getAutoForwarding`) read-only, with a link to Gmail to change them.
+- **Notes:** `forwardingAddresses.create`/`delete` and `updateAutoForwarding` are service-account only (`gmail.settings.sharing`).
+
+#### MST-6 IMAP and POP settings
+
+- **Needs:** Low priority: these configure other clients. Show and toggle with `getImap`/`updateImap`, `getPop`/`updatePop` if wanted.
+
+#### MST-7 Gmail display language
+
+- **Needs:** Low priority: Pigeon follows macOS. `getLanguage` could help pick reply prefixes or date formats.
+
+#### MST-8 Delegates
+
+- **Needs:** Every `delegates` method (list, get, create, delete) is only available to service accounts with domain-wide delegation, so a consumer app can't manage delegates. Reading a mailbox someone delegated to you isn't in the Gmail API either. Tracked only so it isn't forgotten; see §10.
+
+#### MST-9 S/MIME certificates
+
+- **Needs:** Workspace with hosted S/MIME: list, upload (PKCS#12), set default and delete certificates per alias (`smimeInfo.list`, `insert`, `setDefault`, `delete`). Show signed/encrypted state on received mail.
+
+#### MST-10 Client-side encryption
+
+- **Needs:** Workspace Enterprise feature with an external key service and hardware keys for user-managed identities. The client must encrypt and decrypt mail itself. Later, if ever; see §10.
+
+---
+
+## 6. Calendar (CAL)
+
+The calendar shares the window with mail. State lives in `CalendarView` (`src/ui/calendar/mod.rs`), owned by `PigeonApp`; model and pure logic in `src/calendar/` (`mod.rs`, `time.rs`, `recurrence.rs`, `layout.rs`).
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| **Views and navigation** | | | |
+| CAL-1 | Switch between Mail and Calendar | 🟡 Partially done | None (calendar scopes at sign-in) |
+| CAL-2 | Calendar list, colours and visibility | 🟡 Partially done | `calendarList.list`, `calendarList.patch` (`selected`), `colors.get` |
+| CAL-3 | Load events for the visible range | 🟡 Partially done | `events.list` (`timeMin`, `timeMax`, `syncToken`) |
+| CAL-4 | Day, week and month views and navigation | 🟡 Partially done | As CAL-3 |
+| CAL-4a | Go to a date | 🟡 Partially done | None |
+| CAL-18 | Today and the now-line | 🟡 Partially done | None |
+| CAL-19 | Event search in the palette | 🟡 Partially done | `events.list` with `q` |
+| CAL-23 | Persisted calendar UI state | ⚪ Not done | Local; `calendarList.selected` |
+| **Events** | | | |
+| CAL-7 | Edit an event in the panel | 🟡 Partially done | `events.patch` / `events.update` with ETag |
+| CAL-8 | Date, time and all-day editing | 🟡 Partially done | `start`/`end` (`date` or `dateTime` + `timeZone`) |
+| CAL-9 | Create an event | 🟡 Partially done | `events.insert` |
+| CAL-10 | Delete an event and undo | 🟡 Partially done | `events.delete` (`sendUpdates`) |
+| CAL-11 | IDs for new events | 🟡 Partially done | Event `id`, `iCalUID` |
+| CAL-12 | Time zones | 🟡 Partially done | `timeZone` fields; `settings` `timezone` |
+| CAL-15 | Reminders | 🟡 Partially done | `reminders` (`useDefault`, `overrides`) |
+| CAL-16 | Busy and free | 🟡 Partially done | `transparency` |
+| CAL-17 | Video links | 🟡 Partially done | `conferenceData.entryPoints`, `hangoutLink` |
+| CAL-21 | Drag to create, move and resize | 🟡 Partially done | `events.insert`, `events.patch` |
+| CAL-22 | Organizer and read-only permissions | ⚪ Not done | `accessRole`, `guestsCanModify`, `locked`, `organizer.self` |
+| CAL-28 | Event colours and labels | ⚪ Not done | `colorId` + `colors.get`; `eventLabelId` + `calendars` `labelProperties` |
+| CAL-30 | Event attachments | ⚪ Not done | `attachments` (`supportsAttachments=true`) |
+| CAL-31 | Event visibility and guest permissions | ⚪ Not done | `visibility`, `guestsCanModify`, `guestsCanInviteOthers`, `guestsCanSeeOtherGuests` |
+| CAL-33 | Several reminders and default reminders | ⚪ Not done | `reminders.overrides` (`popup`, `email`), `calendarList.defaultReminders` |
+| CAL-34 | Create Google Meet links | ⚪ Not done | `conferenceData.createRequest` (`conferenceDataVersion=1`) |
+| CAL-39 | Quick add from text | ⚪ Not done | `events.quickAdd` |
+| CAL-40 | Move an event to another calendar | 🟡 Partially done | `events.move` |
+| **Recurrence** | | | |
+| CAL-5 | Recurring events | 🟡 Partially done | `recurrence` (RRULE, EXDATE), `events.instances`, `singleEvents` |
+| CAL-6 | This event or all events | 🟡 Partially done | Instance `events.patch`; series split with `UNTIL` |
+| CAL-29 | Set and edit repeat rules | ⚪ Not done | `recurrence` |
+| **Invites and RSVP** | | | |
+| CAL-13 | Guests and invitations | 🟡 Partially done | `attendees`, `sendUpdates` |
+| CAL-14 | My RSVP | 🟡 Partially done | `attendees[].responseStatus` (`self`) |
+| CAL-20 | Invite emails linked to events | 🟡 Partially done | `events.list` with `iCalUID`; iMIP parts in Gmail |
+| CAL-32 | Optional guests, RSVP notes, extra guests and rooms | ⚪ Not done | `attendees[].optional`, `comment`, `additionalGuests`, `resource` |
+| **Event types** | | | |
+| CAL-35 | Focus time | ⚪ Not done | `eventType=focusTime`, `focusTimeProperties` |
+| CAL-36 | Out of office | ⚪ Not done | `eventType=outOfOffice`, `outOfOfficeProperties` |
+| CAL-37 | Working location | ⚪ Not done | `eventType=workingLocation`, `workingLocationProperties` |
+| CAL-38 | Birthdays and special dates | ⚪ Not done | `eventType=birthday`, `birthdayProperties` |
+| **Calendars and sharing** | | | |
+| CAL-24 | Create, rename and delete calendars | ⚪ Not done | `calendars.insert`, `patch`, `update`, `delete` |
+| CAL-25 | Subscribe to other calendars | ⚪ Not done | `calendarList.insert`, `calendarList.delete` |
+| CAL-26 | Calendar sharing | ⚪ Not done | `acl.list`, `insert`, `patch`, `update`, `delete` |
+| **Free/busy** | | | |
+| CAL-27 | Free/busy and finding a time | ⚪ Not done | `freebusy.query` |
+| **Settings** | | | |
+| CAL-41 | Calendar settings from Google | ⚪ Not done | `settings.list`, `settings.get` |
+
+### Views and navigation
+
+#### CAL-1 Switch between Mail and Calendar
+
+- **Today:** Rail icons, `cmd-1`/`cmd-2`, palette "Go to Mail/Calendar". Mail state is kept across switches. `PigeonApp::set_mode()`; `src/ui/rail.rs`.
+- **Needs:** Calendar scopes at sign-in (ACC-6). An empty state for accounts without calendar access (not built).
+
+#### CAL-2 Calendar list, colours and visibility
+
+- **Today:** The header's calendars button shows and hides calendars; palette "Show/Hide Calendar: X". Events take their calendar's colour. `calendars` in JSON; `toggle_calendar()`; `render_calendars_button()` (`header.rs`).
+- **Needs:** `calendarList.list` with `summary`/`summaryOverride`, `backgroundColor`/`foregroundColor` (or `colorId` from `colors.get`), `selected`, `hidden`, `accessRole`, `primary`. Save visibility with `calendarList.patch` (`selected`) or locally (CAL-23).
+- **Notes:** Shared and subscribed calendars are often read-only (CAL-22).
+
+#### CAL-3 Load events for the visible range
+
+- **Today:** All events in memory; `visible_range()` and `visible_occurrences()` filter on every render.
+- **Needs:** `events.list` per visible calendar with `timeMin`/`timeMax`, cached locally, ranges either side prefetched; incremental sync with `syncToken` (SYN-4). Series come once with their `recurrence` (CAL-5).
+
+#### CAL-4 Day, week and month views and navigation
+
+- **Today:** Day, Week (default), Month. `d`/`w`/`m`; `t` today; `n`/`p` period; `←`/`→` move the selected day; `↓`/`↑`, `j`/`k`, `tab`/`shift-tab` step through events past the period. Clicking a day number opens it. The grid scrolls to ~8am. Overlaps sit in equal columns, widening into free ones; columns narrower than 60pt overlap a little. Day view caps the event column at 640pt and shows a mini month and the day's list beside it. Week numbers via View menu or palette. `set_view()`, `open_day()`, `step()`, `step_day()`, `select_adjacent()` (`mod.rs`); `week_view.rs` (`layout::pack_columns()`, `column_box()`), `agenda.rs`, `mini_month.rs`, `month_view.rs` (`layout::pack_lanes()`, "+N more").
+- **Needs:** Beyond CAL-3: next/previous event looks up to 62 days ahead, so that range must be cached or fetched.
+- **Notes:** Week start is fixed to Monday (`time::week_start()`); Google's `weekStart` setting could drive it (CAL-41).
+
+#### CAL-4a Go to a date
+
+- **Today:** Clicking the header title, `g d`, `cmd-shift-t`, palette or Go › Go to Date… opens a field over a small month. Reads typed dates ("nov 12", "next fri", "tomorrow", "in 2 weeks", "dec 2027"), English only. `toggle_date_picker()`, `go_to_date()`, `render_title()`, `time::parse_date()`.
+- **Needs:** Nothing beyond CAL-3.
+
+#### CAL-18 Today and the now-line
+
+- **Today:** Today highlighted; a red now-line in Day and Week; past events faded. `today()`, `now()` from the system clock.
+- **Needs:** None. A per-minute redraw timer isn't built; the line moves only on re-render.
+
+#### CAL-19 Event search in the palette
+
+- **Today:** In Calendar mode the palette finds events by title and jumps to the next occurrence. `PaletteCommand::Event` items in `palette_items()`; `reveal_event()`.
+- **Needs:** `events.list` with `q` (matches title, description, location, attendees) and a cap, as PAL-2.
+- **Notes:** Locally only titles are searched.
+
+#### CAL-23 Persisted calendar UI state
+
+- **Today:** View, date, week numbers and visibility reset on launch (`CalendarView::new()`).
+- **Needs:** Save with PER-3; visibility may live on the server (`calendarList.selected`).
+
+### Events
+
+#### CAL-7 Edit an event in the panel
+
+- **Today:** Click, or `e`/`enter` on the selection, opens the right panel. Title, calendar, location, video link, guests, notes, reminder and busy/free edit in place; changes apply on every keystroke (`on_field_event()`); Esc closes. `open_event()`, `close_panel()`; `EventPanel` (`event_panel.rs`).
+- **Needs:** `events.patch` (or `get` + `update`) with `If-Match` on the ETag; batch writes on close or after a pause. CalDAV: `PUT` with `If-Match`.
+- **Notes:** No Save button, so failed writes must keep the user's text (STA-2).
+
+#### CAL-8 Date, time and all-day editing
+
+- **Today:** Date and time fields with pickers; typed values ("tomorrow", "Oct 27", "10/27", "3pm", "15:30", "noon"); up/down by a day or 15 minutes; all-day switch. Tab reaches every control in reading order; enter/space work switch and pickers. `commit_field()`, `step_field()`, `set_date()`, `set_time()`, `toggle_all_day()`; `time::parse_date()`, `parse_time()`. Changing the start keeps the duration; an end at or before the start moves to the next day; ends are ≥ 15 minutes after the start.
+- **Needs:** All-day: `start.date`/`end.date` with an exclusive end. Timed: `dateTime` with `timeZone` (CAL-12).
+
+#### CAL-9 Create an event
+
+- **Today:** `c` or the header "+" creates one at the next half hour (today or the selected day), opens it, focuses the title. Dragging or double-clicking the grid also creates (CAL-21). Goes to the first visible calendar, 10-minute reminder, busy, user as organizer. `new_event()`, `create_event()`. An untitled new event is dropped when its panel closes, without a toast.
+- **Needs:** `events.insert` once it has a title; replace the local ID (CAL-11).
+- **Notes:** A default-calendar setting isn't built.
+
+#### CAL-10 Delete an event and undo
+
+- **Today:** `delete`/`backspace` or the panel's Delete; toast with Undo. `delete_occurrence()` / `delete_event()` emit `CalendarEvent::Deleted`; `UndoAction::DeleteEvent` → `restore()`. Series ask first (CAL-6).
+- **Needs:** `events.delete` after the toast ends (or delete + re-insert on Undo), with `sendUpdates` so guests get a cancellation; maybe ask first.
+- **Notes:** For an event someone else organizes, "delete" should mean decline and hide (CAL-22).
+
+#### CAL-11 IDs for new events
+
+- **Today:** `e-local-N` from a counter that restarts each launch (`CalendarView::new_id()`).
+- **Needs:** Server IDs, or a local UUID until the first insert (Google accepts client-chosen IDs in base32hex). A stable `iCalUID` so invite mail can find the event (CAL-20).
+
+#### CAL-12 Time zones
+
+- **Today:** Wall-clock times: `wall_time()` drops the JSON's UTC offset (`naive_local()`); the model uses `NaiveDateTime`. The placeholder data uses Eastern offsets for San Francisco places, so converting would move every event.
+- **Needs:** Keep each event's `timeZone`, show in the user's zone (Google's `timezone` setting or macOS), write back with a zone. All-day events have none. Expand recurrences in the event's zone so they hold across DST.
+- **Notes:** No zone picker or "shown in another zone" hint yet.
+
+#### CAL-15 Reminders
+
+- **Today:** One reminder (none, at start, 5, 10, 15, 30 min, 1 h, 1 day). `reminder_minutes`. Nothing fires.
+- **Needs:** Save as `reminders.overrides` with `method=popup` (or `useDefault`). Schedule macOS notifications, also after restart and with the window closed (NTF-3). Several reminders: CAL-33.
+
+#### CAL-16 Busy and free
+
+- **Today:** Busy/Free choice; drawn the same. `busy` on `Event`.
+- **Needs:** `transparency` (`opaque`/`transparent`); it affects free/busy for others (CAL-27).
+
+#### CAL-17 Video links
+
+- **Today:** Shows and edits a link with a Join button (`cx.open_url()`). `video_link` in JSON.
+- **Needs:** Read `conferenceData.entryPoints` (video URI, phone, PIN) and `hangoutLink`, or a URL in location/description. Creating Meet links: CAL-34.
+
+#### CAL-21 Drag to create, move and resize
+
+- **Today:** Day and Week grids: drag empty space to create (live preview snapped to 15 minutes, times floating above; opens with title focused on release); double-click for 30 minutes; drag to move across time and days; drag the bottom edge to resize (≥ 15 min). Auto-scroll near edges; < 4 px is a click; Escape cancels. `src/ui/calendar/drag.rs` (`GridDrag`, `press_grid()`, `press_occurrence()`, `drag_to()`, `finish_drag()`) calls `create_event()` and `retime_occurrence()`. The all-day lane and Month view can't be dragged.
+- **Needs:** One write on release; ask whether to notify guests (`sendUpdates`). Series ask "This event / All events" (CAL-6); failures snap back (STA-2).
+
+#### CAL-22 Organizer and read-only permissions
+
+- **Today:** Not built: every event is editable, including others' and shared ones.
+- **Needs:** The calendar's `accessRole` (`freeBusyReader`, `reader`, `writer`, `owner`), and per event `organizer.self`, `guestsCanModify`, `locked`, `privateCopy`. Make the panel read-only where Google would refuse.
+- **Notes:** Guests can usually change only their RSVP, reminders and, on their copy, busy/free.
+
+#### CAL-28 Event colours and labels
+
+- **Needs:** Per-event colour override: legacy `colorId` from the `colors.get` event palette, or the newer labels: `eventLabelId` pointing at the calendar's `labelProperties.eventLabels` (custom name and colour, up to 200 per calendar; requires `eventLabelVersion=1`, which makes `colorId` ignored). Managing labels needs owner access (`calendars.update`).
+
+#### CAL-30 Event attachments
+
+- **Needs:** Show `attachments` (Drive `fileUrl`, `title`, `mimeType`, `iconLink`; up to 25) and open them in the browser; adding them needs `supportsAttachments=true` and a Drive file (§9).
+
+#### CAL-31 Event visibility and guest permissions
+
+- **Needs:** `visibility` (`default`, `public`, `private`) and the guest switches `guestsCanModify`, `guestsCanInviteOthers`, `guestsCanSeeOtherGuests` in the panel.
+- **Notes:** On a recurring event, making one instance more private applies to the whole series.
+
+#### CAL-33 Several reminders and default reminders
+
+- **Needs:** More than one reminder per event, `email` as well as `popup` (`reminders.overrides`, up to 5), and the calendar's `defaultReminders` from `calendarList` (edited with `calendarList.patch`). `notificationSettings` on `calendarList` controls Google's own emails.
+
+#### CAL-34 Create Google Meet links
+
+- **Needs:** "Add Google Meet" in the panel: `conferenceData.createRequest` with a `requestId` and `conferenceSolutionKey.type=hangoutsMeet`, sent with `conferenceDataVersion=1`; poll until `status.statusCode` is `success`. Google's `autoAddHangouts` setting (CAL-41) says whether to add one by default.
+
+#### CAL-39 Quick add from text
+
+- **Needs:** Optional: `events.quickAdd` creates an event from text ("Lunch with Sam Friday 1pm"). Pigeon's own parsers (`time::parse_date`, `parse_time`) may be enough; quickAdd needs a network round-trip before the event shows.
+
+#### CAL-40 Move an event to another calendar
+
+- **Today:** The panel's calendar picker (`render_calendar_picker()` in `event_panel.rs`) changes the event's calendar in memory.
+- **Needs:** `events.move` with `destination` (changes the organizer calendar). Only `default` events can move; birthdays, focus time, out of office, working location and from-Gmail events can't.
+
+### Recurrence
+
+#### CAL-5 Recurring events
+
+- **Today:** `recurrence` is one keyword (`daily`, `weekdays`, `weekly`, `biweekly`, `monthly`, `yearly`). A series can carry `exceptions` (like `EXDATE`) and `until`, set by CAL-6; a changed occurrence is its own event with `recurring_event_id` and `original_start` (like `RECURRENCE-ID`). `recurrence::occurrences()` expands only the visible range.
+- **Needs:** Full RRULE (`FREQ`, `INTERVAL`, `BYDAY`, `BYMONTHDAY`, `UNTIL`, `COUNT`), `EXDATE`, `RDATE`, and exceptions (`recurringEventId` + `originalStartTime`). Either expand on Google (`singleEvents=true`, or `events.instances` for one series) keeping the series ID, or expand locally from the RRULE.
+- **Notes:** The UI can't set a rule (CAL-29); new events never repeat.
+
+#### CAL-6 This event or all events
+
+- **Today:** Changing, dragging or deleting one occurrence asks which ones. In the panel, the first change shows "Apply this change to: This event / All events" (shown on the whole series until answered; closing without answering keeps "all"). Dropping a drag asks over the grid; enter = "This event", escape cancels. Delete asks "This event / This and following / All events". Undo restores any. "This event" copies the occurrence into its own event (`detach()`) and adds an exception; "This and following" sets `until` and drops later changed occurrences; "All" changes or deletes the series and its exceptions. `SeriesPrompt`, `answer_prompt()`, `delete_occurrence()`, `restore()` (`mod.rs`); `choose_edit_scope()` (`event_panel.rs`).
+- **Needs:** One occurrence: patch or delete the instance (from `events.instances`). Following: end the series with `UNTIL` (plus a new series if the change continues). All: patch the series. Exceptions keep their link to the series. CalDAV: `RECURRENCE-ID` overrides or `EXDATE`.
+- **Notes:** "This and following" is offered for deletes only. Series edits don't reach occurrences changed on their own, as in Google Calendar.
+
+#### CAL-29 Set and edit repeat rules
+
+- **Needs:** A repeat picker in the panel (presets plus custom: interval, weekdays, monthly by date or weekday, end by date or count) writing `recurrence` RRULE strings; show the rule in words for any RRULE Google returns.
+
+### Invites and RSVP
+
+#### CAL-13 Guests and invitations
+
+- **Today:** The panel lists organizer and guests with RSVP icons and a summary ("3 people · 2 yes · 1 awaiting"). "Add guests" suggests contacts (CON-1); `enter` adds, `backspace` on empty removes the last. `render_guests()`, `update_guest_suggestions()`, `add_guest()`, `remove_guest()`. Nothing is sent and the user isn't asked.
+- **Needs:** Save `attendees`; send invites and updates with `sendUpdates` (`all`, `externalOnly`, `none`); ask "send updates to guests?". CalDAV: iMIP. Free/busy for guests: CAL-27.
+- **Notes:** `attendeesOmitted` means the list is incomplete; don't write it back as is.
+
+#### CAL-14 My RSVP
+
+- **Today:** For others' events the panel shows "Going? Yes / Maybe / No", as does the invite card (CAL-20). Unanswered invites are outlined; declined ones struck through. `set_rsvp()`, `Event::my_status()`, `Look` (`week_view.rs`).
+- **Needs:** Patch the `self` attendee's `responseStatus` (`accepted`, `tentative`, `declined`, `needsAction`) so the organizer is told. One write serves the panel and the card.
+- **Notes:** Debounce repeated changes. Answering for one occurrence of a series isn't supported (CAL-6).
+
+#### CAL-20 Invite emails linked to events
+
+- **Today:** An invitation mail shows a card above its body: title, time, repeat rule, location, video link with Join, organizer and head count, in the calendar's colour, plus a mini timeline of the user's other events that day naming busy overlaps ("Conflicts with …"). Yes / Maybe / No (`shift-y`, `shift-m`, `shift-n`) answer it; "Open in Calendar" (`shift-c`). A cancellation shows a muted card with "Remove from calendar" (`shift-x`, with Undo). In the palette and `?` sheet. `Message::invite` (`Invite { event_id, method }`, `request`/`cancel`) in `src/data.rs`; `src/ui/invite.rs` reads `CalendarView::data` and answers via `set_rsvp()`, so card and grid stay in step.
+- **Needs:** Find the event by `iCalUID` (`events.list` with `iCalUID`); Google usually adds invitations sent to Gmail to the calendar itself. For non-Google invites, parse `text/calendar` parts (iMIP `REQUEST`, `CANCEL`, `REPLY`) and `events.import` a private copy. Answers write as CAL-14. "Remove from calendar" deletes only the user's copy and sends nothing.
+- **Notes:** The card shows the next occurrence from today; an invite whose event is gone says "This event is no longer in your calendar". Conflicts count only the user's own busy, non-declined events, not shared calendars.
+
+#### CAL-32 Optional guests, RSVP notes, extra guests and rooms
+
+- **Needs:** Mark guests `optional`; add a note to an RSVP (`comment`) and a `+N` count (`additionalGuests`); show room and resource attendees (`resource=true`) apart from people.
+
+### Event types
+
+#### CAL-35 Focus time
+
+- **Needs:** Show and create `focusTime` events (`focusTimeProperties`: `autoDeclineMode`, `declineMessage`, `chatStatus`). Timed only, primary calendar only, not available to every account.
+
+#### CAL-36 Out of office
+
+- **Needs:** Show and create `outOfOffice` events (`outOfOfficeProperties`: `autoDeclineMode`, `declineMessage`). Timed only, primary calendar only, not available to every account. Distinct from the Gmail vacation responder (MST-3).
+
+#### CAL-37 Working location
+
+- **Needs:** Show the user's working location per day (`workingLocationProperties`: `homeOffice`, `officeLocation`, `customLocation`), for example as an all-day chip; create and edit it. Primary calendar only, mostly Workspace.
+
+#### CAL-38 Birthdays and special dates
+
+- **Needs:** Show `birthday` events (annual, all-day) with `birthdayProperties` (`type`: birthday, anniversary, custom, other, self; `contact` links to People as `people/c…`). The API reads them and creates only `type=birthday`; they can't be moved to another calendar.
+
+### Calendars and sharing
+
+#### CAL-24 Create, rename and delete calendars
+
+- **Needs:** Secondary calendars: `calendars.insert` (summary, description, time zone), `calendars.patch`/`update`, `calendars.delete`. Per-user colour and name override via `calendarList.patch` (`backgroundColor` with `colorRgbFormat=true`, `summaryOverride`).
+
+#### CAL-25 Subscribe to other calendars
+
+- **Needs:** Add an existing calendar (a colleague's, holidays) by ID with `calendarList.insert`; remove it from the list with `calendarList.delete` (doesn't delete the calendar).
+
+#### CAL-26 Calendar sharing
+
+- **Needs:** Show and change who can see a calendar: `acl.list`, `insert`, `patch`/`update`, `delete`. Roles `none`, `freeBusyReader`, `reader`, `writer`, `owner`; scopes `default` (public), `user`, `group`, `domain`. Owner access needed.
+
+### Free/busy
+
+#### CAL-27 Free/busy and finding a time
+
+- **Today:** The invite card's conflict check uses only the user's own loaded events.
+- **Needs:** `freebusy.query` (`timeMin`, `timeMax`, `items` of calendar IDs or guest emails) to show guests' busy blocks in the panel or grid and suggest a free slot; include shared calendars in conflict checks.
+
+### Settings
+
+#### CAL-41 Calendar settings from Google
+
+- **Needs:** Read the user's Google Calendar settings with `settings.list` (read-only in the API; `settings.watch` for changes): `weekStart`, `timezone`, `format24HourTime`, `hideWeekends`, `defaultEventLength`, `showDeclinedEvents`, `hideInvitations`, `remindOnRespondedEventsOnly`, `locale`, `dateFieldOrder`, `autoAddHangouts`, `useKeyboardShortcuts`. Use them as defaults: week start (CAL-4), zone (CAL-12), new-event length (CAL-9), Meet by default (CAL-34), declined events.
+
+---
+
+## 7. Sync, notifications and states
+
+### 7.1 Sync and push (SYN)
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| SYN-1 | Gmail full sync | ⚪ Not done | `threads.list` / `messages.list` + batched `get`; store `historyId` |
+| SYN-2 | Gmail partial sync | ⚪ Not done | `history.list` (`startHistoryId`, `historyTypes`) |
+| SYN-3 | Gmail push | ⚪ Not done | `watch`, `stop`, Cloud Pub/Sub |
+| SYN-4 | Calendar incremental sync | ⚪ Not done | `events.list` / `calendarList.list` with `syncToken` |
+| SYN-5 | Calendar push | ⚪ Not done | `events.watch`, `calendarList.watch`, `acl.watch`, `settings.watch`, `channels.stop` |
+| SYN-6 | Contacts sync | ⚪ Not done | `people.connections.list`, `otherContacts.list` with `syncToken` |
+| SYN-7 | Batching, quotas and backoff | ⚪ Not done | HTTP batch; `429` / `403 rateLimitExceeded` |
+
+#### SYN-1 Gmail full sync
+
+- **Needs:** On first sign-in (or when history expires): list recent threads or messages, fetch them in batches (`format=metadata`, bodies on demand per RDR-6), store them (PER-1) and the newest `historyId`.
+
+#### SYN-2 Gmail partial sync
+
+- **Needs:** Poll `history.list` from the stored `historyId` (`messageAdded`, `messageDeleted`, `labelAdded`, `labelRemoved`), apply changes, store the new ID. A 404 means the ID is too old: run SYN-1. Google recommends polling for installed apps. Feeds LST-8, DRF-6, NTF-1.
+
+#### SYN-3 Gmail push
+
+- **Needs:** `watch` on the mailbox (optionally filtered by `labelIds`) publishing to a Cloud Pub/Sub topic that `gmail-api-push@system.gserviceaccount.com` may publish to; renew before it expires (at most 7 days; Google suggests daily); `stop` on sign-out. Each notification carries a `historyId` that triggers SYN-2.
+- **Notes:** Needs our own Cloud project and a subscriber (a server or a pull subscription), so it depends on the ACC-8 decision. Polling SYN-2 works without it.
+
+#### SYN-4 Calendar incremental sync
+
+- **Needs:** Full `events.list` per calendar to get `nextSyncToken` (on the last page), then list with `syncToken` for changes (deleted events come with `status=cancelled`). `410 Gone` means resync. Same for `calendarList.list`.
+
+#### SYN-5 Calendar push
+
+- **Needs:** `events.watch` (and `calendarList`, `acl`, `settings` watch) to an HTTPS webhook; channels expire and must be renewed; `channels.stop` to cancel. Each notification triggers SYN-4.
+- **Notes:** Needs a public HTTPS server; a desktop-only backend polls SYN-4 instead.
+
+#### SYN-6 Contacts sync
+
+- **Needs:** `people.connections.list` and `otherContacts.list` with `requestSyncToken=true`, then `syncToken` for changes; resync when the token expires. Feeds CON-1.
+
+#### SYN-7 Batching, quotas and backoff
+
+- **Needs:** Group calls into HTTP batch requests (up to 100 calls; Gmail advises at most 50) for list-then-get and bulk actions (ACT-6). Respect per-user rate limits with exponential backoff on `429` and `403 rateLimitExceeded`/`userRateLimitExceeded`. Ask for partial responses (`fields`) to cut payloads.
+
+### 7.2 Notifications and background (NTF)
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| NTF-1 | New mail notifications | ⚪ Not done | From SYN-2 / SYN-3 |
+| NTF-2 | Unread badge | ⚪ Not done | `labels.get` (`INBOX`) |
+| NTF-3 | Background sync when the window is closed | ⚪ Not done | SYN loop |
+
+#### NTF-1 New mail notifications
+
+- **Needs:** A macOS notification with sender and subject for new Inbox mail; clicking opens the thread. Respect Focus; per-label mute if added.
+
+#### NTF-2 Unread badge
+
+- **Needs:** Dock badge from the server's Inbox unread count (FOL-2), not loaded data.
+
+#### NTF-3 Background sync when the window is closed
+
+- **Today:** `main()` quits when the last window closes (`cx.on_window_closed`); quitting stops everything and loses state (PER-2).
+- **Needs:** Keep syncing and holding the outbox in the background (stay running, a login item, or a helper), or catch up on launch. Calendar reminders (CAL-15) need this too.
+
+### 7.3 Loading, error and offline states (STA)
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| STA-1 | Initial load and loading states | ⚪ Not done | None |
+| STA-2 | Action failure and rollback | ⚪ Not done | API error responses |
+| STA-3 | Offline mode and queued changes | ⚪ Not done | None |
+| STA-4 | Expired sign-in | ⚪ Not done | OAuth `invalid_grant`, 401 |
+| STA-5 | Conflicts with server changes | ⚪ Not done | ETags, `historyId`, `syncToken` |
+
+#### STA-1 Initial load and loading states
+
+- **Today:** `MailData::load()` runs synchronously in `main()` and `expect`s valid JSON; everything is loaded before the window opens.
+- **Needs:** Per view and per message: loading, loaded, empty, error, stale. Skeleton rows, a reader spinner. Launch must not wait on the network; empty text (LST-9) must not show while loading.
+
+#### STA-2 Action failure and rollback
+
+- **Today:** Every handler changes `data` and calls `cx.notify()` without checking anything.
+- **Needs:** Pending state per change, server confirmation, rollback of folder, flags and list position on failure, and an error toast (`show_toast()` exists). Send failures: CMP-12.
+
+#### STA-3 Offline mode and queued changes
+
+- **Needs:** A visible offline state; changes queued in the local store (PER-2) and sent when back online; reading from the cache (PER-1); sends held in the outbox; queue size and pending items shown.
+
+#### STA-4 Expired sign-in
+
+- **Needs:** Detect auth errors on every call, refresh (ACC-7), and if refresh fails (`invalid_grant`) show "sign in again" while keeping local changes and the outbox.
+
+#### STA-5 Conflicts with server changes
+
+- **Needs:** Rules for threads, drafts and events changed elsewhere. Refresh the open thread; never silently replace a draft's text; use ETags for events (CAL-7). Links to DRF-6, LST-8.
+
+---
+
+## 8. App-wide
+
+### 8.1 Storage and persistence (PER)
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| PER-1 | Local mailbox store | ⚪ Not done | Holds SYN data |
+| PER-2 | Outbox and drafts that survive quit | ⚪ Not done | None |
+| PER-3 | Persisted UI state and settings | ⚪ Not done | None |
+
+#### PER-1 Local mailbox store
+
+- **Today:** `MailData` (`src/data.rs`) is the only copy, in memory; every launch reads the bundled JSON.
+- **Needs:** A local database (for example SQLite) for threads, messages, labels, drafts, events, contacts, the outbox and sync state (`historyId`, sync tokens). Keep the search index (SRC-5) and parsed bodies (`HtmlCache`) beside it; bodies compressed, attachment bytes separate.
+
+#### PER-2 Outbox and drafts that survive quit
+
+- **Today:** `Quit` (`src/actions.rs`) calls `cx.quit()` with no save step.
+- **Needs:** A durable outbox (sends, draft saves, flag and event changes) written before the UI reports success and flushed on next launch. Quit waits for pending writes or warns.
+
+#### PER-3 Persisted UI state and settings
+
+- **Today:** In memory on `PigeonApp`: `nav`, `sidebar_open`, `sidebar_width`, `list_width`, `archived_expanded`, `expanded_messages`, list density, `text_scale`, recent searches, recent palette commands, and `PigeonApp::settings` (`Settings` in `src/settings.rs`: appearance System/Light/Dark, Reduce motion override, auto-advance, default search scope). Calendar view and week numbers are on `CalendarView` (CAL-23). The settings page (⌘,, `src/ui/settings.rs`) changes all of these; its Accounts row shows `MailData::me()` only. All reset on launch.
+- **Needs:** A local settings file applied at launch: appearance via `App::set_window_appearance` before the first frame, Reduce motion via `App::set_reduce_motion`. Not server data.
+- **Notes:** `expanded_messages` is per thread; keep it or accept the reset.
+
+### 8.2 Command palette (PAL)
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| PAL-1 | Command list | 🟡 Partially done | Each command's own |
+| PAL-2 | Thread search in the palette | 🟡 Partially done | `threads.list` with `q` |
+| PAL-3 | Label jumps | 🟡 Partially done | `labels.list` |
+
+#### PAL-1 Command list
+
+- **Today:** `cmd-k` or `cmd-shift-p` lists every command in `COMMANDS` (`src/actions.rs`) with its shortcut and runs the same handlers. `open_palette()`, `palette_items()`, `on_palette_event()` (`src/app.rs`). Unavailable commands are left out (`When`, `command_available()` in `src/app/mail.rs`). Recent commands first on an empty query (in memory, PER-3). Each `Group` has a `scope()` (Mail, Calendar, Global); the palette and `?` sheet list the current mode's commands plus global ones. `v` and `l` open it scoped to folders or labels.
+- **Needs:** Each command inherits its action's needs: ACT-1–6, CMP-1–4, CMP-8, DRF-1, DRF-4, UND-1–3, ACT-1a, FOL-5, CAL-9, CAL-10. Navigation, view and app commands need none.
+
+#### PAL-2 Thread search in the palette
+
+- **Today:** Matches subject or last non-self sender name, as substring, up to 30 threads after commands. `update_matches()` (`src/ui/command_palette.rs`). No body text, unlike the search bar.
+- **Needs:** A capped server query (SRC-1–5); don't load every thread to build the list.
+
+#### PAL-3 Label jumps
+
+- **Today:** "Go to Label: <name>" per label; `g l` opens the palette with `label: `. `go_to_label()`.
+- **Needs:** The label list (FOL-3); new labels (FOL-6) add entries.
+
+### 8.3 Data model (DAT)
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| DAT-1 | JSON as the data source | 🟡 Partially done | Replaced by SYN data |
+| DAT-2 | Thread model: one folder per thread | 🟡 Partially done | Gmail per-message `labelIds` |
+| DAT-3 | Message model: missing fields | 🟡 Partially done | `Message` resource |
+| DAT-4 | Threading headers | ⚪ Not done | `payload.headers` |
+| DAT-5 | Local IDs for drafts and sent messages | 🟡 Partially done | Draft `id`, message `id`, `threadId` |
+| DAT-6 | Search index rebuild cost | 🟡 Partially done | None |
+| DAT-7 | Import and insert messages | ⚪ Not done | `messages.import`, `messages.insert` |
+
+#### DAT-1 JSON as the data source
+
+- **Today:** `assets/mailbox.json` via `include_str!` in `MailData::load()`; messages sorted by date, empty threads dropped. Message IDs in the JSON (`m-0001`) are dropped; only thread IDs are read.
+- **Needs:** Replace with backend data; keep the JSON as a test fixture.
+
+#### DAT-2 Thread model: one folder per thread
+
+- **Today:** Each `Thread` (`src/data.rs`) has one `folder` and a `labels` list; starred and unread are thread flags.
+- **Needs:** A mapping decision. Gmail is label-based and per message: a thread can be in several labels, Archive is "no `INBOX`", and its messages can differ (one in `INBOX`, one in `SENT`). Derive one folder per thread (for example Trash > Spam > Inbox > Drafts > Sent > Archive) and define what thread-level unread and starred mean.
+- **Notes:** The most important data-model decision; it touches FOL, LST and ACT.
+
+#### DAT-3 Message model: missing fields
+
+- **Today:** `Message` has from, to, cc, bcc (empty in JSON), date, snippet, html, attachments.
+- **Needs:** Server message `id`, `threadId`, `labelIds` (read, starred, labels per message), `internalDate`, `historyId`, plain-text body, the part tree (ATT-2, ATT-4), `sizeEstimate`.
+
+#### DAT-4 Threading headers
+
+- **Today:** No `Message-ID`, `In-Reply-To`, `References` or `Reply-To`; replies link only by the in-memory `reply_to` thread ID.
+- **Needs:** Store them for every message; set them on replies (CMP-2, CMP-3); dedupe the sent copy on `Message-ID` (CMP-13). Without them replies won't thread in other clients.
+
+#### DAT-5 Local IDs for drafts and sent messages
+
+- **Today:** `draft-local-N` / `sent-local-N` from `PigeonApp::next_id` (`new_id()`), restarting at 0 each launch.
+- **Needs:** Server IDs, or stored UUIDs until the first save; a counter would reuse IDs once data persists.
+
+#### DAT-6 Search index rebuild cost
+
+- **Today:** `Thread::reindex()` calls `html::parse()` for every message on load and on each save or send; `update_threads()` re-sorts everything.
+- **Needs:** Index once when a body is stored and keep it in PER-1.
+
+#### DAT-7 Import and insert messages
+
+- **Needs:** Later, for migration: `messages.import` (delivery-like scanning, up to 150 MB) or `messages.insert` (like IMAP `APPEND`, no scanning) to bring mail from another account into Gmail. Neither sends mail.
+
+### 8.4 Features with no backend need
+
+Real features that don't depend on the backend, listed so the tables aren't read as the whole UI:
+
+- Pane resizing for sidebar and list (`PaneResize`, `resize_pane()` in `src/app.rs`); sidebar show/hide (`cmd-\`, `toggle_sidebar()`).
+- Keyboard shortcuts sheet (`?`, `src/ui/shortcuts_help.rs`), built from the live keymap, scoped like the palette.
+- Calendar views, navigation and keyboard selection (CAL-4).
+- Light and dark following the system (`Theme::sync()` in `src/theme.rs`) or the Appearance setting.
+- The settings page (⌘,, `src/ui/settings.rs`) with search and keyboard control, apart from saving values (PER-3).
+- Keyboard focus between list, reader, composer and search; selectable message text.
+- Window title bar and drag area (`window_drag_area()` in `src/ui/mod.rs`); Quit (`cmd-q`).
+
+---
+
+## 9. Adjacent Google APIs (optional, later)
+
+Not catalogued in depth; each would be its own item when picked up.
+
+- **Google Drive API:** send large files as Drive links instead of attachments (ATT-6), save attachments to Drive, attach Drive files to events (CAL-30). Needs a Drive scope such as `drive.file`.
+- **Google Tasks API:** a task list beside the calendar, or "add to Tasks" from a thread.
+- **Google Meet REST API:** meeting details (participants, recordings) beyond the join link that Calendar's `conferenceData` already gives (CAL-17, CAL-34).
+- **Calendar resources (Admin SDK Directory):** room and resource lists for booking (CAL-32); Workspace only.
+- **Google Safe Browsing API:** link checks (LNK-2).
+
+---
+
+## 10. Not planned or out of scope
+
+- **Delegates, alias creation, forwarding-address creation and auto-forwarding changes** (`settings.delegates.*`, `sendAs.create`/`delete`/`verify`, `forwardingAddresses.create`/`delete`, `updateAutoForwarding`): only usable by Workspace service accounts with domain-wide delegation. Pigeon shows what it can read (MST-1, MST-5, MST-8) and links to Gmail for the rest.
+- **Client-side encryption** (`settings.cse.*`, MST-10): Workspace Enterprise with an external key service; the client must do the crypto. Not before everything else.
+- **Postmaster Tools API:** domain-level delivery stats for bulk senders; not a mail-client feature.
+- **Email markup, AMP for Gmail:** AMP needs a web runtime, against the no-webview principle. Sender-side markup (actions, highlights) is ignored.
+- **Gmail inbox feed (Atom)** and **Gmail and Calendar add-on scopes** (`gmail.addons.*`, `calendar.addons.*`): for legacy readers and Workspace add-ons, not standalone clients.
+- **`calendars.clear`, `calendars.transferOwnership`, event `gadget`:** destructive or admin-only, or deprecated.
+- **Not in Google's APIs at all:** snooze, scheduled send and server-side undo send. If wanted they must be app-side (local timers plus a label, or a server), which is a new decision, not an API mapping.

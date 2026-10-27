@@ -342,7 +342,7 @@ pub struct DraftContent {
     pub subject: String,
     pub body: String,
     /// Files attached, as name, size and type; the files themselves aren't
-    /// read (see BACKEND_REQUIREMENTS ATT-5).
+    /// read (see ATT-6 in `docs/ROADMAP.md`).
     pub attachments: Vec<Attachment>,
 }
 

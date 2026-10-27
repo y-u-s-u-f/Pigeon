@@ -4,7 +4,7 @@
 //!
 //! Times are wall-clock times (`NaiveDateTime`): the JSON's offsets are
 //! dropped and every time is shown as written. See CAL-12 in
-//! `docs/BACKEND_REQUIREMENTS.md`.
+//! `docs/ROADMAP.md`.
 
 pub mod layout;
 pub mod recurrence;

@@ -1,6 +1,6 @@
 # Pigeon UX review
 
-> **Status (26 Oct 2026):** addressed in two waves. Not done by choice: UX-037 calendar sidebar (full-width calendar was chosen; replaced by a go-to-date popover), ⌘⇧P kept alongside ⌘K. Waiting on the backend: remote images, opening/saving attachments. Not built: compose text formatting, dragging threads onto folders.
+> **Status (26 Oct 2026):** addressed in two waves. Not done by choice: UX-037 calendar sidebar (full-width calendar was chosen; replaced by a go-to-date popover), ⌘⇧P kept alongside ⌘K. Waiting on the backend (tracked in `docs/ROADMAP.md`): remote images, opening/saving attachments. Not built: compose text formatting, dragging threads onto folders.
 
 Reviewed 26 Oct 2026 against the code at HEAD and a release build, driven with Cua Driver (pid- and window-scoped, background input wherever it worked; foreground only for calendar clicks and drags, which GPUI ignores in the background). Screenshots are in `/private/var/folders/sc/26v_9jsx0s9_fkjttv6jzjdh0000gn/T/opencode/ux-*.png` (shortened to `ux-NN` below).
 

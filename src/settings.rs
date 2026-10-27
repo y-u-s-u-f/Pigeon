@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// Preferences that have no other home. In memory, like the rest of the
-/// app's state (see PER-3 in `docs/BACKEND_REQUIREMENTS.md`).
+/// app's state (see PER-3 in `docs/ROADMAP.md`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub appearance: Appearance,

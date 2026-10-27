@@ -147,7 +147,7 @@ impl Renderer<'_> {
                 .child(self.blocks(blocks, BLOCK_GAP))
                 .into_any_element(),
             Block::Table(table) => self.table(table),
-            // Remote images aren't loaded (see BACKEND_REQUIREMENTS RDR-4).
+            // Remote images aren't loaded (see ATT-1 in `docs/ROADMAP.md`).
             Block::Image { alt } => div()
                 .max_w_full()
                 .flex()
