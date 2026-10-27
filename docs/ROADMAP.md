@@ -22,22 +22,22 @@ To update: change the status cell in the area's table, then the counts below.
 | [Thread list](#52-thread-list-lst) | 1 | 3 | 5 | 9 |
 | [Reading pane](#53-reading-pane-rdr) | 1 | 4 | 3 | 8 |
 | [Message actions](#54-message-and-thread-actions-act) | 0 | 7 | 0 | 7 |
-| [Compose and sending](#55-compose-and-sending-cmp) | 1 | 12 | 0 | 13 |
-| [Drafts](#56-drafts-drf) | 2 | 3 | 1 | 6 |
+| [Compose and sending](#55-compose-and-sending-cmp) | 0 | 13 | 0 | 13 |
+| [Drafts](#56-drafts-drf) | 1 | 4 | 1 | 6 |
 | [Undo](#57-undo-und) | 0 | 3 | 0 | 3 |
 | [Search](#58-search-src) | 1 | 8 | 0 | 9 |
 | [Contacts](#59-contacts-con) | 6 | 2 | 0 | 8 |
 | [Images and attachments](#510-images-and-attachments-att) | 3 | 4 | 0 | 7 |
 | [Links](#511-links-lnk) | 2 | 1 | 0 | 3 |
 | [Mail settings](#512-mail-settings-mst) | 10 | 0 | 0 | 10 |
-| [Calendar](#6-calendar-cal) | 19 | 17 | 6 | 42 |
-| [Sync and push](#71-sync-and-push-syn) | 3 | 4 | 0 | 7 |
+| [Calendar](#6-calendar-cal) | 18 | 18 | 6 | 42 |
+| [Sync and push](#71-sync-and-push-syn) | 2 | 5 | 0 | 7 |
 | [Notifications and background](#72-notifications-and-background-ntf) | 3 | 0 | 0 | 3 |
-| [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 3 | 2 | 0 | 5 |
+| [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 2 | 3 | 0 | 5 |
 | [Storage and persistence](#81-storage-and-persistence-per) | 1 | 1 | 1 | 3 |
 | [Command palette](#82-command-palette-pal) | 0 | 3 | 0 | 3 |
-| [Data model](#83-data-model-dat) | 2 | 5 | 0 | 7 |
-| **Overall** | **69** | **86** | **21** | **176** |
+| [Data model](#83-data-model-dat) | 1 | 6 | 0 | 7 |
+| **Overall** | **63** | **92** | **21** | **176** |
 
 ## Contents
 
@@ -434,7 +434,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 | CMP-9 | Send validation | 🟡 Partially done | Send errors |
 | CMP-10 | Forward quote block | 🟡 Partially done | `raw` MIME |
 | CMP-11 | Reply appends to the thread | 🟡 Partially done | `threadId`, `In-Reply-To`, `References` |
-| CMP-12 | Send failure feedback | ⚪ Not done | Send errors |
+| CMP-12 | Send failure feedback | 🟡 Partially done | Send errors |
 | CMP-13 | Sent copy on the server | 🟡 Partially done | `SENT` label (automatic) |
 
 #### CMP-1 New message
@@ -524,7 +524,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 | DRF-3 | Open and edit a draft | 🟡 Partially done | `drafts.get` |
 | DRF-4 | Discard a draft | 🟡 Partially done | `drafts.delete` |
 | DRF-5 | Save while typing | ⚪ Not done | `drafts.update` (debounced) |
-| DRF-6 | Sync drafts with the server | ⚪ Not done | `drafts.list`, `history.list` |
+| DRF-6 | Sync drafts with the server | 🟡 Partially done | `drafts.list`, `history.list` |
 
 #### DRF-1 Save on close or navigation
 
@@ -857,7 +857,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | CAL-16 | Busy and free | 🟡 Partially done | `transparency` |
 | CAL-17 | Video links | 🟡 Partially done | `conferenceData.entryPoints`, `hangoutLink` |
 | CAL-21 | Drag to create, move and resize | 🟡 Partially done | `events.insert`, `events.patch` |
-| CAL-22 | Organizer and read-only permissions | ⚪ Not done | `accessRole`, `guestsCanModify`, `locked`, `organizer.self` |
+| CAL-22 | Organizer and read-only permissions | 🟡 Partially done | `accessRole`, `guestsCanModify`, `locked`, `organizer.self` |
 | CAL-28 | Event colours and labels | ⚪ Not done | `colorId` + `colors.get`; `eventLabelId` + `calendars` `labelProperties` |
 | CAL-30 | Event attachments | ⚪ Not done | `attachments` (`supportsAttachments=true`) |
 | CAL-31 | Event visibility and guest permissions | ⚪ Not done | `visibility`, `guestsCanModify`, `guestsCanInviteOthers`, `guestsCanSeeOtherGuests` |
@@ -1140,7 +1140,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | SYN-3 | Gmail push | ⚪ Not done | `watch`, `stop`, Cloud Pub/Sub |
 | SYN-4 | Calendar incremental sync | 🟡 Partially done | `events.list` / `calendarList.list` with `syncToken` |
 | SYN-5 | Calendar push | ⚪ Not done | `events.watch`, `calendarList.watch`, `acl.watch`, `settings.watch`, `channels.stop` |
-| SYN-6 | Contacts sync | ⚪ Not done | `people.connections.list`, `otherContacts.list` with `syncToken` |
+| SYN-6 | Contacts sync | 🟡 Partially done | `people.connections.list`, `otherContacts.list` with `syncToken` |
 | SYN-7 | Batching, quotas and backoff | 🟡 Partially done | HTTP batch; `429` / `403 rateLimitExceeded` |
 
 #### SYN-1 Gmail full sync
@@ -1207,7 +1207,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | STA-2 | Action failure and rollback | ⚪ Not done | API error responses |
 | STA-3 | Offline mode and queued changes | ⚪ Not done | None |
 | STA-4 | Expired sign-in | 🟡 Partially done | OAuth `invalid_grant`, 401 |
-| STA-5 | Conflicts with server changes | ⚪ Not done | ETags, `historyId`, `syncToken` |
+| STA-5 | Conflicts with server changes | 🟡 Partially done | ETags, `historyId`, `syncToken` |
 
 #### STA-1 Initial load and loading states
 
@@ -1293,7 +1293,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | DAT-1 | JSON as the data source | 🟡 Partially done | Replaced by SYN data |
 | DAT-2 | Thread model: one folder per thread | 🟡 Partially done | Gmail per-message `labelIds` |
 | DAT-3 | Message model: missing fields | 🟡 Partially done | `Message` resource |
-| DAT-4 | Threading headers | ⚪ Not done | `payload.headers` |
+| DAT-4 | Threading headers | 🟡 Partially done | `payload.headers` |
 | DAT-5 | Local IDs for drafts and sent messages | 🟡 Partially done | Draft `id`, message `id`, `threadId` |
 | DAT-6 | Search index rebuild cost | 🟡 Partially done | None |
 | DAT-7 | Import and insert messages | ⚪ Not done | `messages.import`, `messages.insert` |
