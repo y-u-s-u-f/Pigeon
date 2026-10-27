@@ -239,8 +239,11 @@ impl Query {
             },
             (Some(Scope::All), _) | (None, None) => GmailQuery::default(),
             // The Inbox's search covers its archived threads too
-            // (`refresh_rows`).
-            (None, Some(ViewKey::Folder(Folder::Inbox))) => GmailQuery::default(),
+            // (`refresh_rows`); a Gmail-only one, the Inbox alone, since
+            // only Gmail's results show.
+            (None, Some(ViewKey::Folder(Folder::Inbox))) if self.gmail_q.is_none() => {
+                GmailQuery::default()
+            }
             (Some(Scope::Folder(folder)), _) => GmailQuery::folder(folder)?,
             (None, Some(view)) => GmailQuery::view(view)?,
         };
@@ -659,8 +662,15 @@ mod tests {
         let typed = r#"(from:ana OR from:"Bo Li") -is:unread"#;
         // As typed, quotes and case kept.
         assert_eq!(q(typed, None), just(typed));
-        // The Inbox's search looks everywhere, as before.
-        assert_eq!(q(typed, Some(&ViewKey::Folder(Folder::Inbox))), just(typed));
+        // The Inbox: the Inbox alone, every category.
+        assert_eq!(
+            q(typed, Some(&ViewKey::Folder(Folder::Inbox))),
+            GmailQuery {
+                q: typed.into(),
+                label: Some("INBOX".into()),
+                include_spam_trash: false,
+            }
+        );
         // A label view: by label id, the query untouched.
         assert_eq!(
             q(typed, Some(&ViewKey::Label("Label_2".into()))),
@@ -702,6 +712,58 @@ mod tests {
             }
         );
         assert_eq!(q("in:work -x", None), just("in:work -x"));
+    }
+
+    #[test]
+    fn gmail_only_q_per_scope() {
+        use crate::backend::categories::Category;
+        let labels = [label("Label_2", "Work")];
+        let typed = r#"after:2026/10/01 subject:"Pigeon test""#;
+        let sent = |view: Option<ViewKey>| {
+            Query::parse(typed)
+                .to_gmail_q(&labels, view.as_ref())
+                .map(|g| (g.q, g.label, g.include_spam_trash))
+        };
+        let with = |q: &str, label: Option<&str>, st: bool| {
+            Some((q.to_string(), label.map(String::from), st))
+        };
+        let cases = [
+            (
+                Some(ViewKey::Folder(Folder::Inbox)),
+                with(typed, Some("INBOX"), false),
+            ),
+            (
+                Some(ViewKey::Category(Category::Social)),
+                with(&format!("({typed}) in:inbox category:social"), None, false),
+            ),
+            (
+                Some(ViewKey::Label("Label_2".into())),
+                with(typed, Some("Label_2"), false),
+            ),
+            (Some(ViewKey::Starred), with(typed, Some("STARRED"), false)),
+            (
+                Some(ViewKey::Folder(Folder::Sent)),
+                with(typed, Some("SENT"), false),
+            ),
+            (
+                Some(ViewKey::Folder(Folder::Archive)),
+                with(&format!("({typed}) {ARCHIVE_Q}"), None, false),
+            ),
+            (
+                Some(ViewKey::Folder(Folder::Spam)),
+                with(typed, Some("SPAM"), true),
+            ),
+            (
+                Some(ViewKey::Folder(Folder::Trash)),
+                with(typed, Some("TRASH"), true),
+            ),
+            (Some(ViewKey::Folder(Folder::Drafts)), None),
+            // All mail: no terms of its own.
+            (None, with(typed, None, false)),
+        ];
+        for (view, want) in cases {
+            assert_eq!(sent(view.clone()), want, "{view:?}");
+        }
     }
 
     #[test]

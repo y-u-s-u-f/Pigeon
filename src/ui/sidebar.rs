@@ -259,7 +259,10 @@ impl PigeonApp {
             }
         }
         let open = match self.nav {
-            Nav::Label(ix) => Some(ix),
+            Nav::Label(ix) => Some(ix).filter(|&ix| {
+                self.labels_ui.hidden_while_open.as_deref()
+                    != self.data.labels.get(ix).map(|l| l.id.as_str())
+            }),
             _ => None,
         };
         let (rows, hidden) = label_rows(

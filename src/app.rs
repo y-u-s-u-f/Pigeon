@@ -501,9 +501,12 @@ impl PigeonApp {
             match self.search_query.scope {
                 Some(scope) => Query::in_scope(scope, thread),
                 None if self.search_all => Query::in_scope(crate::search::Scope::All, thread),
-                // The Inbox shows its archived threads too, so its search does.
+                // The Inbox shows its archived threads too, so its search
+                // does; a Gmail-only one looks in the Inbox alone
+                // (`Query::to_gmail_q`).
                 None if self.nav == Nav::Folder(Folder::Inbox) => {
-                    matches!(thread.folder, Folder::Inbox | Folder::Archive)
+                    thread.folder == Folder::Inbox
+                        || (!self.search_query.gmail_only() && thread.folder == Folder::Archive)
                 }
                 None => self.nav_contains(self.nav, thread),
             }
@@ -580,6 +583,7 @@ impl PigeonApp {
         if self.nav != nav {
             self.stash_composer(cx);
             self.nav = nav;
+            self.labels_ui.hidden_while_open = None;
             self.selected = None;
             self.clear_checked();
             self.reader_focused = false;

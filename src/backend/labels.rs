@@ -312,15 +312,31 @@ pub fn commit(
     account: &str,
     edit: &LabelEdit,
 ) -> Result<Committed, String> {
-    let put = |label: &GLabel| {
-        store.put_gmail_label(account, label).ok();
+    // Gmail's answer to a patch can leave out fields, and to a create
+    // `type` and the visibilities, so a create is stored as the user label
+    // it made, shown, and a change as what was asked, once Gmail took it.
+    let created = |label: &GLabel| {
+        let mut label = label.clone();
+        if label.kind.is_empty() {
+            label.kind = "user".into();
+        }
+        label
+            .label_list_visibility
+            .get_or_insert_with(|| ListVisibility::Show.gmail().into());
+        label
+            .message_list_visibility
+            .get_or_insert_with(|| "show".into());
+        store.put_gmail_label(account, &label).ok();
+    };
+    let changed = |edit: &LabelEdit| {
+        apply_local(store, account, edit).ok();
     };
     match edit {
         LabelEdit::Create { name } => {
             let label: GLabel = gmail
                 .call(&gmail::label_create_request(name))
                 .map_err(|e| format!("Couldn't create “{name}”: {}", why(&e)))?;
-            put(&label);
+            created(&label);
             Ok(Committed::default())
         }
         LabelEdit::Rename(renames) => {
@@ -333,13 +349,12 @@ pub fn commit(
                     &serde_json::json!({ "name": r.new }),
                 ))
             };
-            let label = rename(first)
-                .map_err(|e| format!("Couldn't rename “{}”: {}", first.old, why(&e)))?;
-            put(&label);
+            rename(first).map_err(|e| format!("Couldn't rename “{}”: {}", first.old, why(&e)))?;
+            changed(&LabelEdit::Rename(vec![first.clone()]));
             let mut failed = Vec::new();
             for child in children {
                 match rename(child) {
-                    Ok(label) => put(&label),
+                    Ok(_) => changed(&LabelEdit::Rename(vec![child.clone()])),
                     Err(_) => failed.push(child.old.clone()),
                 }
             }
@@ -378,10 +393,10 @@ pub fn commit(
         }
         edit => {
             let (id, fields) = edit.patch().expect("a patch");
-            let label: GLabel = gmail
-                .call(&gmail::label_patch_request(id, &fields))
+            gmail
+                .call::<GLabel>(&gmail::label_patch_request(id, &fields))
                 .map_err(|e| format!("Couldn't change the label: {}", why(&e)))?;
-            put(&label);
+            changed(edit);
             Ok(Committed::default())
         }
     }
@@ -728,18 +743,19 @@ mod tests {
                     "POST",
                     LABELS,
                     &[],
-                    &[(200, r#"{"id":"Label_9","name":"Pigeon Test","type":"user"}"#)],
+                    // Without `type` or visibilities, as Gmail can answer.
+                    &[(200, r#"{"id":"Label_9","name":"Pigeon Test"}"#)],
                 )
                 .on(
                     "PATCH",
                     &format!("{LABELS}/Label_9"),
                     &[],
-                    &[(
-                        200,
-                        r##"{"id":"Label_9","name":"Pigeon Test","type":"user",
-                            "labelListVisibility":"labelShowIfUnread","messageListVisibility":"hide",
-                            "color":{"backgroundColor":"#4a86e8","textColor":"#ffffff"}}"##,
-                    )],
+                    // Partial answers: what was asked is what's stored.
+                    &[
+                        (200, r#"{"id":"Label_9","name":"Pigeon Test"}"#),
+                        (200, r#"{"id":"Label_9","name":"Pigeon Test"}"#),
+                        (200, r#"{"id":"Label_9","name":"Pigeon Test"}"#),
+                    ],
                 )
                 .on("DELETE", &format!("{LABELS}/Label_0"), &[], &[(204, "")]),
         );
@@ -764,6 +780,31 @@ mod tests {
             },
         )
         .unwrap();
+        // A new label lists at once, shown.
+        let stored = store.load_labels(account).unwrap();
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[1].list_visibility, ListVisibility::Show);
+        assert!(stored[1].in_message_list);
+        commit(
+            &gmail,
+            &store,
+            account,
+            &LabelEdit::ListVisibility {
+                id: "Label_9".into(),
+                visibility: ListVisibility::ShowIfUnread,
+            },
+        )
+        .unwrap();
+        commit(
+            &gmail,
+            &store,
+            account,
+            &LabelEdit::MessageVisibility {
+                id: "Label_9".into(),
+                shown: false,
+            },
+        )
+        .unwrap();
         let done = commit(
             &gmail,
             &store,
@@ -783,7 +824,11 @@ mod tests {
             String::from_utf8_lossy(&requests[1].body),
             r##"{"color":{"backgroundColor":"#4a86e8","textColor":"#ffffff"}}"##
         );
-        assert_eq!(requests[2].method, "DELETE");
+        assert_eq!(
+            String::from_utf8_lossy(&requests[2].body),
+            r#"{"labelListVisibility":"labelShowIfUnread"}"#
+        );
+        assert_eq!(requests[4].method, "DELETE");
     }
 
     #[test]

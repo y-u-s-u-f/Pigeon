@@ -28,6 +28,9 @@ pub struct LabelsUi {
     pub folded: HashSet<String>,
     /// The sidebar lists hidden labels too.
     pub show_hidden: bool,
+    /// The open label, by id, once hidden from the sidebar while open: it
+    /// goes at once instead of staying for being open (`label_rows`).
+    pub hidden_while_open: Option<String>,
     /// What the name being typed is for.
     prompt: Option<Prompt>,
 }
@@ -378,6 +381,9 @@ impl PigeonApp {
             }
             LabelCommand::ListVisibility(ix, visibility) => {
                 self.data.labels[ix].list_visibility = visibility;
+                self.labels_ui.hidden_while_open = (self.current_label() == Some(ix)
+                    && visibility != ListVisibility::Show)
+                    .then(|| id.clone());
                 let done = match visibility {
                     ListVisibility::Show => format!("“{}” shows in the sidebar", label.name),
                     ListVisibility::ShowIfUnread => {
