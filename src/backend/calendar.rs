@@ -3631,6 +3631,96 @@ mod tests {
     }
 
     #[test]
+    fn an_edit_right_after_a_split_goes_after_it_to_the_new_series() {
+        use crate::backend::{Op, outbox::Outbox};
+        let store = seeded(&[SERIES]);
+        let before = stored(&store, "s1");
+        let origin = at(d(2026, 11, 4), 10, 0);
+        let mut edited = before.clone();
+        if let Some(rule) = &mut edited.recurrence {
+            rule.interval = 2;
+            rule.count = Some(5);
+        }
+        let (old, new) = before.split(origin, origin, &edited, "n1".into()).unwrap();
+        // "Does not repeat" on the new series, before the split went.
+        let single = Event {
+            recurrence: None,
+            ..new.clone()
+        };
+        let outbox = Outbox::new(store.clone(), ME.into());
+        let split = Op::Calendar(CalOp::Split {
+            id: "s1".into(),
+            before: before.clone(),
+            after: old.clone(),
+            new: new.clone(),
+            send_updates: SendUpdates::None,
+        });
+        let patch = Op::Calendar(CalOp::Patch {
+            id: "n1".into(),
+            before: new.clone(),
+            after: single,
+            scope: SeriesScope::All,
+            send_updates: SendUpdates::None,
+        });
+        let split_id = outbox.push(split, 0, 0).unwrap();
+        outbox.push(patch, 0, 0).unwrap();
+        // The split goes alone; the edit waits for it.
+        let due = outbox.take_due(0).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].0, split_id);
+        let answer = SERIES.replace(
+            "RRULE:FREQ=WEEKLY;BYDAY=MO,WE",
+            "RRULE:FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20261104T165959Z",
+        );
+        let inserted = r#"{"id":"n1","etag":"\"n\"","status":"confirmed","summary":"Standup",
+            "organizer":{"email":"me@example.com","self":true},
+            "start":{"dateTime":"2026-11-04T10:00:00-08:00"},"end":{"dateTime":"2026-11-04T10:30:00-08:00"},
+            "recurrence":["RRULE:FREQ=WEEKLY;INTERVAL=2;COUNT=5;BYDAY=MO,WE"]}"#;
+        let single_answer = r#"{"id":"n1","etag":"\"n2\"","status":"confirmed","summary":"Standup",
+            "organizer":{"email":"me@example.com","self":true},
+            "start":{"dateTime":"2026-11-04T10:00:00-08:00"},"end":{"dateTime":"2026-11-04T10:30:00-08:00"}}"#;
+        let fake = FakeTransport::new()
+            .on("PATCH", &format!("{CAL_PATH}/s1"), &[], &[(200, &answer)])
+            .on("POST", CAL_PATH, &[], &[(200, inserted)])
+            .on(
+                "PATCH",
+                &format!("{CAL_PATH}/n1"),
+                &[],
+                &[(200, single_answer)],
+            );
+        let Op::Calendar(op) = &due[0].1 else {
+            panic!("a calendar op")
+        };
+        let done = commit_at(&fake, &store, ME, op, &zone(), now());
+        assert_eq!(done.error, None);
+        outbox.finish(split_id).unwrap();
+        // Google's new series (stored, and read by the next sync) doesn't
+        // replace the app's copy while the edit to it is queued.
+        assert!(stored(&store, "n1").is_series());
+        assert!(outbox.queued_events().contains("n1"));
+        assert!(!outbox.queued_events().contains("s1"));
+        // Then the edit goes, to the new series' id, with its etag.
+        let due = outbox.take_due(0).unwrap();
+        assert_eq!(due.len(), 1);
+        let Op::Calendar(op) = &due[0].1 else {
+            panic!("a calendar op")
+        };
+        let done = commit_at(&fake, &store, ME, op, &zone(), now());
+        assert_eq!(done.error, None);
+        let requests = fake.requests();
+        let last = requests.last().unwrap();
+        assert_eq!(last.method, "PATCH");
+        assert!(last.url.contains("/events/n1?"));
+        assert_eq!(body(last)["recurrence"], json!([]));
+        assert!(
+            last.headers
+                .iter()
+                .any(|(k, v)| k == "If-Match" && v == "\"n\"")
+        );
+        assert!(!stored(&store, "n1").is_series());
+    }
+
+    #[test]
     fn several_reminders_and_every_default_are_kept() {
         let e = series_with(
             r#"{"useDefault":false,"overrides":[{"method":"email","minutes":1440},{"method":"popup","minutes":10}]}"#,

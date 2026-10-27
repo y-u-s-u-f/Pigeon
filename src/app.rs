@@ -1329,7 +1329,7 @@ impl PigeonApp {
             .iter()
             .filter(|c| {
                 !c.help_only
-                    && (c.group.scope() == Scope::Global || c.group.scope() == scope)
+                    && (c.scope() == Scope::Global || c.scope() == scope)
                     && self.command_available(c.when, cx)
             })
             .collect::<Vec<_>>();
@@ -1452,7 +1452,7 @@ impl PigeonApp {
                     COMMANDS
                         .iter()
                         .find(|c| (c.action)().name() == name)
-                        .is_none_or(|c| c.group.scope() == Scope::Global)
+                        .is_none_or(|c| c.scope() == Scope::Global)
                 }
                 _ => false,
             };

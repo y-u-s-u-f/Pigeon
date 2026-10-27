@@ -641,8 +641,21 @@ pub struct Command {
     pub action: fn() -> Box<dyn Action>,
     /// Shown in the shortcuts overlay but not offered in the palette.
     pub help_only: bool,
+    /// Offered in the palette in Mail too, though its group is Calendar's.
+    pub global: bool,
     /// When the palette offers it (`PigeonApp::command_available`).
     pub when: When,
+}
+
+impl Command {
+    /// Where the palette offers it.
+    pub fn scope(&self) -> Scope {
+        if self.global {
+            Scope::Global
+        } else {
+            self.group.scope()
+        }
+    }
 }
 
 /// The state a command needs to do anything; the palette leaves out the
@@ -678,18 +691,23 @@ pub enum When {
 }
 
 macro_rules! commands {
-    ($($group:ident: $name:literal, $icon:ident, $action:ident $(, $help_only:ident)? $(if $when:ident)?;)*) => {
+    ($($group:ident: $name:literal, $icon:ident, $action:ident $(, $flag:ident)? $(if $when:ident)?;)*) => {
         &[$(Command {
             name: $name,
             group: Group::$group,
             icon: Icon::$icon,
             action: || Box::new($action),
-            help_only: commands!(@help $($help_only)?),
+            help_only: commands!(@help $($flag)?),
+            global: commands!(@global $($flag)?),
             when: commands!(@when $($when)?),
         }),*]
     };
     (@help) => { false };
     (@help help_only) => { true };
+    (@help global) => { false };
+    (@global) => { false };
+    (@global global) => { true };
+    (@global help_only) => { false };
     (@when) => { When::Always };
     (@when $when:ident) => { When::$when };
 }
@@ -756,9 +774,10 @@ pub const COMMANDS: &[Command] = commands! {
     GoTo: "Go to Label…", ChevronRight, GoToLabel;
     Navigation: "Toggle Sidebar", PanelLeft, ToggleSidebar;
     Navigation: "Show / Hide Archived in Inbox", Archive, ToggleArchivedSection if Inbox;
-    CalendarEvents: "New Event", Plus, NewEvent;
+    // From Mail too: the app switches to Calendar (`Show::NewEvent`).
+    CalendarEvents: "New Event", Plus, NewEvent, global;
     // W5.
-    CalendarEvents: "New Event from Text…", Plus, NewEventFromText;
+    CalendarEvents: "New Event from Text…", Plus, NewEventFromText, global;
     CalendarEvents: "Add Google Meet", Video, AddGoogleMeet;
     CalendarEvents: "Repeat…", Repeat, SetRepeat;
     CalendarEvents: "Add Reminder…", Bell, AddReminder;

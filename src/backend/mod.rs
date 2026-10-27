@@ -895,6 +895,11 @@ impl Backend {
         }
     }
 
+    /// Events with calendar changes still queued (`Outbox::queued_events`).
+    pub fn queued_events(&self) -> std::collections::HashSet<String> {
+        self.outbox.queued_events()
+    }
+
     pub fn load_events(&self, ids: &[String]) -> Vec<Event> {
         self.store
             .load_events(self.email(), ids)
@@ -1053,13 +1058,25 @@ impl Backend {
             calendar: is_calendar,
         } in results
         {
+            // The row is done (or failed, or waiting) first: what the commit
+            // changed is then held back only for ops still queued after it.
+            match &outcome {
+                outbox::Outcome::Committed => log_outbox(self.outbox.finish(id)),
+                outbox::Outcome::Failed { message, .. } => {
+                    log_outbox(self.outbox.fail(id, message))
+                }
+                outbox::Outcome::Later(error) => log_outbox(self.outbox.retry_later(
+                    id,
+                    now_ms() + outbox::RETRY_LATER_MS,
+                    &error.to_string(),
+                )),
+            }
             // What the commit changed (W6, W7), before it's reported.
             for event in events {
                 cx.emit(event);
             }
             match outcome {
                 outbox::Outcome::Committed => {
-                    log_outbox(self.outbox.finish(id));
                     if is_calendar {
                         calendar = true;
                     } else {
@@ -1072,7 +1089,6 @@ impl Backend {
                     changed,
                     removed,
                 } => {
-                    log_outbox(self.outbox.fail(id, &message));
                     calendar |= is_calendar;
                     if !changed.is_empty() {
                         cx.emit(BackendEvent::ThreadsChanged(changed));
@@ -1082,14 +1098,7 @@ impl Backend {
                     }
                     cx.emit(BackendEvent::OpFailed { op: id, message });
                 }
-                outbox::Outcome::Later(error) => {
-                    log_outbox(self.outbox.retry_later(
-                        id,
-                        now_ms() + outbox::RETRY_LATER_MS,
-                        &error.to_string(),
-                    ));
-                    self.note_error(&error, cx);
-                }
+                outbox::Outcome::Later(error) => self.note_error(&error, cx),
             }
         }
         // W4a: demo counts follow its commits.

@@ -242,6 +242,18 @@ impl Outbox {
             .outbox_pending(&self.account)
             .map_or(0, |rows| rows.len())
     }
+
+    /// The events with calendar ops still to go: the app keeps its own
+    /// copy of them until the last one commits (CAL-29).
+    pub fn queued_events(&self) -> HashSet<String> {
+        self.store
+            .outbox_pending(&self.account)
+            .unwrap_or_default()
+            .iter()
+            .filter(|r| r.kind.starts_with("calendar."))
+            .flat_map(|r| keys(&r.resource).map(String::from).collect::<Vec<_>>())
+            .collect()
+    }
 }
 
 // Committing to Google.

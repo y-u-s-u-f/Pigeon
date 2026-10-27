@@ -835,6 +835,18 @@ impl CalendarView {
         uuid::Uuid::new_v4().simple().to_string()
     }
 
+    /// Whether `id` has a change not yet handed to the backend: settling,
+    /// waiting for its scope or for "Send updates to guests?".
+    pub fn has_local_edit(&self, id: &str) -> bool {
+        self.pending.as_ref().is_some_and(|p| p.id == id)
+            || self.unsent.as_deref() == Some(id)
+            || self
+                .panel
+                .as_ref()
+                .is_some_and(|p| p.event_id == id && p.edit_scope.asking())
+            || self.guest_prompt.as_ref().is_some_and(|p| p.event_id == id)
+    }
+
     /// Hand the backend a change.
     pub(crate) fn queue(&self, op: CalOp, cx: &mut Context<Self>) -> OpId {
         self.backend.update(cx, |b, cx| b.calendar(op, cx))

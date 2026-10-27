@@ -2668,7 +2668,12 @@ impl CalendarView {
                             .items_center()
                             .text_size(TEXT_BASE)
                             .text_color(theme.text_muted)
-                            .child("No reminders"),
+                            // The calendar's default, which has none.
+                            .child(if uses_default {
+                                "Calendar default · none"
+                            } else {
+                                "No reminders"
+                            }),
                     )
                 })
                 .when(can_add, |d| {

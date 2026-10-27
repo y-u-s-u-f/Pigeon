@@ -139,7 +139,17 @@ impl PigeonApp {
     /// no longer stored go. An event shared into several calendars has a
     /// copy in each, under one id. Selection and the view stay put: they
     /// go by id and date.
+    /// An event changed here and not yet committed keeps the app's copy
+    /// (CAL-29): the commit of its last change reloads it.
     fn on_events_changed(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        let queued = self.backend.read(cx).queued_events();
+        let calendar = self.calendar.read(cx);
+        let ids: Vec<String> = ids
+            .iter()
+            .filter(|id| !queued.contains(*id) && !calendar.has_local_edit(id))
+            .cloned()
+            .collect();
+        let ids = ids.as_slice();
         let mut fresh = self.backend.read(cx).load_events(ids);
         let gone: Vec<String> = ids
             .iter()
