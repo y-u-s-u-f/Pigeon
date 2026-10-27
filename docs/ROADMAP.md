@@ -34,10 +34,10 @@ To update: change the status cell in the area's table, then the counts below.
 | [Sync and push](#71-sync-and-push-syn) | 7 | 0 | 0 | 7 |
 | [Notifications and background](#72-notifications-and-background-ntf) | 3 | 0 | 0 | 3 |
 | [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 5 | 0 | 0 | 5 |
-| [Storage and persistence](#81-storage-and-persistence-per) | 3 | 0 | 0 | 3 |
+| [Storage and persistence](#81-storage-and-persistence-per) | 2 | 1 | 0 | 3 |
 | [Command palette](#82-command-palette-pal) | 0 | 3 | 0 | 3 |
 | [Data model](#83-data-model-dat) | 2 | 5 | 0 | 7 |
-| **Overall** | **83** | **93** | **0** | **176** |
+| **Overall** | **82** | **94** | **0** | **176** |
 
 ## Contents
 
@@ -1209,7 +1209,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | --- | --- | --- | --- |
 | PER-1 | Local mailbox store | ⚪ Not done | Holds SYN data |
 | PER-2 | Outbox and drafts that survive quit | ⚪ Not done | None |
-| PER-3 | Persisted UI state and settings | ⚪ Not done | None |
+| PER-3 | Persisted UI state and settings | 🟡 Partially done | None |
 
 #### PER-1 Local mailbox store
 
