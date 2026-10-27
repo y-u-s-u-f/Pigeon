@@ -281,6 +281,19 @@ fn window_options(cx: &mut App) -> WindowOptions {
     }
 }
 
+/// Save the app's settings as they are now (W7b's menu bar rows).
+pub fn save_app_settings(cx: &mut App) {
+    let map = settings::current(cx).to_map();
+    backend_of(cx).update(cx, |b, cx| b.save_settings(map, cx));
+}
+
+/// The menu bar, its model and the reminders (W7b). Once, at launch, after
+/// the main window opened (it sets the theme).
+pub fn install_menu_bar(cx: &mut App) {
+    let today = super::today::init(backend_of(cx), cx);
+    super::menu_bar::install(today, cx);
+}
+
 /// Settings › Notifications and ⌘K: on or off, app-wide.
 pub fn set_notifications(on: bool, cx: &mut App) {
     let mut saved = settings::current(cx);

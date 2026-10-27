@@ -3,6 +3,8 @@
 //! login item. Everything here runs on the main thread; elsewhere it does
 //! nothing.
 
+pub mod menu_bar;
+
 use std::cell::RefCell;
 
 use objc2::{

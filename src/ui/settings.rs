@@ -25,12 +25,12 @@ use super::{HEADER_HEIGHT, avatar, binding_caps, empty_state, icon, keycap, wind
 use crate::ui::style::*;
 use crate::{
     actions::{COMMANDS, Scope, SignOut, SyncNow},
-    app::{Density, PigeonApp, shell},
+    app::{Density, PigeonApp, menu_bar, shell},
     assets::Icon,
     backend::Source,
     data::Contact,
     native::{self, LoginItem},
-    settings::{self, Appearance, Entry, Match, RemoteImages, Section, SettingId},
+    settings::{self, Appearance, Entry, HotKey, Match, RemoteImages, Section, SettingId},
     theme::Theme,
     ui::{calendar::ViewKind, shortcuts_help::live_bindings},
 };
@@ -66,6 +66,9 @@ const IMAGES: &[&str] = &["Ask", "Always", "Never"];
 // W5 (CAL-41).
 const EVENT_LENGTHS: &[&str] = &["15 min", "30 min", "45 min", "1 hr", "1.5 hrs", "2 hrs"];
 const EVENT_MINUTES: [u32; 6] = [15, 30, 45, 60, 90, 120];
+// W7b: as `HotKey::PANEL` and `HotKey::JOIN`.
+const PANEL_KEYS: &[&str] = &["⌃⌥⌘Space", "⌃⌥⌘P", "Off"];
+const JOIN_KEYS: &[&str] = &["⌃⌥⌘J", "⌃⌥⌘M", "Off"];
 
 pub struct SettingsPage {
     pub open: bool,
@@ -561,6 +564,22 @@ impl PigeonApp {
                 LoginItem::Off => Control::Switch(false),
             },
             SettingId::LoginItemStatus => Control::Info(shell::login_item_status()),
+            // Sprint 2 W7b.
+            SettingId::MenuBarIcon => Control::Switch(settings::current(cx).menu_bar.icon),
+            SettingId::MenuBarNextMeeting => {
+                Control::Switch(settings::current(cx).menu_bar.next_meeting)
+            }
+            SettingId::MenuBarPanelKey => {
+                let key = settings::current(cx).menu_bar.panel_key;
+                let ix = HotKey::PANEL.iter().position(|k| *k == key).unwrap_or(0);
+                Control::Choice(ix, PANEL_KEYS)
+            }
+            SettingId::MenuBarJoinKey => {
+                let key = settings::current(cx).menu_bar.join_key;
+                let ix = HotKey::JOIN.iter().position(|k| *k == key).unwrap_or(0);
+                Control::Choice(ix, JOIN_KEYS)
+            }
+            SettingId::MenuBarShortcutStatus => Control::Info(menu_bar::hot_key_status()),
         }
     }
 
@@ -619,12 +638,26 @@ impl PigeonApp {
                 self.saved.remote_images =
                     [RemoteImages::Ask, RemoteImages::Always, RemoteImages::Never][choice];
                 self.saved.notifications = settings::current(cx).notifications;
+                self.saved.menu_bar = settings::current(cx).menu_bar;
                 settings::remember(self.saved, cx);
                 let map = self.saved.to_map();
                 self.backend.update(cx, |b, cx| b.save_settings(map, cx));
             }
             SettingId::Notifications => shell::set_notifications(on, cx),
             SettingId::OpenAtLogin => shell::set_open_at_login(on, cx),
+            SettingId::MenuBarIcon
+            | SettingId::MenuBarNextMeeting
+            | SettingId::MenuBarPanelKey
+            | SettingId::MenuBarJoinKey => {
+                let mut prefs = settings::current(cx).menu_bar;
+                match id {
+                    SettingId::MenuBarIcon => prefs.icon = on,
+                    SettingId::MenuBarNextMeeting => prefs.next_meeting = on,
+                    SettingId::MenuBarPanelKey => prefs.panel_key = HotKey::PANEL[choice],
+                    _ => prefs.join_key = HotKey::JOIN[choice],
+                }
+                menu_bar::set_prefs(prefs, cx);
+            }
             SettingId::TimeFormat => self.calendar.update(cx, |c, cx| {
                 c.prefs.time_24h = Some(on);
                 c.apply_display();
@@ -642,7 +675,8 @@ impl PigeonApp {
             | SettingId::SyncNow
             | SettingId::SignOut
             | SettingId::TestNotification
-            | SettingId::LoginItemStatus => {}
+            | SettingId::LoginItemStatus
+            | SettingId::MenuBarShortcutStatus => {}
         }
         cx.notify();
     }

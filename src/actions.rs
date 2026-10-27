@@ -33,7 +33,7 @@ use crate::{
             self, BulletedList, ClearFormatting, FormatBold, FormatCode, FormatItalic,
             FormatStrikethrough, FormatUnderline, InsertLink, NumberedList, QuoteLines,
         },
-        settings as settings_page,
+        menu_bar, settings as settings_page,
     },
 };
 
@@ -145,6 +145,9 @@ actions!(
         SetRepeat,
         AddReminder,
         NewEventFromText,
+        // W7b: the menu bar.
+        OpenMenuBarPanel,
+        JoinNextMeeting,
     ]
 );
 
@@ -211,6 +214,7 @@ pub fn bind_keys(cx: &mut App) {
     const GUESTS_INPUT: &str = "Guests > Input";
     const SET: &str = "Settings && !Input";
     const SET_INPUT: &str = "SettingsSearch > Input";
+    const MENU_BAR: &str = menu_bar::MENU_BAR;
 
     cx.bind_keys([
         // Menu-bar shortcuts first: the menu shows an action's first binding.
@@ -453,6 +457,22 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-alt-s", SaveOriginal, Some(MAILBOX)),
         KeyBinding::new("cmd-c", CopyOriginal, Some(ORIGINAL)),
         KeyBinding::new("escape", CloseOriginal, Some(ORIGINAL)),
+        // W7b: the menu bar panel.
+        KeyBinding::new("down", menu_bar::SelectNext, Some(MENU_BAR)),
+        KeyBinding::new("up", menu_bar::SelectPrev, Some(MENU_BAR)),
+        KeyBinding::new("ctrl-n", menu_bar::SelectNext, Some(MENU_BAR)),
+        KeyBinding::new("ctrl-p", menu_bar::SelectPrev, Some(MENU_BAR)),
+        KeyBinding::new("enter", menu_bar::OpenSelected, Some(MENU_BAR)),
+        KeyBinding::new("j", menu_bar::Join, Some(MENU_BAR)),
+        KeyBinding::new("e", menu_bar::Archive, Some(MENU_BAR)),
+        KeyBinding::new("shift-i", menu_bar::MarkRead, Some(MENU_BAR)),
+        KeyBinding::new("z", menu_bar::Undo, Some(MENU_BAR)),
+        KeyBinding::new("cmd-z", menu_bar::Undo, Some(MENU_BAR)),
+        KeyBinding::new("c", menu_bar::Compose, Some(MENU_BAR)),
+        KeyBinding::new("n", menu_bar::NewEvent, Some(MENU_BAR)),
+        KeyBinding::new("cmd-o", menu_bar::OpenPigeon, Some(MENU_BAR)),
+        KeyBinding::new("escape", menu_bar::Close, Some(MENU_BAR)),
+        KeyBinding::new("cmd-w", menu_bar::Close, Some(MENU_BAR)),
     ]);
 }
 
@@ -705,4 +725,7 @@ pub const COMMANDS: &[Command] = commands! {
     Conversation: "Save Message as .eml…", Download, SaveOriginal if Thread;
     Conversation: "Copy Original", Code, CopyOriginal, help_only;
     Conversation: "Close Original", X, CloseOriginal, help_only;
+    // W7b: the menu bar.
+    App: "Open Menu Bar Panel", Calendar, OpenMenuBarPanel;
+    App: "Join Next Meeting", Video, JoinNextMeeting;
 };

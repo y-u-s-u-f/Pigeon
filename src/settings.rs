@@ -84,6 +84,70 @@ pub struct Saved {
     pub time_24h: Option<bool>,
     /// A new event's length in minutes; `None` follows Google Calendar.
     pub event_minutes: Option<u32>,
+    /// W7b: the menu bar item, its panel and quick join (NTF-4, NTF-5).
+    pub menu_bar: MenuBarPrefs,
+}
+
+/// W7b: Settings › Menu bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MenuBarPrefs {
+    pub icon: bool,
+    /// The next meeting's title and countdown beside the icon.
+    pub next_meeting: bool,
+    pub panel_key: HotKey,
+    pub join_key: HotKey,
+}
+
+impl Default for MenuBarPrefs {
+    fn default() -> Self {
+        Self {
+            icon: true,
+            next_meeting: true,
+            panel_key: HotKey::CtrlOptCmdSpace,
+            join_key: HotKey::CtrlOptCmdJ,
+        }
+    }
+}
+
+/// The global shortcuts on offer: a few that macOS doesn't use itself
+/// (⌃⌥Space switches input sources, ⌥⌘Space opens a Finder search).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HotKey {
+    CtrlOptCmdSpace,
+    CtrlOptCmdP,
+    CtrlOptCmdJ,
+    CtrlOptCmdM,
+    Off,
+}
+
+impl HotKey {
+    /// The panel's choices, in Settings order.
+    pub const PANEL: [HotKey; 3] = [HotKey::CtrlOptCmdSpace, HotKey::CtrlOptCmdP, HotKey::Off];
+    /// Quick join's.
+    pub const JOIN: [HotKey; 3] = [HotKey::CtrlOptCmdJ, HotKey::CtrlOptCmdM, HotKey::Off];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            HotKey::CtrlOptCmdSpace => "⌃⌥⌘Space",
+            HotKey::CtrlOptCmdP => "⌃⌥⌘P",
+            HotKey::CtrlOptCmdJ => "⌃⌥⌘J",
+            HotKey::CtrlOptCmdM => "⌃⌥⌘M",
+            HotKey::Off => "Off",
+        }
+    }
+
+    /// The macOS virtual key code, with ⌃⌥⌘; none when off.
+    pub fn key_code(self) -> Option<u32> {
+        match self {
+            HotKey::CtrlOptCmdSpace => Some(49),
+            HotKey::CtrlOptCmdP => Some(35),
+            HotKey::CtrlOptCmdJ => Some(38),
+            HotKey::CtrlOptCmdM => Some(46),
+            HotKey::Off => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +181,7 @@ impl Default for Saved {
             calendar_date: None,
             time_24h: None,
             event_minutes: None,
+            menu_bar: MenuBarPrefs::default(),
         }
     }
 }
@@ -175,17 +240,19 @@ pub enum Section {
     Mail,
     Calendar,
     Notifications,
+    MenuBar,
     General,
     Accounts,
     Shortcuts,
 }
 
 impl Section {
-    pub const ALL: [Section; 7] = [
+    pub const ALL: [Section; 8] = [
         Section::Appearance,
         Section::Mail,
         Section::Calendar,
         Section::Notifications,
+        Section::MenuBar,
         Section::General,
         Section::Accounts,
         Section::Shortcuts,
@@ -197,6 +264,7 @@ impl Section {
             Section::Mail => "Mail",
             Section::Calendar => "Calendar",
             Section::Notifications => "Notifications",
+            Section::MenuBar => "Menu Bar",
             Section::General => "General",
             Section::Accounts => "Accounts",
             Section::Shortcuts => "Keyboard Shortcuts",
@@ -209,6 +277,7 @@ impl Section {
             Section::Mail => Icon::Mail,
             Section::Calendar => Icon::Calendar,
             Section::Notifications => Icon::Bell,
+            Section::MenuBar => Icon::PanelTop,
             Section::General => Icon::Settings,
             Section::Accounts => Icon::User,
             Section::Shortcuts => Icon::Keyboard,
@@ -221,6 +290,7 @@ impl Section {
             Section::Mail => &["inbox", "email", "list"],
             Section::Calendar => &["events", "schedule"],
             Section::Notifications => &["alerts", "banners", "badge", "notify"],
+            Section::MenuBar => &["status bar", "status item", "tray", "menubar", "panel"],
             Section::General => &["startup", "launch", "app"],
             Section::Accounts => &["profile", "user", "sign in", "login"],
             Section::Shortcuts => &["keys", "keymap", "hotkeys", "keybindings", "shortcuts"],
@@ -254,6 +324,12 @@ pub enum SettingId {
     TestNotification,
     OpenAtLogin,
     LoginItemStatus,
+    // Sprint 2 W7b.
+    MenuBarIcon,
+    MenuBarNextMeeting,
+    MenuBarPanelKey,
+    MenuBarJoinKey,
+    MenuBarShortcutStatus,
 }
 
 pub struct SettingMeta {
@@ -325,6 +401,16 @@ pub const SETTINGS: &[SettingMeta] = settings! {
         ["startup", "launch", "login item", "start", "boot"];
     General: LoginItemStatus, "Login item", "What macOS says about Pigeon's login item.",
         ["startup", "approval", "system settings", "status"];
+    MenuBar: MenuBarIcon, "Show menu bar icon", "Pigeon's bird in the menu bar, with a dot for new mail in Primary. Click it for today and recent mail.",
+        ["status item", "icon", "tray", "bird", "dot"];
+    MenuBar: MenuBarNextMeeting, "Show next meeting in menu bar", "The next meeting's title and countdown beside the icon, from three hours before.",
+        ["countdown", "meeting", "title", "join", "event"];
+    MenuBar: MenuBarPanelKey, "Open the menu bar panel", "A shortcut that works in any app.",
+        ["global", "hotkey", "shortcut", "panel"];
+    MenuBar: MenuBarJoinKey, "Join next meeting", "Opens the video call of the meeting under way or starting within 10 minutes, from any app.",
+        ["quick join", "global", "hotkey", "shortcut", "video", "meet", "zoom"];
+    MenuBar: MenuBarShortcutStatus, "Shortcuts", "Whether macOS gave Pigeon the shortcuts.",
+        ["conflict", "taken", "registered", "status", "hotkey"];
 };
 
 pub fn meta(id: SettingId) -> &'static SettingMeta {

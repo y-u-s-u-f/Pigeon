@@ -4,7 +4,9 @@ mod attachments;
 mod backend_events;
 mod compose;
 mod mail;
+pub mod menu_bar;
 pub mod shell;
+pub mod today;
 pub use mail::{Density, SearchSuggestion};
 
 use std::{
@@ -423,6 +425,7 @@ impl PigeonApp {
             calendar_date: Some(calendar.anchor),
             time_24h: calendar.prefs.time_24h,
             event_minutes: calendar.prefs.event_minutes,
+            menu_bar: crate::settings::current(cx).menu_bar,
         }
     }
 

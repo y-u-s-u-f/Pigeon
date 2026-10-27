@@ -1515,6 +1515,25 @@ impl Backend {
     }
     // end sprint 2 W1 ---------------------------------------------------
 
+    // Sprint 2 W7b ------------------------------------------------------
+
+    /// Every stored thread, read off the main thread, with the changes
+    /// still queued shown as made: the menu bar's recent mail.
+    pub fn load_threads_in_background(&self, cx: &mut Context<Self>) -> Task<Vec<Thread>> {
+        let store = self.store.clone();
+        let email = self.email().to_string();
+        cx.spawn(async move |this, cx| {
+            let mut threads = cx
+                .background_executor()
+                .spawn(async move { store.load_all_threads(&email).unwrap_or_default() })
+                .await;
+            this.update(cx, |this, _| this.outbox.overlay(&mut threads))
+                .ok();
+            threads
+        })
+    }
+    // end sprint 2 W7b --------------------------------------------------
+
     /// Write settings still waiting to settle: on quit.
     pub fn flush_settings(&mut self) {
         self._save_settings = None;

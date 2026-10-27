@@ -88,7 +88,6 @@ pub fn counts(data: &CalendarData, event: &Event) -> bool {
 }
 
 /// How far ahead `joinable` looks.
-#[allow(dead_code)] // W1's menu bar and quick join.
 pub const JOIN_AHEAD: Duration = Duration::hours(24);
 
 /// The meetings that can be joined at `now` or within `JOIN_AHEAD`: events
@@ -96,7 +95,6 @@ pub const JOIN_AHEAD: Duration = Duration::hours(24);
 /// under way, the one that started most recently first, then the ones to
 /// come, soonest first. The menu bar lists them; `next_joinable` is the
 /// first.
-#[allow(dead_code)] // W1's menu bar and quick join.
 pub fn joinable(data: &CalendarData, now: NaiveDateTime) -> Vec<Occurrence> {
     let mut found: Vec<Occurrence> = occurrences(
         &data.events,
@@ -118,7 +116,6 @@ pub fn joinable(data: &CalendarData, now: NaiveDateTime) -> Vec<Occurrence> {
 }
 
 /// The meeting to join: see `joinable`.
-#[allow(dead_code)] // W1's menu bar and quick join.
 pub fn next_joinable(data: &CalendarData, now: NaiveDateTime) -> Option<Occurrence> {
     joinable(data, now).into_iter().next()
 }

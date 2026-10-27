@@ -1,0 +1,1189 @@
+//! The menu bar panel (sprint 2 W7b, NTF-4), design A "Agenda first"
+//! (`docs/design/menubar.html`): the date and sync status, a card for the
+//! next meeting, the rest of today, recent Primary mail, and a footer.
+//!
+//! Keys (context `MenuBar`, bound in `actions.rs`): ↑/↓ move through the
+//! card, events and mail, Enter opens the selected one in the main window,
+//! `j` joins the next meeting, `e` archives and ⇧I marks read the selected
+//! mail (Undo with `z`), `c` composes, `n` makes an event, ⌘O opens
+//! Pigeon, Esc closes. The window is shown, hidden and sized by
+//! `app::menu_bar`; this view only draws and asks.
+
+use std::{cell::Cell, rc::Rc, time::Instant};
+
+use chrono::{Duration, NaiveDateTime};
+use gpui::{
+    AnyElement, App, Context, Entity, FocusHandle, FontWeight, Hsla, InteractiveElement,
+    IntoElement, ParentElement, Pixels, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled, Task, Window, actions, div,
+    prelude::FluentBuilder as _, px,
+};
+
+use super::{keycap, style::*};
+use crate::{
+    app::{
+        menu_bar::{self, HideReason},
+        shell::Show,
+        today::{self, Agenda, MailRow, Today},
+    },
+    backend::{BackendEvent, MailOp, OpId, UNDO_WINDOW, gmail},
+    calendar::{CalendarData, Occurrence, policy, time},
+    data::{Folder, list_date},
+    settings,
+    theme::Theme,
+    ui::status,
+};
+
+actions!(
+    menu_bar,
+    [
+        SelectNext,
+        SelectPrev,
+        OpenSelected,
+        Join,
+        Archive,
+        MarkRead,
+        Undo,
+        Compose,
+        NewEvent,
+        OpenPigeon,
+        Close,
+    ]
+);
+
+/// Key context of the panel.
+pub const MENU_BAR: &str = "MenuBar";
+
+pub const PANEL_WIDTH: Pixels = px(352.);
+/// The panel grows with what it shows, up to this; the lists scroll past it.
+pub const PANEL_MAX_HEIGHT: Pixels = px(640.);
+/// Its height before the first measure.
+pub const PANEL_START_HEIGHT: Pixels = px(420.);
+/// Rows of "Later today" and of recent mail, at most.
+const MAX_EVENTS: usize = 6;
+const MAX_MAIL: usize = 4;
+const TIME_COLUMN: Pixels = px(56.);
+const COLOR_BAR: Pixels = px(3.);
+const UNREAD_DOT: Pixels = px(6.);
+
+/// What ↑/↓ move through.
+#[derive(Clone, Debug, PartialEq)]
+enum Item {
+    Next(Occurrence),
+    Event(Occurrence),
+    Mail(String),
+}
+
+/// An archive from the panel, until its undo window closes.
+struct PanelUndo {
+    thread: String,
+    subject: String,
+    ops: Vec<OpId>,
+}
+
+pub struct MenuBarPanel {
+    today: Entity<Today>,
+    focus: FocusHandle,
+    selected: usize,
+    /// Said once at the top, until the panel closes ("No meeting …").
+    notice: Option<SharedString>,
+    undo: Option<PanelUndo>,
+    /// Set on show: the first render after logs how long it took.
+    opening: Option<(Instant, &'static str)>,
+    scroll: ScrollHandle,
+    reveal: bool,
+    /// The content's height as last laid out, to size the window to it.
+    height: Rc<Cell<f32>>,
+    _undo_timer: Option<Task<()>>,
+}
+
+impl MenuBarPanel {
+    pub fn new(today: Entity<Today>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        cx.observe(&today, |_, _, cx| cx.notify()).detach();
+        cx.observe_window_activation(window, |_, window, _| {
+            if !window.is_window_active() {
+                menu_bar::hide_later(HideReason::LostKey);
+            }
+        })
+        .detach();
+        // The system's light or dark, or the user's choice, with the main
+        // window closed too.
+        cx.observe_window_appearance(window, |_, window, cx| {
+            sync_theme(window, cx);
+            cx.notify();
+        })
+        .detach();
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+        Self {
+            today,
+            focus,
+            selected: 0,
+            notice: None,
+            undo: None,
+            opening: None,
+            scroll: ScrollHandle::new(),
+            reveal: false,
+            height: Rc::new(Cell::new(f32::from(PANEL_START_HEIGHT))),
+            _undo_timer: None,
+        }
+    }
+
+    /// About to show: start on the first item, at the app's text size.
+    pub fn will_show(
+        &mut self,
+        source: &'static str,
+        notice: Option<SharedString>,
+        started: Instant,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.opening = Some((started, source));
+        self.notice = notice;
+        self.selected = 0;
+        self.reveal = true;
+        window.set_rem_size(px(BASE_REM * settings::current(cx).text_scale));
+        sync_theme(window, cx);
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// The content's height in points, for the window.
+    pub fn content_height(&self) -> f64 {
+        self.height.get() as f64
+    }
+
+    fn items(agenda: &Agenda, mail: &[MailRow]) -> Vec<Item> {
+        let mut items = Vec::new();
+        items.extend(agenda.next.map(Item::Next));
+        items.extend(
+            agenda
+                .later
+                .iter()
+                .take(MAX_EVENTS)
+                .chain(agenda.tomorrow.iter())
+                .map(|o| Item::Event(*o)),
+        );
+        items.extend(mail.iter().take(MAX_MAIL).map(|m| Item::Mail(m.id.clone())));
+        items
+    }
+
+    fn current(&self, cx: &App) -> (Agenda, Vec<Item>) {
+        let today = self.today.read(cx);
+        let agenda = today::agenda(&today.calendar, today::now());
+        let items = Self::items(&agenda, &today.mail);
+        (agenda, items)
+    }
+
+    fn selected_item(&self, cx: &App) -> Option<Item> {
+        let (_, items) = self.current(cx);
+        items
+            .get(self.selected.min(items.len().saturating_sub(1)))
+            .cloned()
+    }
+
+    fn step(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let (_, items) = self.current(cx);
+        if items.is_empty() {
+            return;
+        }
+        let last = items.len() - 1;
+        self.selected = if forward {
+            (self.selected + 1).min(last)
+        } else {
+            self.selected.min(last).saturating_sub(1)
+        };
+        self.reveal = true;
+        cx.notify();
+    }
+
+    fn select_next(&mut self, _: &SelectNext, _: &mut Window, cx: &mut Context<Self>) {
+        self.step(true, cx);
+    }
+
+    fn select_prev(&mut self, _: &SelectPrev, _: &mut Window, cx: &mut Context<Self>) {
+        self.step(false, cx);
+    }
+
+    fn open_selected(&mut self, _: &OpenSelected, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(item) = self.selected_item(cx) {
+            self.open_item(&item, cx);
+        }
+    }
+
+    fn open_item(&self, item: &Item, cx: &App) {
+        let show = match item {
+            Item::Next(o) | Item::Event(o) => event_show(&self.today.read(cx).calendar, o),
+            Item::Mail(id) => Some(Show::Thread(id.clone())),
+        };
+        if let Some(show) = show {
+            menu_bar::open_in_main(show);
+        }
+    }
+
+    fn join(&mut self, _: &Join, _: &mut Window, cx: &mut Context<Self>) {
+        let today = self.today.read(cx);
+        let agenda = today::agenda(&today.calendar, today::now());
+        let url = agenda
+            .next
+            .and_then(|o| policy::video_link(&today.calendar.events[o.event]).map(str::to_string));
+        if let Some(url) = url {
+            menu_bar::hide_later(HideReason::Opened);
+            menu_bar::open_link(&url, cx);
+        }
+    }
+
+    fn selected_mail(&self, cx: &App) -> Option<MailRow> {
+        let Some(Item::Mail(id)) = self.selected_item(cx) else {
+            return None;
+        };
+        self.today
+            .read(cx)
+            .mail
+            .iter()
+            .find(|m| m.id == id)
+            .cloned()
+    }
+
+    /// `e`: out of the Inbox, as the main app's Archive, with its undo.
+    fn archive(&mut self, _: &Archive, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(row) = self.selected_mail(cx) else {
+            return;
+        };
+        let backend = self.today.read(cx).backend().clone();
+        let ids = vec![row.id.clone()];
+        let ops = backend.update(cx, |b, cx| {
+            let ops: Vec<OpId> = MailOp::moves(ids.clone(), Folder::Inbox, Folder::Archive)
+                .into_iter()
+                .map(|op| b.mail(op, cx))
+                .collect();
+            // The main window and the badge read it back, queued.
+            cx.emit(BackendEvent::ThreadsChanged(ids));
+            ops
+        });
+        self.today.update(cx, |t, _| {
+            t.update_mail(&row.id, |rows, ix| {
+                rows.remove(ix);
+            })
+        });
+        self.undo = Some(PanelUndo {
+            thread: row.id,
+            subject: row.subject,
+            ops,
+        });
+        self._undo_timer = Some(cx.spawn(async |this, cx| {
+            cx.background_executor().timer(UNDO_WINDOW).await;
+            this.update(cx, |this, cx| {
+                this.undo = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    /// `z`: put the archived conversation back. Inside the undo window
+    /// nothing went; past it, it moves back at once.
+    fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(undo) = self.undo.take() else {
+            return;
+        };
+        let backend = self.today.read(cx).backend().clone();
+        backend.update(cx, |b, cx| {
+            let cancelled: Vec<bool> = undo.ops.iter().map(|&op| b.cancel(op)).collect();
+            if !cancelled.into_iter().all(|c| c) {
+                for op in MailOp::moves(vec![undo.thread.clone()], Folder::Archive, Folder::Inbox) {
+                    b.mail_now(op, cx);
+                }
+            }
+            cx.emit(BackendEvent::ThreadsChanged(vec![undo.thread.clone()]));
+        });
+        self._undo_timer = None;
+        cx.notify();
+    }
+
+    /// ⇧I: read, as the main app's Mark as Read.
+    fn mark_read(&mut self, _: &MarkRead, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(row) = self.selected_mail(cx).filter(|r| r.unread) else {
+            return;
+        };
+        let backend = self.today.read(cx).backend().clone();
+        backend.update(cx, |b, cx| {
+            b.mail(
+                MailOp::Modify {
+                    threads: vec![row.id.clone()],
+                    add: Vec::new(),
+                    remove: vec![gmail::UNREAD.to_string()],
+                },
+                cx,
+            );
+            cx.emit(BackendEvent::ThreadsChanged(vec![row.id.clone()]));
+        });
+        self.today.update(cx, |t, _| {
+            t.update_mail(&row.id, |rows, ix| rows[ix].unread = false)
+        });
+        cx.notify();
+    }
+
+    fn compose(&mut self, _: &Compose, _: &mut Window, _: &mut Context<Self>) {
+        menu_bar::open_in_main(Show::Compose(None));
+    }
+
+    fn new_event(&mut self, _: &NewEvent, _: &mut Window, _: &mut Context<Self>) {
+        menu_bar::open_in_main(Show::NewEvent);
+    }
+
+    fn open_pigeon(&mut self, _: &OpenPigeon, _: &mut Window, _: &mut Context<Self>) {
+        menu_bar::open_in_main(Show::Main);
+    }
+
+    fn close(&mut self, _: &Close, _: &mut Window, _: &mut Context<Self>) {
+        menu_bar::hide_later(HideReason::Escape);
+    }
+
+    /// Say something at the top while it shows.
+    pub fn say(&mut self, notice: SharedString, cx: &mut Context<Self>) {
+        self.notice = Some(notice);
+        cx.notify();
+    }
+
+    /// Hidden: what was said once goes.
+    pub fn did_hide(&mut self, cx: &mut Context<Self>) {
+        self.notice = None;
+        cx.notify();
+    }
+}
+
+/// The theme for the user's choice, or this window's appearance.
+fn sync_theme(window: &mut Window, cx: &mut App) {
+    use gpui::WindowAppearance;
+    let appearance = match settings::current(cx).appearance {
+        settings::Appearance::System => window.appearance(),
+        settings::Appearance::Light => WindowAppearance::Light,
+        settings::Appearance::Dark => WindowAppearance::Dark,
+    };
+    if Theme::of(cx).is_dark
+        != matches!(
+            appearance,
+            WindowAppearance::Dark | WindowAppearance::VibrantDark
+        )
+    {
+        Theme::apply(appearance, window, cx);
+    }
+}
+
+fn event_show(data: &CalendarData, o: &Occurrence) -> Option<Show> {
+    let event = data.events.get(o.event)?;
+    Some(Show::Event {
+        calendar: event.calendar.clone(),
+        id: event.id.clone(),
+        start: o.start,
+    })
+}
+
+/// "in 12 min", "Now · 25 min left", "Tomorrow".
+fn countdown_chip(o: &Occurrence, now: NaiveDateTime) -> String {
+    let minutes = |to: NaiveDateTime| {
+        let m = (to - now).num_minutes().max(1);
+        time::duration_label(Duration::minutes(m))
+    };
+    if o.start <= now {
+        format!("Now · {} left", minutes(o.end))
+    } else if o.start.date() == now.date() {
+        format!("in {}", minutes(o.start))
+    } else {
+        "Tomorrow".into()
+    }
+}
+
+/// "Priya, Sam and 2 others": the guests but the user, by first name.
+fn guests_line(data: &CalendarData, o: &Occurrence) -> Option<String> {
+    let event = &data.events[o.event];
+    let names: Vec<String> = event
+        .attendees
+        .iter()
+        .filter(|a| !data.account.is_me(&a.email))
+        .map(|a| {
+            let name = if a.name.trim().is_empty() {
+                a.email.split('@').next().unwrap_or_default()
+            } else {
+                a.name.split_whitespace().next().unwrap_or_default()
+            };
+            name.to_string()
+        })
+        .collect();
+    match names.as_slice() {
+        [] => None,
+        [a] => Some(a.clone()),
+        [a, b] => Some(format!("{a} and {b}")),
+        [a, b, c] => Some(format!("{a}, {b} and {c}")),
+        [a, b, rest @ ..] => Some(format!("{a}, {b} and {} others", rest.len())),
+    }
+}
+
+impl Render for MenuBarPanel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some((started, source)) = self.opening.take() {
+            crate::logging::info(&format!(
+                "menu-bar: shown in {:.1} ms ({source})",
+                started.elapsed().as_secs_f64() * 1000.
+            ));
+        }
+        let theme = Theme::of(cx).clone();
+        let now = today::now();
+        let today_entity = self.today.clone();
+        let today = today_entity.read(cx);
+        let agenda = today::agenda(&today.calendar, now);
+        let items = Self::items(&agenda, &today.mail);
+        let status = status::label(
+            today.backend().read(cx).status(),
+            chrono::Utc::now().timestamp_millis(),
+        );
+        let header = now.format("%A, %b %-d").to_string();
+        let mail = &today.mail;
+        let data = &today.calendar;
+        self.selected = self.selected.min(items.len().saturating_sub(1));
+        let reveal = std::mem::take(&mut self.reveal);
+        let selected = items.get(self.selected).cloned();
+        let is_selected = |item: &Item| selected.as_ref() == Some(item);
+
+        // The scrolling middle: one flat list, so the selection can be
+        // scrolled to by child index.
+        let mut middle: Vec<AnyElement> = Vec::new();
+        let mut reveal_ix = None;
+        let mut push_row = |middle: &mut Vec<AnyElement>, item: &Item, row: AnyElement| {
+            if is_selected(item) {
+                reveal_ix = Some(middle.len());
+            }
+            middle.push(row);
+        };
+
+        let later: Vec<&Occurrence> = agenda.later.iter().take(MAX_EVENTS).collect();
+        let more = agenda.later.len().saturating_sub(MAX_EVENTS);
+        let count = agenda.later.len();
+        if !later.is_empty() || agenda.next.is_some() || agenda.tomorrow.is_none() {
+            middle.push(section_header(
+                "later-today",
+                "Later today",
+                (count > 0).then(|| {
+                    format!("{count} event{}", if count == 1 { "" } else { "s" }).into_any_element()
+                }),
+                &theme,
+            ));
+        }
+        for o in &later {
+            let item = Item::Event(**o);
+            let row = self.event_row(data, o, now, is_selected(&item), &theme, cx);
+            push_row(&mut middle, &item, row);
+        }
+        if more > 0 {
+            middle.push(quiet_line(
+                "more-events",
+                format!("{more} more today"),
+                &theme,
+            ));
+        }
+        if later.is_empty() && agenda.tomorrow.is_none() {
+            let text = if agenda.next.is_some() {
+                "Nothing else today"
+            } else {
+                "Nothing else today or tomorrow"
+            };
+            middle.push(quiet_line("nothing-today", text.into(), &theme));
+        }
+        if let Some(o) = &agenda.tomorrow {
+            middle.push(section_header("tomorrow", "Tomorrow", None, &theme));
+            let item = Item::Event(*o);
+            let row = self.event_row(data, o, now, is_selected(&item), &theme, cx);
+            push_row(&mut middle, &item, row);
+        }
+
+        let unread = mail.iter().filter(|m| m.unread).count();
+        let mail_selected = matches!(selected, Some(Item::Mail(_)));
+        middle.push(section_header(
+            "recent-mail",
+            "Recent mail",
+            if mail_selected {
+                Some(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(SPACE_XS)
+                        .child(keycap("E", &theme))
+                        .child("Archive")
+                        .child(div().w(SPACE_2XS))
+                        .child(keycap("⇧I", &theme))
+                        .child("Read")
+                        .into_any_element(),
+                )
+            } else {
+                (unread > 0).then(|| format!("{unread} unread").into_any_element())
+            },
+            &theme,
+        ));
+        if mail.is_empty() {
+            middle.push(quiet_line("no-mail", "Nothing in Primary".into(), &theme));
+        }
+        for row in mail.iter().take(MAX_MAIL) {
+            let item = Item::Mail(row.id.clone());
+            let el = self.mail_row(row, is_selected(&item), &theme, cx);
+            push_row(&mut middle, &item, el);
+        }
+        middle.push(div().h(SPACE_XS).into_any_element());
+        if reveal {
+            match reveal_ix {
+                Some(ix) => self.scroll.scroll_to_item(ix),
+                None => self.scroll.scroll_to_top_of_item(0),
+            }
+        }
+
+        let height = self.height.clone();
+        div()
+            .on_children_prepainted(move |bounds, window, _| {
+                let Some(content) = bounds.first() else {
+                    return;
+                };
+                let h = f32::from(content.size.height).ceil();
+                height.set(h);
+                if (h - f32::from(window.viewport_size().height)).abs() > 0.5 {
+                    menu_bar::resize_later(h as f64);
+                }
+            })
+            .id("menu-bar-panel")
+            .role(gpui::Role::Dialog)
+            .aria_label("Pigeon: today and recent mail")
+            .track_focus(&self.focus)
+            .key_context(MENU_BAR)
+            .on_action(cx.listener(Self::select_next))
+            .on_action(cx.listener(Self::select_prev))
+            .on_action(cx.listener(Self::open_selected))
+            .on_action(cx.listener(Self::join))
+            .on_action(cx.listener(Self::archive))
+            .on_action(cx.listener(Self::mark_read))
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::compose))
+            .on_action(cx.listener(Self::new_event))
+            .on_action(cx.listener(Self::open_pigeon))
+            .on_action(cx.listener(Self::close))
+            .size_full()
+            .bg(theme.menu_bar_bg)
+            .text_color(theme.text)
+            .text_size(TEXT_BASE)
+            .child(
+                div()
+                    .w_full()
+                    .max_h(PANEL_MAX_HEIGHT)
+                    .flex()
+                    .flex_col()
+                    .child(self.header(header, status, &theme))
+                    .when_some(self.notice.clone(), |el, notice| {
+                        el.child(
+                            div()
+                                .id("menu-bar-notice")
+                                .role(gpui::Role::Status)
+                                .aria_label(notice.clone())
+                                .flex_none()
+                                .mx(SPACE_SM)
+                                .mt(SPACE_SM)
+                                .px(SPACE_MD)
+                                .py(SPACE_SM)
+                                .rounded(RADIUS_MD)
+                                .bg(theme.chip_bg)
+                                .text_size(TEXT_SM)
+                                .text_color(theme.text_muted)
+                                .child(notice),
+                        )
+                    })
+                    .when_some(agenda.next, |el, o| {
+                        let selected = is_selected(&Item::Next(o));
+                        el.child(self.card(data, &o, now, selected, &theme, cx))
+                    })
+                    .child(
+                        div()
+                            .id("menu-bar-lists")
+                            // As tall as its rows; it gives way, and
+                            // scrolls, once the panel is at its maximum.
+                            .min_h(px(0.))
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll)
+                            .children(middle),
+                    )
+                    .when_some(self.undo.as_ref(), |el, undo| {
+                        el.child(self.undo_bar(undo, &theme, cx))
+                    })
+                    .child(self.footer(&theme, cx)),
+            )
+    }
+}
+
+impl MenuBarPanel {
+    fn header(&self, date: String, status: String, theme: &Theme) -> impl IntoElement {
+        div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(SPACE_SM)
+            .px(SPACE_LG)
+            .pt(SPACE_MD)
+            .pb(SPACE_XS)
+            .child(
+                div()
+                    .id("menu-bar-date")
+                    .role(gpui::Role::Heading)
+                    .aria_label(SharedString::from(date.clone()))
+                    .text_size(TEXT_LG)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(date),
+            )
+            .child(
+                div()
+                    .id("menu-bar-sync")
+                    .role(gpui::Role::Status)
+                    .aria_label(SharedString::from(status.clone()))
+                    .text_size(TEXT_XS)
+                    .text_color(theme.text_faint)
+                    .truncate()
+                    .child(status),
+            )
+    }
+
+    fn card(
+        &self,
+        data: &CalendarData,
+        o: &Occurrence,
+        now: NaiveDateTime,
+        selected: bool,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let event = &data.events[o.event];
+        let title = event.display_title().to_string();
+        let chip = countdown_chip(o, now);
+        let range = time::time_range_label(o.start.time(), o.end.time());
+        let service = policy::video_link(event).map(today::video_service);
+        let subline = [service.map(str::to_string), guests_line(data, o)]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let item = Item::Next(*o);
+        let open = item.clone();
+        let ring = focus_ring(theme);
+        div()
+            .id("menu-bar-next")
+            .role(gpui::Role::Group)
+            .aria_label(SharedString::from(format!(
+                "Next meeting: {title}, {chip}, {range}"
+            )))
+            .aria_selected(selected)
+            .flex_none()
+            .mx(SPACE_SM)
+            .mt(SPACE_SM)
+            .mb(SPACE_XS)
+            .p(SPACE_MD)
+            .rounded(RADIUS_LG)
+            .bg(theme.menu_bar_card)
+            .border_1()
+            .border_color(theme.border)
+            .when(selected, |el| el.shadow(ring))
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.selected = 0;
+                this.open_item(&open, cx);
+            }))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(SPACE_SM)
+                    .child(
+                        div()
+                            .px(SPACE_SM)
+                            .py(SPACE_2XS)
+                            .rounded(RADIUS_SM)
+                            .bg(theme.chip_bg)
+                            .text_size(TEXT_XS)
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.accent)
+                            .child(chip),
+                    )
+                    .child(
+                        div()
+                            .text_size(TEXT_SM)
+                            .text_color(theme.text_faint)
+                            .font_features(tabular_figures())
+                            .child(range),
+                    ),
+            )
+            .child(
+                div()
+                    .mt(SPACE_SM)
+                    .text_size(TEXT_LG)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .truncate()
+                    .child(title.clone()),
+            )
+            .when(!subline.is_empty(), |el| {
+                el.child(
+                    div()
+                        .mt(SPACE_2XS)
+                        .text_size(TEXT_SM)
+                        .text_color(theme.text_muted)
+                        .truncate()
+                        .child(subline),
+                )
+            })
+            .child(
+                div()
+                    .mt(SPACE_MD)
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_SM)
+                    .when(service.is_some(), |el| {
+                        el.child(
+                            div()
+                                .id("menu-bar-join")
+                                .role(gpui::Role::Button)
+                                .aria_label(SharedString::from(format!("Join {title}")))
+                                .h(HIT_TARGET)
+                                .px(SPACE_MD)
+                                .flex()
+                                .items_center()
+                                .gap(SPACE_SM)
+                                .rounded(RADIUS_MD)
+                                .bg(theme.accent)
+                                .text_color(theme.accent_text)
+                                .text_size(TEXT_SM)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.join(&Join, window, cx);
+                                }))
+                                .child("Join meeting")
+                                .child(on_accent_cap("J", theme)),
+                        )
+                    })
+                    .child(
+                        div()
+                            .id("menu-bar-details")
+                            .role(gpui::Role::Button)
+                            .aria_label("Open in Calendar")
+                            .h(HIT_TARGET)
+                            .px(SPACE_MD)
+                            .flex()
+                            .items_center()
+                            .gap(SPACE_SM)
+                            .rounded(RADIUS_MD)
+                            .bg(theme.chip_bg)
+                            .hover(|s| s.bg(theme.selected_bg))
+                            .text_size(TEXT_SM)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.open_item(&item, cx);
+                            }))
+                            .child("Details")
+                            .when(selected, |el| el.child(keycap("↵", theme))),
+                    ),
+            )
+    }
+
+    fn event_row(
+        &self,
+        data: &CalendarData,
+        o: &Occurrence,
+        now: NaiveDateTime,
+        selected: bool,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let event = &data.events[o.event];
+        let title = event.display_title().to_string();
+        let when = if event.all_day {
+            "All day".to_string()
+        } else if o.start <= now {
+            "Now".to_string()
+        } else {
+            time::compact_time_label(o.start.time())
+        };
+        let place = event.location.trim().to_string();
+        let item = Item::Event(*o);
+        let open = item.clone();
+        let label = [when.as_str(), title.as_str(), place.as_str()]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(", ");
+        row_shell(
+            (
+                "menu-bar-event",
+                o.event as u64 ^ o.start.and_utc().timestamp() as u64,
+            ),
+            label,
+            selected,
+            theme,
+        )
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.select(&open, cx);
+            this.open_item(&open, cx);
+        }))
+        .child(
+            div()
+                .w(TIME_COLUMN)
+                .flex_none()
+                .text_size(TEXT_SM)
+                .text_color(theme.text_muted)
+                .text_right()
+                .font_features(tabular_figures())
+                .child(when),
+        )
+        .child(
+            div()
+                .w(COLOR_BAR)
+                .flex_none()
+                .self_stretch()
+                .rounded(RADIUS_SM)
+                .bg(theme.event_accent(data.color_of(event), false)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .truncate()
+                        .child(title),
+                )
+                .when(!place.is_empty(), |el| {
+                    el.child(
+                        div()
+                            .text_size(TEXT_SM)
+                            .text_color(theme.text_faint)
+                            .truncate()
+                            .child(place),
+                    )
+                }),
+        )
+        .when(selected, |el| el.child(keycap("↵", theme)))
+        .into_any_element()
+    }
+
+    fn mail_row(
+        &self,
+        row: &MailRow,
+        selected: bool,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let item = Item::Mail(row.id.clone());
+        let time = list_date(&row.date);
+        let label = format!(
+            "{}{}, {}, {time}",
+            if row.unread { "Unread, " } else { "" },
+            row.sender,
+            row.subject
+        );
+        row_shell(
+            SharedString::from(format!("menu-bar-mail-{}", row.id)),
+            label,
+            selected,
+            theme,
+        )
+        .items_start()
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.select(&item, cx);
+            this.open_item(&item, cx);
+        }))
+        .child(
+            div()
+                .mt(SPACE_XS)
+                .size(UNREAD_DOT)
+                .flex_none()
+                .rounded_full()
+                .when(row.unread, |el| el.bg(theme.accent)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(SPACE_SM)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .truncate()
+                                .map(|el| {
+                                    if row.unread {
+                                        el.font_weight(FontWeight::SEMIBOLD)
+                                    } else {
+                                        el.font_weight(FontWeight::MEDIUM)
+                                            .text_color(theme.text_muted)
+                                    }
+                                })
+                                .child(row.sender.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(TEXT_XS)
+                                .text_color(theme.text_faint)
+                                .font_features(tabular_figures())
+                                .child(time),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_size(TEXT_SM)
+                        .text_color(theme.text_muted)
+                        .truncate()
+                        .child(row.subject.clone()),
+                ),
+        )
+        .into_any_element()
+    }
+
+    fn select(&mut self, item: &Item, cx: &mut Context<Self>) {
+        let (_, items) = self.current(cx);
+        if let Some(ix) = items.iter().position(|i| i == item) {
+            self.selected = ix;
+            cx.notify();
+        }
+    }
+
+    fn undo_bar(&self, undo: &PanelUndo, theme: &Theme, cx: &Context<Self>) -> impl IntoElement {
+        let message = format!("Archived “{}”", today::truncate(&undo.subject, 32));
+        div()
+            .id("menu-bar-undo")
+            .role(gpui::Role::Status)
+            .aria_label(SharedString::from(message.clone()))
+            .flex_none()
+            .mx(SPACE_SM)
+            .mb(SPACE_SM)
+            .pl(SPACE_MD)
+            .pr(SPACE_XS)
+            .h(HIT_TARGET + SPACE_XS)
+            .flex()
+            .items_center()
+            .gap(SPACE_SM)
+            .rounded(RADIUS_MD)
+            .bg(theme.chip_bg)
+            .text_size(TEXT_SM)
+            .child(div().flex_1().min_w(px(0.)).truncate().child(message))
+            .child(footer_button(
+                "menu-bar-undo-button",
+                "Undo",
+                "Z",
+                "Undo archive",
+                theme,
+                cx.listener(|this, _, window, cx| this.undo(&Undo, window, cx)),
+            ))
+    }
+
+    fn footer(&self, theme: &Theme, cx: &Context<Self>) -> impl IntoElement {
+        div()
+            .id("menu-bar-footer")
+            .role(gpui::Role::Toolbar)
+            .aria_label("Actions")
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(SPACE_XS)
+            .px(SPACE_SM)
+            .py(SPACE_XS)
+            .border_t_1()
+            .border_color(theme.border)
+            .text_size(TEXT_SM)
+            .text_color(theme.text_muted)
+            .child(footer_button(
+                "menu-bar-compose",
+                "Compose",
+                "C",
+                "Compose a new message",
+                theme,
+                cx.listener(|this, _, window, cx| this.compose(&Compose, window, cx)),
+            ))
+            .child(footer_button(
+                "menu-bar-new-event",
+                "Event",
+                "N",
+                "New event",
+                theme,
+                cx.listener(|this, _, window, cx| this.new_event(&NewEvent, window, cx)),
+            ))
+            .child(div().flex_1())
+            .child(footer_button(
+                "menu-bar-open",
+                "Open Pigeon",
+                "⌘O",
+                "Open Pigeon",
+                theme,
+                cx.listener(|this, _, window, cx| this.open_pigeon(&OpenPigeon, window, cx)),
+            ))
+    }
+}
+
+/// A selectable row: events and mail.
+fn row_shell(
+    id: impl Into<gpui::ElementId>,
+    label: String,
+    selected: bool,
+    theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .role(gpui::Role::ListBoxOption)
+        .aria_label(SharedString::from(label))
+        .aria_selected(selected)
+        .mx(SPACE_XS)
+        .px(SPACE_MD)
+        .py(SPACE_XS + SPACE_2XS)
+        .min_h(HIT_TARGET)
+        .flex()
+        .items_center()
+        .gap(SPACE_SM + SPACE_2XS)
+        .rounded(RADIUS_MD)
+        .cursor_pointer()
+        .map(|el| {
+            if selected {
+                el.bg(theme.selected_focused_bg)
+            } else {
+                el.hover(|s| s.bg(theme.hover_bg))
+            }
+        })
+}
+
+fn section_header(
+    id: &'static str,
+    title: &'static str,
+    right: Option<AnyElement>,
+    theme: &Theme,
+) -> AnyElement {
+    div()
+        .id(id)
+        .role(gpui::Role::Heading)
+        .aria_label(title)
+        .flex()
+        .items_center()
+        .justify_between()
+        .px(SPACE_LG)
+        .pt(SPACE_MD)
+        .pb(SPACE_XS)
+        .text_size(TEXT_XS)
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme.text_faint)
+        .child(title.to_uppercase())
+        .when_some(right, |el, right| {
+            el.child(div().font_weight(FontWeight::NORMAL).child(right))
+        })
+        .into_any_element()
+}
+
+fn quiet_line(id: &'static str, text: String, theme: &Theme) -> AnyElement {
+    div()
+        .id(id)
+        .px(SPACE_LG)
+        .py(SPACE_XS)
+        .text_size(TEXT_SM)
+        .text_color(theme.text_faint)
+        .child(text)
+        .into_any_element()
+}
+
+/// A keycap on the accent button.
+fn on_accent_cap(label: &'static str, theme: &Theme) -> impl IntoElement {
+    let text: Hsla = theme.accent_text;
+    div()
+        .min_w(px(18.))
+        .h(px(18.))
+        .px(SPACE_XS)
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(RADIUS_SM)
+        .bg(text.alpha(0.16))
+        .text_size(TEXT_XS)
+        .text_color(text.alpha(0.85))
+        .child(label)
+}
+
+fn footer_button(
+    id: &'static str,
+    label: &'static str,
+    key: &'static str,
+    aria: &'static str,
+    theme: &Theme,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(aria)
+        .h(HIT_TARGET)
+        .px(SPACE_SM)
+        .flex()
+        .items_center()
+        .gap(SPACE_XS + SPACE_2XS)
+        .rounded(RADIUS_MD)
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
+        .on_click(on_click)
+        .child(keycap(key, theme))
+        .child(label)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        calendar::{Attendee, Event, RsvpStatus, time::at},
+        data::Account,
+    };
+    use chrono::NaiveDate;
+
+    #[test]
+    fn card_words() {
+        let day = NaiveDate::from_ymd_opt(2026, 10, 27).unwrap();
+        let o = Occurrence {
+            event: 0,
+            start: at(day, 11, 0),
+            end: at(day, 11, 45),
+        };
+        assert_eq!(countdown_chip(&o, at(day, 10, 48)), "in 12 min");
+        assert_eq!(countdown_chip(&o, at(day, 11, 20)), "Now · 25 min left");
+        assert_eq!(
+            countdown_chip(&o, at(day - Duration::days(1), 18, 0)),
+            "Tomorrow"
+        );
+        let guest = |name: &str| Attendee {
+            name: name.into(),
+            email: format!("{}@x.com", name.to_lowercase()),
+            status: RsvpStatus::Accepted,
+        };
+        let mut data = CalendarData {
+            account: Account {
+                email: "me@x.com".into(),
+                ..Account::default()
+            },
+            calendars: Vec::new(),
+            events: vec![Event {
+                attendees: vec![guest("Me"), guest("Priya Raman"), guest("Sam")],
+                ..Event::default()
+            }],
+        };
+        assert_eq!(guests_line(&data, &o).as_deref(), Some("Priya and Sam"));
+        data.events[0].attendees.extend([guest("Ana"), guest("Bo")]);
+        assert_eq!(
+            guests_line(&data, &o).as_deref(),
+            Some("Priya, Sam and 2 others")
+        );
+    }
+}

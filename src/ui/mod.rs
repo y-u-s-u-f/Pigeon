@@ -5,6 +5,7 @@ pub mod command_palette;
 pub mod composer;
 pub mod html_view;
 pub mod invite;
+pub mod menu_bar;
 pub mod onboarding;
 pub mod rail;
 pub mod reader;

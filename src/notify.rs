@@ -18,7 +18,6 @@ use gpui::{App, Global, SystemNotification, SystemNotificationAction, SystemNoti
 use crate::{app::shell, backend::new_mail::NewMail, instance, logging};
 
 /// Where a click on the notice's body goes.
-#[allow(dead_code)] // `Event`: W5's reminders.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NoticeTarget {
     Thread {

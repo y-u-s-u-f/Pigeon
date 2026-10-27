@@ -31,11 +31,7 @@ pub mod month_view;
 pub mod repeat;
 pub mod week_view;
 
-use std::{
-    cell::Cell,
-    rc::Rc,
-    time::{Duration as StdDuration, Instant},
-};
+use std::{cell::Cell, rc::Rc, time::Duration as StdDuration};
 
 use chrono::{Duration, Local, NaiveDate, NaiveDateTime};
 use gpui::{
@@ -60,7 +56,6 @@ use crate::{
     calendar::{
         CalendarData, Event, GoogleSettings, Occurrence, RsvpStatus, SeriesScope, occurrences,
         quick_add,
-        reminders::{DueReminder, Scheduler},
         time::{self, LocalZone, add_months, month_grid, next_half_hour, week_start},
     },
     contacts::SharedContactBook,
@@ -345,16 +340,11 @@ pub struct CalendarView {
     /// The user's Google Calendar settings (CAL-41).
     pub google: GoogleSettings,
     pub prefs: CalendarPrefs,
-    /// Reminder notifications (CAL-33), checked on every tick.
-    reminders: Scheduler,
-    /// The clock the scheduler compares with the wall clock; it stops
-    /// while the Mac sleeps.
-    started: Instant,
     /// Meet requests asked for, by event id: the id stays the same on a
     /// retry (CAL-34).
     meet_requests: std::collections::HashMap<String, String>,
-    /// Repaints every half minute so the current-time line moves, and
-    /// checks the reminders.
+    /// Repaints every half minute so the current-time line moves.
+    /// Reminders are app-wide (`app::today`).
     _tick: Task<()>,
     _closing: Option<Task<()>>,
     _autoscroll: Option<Task<()>>,
@@ -368,15 +358,6 @@ impl EventEmitter<CalendarEvent> for CalendarView {}
 pub fn occurrence_key(occurrence: &Occurrence, part: i64) -> u64 {
     let minutes = occurrence.start.and_utc().timestamp() / 60;
     ((occurrence.event as u64) << 40) ^ ((minutes as u64) << 8) ^ (part as u64 & 0xff)
-}
-
-/// A reminder fell due.
-fn fire_reminder(reminder: &DueReminder) {
-    // W5→W1: notify
-    eprintln!(
-        "Pigeon: reminder: {} at {}",
-        reminder.title, reminder.key.start
-    );
 }
 
 /// The start of an event's next occurrence from today, or of its last one.
@@ -413,10 +394,7 @@ impl CalendarView {
                 cx.background_executor()
                     .timer(StdDuration::from_secs(30))
                     .await;
-                let ticked = this.update(cx, |this, cx| {
-                    this.check_reminders(cx);
-                    cx.notify();
-                });
+                let ticked = this.update(cx, |_, cx| cx.notify());
                 if ticked.is_err() {
                     break;
                 }
@@ -434,12 +412,8 @@ impl CalendarView {
             ) {
                 this.load_google(cx);
             }
-            if matches!(event, BackendEvent::SignedIn | BackendEvent::SignedOut) {
-                this.reminders = Scheduler::new(this.backend.read(cx).fired_reminders());
-            }
         });
         let google = backend.read(cx).calendar_settings();
-        let fired = backend.read(cx).fired_reminders();
         let mut this = Self {
             data,
             view: ViewKind::Week,
@@ -467,8 +441,6 @@ impl CalendarView {
             guest_prompt: None,
             google,
             prefs: CalendarPrefs::default(),
-            reminders: Scheduler::new(fired),
-            started: Instant::now(),
             meet_requests: Default::default(),
             _tick: tick,
             _closing: None,
@@ -476,8 +448,6 @@ impl CalendarView {
             _subscriptions: vec![date_events, backend_events],
         };
         this.apply_display();
-        // The first check only starts the clock: nothing missed fires.
-        this.check_reminders(cx);
         this.scroll_to_morning();
         this
     }
@@ -1850,20 +1820,6 @@ impl CalendarView {
             .time_zone
             .as_deref()
             .filter(|&z| z != LocalZone::system().name)
-    }
-
-    /// Show the reminders that fell due since the last tick (CAL-33).
-    fn check_reminders(&mut self, cx: &mut Context<Self>) {
-        let due = self.reminders.tick(
-            &self.data,
-            self.google.remind_responded_only,
-            now(),
-            self.started.elapsed(),
-        );
-        for reminder in due {
-            self.backend.read(cx).mark_reminder_fired(&reminder.key);
-            fire_reminder(&reminder);
-        }
     }
 
     /// "New event: Lunch with Sam Fri 1pm" from ⌘K (CAL-39): the event,

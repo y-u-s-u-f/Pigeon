@@ -42,6 +42,8 @@ log = { version = "0.4", default-features = false, features = ["std"] }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "std",
+    "NSArray",
+    "NSGeometry",
     "NSDictionary",
     "NSDistributedNotificationCenter",
     "NSNotification",
@@ -52,7 +54,16 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
 ] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "std",
+    "block2",
     "NSApplication",
+    "NSBezierPath",
+    "NSButton",
+    "NSCell",
+    "NSColor",
+    "NSControl",
+    "NSFont",
+    "NSFontDescriptor",
+    "NSGraphics",
     "NSDockTile",
     "NSEvent",
     "NSImage",
@@ -69,6 +80,10 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "libc",
     "objc2-core-foundation",
 ] }
+# W7b: the menu bar's click-away monitor and drawn icon, and the panel's
+# NSWindow behind its gpui window. Both already in the lock file.
+block2 = "0.6"
+raw-window-handle = "0.6"
 
 [profile.release]
 opt-level = 3

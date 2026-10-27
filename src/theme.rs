@@ -93,6 +93,10 @@ pub struct Theme {
     pub cal_selected_text: Hsla,
     /// The edge between an event and one drawn over it.
     pub cal_ring: Hsla,
+
+    // The menu bar panel (W7b): its glass, and the next-meeting card.
+    pub menu_bar_bg: Hsla,
+    pub menu_bar_card: Hsla,
 }
 
 impl Global for Theme {}
@@ -160,6 +164,9 @@ impl Theme {
             cal_now: hex(0xff5f57ff),
             cal_selected_text: hex(0xffffffff),
             cal_ring: hex(0x1a1a1eff),
+
+            menu_bar_bg: hex(0x1e1e24bd),
+            menu_bar_card: hex(0xffffff0d),
         }
     }
 
@@ -221,6 +228,9 @@ impl Theme {
             cal_now: hex(0xe5483bff),
             cal_selected_text: hex(0xffffffff),
             cal_ring: hex(0xffffffff),
+
+            menu_bar_bg: hex(0xfafafcc7),
+            menu_bar_card: hex(0xffffff8c),
         }
     }
 

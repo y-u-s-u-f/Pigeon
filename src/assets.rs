@@ -60,6 +60,7 @@ icons! {
     Minus => "minus",
     OctagonAlert => "octagon-alert",
     PanelLeft => "panel-left",
+    PanelTop => "panel-top",
     Paperclip => "paperclip",
     Plus => "plus",
     RemoveFormatting => "remove-formatting",

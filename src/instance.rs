@@ -17,7 +17,6 @@ pub fn dev_mode() -> bool {
 }
 
 /// Whether global shortcuts may be registered (W7b).
-#[allow(dead_code)] // W7b registers them.
 pub fn global_shortcuts_allowed() -> bool {
     !dev_mode()
 }
