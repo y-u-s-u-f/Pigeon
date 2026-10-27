@@ -243,6 +243,9 @@ impl PigeonApp {
             cx.notify();
         });
         self.contact_book.borrow_mut().update(contacts);
+        // W9: Gmail search and paging, signed in.
+        self.server_search = Default::default();
+        self.server_search.available = self.backend.read(cx).can_search();
         self.refresh_rows(false);
         cx.notify();
     }

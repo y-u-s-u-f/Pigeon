@@ -188,7 +188,7 @@ The user's own plans, not driven by Google's APIs.
 
 - **Today:** The sidebar lists Inbox, Starred, Sent, Drafts, Archive, Spam, Trash. Shortcuts `g i`, `g s`, `g t`, `g d`, `g a`, `g !`; Trash via the palette. `Folder` (`src/data.rs`) has six variants; each thread has one, derived from its messages' Gmail labels by `gmail::derive_folder()` when synced (W3). Sent lists every conversation holding a message the user sent, like Gmail (`nav_contains()`, 6.4 item 5). Starred is a flag. `FOLDERS` in `src/ui/sidebar.rs`, `set_nav()` in `src/app.rs`.
 - **Needs:** A tester pass on the real account (T1a). IMAP later: special-use `\Sent`, `\Drafts`, `\Junk`, `\Trash`, `\Archive`.
-- **Notes:** See DAT-2 for the one-folder limit. Spam and Trash sync only their newest 25 threads; older ones need LST-7.
+- **Notes:** See DAT-2 for the one-folder limit. Spam and Trash sync only their newest 25 threads; older ones load with "Load older" (LST-7, W9).
 
 #### FOL-2 Sidebar counts
 
@@ -205,7 +205,7 @@ The user's own plans, not driven by Google's APIs.
 #### FOL-4 Label views
 
 - **Today:** `Nav::Label(usize)` (`src/app.rs`); `nav_contains()` shows cached threads carrying the label, excluding Spam and Trash. The cache holds the Inbox's first 100 threads, the first pages of Sent, Starred, Spam and Trash, and a backfill of up to 1,000 threads or 90 days (W3), so a label view shows the labelled threads in that window. `g l` or "Go to Label…" opens a label search.
-- **Needs:** Older labelled threads through `threads.list labelIds=…` with `pageToken` (LST-7, W9). IMAP: folder or keyword search.
+- **Needs:** A tester pass (T3a) of "Load older" at the end of a label view (LST-7, W9). IMAP: folder or keyword search.
 - **Notes:** Label views include Sent, Drafts and Archive, as in Gmail.
 
 #### FOL-5 Apply and remove labels on a thread
@@ -282,7 +282,7 @@ The user's own plans, not driven by Google's APIs.
 #### LST-4 Archived section in the Inbox
 
 - **Today:** The Inbox ends with a collapsible "Archived" header counting the cached Archive threads (`Row::ArchivedHeader` in `refresh_rows()`, `src/app.rs`); palette "Show / Hide Archived in Inbox". With Google, the cache's archived threads come from the backfill (W3).
-- **Needs:** "Load older" (LST-7) for archived mail past the window. Gmail has no cheap server count for "not in Inbox" (1.1).
+- **Needs:** Gmail has no cheap server count for "not in Inbox" (1.1), so the header counts cached threads only. Archived mail past the window comes from "Load older" in the Archive view (LST-7, W9).
 
 #### LST-5 Keyboard list navigation
 
@@ -296,9 +296,9 @@ The user's own plans, not driven by Google's APIs.
 
 #### LST-7 Pagination and lazy loading
 
-- **Today:** Not built. The list is virtualised (`ListState`), but all 124 threads load at startup.
-- **Needs:** Cursor paging per view: `threads.list` `pageToken` and `maxResults` (up to 500). IMAP: UID ranges. Keep only visible and recent threads in memory.
-- **Notes:** Search, counts, contacts (CON-1) and palette search (PAL-2) assume full data and each need a server query once paging exists.
+- **Today:** W9: signed in, every view but Drafts ends in a "Load older conversations" row (`Row::LoadOlder`, `render_load_older()` in `src/ui/thread_list.rs`). A click, Enter on the focused row, `j` past the last thread, or ⌘K "Load Older Conversations" runs `activate_load_older()` (`src/app/mail.rs`), which calls `Backend::load_older(view, oldest)`: `threads.list` (`maxResults=50`) with the view's `labelIds` (Archive: `q=-in:inbox -in:spam -in:trash -in:drafts`) and `before:<oldest cached thread in the view>`, then the `pageToken` on later clicks. Threads the store lacks are fetched with batched `threads.get format=metadata` and stored (`gmail::older_pages()`, `list_and_store()`); up to 5 pages per click when a page is all cached. The row says "Loading older conversations…" and, once Gmail has none, "No older conversations". Demo mode: no row; the command says "That's all the demo mail".
+- **Needs:** A tester pass (T3a). Paging state is per launch (in memory); the threads loaded stay in the cache. IMAP: UID ranges. Keep only visible and recent threads in memory.
+- **Notes:** Gmail's `before:` matches threads with any message before the date, so a page can repeat cached threads; they're skipped without a fetch.
 
 #### LST-8 Live refresh and new mail in the list
 
@@ -588,7 +588,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 ### 5.8 Search (SRC)
 
-Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` with lowercased subject, sender and recipient names and addresses (to, cc, bcc), snippets, plain-text bodies and attachment names. Matching is `Query::matches` in `src/search.rs`.
+Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` with lowercased subject, sender and recipient names and addresses (to, cc, bcc), snippets, plain-text bodies and attachment names. Matching is `Query::matches` in `src/search.rs`. Signed in, Gmail's search runs alongside it (W9, SRC-7) and its results join the list.
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
@@ -605,44 +605,47 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 #### SRC-1 Search bar and keys
 
 - **Today:** `/`, `cmd-f` or the list header icon opens the field; `Esc` clears and closes; `Enter` focuses results. Empty field: dropdown of operators and the last 5 searches; while typing `from:`/`to:`: matching contacts; arrows and Enter pick. A chip toggles scope ("Inbox"/"All mail"); recognised operators show as chips beside the count. `toggle_search()`, `close_search()`, `focus_results()` (`src/app.rs`); `search_suggestions()`, `remember_search()`, `toggle_search_scope()` (`src/app/mail.rs`); `render_search_bar()`, `render_search_suggestions()` (`src/ui/thread_list.rs`). Recent searches in memory (PER-3).
-- **Needs:** Server search (`threads.list` with `q`) or the local index (PER-1), and a "searching" state (STA-1).
+- **Needs:** A tester pass (T3a). W9 adds Gmail's results to the local ones (SRC-7) and a "Searching Gmail…" note.
 
 #### SRC-2 Default search scope
 
-- **Today:** Without `in:`, the current view (or all mail per Settings › Mail › Search scope); Inbox also covers Archive. `refresh_rows()` with `nav_contains()`.
-- **Needs:** Scope by `labelIds` or `q` (`in:inbox OR -in:inbox…`); Sent, Drafts, Spam and Trash search only themselves.
+- **Today:** Without `in:`, the current view (or all mail per Settings › Mail › Search scope); Inbox also covers Archive. `refresh_rows()` with `nav_contains()`. W9: Gmail gets the same scope through `Query::to_gmail_q()` (`src/search.rs`): Inbox → all mail, Archive → `-in:inbox -in:spam -in:trash -in:drafts`, Sent/Spam/Trash/Starred/a label → its `labelIds` (Spam and Trash with `includeSpamTrash=true`). Drafts aren't sent to Gmail (they sync whole). Gmail's results are filtered by the same local scope.
+- **Needs:** A tester pass (T3a).
 
 #### SRC-3 Search operators
 
 - **Today:** `from:`, `to:`, `subject:`, `label:`, `is:unread`, `is:starred`, `has:attachment(s)`, quoted phrases (`from:"Sarah Chen"`), AND only. `Query::parse()`, `Term` (`src/search.rs`); substring matches; `label:` matches ID or alphanumeric name.
-- **Needs:** Pass the same operators in Gmail's `q` (IMAP: `SEARCH FROM/TO/SUBJECT/UNSEEN/FLAGGED`).
-- **Notes:** Gmail matches words, not substrings, so local and server results can differ for the same query.
+- **Needs:** A tester pass (T3a). IMAP: `SEARCH FROM/TO/SUBJECT/UNSEEN/FLAGGED`.
+- **Notes:** W9: `Query::to_gmail_q()` passes every operator to Gmail's `q`: phrases quoted, `has:attachments` as `has:attachment`, `label:`/`in:<label>` as `label:"<Gmail name>"` (several prefix matches as `{label:"A" label:"B"}`; checked on the real account: quoted names with spaces match the label id's threads). Gmail matches words, not substrings, so the list shows the union (SRC-5).
 
 #### SRC-4 Scope operator `in:`
 
 - **Today:** `in:inbox`, `in:archive(d)`, `in:sent`, `in:draft(s)`, `in:spam`, `in:trash`, `in:anywhere`, `in:all`, `in:starred`, `in:<label>`. `Scope` (`src/search.rs`). `in:all` = everything but Spam and Trash; `in:anywhere` = everything.
-- **Needs:** The same meanings server-side: Gmail excludes Spam and Trash unless `includeSpamTrash=true` or `in:anywhere`.
+- **Needs:** A tester pass (T3a).
+- **Notes:** W9: `in:all` → no restriction (Gmail leaves out Spam and Trash), `in:anywhere` → `includeSpamTrash=true`, `in:archive` → `-in:inbox -in:spam -in:trash -in:drafts`, `in:inbox/sent/spam/trash` → their `labelIds`, `in:starred` → `is:starred`, `in:drafts` → local only.
 
 #### SRC-5 Text matching
 
 - **Today:** Plain words match `SearchIndex::all` (`Term::Text`).
-- **Needs:** Full-text over bodies and attachment names: Gmail's index; IMAP `TEXT` (slow); a local index (PER-1) for offline search.
-- **Notes:** Bodies are only in memory today; needed once RDR-6 lands.
+- **Needs:** IMAP `TEXT` (slow). Offline, only cached text is searched.
+- **Notes:** W9: the list shows the union of local substring matches and Gmail's whole-word matches (`ServerSearch::merge()`), newest first, each once.
 
 #### SRC-6 Result count
 
-- **Today:** "N results in <scope>" from `rows`.
-- **Needs:** Gmail's `resultSizeEstimate` is an estimate and can change between pages; show "about N" or a loading state.
+- **Today:** "N results in <scope>" from the thread rows. W9: "About N results" when Gmail's `resultSizeEstimate` is larger than what's shown (`render_search_summary()`).
+- **Needs:** A tester pass (T3a).
+- **Notes:** Gmail's estimate is rough (often 201 for anything past a page).
 
 #### SRC-7 Full-mailbox search
 
-- **Today:** `in:all`/`in:anywhere` are complete because everything is loaded.
-- **Needs:** Server search over mail not yet synced; mark partial results (STA-3). The main reason search must move to the server once LST-7 exists.
+- **Today:** W9: signed in, every search also asks Gmail (`PigeonApp::search_gmail()` in `src/app/mail.rs` → `Backend::search()`): `threads.list q=… maxResults=25` at the user's priority, then batched `threads.get format=metadata` for threads the store lacks, which are stored and join the list. "Searching Gmail…" shows beside the count (or as the empty state) while waiting; a "More results from Gmail" row at the end fetches the next `pageToken`. Offline: local results with "Offline: downloaded mail only". Checked on the real account: a word with `older_than:2y` finds 25 threads all older than the sync window.
+- **Needs:** A tester pass (T3a).
+- **Notes:** Threads found stay in the cache, so they also show in their folders afterwards.
 
 #### SRC-8 Live search while typing
 
-- **Today:** Every keystroke re-runs `Query::parse()` and `refresh_rows()` (`on_search_event()`), no debounce.
-- **Needs:** Debounced server requests; cancel or ignore stale responses.
+- **Today:** Every keystroke re-runs `Query::parse()` and `refresh_rows()` (`on_search_event()`) on the cache at once. W9: Gmail is asked 300 ms after typing settles (`SEARCH_DEBOUNCE`); a new query drops the waiting request and its results (`ServerSearch::ask()`/`answer()` by serial), and the same query again (a refresh, the scope chip back) asks nothing.
+- **Needs:** A tester pass (T3a).
 
 #### SRC-9 More Gmail operators
 
@@ -1281,12 +1284,12 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 - **Today:** `cmd-k` or `cmd-shift-p` lists every command in `COMMANDS` (`src/actions.rs`) with its shortcut and runs the same handlers. `open_palette()`, `palette_items()`, `on_palette_event()` (`src/app.rs`). Unavailable commands are left out (`When`, `command_available()` in `src/app/mail.rs`). Recent commands first on an empty query (in memory, PER-3). Each `Group` has a `scope()` (Mail, Calendar, Global); the palette and `?` sheet list the current mode's commands plus global ones. `v` and `l` open it scoped to folders or labels.
 - **Needs:** Each command inherits its action's needs: ACT-1–6, CMP-1–4, CMP-8, DRF-1, DRF-4, UND-1–3, ACT-1a, FOL-5, CAL-9, CAL-10. Navigation, view and app commands need none.
-- **Notes:** Sign In with Google, Sign Out and Use Demo Data work (W2: ACC-3, ACC-7). The backend's other commands are in already, doing nothing (or saying so in a toast) until their workstream lands: Sync Now (`cmd-r`, also File › Sync Now; SYN-2), Retry Loading Message (RDR-6), Load Older Conversations (LST-7).
+- **Notes:** Sign In with Google, Sign Out and Use Demo Data work (W2: ACC-3, ACC-7). The backend's other commands are in already, doing nothing (or saying so in a toast) until their workstream lands: Sync Now (`cmd-r`, also File › Sync Now; SYN-2), Retry Loading Message (RDR-6), Load Older Conversations (LST-7; works since W9).
 
 #### PAL-2 Thread search in the palette
 
-- **Today:** Matches subject or last non-self sender name, as substring, up to 30 threads after commands. `update_matches()` (`src/ui/command_palette.rs`). No body text, unlike the search bar.
-- **Needs:** A capped server query (SRC-1–5); don't load every thread to build the list.
+- **Today:** Matches subject or last non-self sender name, as substring, up to 30 threads after commands. `update_matches()` (`src/ui/command_palette.rs`). No body text, unlike the search bar. Searches the local cache only, which is instant (W9 decision); the search bar asks Gmail.
+- **Needs:** A tester pass (T3a).
 
 #### PAL-3 Label jumps
 

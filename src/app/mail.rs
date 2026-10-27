@@ -7,13 +7,15 @@ use gpui::{
     Stateful, Window, component::native_menu::NativeMenu, prelude::*,
 };
 
+use std::time::Duration;
+
 use super::{Mode, Nav, PigeonApp, Row, UndoAction};
 use crate::{
     actions::*,
     assets::Icon,
-    backend::{MailOp, OpId, gmail},
+    backend::{MailOp, Older, OpId, ViewKey, gmail},
     data::{Folder, InviteMethod, Thread},
-    search::{NextSuggestion, PrevSuggestion},
+    search::{GmailQuery, NextSuggestion, PrevSuggestion, ServerState},
     ui::command_palette::{Leading, PaletteCommand, PaletteItem},
 };
 
@@ -238,7 +240,7 @@ impl PigeonApp {
             .iter()
             .filter_map(|row| match row {
                 Row::Thread(ix) => Some(self.data.threads[*ix].id.clone()),
-                Row::ArchivedHeader { .. } => None,
+                _ => None,
             })
             .collect();
         if self.select_anchor.is_none() {
@@ -436,7 +438,7 @@ impl PigeonApp {
 
         let thread_at = |row: &Row| match row {
             Row::Thread(ix) => Some(*ix),
-            Row::ArchivedHeader { .. } => None,
+            _ => None,
         };
         let moved_rows: Vec<usize> = ids
             .iter()
@@ -1018,6 +1020,7 @@ impl PigeonApp {
         self.search_query = crate::search::Query::parse(text);
         self.search_highlight = None;
         self.refresh_rows(false);
+        self.search_gmail(cx);
         cx.notify();
     }
 
@@ -1039,6 +1042,7 @@ impl PigeonApp {
         self.search_all = all;
         if self.is_searching() {
             self.refresh_rows(false);
+            self.search_gmail(cx);
         }
         cx.notify();
     }
@@ -1047,7 +1051,120 @@ impl PigeonApp {
     pub(crate) fn toggle_search_scope(&mut self, cx: &mut Context<Self>) {
         self.search_all = !self.search_all;
         self.refresh_rows(false);
+        self.search_gmail(cx);
         cx.notify();
+    }
+}
+
+// Search and paging past the cache (W9).
+
+impl PigeonApp {
+    /// The view the list shows, as the backend names it.
+    pub(crate) fn view_key(&self) -> ViewKey {
+        match self.nav {
+            Nav::Folder(folder) => ViewKey::Folder(folder),
+            Nav::Starred => ViewKey::Starred,
+            Nav::Label(ix) => ViewKey::Label(self.data.labels[ix].id.clone()),
+        }
+    }
+
+    /// Ask Gmail about the open search too (SRC-7), once typing has
+    /// settled for 300 ms (SRC-8). Local results show meanwhile; a newer
+    /// query drops the answer to this one.
+    pub(crate) fn search_gmail(&mut self, cx: &mut Context<Self>) {
+        let view = (!self.search_all).then(|| self.view_key());
+        let query = (self.is_searching() && self.backend.read(cx).can_search())
+            .then(|| {
+                self.search_query
+                    .to_gmail_q(&self.data.labels, view.as_ref())
+            })
+            .flatten();
+        let Some(serial) = self.server_search.ask(query.clone()) else {
+            return;
+        };
+        let query = query.expect("asked");
+        self.request_search(serial, query, None, crate::search::SEARCH_DEBOUNCE, cx);
+    }
+
+    /// The next page of Gmail's results, at the end of the search's rows.
+    fn more_search_results(&mut self, cx: &mut Context<Self>) {
+        if let Some((serial, query, page)) = self.server_search.more() {
+            self.request_search(serial, query, Some(page), Duration::ZERO, cx);
+            cx.notify();
+        }
+    }
+
+    fn request_search(
+        &mut self,
+        serial: u64,
+        query: GmailQuery,
+        page: Option<String>,
+        wait: Duration,
+        cx: &mut Context<Self>,
+    ) {
+        self.server_search.task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let Ok(request) = this.update(cx, |this, cx| {
+                this.backend.update(cx, |b, cx| b.search(&query, page, cx))
+            }) else {
+                return;
+            };
+            let result = request.await;
+            this.update(cx, |this, cx| {
+                if this.server_search.answer(serial, result) {
+                    this.refresh_rows(true);
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// Whether the list ends in "Load older" (LST-7): views Gmail pages,
+    /// signed in; or more of Gmail's results for a search.
+    pub(crate) fn shows_load_older(&self) -> bool {
+        if !self.server_search.available {
+            return false;
+        }
+        if self.is_searching() {
+            return self.server_search.has_more();
+        }
+        self.nav != Nav::Folder(Folder::Drafts)
+    }
+
+    /// "Load older": Enter or a click on the row, `j` onto it, or the
+    /// command.
+    pub(crate) fn activate_load_older(&mut self, cx: &mut Context<Self>) {
+        if self.is_searching() {
+            return self.more_search_results(cx);
+        }
+        // The view's oldest cached thread: older ones come from Gmail.
+        let oldest = self
+            .data
+            .threads
+            .iter()
+            .filter(|t| self.nav_contains(self.nav, t))
+            .map(|t| t.last_message().internal_date)
+            .min();
+        let view = self.view_key();
+        self.backend
+            .update(cx, |b, cx| b.load_older(view, oldest, cx));
+        cx.notify();
+    }
+
+    /// What the "Load older" row says, and whether it does anything now.
+    pub(crate) fn load_older_label(&self, cx: &App) -> (&'static str, bool) {
+        if self.is_searching() {
+            return match self.server_search.state {
+                ServerState::Waiting => ("Searching Gmail…", false),
+                _ => ("More results from Gmail", true),
+            };
+        }
+        match self.backend.read(cx).older(&self.view_key()) {
+            Older::More => ("Load older conversations", true),
+            Older::Loading => ("Loading older conversations…", false),
+            Older::Done => ("No older conversations", false),
+        }
     }
 }
 

@@ -55,7 +55,7 @@ use crate::{
     data::{
         Account, Attachment, Contact, DraftOrigin, Folder, Label, MailData, Message, Quote, Thread,
     },
-    search::Query,
+    search::GmailQuery,
 };
 
 /// An op in the outbox: its row id.
@@ -479,7 +479,32 @@ pub enum ViewKey {
 pub struct SearchResult {
     pub thread_ids: Vec<String>,
     pub estimate: Option<usize>,
+    /// For the next page, if there is one.
+    pub next_page: Option<String>,
 }
+
+/// Where loading a view's older threads is (LST-7).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Older {
+    #[default]
+    More,
+    Loading,
+    /// Gmail has no older ones.
+    Done,
+}
+
+/// A view's paging past the cache: its query, and where the next page is.
+#[derive(Default)]
+struct OlderPages {
+    query: Option<GmailQuery>,
+    next: Option<String>,
+    state: Older,
+}
+
+/// Threads per page of a view's older threads, and pages tried at most
+/// per "Load older" when they're all cached already.
+const OLDER_PAGE: usize = 50;
+const OLDER_TRIES: usize = 5;
 
 pub struct Backend {
     source: Source,
@@ -512,6 +537,8 @@ pub struct Backend {
     sync: sync::SyncState,
     /// W11: offline, waiting and the queue, over sync's status (`health`).
     health: health::Health,
+    /// W9: each view's older pages (LST-7).
+    older: Vec<(ViewKey, OlderPages)>,
 }
 
 impl EventEmitter<BackendEvent> for Backend {}
@@ -528,6 +555,20 @@ pub fn data_dir() -> PathBuf {
 /// `PIGEON_DEMO=1`: the placeholder data, whoever is signed in.
 pub fn demo_requested() -> bool {
     std::env::var("PIGEON_DEMO").is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
+/// W9: a view's threads older than `oldest` (ms), for "Load older".
+fn older_query(view: &ViewKey, oldest: Option<i64>) -> Option<GmailQuery> {
+    let mut query = GmailQuery::view(view)?;
+    if let Some(ms) = oldest {
+        let before = format!("before:{}", ms.div_euclid(1000));
+        query.q = [query.q.as_str(), &before]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
+    Some(query)
 }
 
 fn now_ms() -> i64 {
@@ -687,6 +728,7 @@ impl Backend {
             _sign_in: None,
             _profile: None,
             sync: Default::default(),
+            older: Vec::new(),
         };
         // Whatever was left queued at the last quit goes now.
         this.schedule(cx);
@@ -994,13 +1036,152 @@ impl Backend {
 
     // Google only; nothing to do on the placeholder data.
 
-    /// Search all of Gmail (SRC-7). Demo search is local only.
-    pub fn search(&mut self, _query: &Query, _cx: &mut Context<Self>) -> Task<SearchResult> {
-        Task::ready(SearchResult::default())
+    // search and paging (W9) -------------------------------------------
+
+    /// Whether Gmail can be searched and paged: signed in to Google.
+    pub fn can_search(&self) -> bool {
+        self.transport().is_some()
     }
 
-    /// Fetch the next page of a view, past the sync window (LST-7).
-    pub fn load_older(&mut self, _view: ViewKey, _cx: &mut Context<Self>) {}
+    /// Search all of Gmail (SRC-7): a page of `query`'s threads, at the
+    /// user's priority. Ones the store lacks are fetched and stored first
+    /// (`ThreadsChanged`). Demo search is local only; offline it fails at
+    /// once, as a network error.
+    pub fn search(
+        &mut self,
+        query: &GmailQuery,
+        page: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<SearchResult, gmail::GmailError>> {
+        let Some(transport) = self.transport() else {
+            return Task::ready(Ok(SearchResult::default()));
+        };
+        if transport.is_offline() {
+            return Task::ready(Err(gmail::GmailError::Network("offline".into())));
+        }
+        let (store, account, query) = (self.store.clone(), self.email().to_string(), query.clone());
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let gmail = gmail::Gmail::new(Arc::new(outbox::UserPriority(transport)));
+                    gmail::list_and_store(
+                        &gmail,
+                        &store,
+                        &account,
+                        &query,
+                        gmail::SEARCH_PAGE,
+                        page.as_deref(),
+                    )
+                })
+                .await;
+            this.update(cx, |this, cx| match &result {
+                Ok(found) if !found.stored.is_empty() => {
+                    cx.emit(BackendEvent::ThreadsChanged(found.stored.clone()))
+                }
+                Ok(_) => {}
+                Err(e) => this.note_gmail_error(e, cx),
+            })
+            .ok();
+            result.map(|found| SearchResult {
+                thread_ids: found.ids,
+                estimate: found.estimate,
+                next_page: found.next_page,
+            })
+        })
+    }
+
+    /// Where loading `view`'s older threads is.
+    pub fn older(&self, view: &ViewKey) -> Older {
+        self.older
+            .iter()
+            .find(|(v, _)| v == view)
+            .map_or(Older::More, |(_, pages)| pages.state)
+    }
+
+    /// Fetch the next page of a view, past the sync window (LST-7): first
+    /// the threads before `oldest` (ms), the view's oldest cached one, then
+    /// page on. Emits `ThreadsChanged` for the threads stored and
+    /// `CountsChanged` once done, for the "Load older" row.
+    pub fn load_older(&mut self, view: ViewKey, oldest: Option<i64>, cx: &mut Context<Self>) {
+        let Some(transport) = self.transport() else {
+            return;
+        };
+        let Some(query) = older_query(&view, oldest) else {
+            return;
+        };
+        let ix = match self.older.iter().position(|(v, _)| *v == view) {
+            Some(ix) => ix,
+            None => {
+                self.older.push((view.clone(), OlderPages::default()));
+                self.older.len() - 1
+            }
+        };
+        let pages = &mut self.older[ix].1;
+        if pages.state != Older::More {
+            return;
+        }
+        pages.state = Older::Loading;
+        let query = pages.query.get_or_insert(query).clone();
+        let page = pages.next.clone();
+        let (store, account) = (self.store.clone(), self.email().to_string());
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let gmail = gmail::Gmail::new(Arc::new(outbox::UserPriority(transport)));
+                    gmail::older_pages(
+                        &gmail,
+                        &store,
+                        &account,
+                        &query,
+                        page,
+                        OLDER_TRIES,
+                        OLDER_PAGE,
+                    )
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                let Some((_, pages)) = this.older.iter_mut().find(|(v, _)| *v == view) else {
+                    return;
+                };
+                match result {
+                    Ok((stored, next)) => {
+                        pages.state = if next.is_some() {
+                            Older::More
+                        } else {
+                            Older::Done
+                        };
+                        pages.next = next;
+                        if !stored.is_empty() {
+                            cx.emit(BackendEvent::ThreadsChanged(stored));
+                        }
+                    }
+                    Err(e) => {
+                        pages.state = Older::More;
+                        eprintln!("Pigeon: couldn't load older conversations: {e}");
+                        this.note_gmail_error(&e, cx);
+                    }
+                }
+                cx.emit(BackendEvent::CountsChanged);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn note_gmail_error(&mut self, error: &gmail::GmailError, cx: &mut Context<Self>) {
+        match error {
+            gmail::GmailError::Network(m) => {
+                self.note_error(&TransportError::Network(m.clone()), cx)
+            }
+            gmail::GmailError::Status { status: 401, .. } => {
+                self.note_error(&TransportError::AuthExpired, cx)
+            }
+            _ => {}
+        }
+    }
+    // end search and paging (W9) ---------------------------------------
 
     pub fn sync_now(&mut self, cx: &mut Context<Self>) {
         cx.emit(BackendEvent::Status(self.status.clone()));
@@ -1326,6 +1507,25 @@ mod tests {
             }
             .undoable()
         );
+    }
+
+    #[test]
+    fn older_pages_start_before_the_oldest_cached_thread() {
+        let label =
+            older_query(&ViewKey::Label("Label_7".into()), Some(1_793_000_000_999)).unwrap();
+        assert_eq!(label.q, "before:1793000000");
+        assert_eq!(label.label.as_deref(), Some("Label_7"));
+        let archive = older_query(&ViewKey::Folder(Folder::Archive), Some(1_000)).unwrap();
+        assert_eq!(
+            archive.q,
+            "-in:inbox -in:spam -in:trash -in:drafts before:1"
+        );
+        let empty = older_query(&ViewKey::Starred, None).unwrap();
+        assert_eq!(
+            (empty.q.as_str(), empty.label.as_deref()),
+            ("", Some("STARRED"))
+        );
+        assert!(older_query(&ViewKey::Folder(Folder::Drafts), None).is_none());
     }
 
     #[test]

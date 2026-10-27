@@ -25,7 +25,7 @@ use crate::ui::style::*;
 use crate::{
     actions::*,
     assets::Icon,
-    backend::{Backend, MailOp, OpId, Source, UNDO_WINDOW, ViewKey, auth::CALENDAR_SCOPE, gmail},
+    backend::{Backend, MailOp, OpId, Source, UNDO_WINDOW, auth::CALENDAR_SCOPE, gmail},
     contacts::{ContactBook, SharedContactBook},
     data::{Folder, MailData, Thread},
     search::{FocusResults, Query},
@@ -87,6 +87,9 @@ pub enum Row {
     Thread(usize),
     /// The collapsible "Archived" header under the Inbox.
     ArchivedHeader { count: usize },
+    /// W9: "Load older" at the end of a view, or more of Gmail's results
+    /// at the end of a search (LST-7, SRC-7).
+    LoadOlder,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -222,6 +225,8 @@ pub struct PigeonApp {
     pub(crate) saved: Saved,
     /// Gmail's unread counts (`ui::sidebar`).
     pub server_counts: ui::sidebar::ServerCounts,
+    /// W9: Gmail's half of the search, and whether views page (LST-7).
+    pub server_search: crate::search::ServerSearch,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -336,6 +341,7 @@ impl PigeonApp {
             system_reduce_motion: false,
             saved,
             server_counts: Default::default(),
+            server_search: Default::default(),
             _subscriptions: vec![
                 settings_events,
                 appearance,
@@ -350,6 +356,7 @@ impl PigeonApp {
             ],
         };
         this.apply_settings(saved, window, cx);
+        this.server_search.available = this.backend.read(cx).can_search();
         this.refresh_rows(false);
         this.refresh_server_counts(cx);
         this
@@ -447,7 +454,7 @@ impl PigeonApp {
             if !searching {
                 return self.nav_contains(self.nav, thread);
             }
-            let in_scope = match self.search_query.scope {
+            match self.search_query.scope {
                 Some(scope) => Query::in_scope(scope, thread),
                 None if self.search_all => Query::in_scope(crate::search::Scope::All, thread),
                 // The Inbox shows its archived threads too, so its search does.
@@ -455,13 +462,23 @@ impl PigeonApp {
                     matches!(thread.folder, Folder::Inbox | Folder::Archive)
                 }
                 None => self.nav_contains(self.nav, thread),
-            };
-            in_scope && self.search_query.matches(thread, &self.data)
+            }
         };
-        let mut rows: Vec<Row> = (0..threads.len())
-            .filter(|&ix| in_view(&threads[ix]))
-            .map(Row::Thread)
-            .collect();
+        let mut rows: Vec<Row> = if searching {
+            // W9: with what Gmail found (SRC-5).
+            self.server_search
+                .merge(threads, in_view, |t| {
+                    self.search_query.matches(t, &self.data)
+                })
+                .into_iter()
+                .map(Row::Thread)
+                .collect()
+        } else {
+            (0..threads.len())
+                .filter(|&ix| in_view(&threads[ix]))
+                .map(Row::Thread)
+                .collect()
+        };
 
         if self.nav == Nav::Folder(Folder::Inbox) && !searching {
             let archived = (0..threads.len()).filter(|&ix| threads[ix].folder == Folder::Archive);
@@ -472,6 +489,9 @@ impl PigeonApp {
                     rows.extend(archived.map(Row::Thread));
                 }
             }
+        }
+        if self.shows_load_older() {
+            rows.push(Row::LoadOlder);
         }
 
         if keep_scroll {
@@ -514,6 +534,7 @@ impl PigeonApp {
             self.selected = None;
             self.clear_checked();
             self.reader_focused = false;
+            self.search_gmail(cx);
             self.refresh_rows(false);
         }
         cx.notify();
@@ -578,7 +599,7 @@ impl PigeonApp {
     fn neighbor_thread(&self, row: usize, forward: bool) -> Option<usize> {
         let thread_at = |r: &Row| match r {
             Row::Thread(ix) => Some(*ix),
-            Row::ArchivedHeader { .. } => None,
+            _ => None,
         };
         if forward {
             self.rows[row + 1..].iter().find_map(thread_at)
@@ -592,7 +613,7 @@ impl PigeonApp {
             Some(row) => self.neighbor_thread(row, forward),
             None => self.rows.iter().find_map(|r| match r {
                 Row::Thread(ix) => Some(*ix),
-                Row::ArchivedHeader { .. } => None,
+                _ => None,
             }),
         };
         match next {
@@ -603,6 +624,10 @@ impl PigeonApp {
                 cx.notify();
             }
             Some(ix) => self.select_thread(ix, window, cx),
+            // W9: `j` past the last thread reaches "Load older".
+            None if forward && self.rows.last() == Some(&Row::LoadOlder) => {
+                self.activate_load_older(cx)
+            }
             None => {}
         }
     }
@@ -792,13 +817,8 @@ impl PigeonApp {
     }
 
     fn load_older(&mut self, _: &LoadOlderConversations, _: &mut Window, cx: &mut Context<Self>) {
-        let view = match self.nav {
-            Nav::Folder(folder) => ViewKey::Folder(folder),
-            Nav::Starred => ViewKey::Starred,
-            Nav::Label(ix) => ViewKey::Label(self.data.labels[ix].id.clone()),
-        };
         let demo = self.backend.read(cx).is_demo();
-        self.backend.update(cx, |b, cx| b.load_older(view, cx));
+        self.activate_load_older(cx);
         if demo {
             self.show_toast("That's all the demo mail", None, cx);
         }
@@ -836,6 +856,7 @@ impl PigeonApp {
         self.search_query = Query::default();
         self.search_input
             .update(cx, |input, cx| input.set_value("", window, cx));
+        self.search_gmail(cx);
         self.refresh_rows(false);
         self.reveal_selected();
         window.focus(&self.focus_handle, cx);
@@ -854,6 +875,7 @@ impl PigeonApp {
                 self.search_query = Query::parse(&input.read(cx).value());
                 self.search_highlight = None;
                 self.refresh_rows(false);
+                self.search_gmail(cx);
                 cx.notify();
             }
             InputEvent::PressEnter { .. } if !self.accept_search_suggestion(window, cx) => {

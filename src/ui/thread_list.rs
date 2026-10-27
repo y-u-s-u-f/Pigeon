@@ -13,10 +13,14 @@ use gpui::{
 use super::{HEADER_HEIGHT, avatar, empty_state, icon, icon_button, window_drag_area};
 use crate::ui::style::*;
 use crate::{
-    actions::{CloseSearch, SEARCH, ToggleArchivedSection, ToggleSearch, ToggleSidebar},
+    actions::{
+        CloseSearch, LoadOlderConversations, SEARCH, ToggleArchivedSection, ToggleSearch,
+        ToggleSidebar,
+    },
     app::{Density, Nav, PigeonApp, Row, SearchSuggestion},
     assets::Icon,
     data::{Folder, list_date},
+    search::ServerState,
     theme::Theme,
 };
 
@@ -98,7 +102,13 @@ impl PigeonApp {
             });
 
         let searching = self.is_searching();
-        let body = if self.rows.is_empty() && searching {
+        let asking_gmail = self.server_search.state == ServerState::Waiting;
+        // "Load older" alone (W9) still leaves the view empty.
+        let empty = self.rows.iter().all(|r| *r == Row::LoadOlder);
+        let body = if empty && searching && asking_gmail {
+            // W9 (SRC-7): nothing here, but Gmail may have some.
+            empty_state(Icon::Search, "Searching Gmail…", None, &theme)
+        } else if empty && searching {
             empty_state(
                 Icon::Search,
                 format!("No results {}", self.search_scope_text()),
@@ -109,7 +119,7 @@ impl PigeonApp {
                 }),
                 &theme,
             )
-        } else if self.rows.is_empty() && !self.view_loaded(cx) {
+        } else if empty && !self.view_loaded(cx) {
             // Not "Nothing in …" before the first page is in (LST-9).
             match self.backend.read(cx).sync_error() {
                 Some(error) => empty_state(
@@ -124,7 +134,7 @@ impl PigeonApp {
                 ),
                 None => render_skeleton(&theme),
             }
-        } else if self.rows.is_empty() {
+        } else if empty {
             empty_state(
                 Icon::Inbox,
                 format!("Nothing in {}", self.nav_title()),
@@ -162,10 +172,22 @@ impl PigeonApp {
             .border_r_1()
             .border_color(theme.border)
             .child(header)
-            .when(searching && !self.rows.is_empty(), |this| {
-                this.child(self.render_search_summary(&theme))
-            })
+            .when(
+                searching && (!empty || self.server_search.state == ServerState::Offline),
+                |this| this.child(self.render_search_summary(&theme)),
+            )
             .child(div().flex_1().min_h_0().child(body))
+            .when(
+                empty && !self.rows.is_empty() && (searching || self.view_loaded(cx)),
+                |this| {
+                    this.child(
+                        div()
+                            .flex_none()
+                            .pb(SPACE_SM)
+                            .child(self.render_load_older(&theme, cx)),
+                    )
+                },
+            )
             .when(!suggestions.is_empty(), |this| {
                 this.child(self.render_search_suggestions(suggestions, &theme, cx))
             })
@@ -196,7 +218,20 @@ impl PigeonApp {
     /// Under the search field: the operators it understood, tinted, and how
     /// many threads match.
     fn render_search_summary(&self, theme: &Theme) -> impl IntoElement {
-        let count = self.rows.len();
+        let count = self
+            .rows
+            .iter()
+            .filter(|r| matches!(r, Row::Thread(_)))
+            .count();
+        // W9: Gmail's estimate, when it knows of more (SRC-6), and how its
+        // half of the search is going (SRC-7).
+        let estimate = self.server_search.estimate.filter(|&n| n > count);
+        let note = match self.server_search.state {
+            ServerState::Waiting => Some("Searching Gmail…"),
+            ServerState::Offline => Some("Offline: downloaded mail only"),
+            ServerState::Failed => Some("Couldn't search Gmail"),
+            _ => None,
+        };
         div()
             .flex_none()
             .pl(ROW_MARGIN + ROW_INSET)
@@ -224,12 +259,24 @@ impl PigeonApp {
                 div()
                     .ml(SPACE_2XS)
                     .font_features(tabular_figures())
-                    .child(format!(
-                        "{count} result{} {}",
-                        if count == 1 { "" } else { "s" },
-                        self.search_scope_text()
-                    )),
+                    .child(match estimate {
+                        Some(n) => format!("About {n} results {}", self.search_scope_text()),
+                        None => format!(
+                            "{count} result{} {}",
+                            if count == 1 { "" } else { "s" },
+                            self.search_scope_text()
+                        ),
+                    }),
             )
+            .children(note.map(|note| {
+                div()
+                    .id("search-gmail-note")
+                    .role(gpui::Role::Status)
+                    .aria_label(note)
+                    .ml(SPACE_2XS)
+                    .text_color(theme.text_faint)
+                    .child(format!("· {note}"))
+            }))
     }
 
     /// The search button, expanded into a field that fills the header. It
@@ -458,7 +505,49 @@ impl PigeonApp {
         match self.rows[ix] {
             Row::Thread(thread_ix) => self.render_thread_row(thread_ix, &theme, window, cx),
             Row::ArchivedHeader { count } => self.render_archived_header(count, &theme, cx),
+            Row::LoadOlder => self.render_load_older(&theme, cx),
         }
+    }
+
+    /// W9 (LST-7): the end of the list, where older threads (or more of
+    /// Gmail's results) load.
+    fn render_load_older(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let (label, enabled) = self.load_older_label(cx);
+        div()
+            .px(ROW_MARGIN)
+            .pt(SPACE_SM)
+            .child(
+                focusable_control(div().id("load-older"), theme)
+                    .role(gpui::Role::Button)
+                    .aria_label(label)
+                    .h(HIT_TARGET)
+                    .pl(ROW_INSET)
+                    .pr(SPACE_MD)
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_SM)
+                    .rounded(RADIUS_MD)
+                    .text_size(TEXT_SM)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(if enabled {
+                        theme.text_muted
+                    } else {
+                        theme.text_faint
+                    })
+                    .child(icon(Icon::ChevronDown, px(14.), theme.text_faint))
+                    .child(label)
+                    .when(enabled, |this| {
+                        this.cursor_pointer()
+                            .hover(|s| s.bg(theme.hover_bg))
+                            .tooltip(|window, cx| {
+                                Tooltip::new("Load older conversations")
+                                    .action(&LoadOlderConversations, None)
+                                    .build(window, cx)
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| this.activate_load_older(cx)))
+                    }),
+            )
+            .into_any_element()
     }
 
     fn render_archived_header(

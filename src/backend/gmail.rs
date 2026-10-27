@@ -752,6 +752,111 @@ pub fn thread_untrash_request(id: &str) -> Request {
 
 // end writes (W5)
 
+// search (W9) --------------------------------------------------------------
+// Server search (SRC-7) and older pages of a view (LST-7): one page of
+// `threads.list`, then `threads.get` for what the store lacks.
+
+/// Threads per search page.
+pub const SEARCH_PAGE: usize = 25;
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchPage {
+    #[serde(default)]
+    pub threads: Vec<ThreadRef>,
+    #[serde(default)]
+    pub next_page_token: Option<String>,
+    #[serde(default, deserialize_with = "opt_number")]
+    pub result_size_estimate: Option<u64>,
+}
+
+pub fn search_request(
+    query: &crate::search::GmailQuery,
+    max: usize,
+    page: Option<&str>,
+) -> Request {
+    let q = Some(query.q.as_str()).filter(|q| !q.is_empty());
+    let mut request = threads_list_request(query.label.as_deref(), q, max, page);
+    if query.include_spam_trash {
+        request.url.push_str("&includeSpamTrash=true");
+    }
+    request
+}
+
+/// A page of a search or a view, with the threads it fetched.
+#[derive(Debug, Default, PartialEq)]
+pub struct Found {
+    /// Every thread listed, in Gmail's order (newest first).
+    pub ids: Vec<String>,
+    /// The ones fetched and stored now, for `ThreadsChanged`.
+    pub stored: Vec<String>,
+    pub estimate: Option<usize>,
+    pub next_page: Option<String>,
+}
+
+/// One page of `query`'s threads. Those the store lacks, or has at another
+/// history id, are fetched as metadata (batched) and stored. Blocking.
+pub fn list_and_store(
+    gmail: &Gmail,
+    store: &super::store::Store,
+    account: &str,
+    query: &crate::search::GmailQuery,
+    max: usize,
+    page: Option<&str>,
+) -> Result<Found, GmailError> {
+    let list: SearchPage = gmail.call(&search_request(query, max, page))?;
+    let known = store.thread_history_ids(account)?;
+    let wanted: Vec<String> = list
+        .threads
+        .iter()
+        .filter(|t| t.history_id.is_none() || known.get(&t.id) != t.history_id.as_ref())
+        .map(|t| t.id.clone())
+        .collect();
+    let requests: Vec<Request> = wanted.iter().map(|id| thread_get_request(id)).collect();
+    let mut threads = Vec::new();
+    for result in gmail.batch::<GThread>(&requests) {
+        match result {
+            Ok(t) => threads.extend(thread_from_gmail(&t)),
+            Err(e) if e.is_network() => return Err(e),
+            // Gone since it was listed, or one bad answer: the rest count.
+            Err(_) => {}
+        }
+    }
+    let stored: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
+    store.put_synced_threads(account, threads)?;
+    Ok(Found {
+        ids: list.threads.into_iter().map(|t| t.id).collect(),
+        stored,
+        estimate: list.result_size_estimate.map(|n| n as usize),
+        next_page: list.next_page_token,
+    })
+}
+
+/// Pages of a view's older threads from `page` on, until one brings
+/// threads the store lacked or `tries` pages are read: the threads stored,
+/// and the page after (none: no older ones). Blocking.
+pub fn older_pages(
+    gmail: &Gmail,
+    store: &super::store::Store,
+    account: &str,
+    query: &crate::search::GmailQuery,
+    mut page: Option<String>,
+    tries: usize,
+    max: usize,
+) -> Result<(Vec<String>, Option<String>), GmailError> {
+    let mut stored = Vec::new();
+    for _ in 0..tries {
+        let found = list_and_store(gmail, store, account, query, max, page.as_deref())?;
+        stored.extend(found.stored);
+        page = found.next_page;
+        if !stored.is_empty() || page.is_none() {
+            break;
+        }
+    }
+    Ok((stored, page))
+}
+// end search (W9) ----------------------------------------------------------
+
 // Gmail → model.
 
 /// A label for the sidebar, from Gmail's. Labels without a colour get
@@ -1225,6 +1330,125 @@ mod tests {
             .map(|r| batch_paths(r).len())
             .collect();
         assert_eq!(sizes, [BATCH_SIZE, BATCH_SIZE, 5]);
+    }
+
+    // search (W9)
+
+    fn store_with_a1() -> super::super::store::Store {
+        let store = super::super::store::Store::open_in_memory().unwrap();
+        let t: GThread = serde_json::from_str(include_str!(
+            "../../tests/fixtures/google/gmail/thread_metadata.json"
+        ))
+        .unwrap();
+        store
+            .put_synced_threads("me@example.com", vec![thread_from_gmail(&t).unwrap()])
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn search_lists_then_fetches_only_unknown_threads() {
+        let thread = include_str!("../../tests/fixtures/google/gmail/thread_metadata.json")
+            .replace("thread-a1", "old-1")
+            .replace("msg-a", "msg-old-");
+        let list = r#"{"threads":[{"id":"thread-a1","historyId":"1052"},{"id":"old-1","historyId":"7"}],
+            "nextPageToken":"p2","resultSizeEstimate":120}"#;
+        let fake = Arc::new(
+            FakeTransport::new()
+                .on(
+                    "GET",
+                    "/gmail/v1/users/me/threads",
+                    &[("q", "budget"), ("includeSpamTrash", "true")],
+                    &[(200, list)],
+                )
+                .on(
+                    "POST",
+                    "/batch/gmail/v1",
+                    &[],
+                    &[(200, &batch_body(&[(200, &thread)]))],
+                ),
+        );
+        let gmail = Gmail::new(Arc::new(Batches(fake.clone())));
+        let store = store_with_a1();
+        let query = crate::search::GmailQuery {
+            q: "budget".into(),
+            label: None,
+            include_spam_trash: true,
+        };
+        let found = list_and_store(&gmail, &store, "me@example.com", &query, 25, None).unwrap();
+        assert_eq!(found.ids, ["thread-a1", "old-1"]);
+        assert_eq!(found.stored, ["old-1"]);
+        assert_eq!(found.estimate, Some(120));
+        assert_eq!(found.next_page.as_deref(), Some("p2"));
+        let requests = fake.requests();
+        assert!(requests[0].url.contains("maxResults=25"));
+        // Only the unknown thread was fetched.
+        assert_eq!(
+            batch_paths(&requests[1]),
+            ["/gmail/v1/users/me/threads/old-1"]
+        );
+        assert_eq!(store.load_all_threads("me@example.com").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn older_pages_page_on_past_cached_threads() {
+        let thread = include_str!("../../tests/fixtures/google/gmail/thread_metadata.json")
+            .replace("thread-a1", "older-1");
+        let cached = r#"{"threads":[{"id":"thread-a1","historyId":"1052"}],"nextPageToken":"p2"}"#;
+        let older = r#"{"threads":[{"id":"older-1","historyId":"9"}],"nextPageToken":"p3"}"#;
+        let last = r#"{"threads":[]}"#;
+        let fake = Arc::new(
+            FakeTransport::new()
+                .on(
+                    "GET",
+                    "/gmail/v1/users/me/threads",
+                    &[("pageToken", "p2")],
+                    &[(200, older)],
+                )
+                .on(
+                    "GET",
+                    "/gmail/v1/users/me/threads",
+                    &[("pageToken", "p3")],
+                    &[(200, last)],
+                )
+                .on(
+                    "GET",
+                    "/gmail/v1/users/me/threads",
+                    &[("labelIds", "Label_7")],
+                    &[(200, cached)],
+                )
+                .on(
+                    "POST",
+                    "/batch/gmail/v1",
+                    &[],
+                    &[(200, &batch_body(&[(200, &thread)]))],
+                ),
+        );
+        let gmail = Gmail::new(Arc::new(Batches(fake.clone())));
+        let store = store_with_a1();
+        let query = crate::search::GmailQuery {
+            q: "before:1793000000".into(),
+            label: Some("Label_7".into()),
+            include_spam_trash: false,
+        };
+        // The first page is all cached: on to the next, which isn't.
+        let (stored, next) =
+            older_pages(&gmail, &store, "me@example.com", &query, None, 5, 50).unwrap();
+        assert_eq!(stored, ["older-1"]);
+        assert_eq!(next.as_deref(), Some("p3"));
+        let lists: Vec<Request> = fake
+            .requests()
+            .into_iter()
+            .filter(|r| r.path().ends_with("/threads"))
+            .collect();
+        assert_eq!(lists.len(), 2);
+        assert!(lists[0].url.contains("q=before%3A1793000000"));
+        assert!(lists[0].url.contains("maxResults=50"));
+        // The next "Load older" goes on from there, and finds the end.
+        let (stored, next) =
+            older_pages(&gmail, &store, "me@example.com", &query, next, 5, 50).unwrap();
+        assert!(stored.is_empty());
+        assert_eq!(next, None);
     }
 
     #[test]
