@@ -23,13 +23,13 @@ To update: change the status cell in the area's table, then the counts below.
 | [Reading pane](#53-reading-pane-rdr) | 0 | 1 | 7 | 8 |
 | [Message actions](#54-message-and-thread-actions-act) | 0 | 0 | 7 | 7 |
 | [Compose and sending](#55-compose-and-sending-cmp) | 0 | 1 | 12 | 13 |
-| [Drafts](#56-drafts-drf) | 1 | 0 | 5 | 6 |
+| [Drafts](#56-drafts-drf) | 0 | 1 | 5 | 6 |
 | [Undo](#57-undo-und) | 0 | 0 | 3 | 3 |
 | [Search](#58-search-src) | 0 | 1 | 8 | 9 |
 | [Contacts](#59-contacts-con) | 6 | 0 | 2 | 8 |
 | [Images and attachments](#510-images-and-attachments-att) | 0 | 4 | 3 | 7 |
-| [Links](#511-links-lnk) | 2 | 0 | 1 | 3 |
-| [Mail settings](#512-mail-settings-mst) | 10 | 0 | 0 | 10 |
+| [Links](#511-links-lnk) | 1 | 1 | 1 | 3 |
+| [Mail settings](#512-mail-settings-mst) | 8 | 2 | 0 | 10 |
 | [Calendar](#6-calendar-cal) | 12 | 10 | 20 | 42 |
 | [Sync and push](#71-sync-and-push-syn) | 2 | 0 | 5 | 7 |
 | [Notifications and background](#72-notifications-and-background-ntf) | 0 | 6 | 0 | 6 |
@@ -37,7 +37,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Storage and persistence](#81-storage-and-persistence-per) | 0 | 2 | 3 | 5 |
 | [Command palette](#82-command-palette-pal) | 0 | 0 | 3 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 3 | 3 | 7 |
-| **Overall** | **40** | **38** | **103** | **181** |
+| **Overall** | **36** | **42** | **103** | **181** |
 
 ## Contents
 
@@ -533,7 +533,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 | DRF-2 | Drafts list | 🟢 Fully linked | `drafts.list` |
 | DRF-3 | Open and edit a draft | 🟢 Fully linked | `drafts.get` |
 | DRF-4 | Discard a draft | 🟢 Fully linked | `drafts.delete` |
-| DRF-5 | Save while typing | ⚪ Not done | `drafts.update` (debounced) |
+| DRF-5 | Save while typing | 🟡 Partially done | `drafts.update` (debounced) |
 | DRF-6 | Sync drafts with the server | 🟢 Fully linked | `drafts.list`, `history.list` |
 
 #### DRF-1 Save on close or navigation
@@ -772,7 +772,7 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 | --- | --- | --- | --- |
 | LNK-1 | Open a link in the browser | 🟢 Fully linked | None |
 | LNK-2 | Link safety checks | ⚪ Not done | None (optional Safe Browsing API) |
-| LNK-3 | `mailto:` links | ⚪ Not done | None |
+| LNK-3 | `mailto:` links | 🟡 Partially done | None |
 
 #### LNK-1 Open a link in the browser
 
@@ -793,8 +793,8 @@ Gmail's `users.settings` resources. All need `gmail.settings.basic` unless noted
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| MST-1 | Send-as aliases and From picker | ⚪ Not done | `settings.sendAs.list`, `get`, `patch`, `update` |
-| MST-2 | Signatures | ⚪ Not done | `sendAs.signature` via `settings.sendAs.patch` |
+| MST-1 | Send-as aliases and From picker | 🟡 Partially done | `settings.sendAs.list`, `get`, `patch`, `update` |
+| MST-2 | Signatures | 🟡 Partially done | `sendAs.signature` via `settings.sendAs.patch` |
 | MST-3 | Vacation responder | ⚪ Not done | `settings.getVacation`, `updateVacation` |
 | MST-4 | Filters | ⚪ Not done | `settings.filters.list`, `get`, `create`, `delete` |
 | MST-5 | Forwarding and auto-forwarding | ⚪ Not done | `settings.forwardingAddresses.list`, `get`; `settings.getAutoForwarding` |
