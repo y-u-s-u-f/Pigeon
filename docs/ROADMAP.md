@@ -18,14 +18,14 @@ To update: change the status cell in the area's table, then the counts below.
 | --- | --- | --- | --- | --- |
 | [Planned features](#3-planned-features-pln) | 3 | 0 | 0 | 3 |
 | [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 2 | 3 | 3 | 8 |
-| [Folders and labels](#51-folders-and-labels-fol) | 5 | 1 | 6 | 12 |
+| [Folders and labels](#51-folders-and-labels-fol) | 1 | 5 | 6 | 12 |
 | [Thread list](#52-thread-list-lst) | 0 | 0 | 9 | 9 |
 | [Reading pane](#53-reading-pane-rdr) | 0 | 1 | 7 | 8 |
 | [Message actions](#54-message-and-thread-actions-act) | 0 | 0 | 7 | 7 |
 | [Compose and sending](#55-compose-and-sending-cmp) | 0 | 1 | 12 | 13 |
 | [Drafts](#56-drafts-drf) | 1 | 0 | 5 | 6 |
 | [Undo](#57-undo-und) | 0 | 0 | 3 | 3 |
-| [Search](#58-search-src) | 1 | 0 | 8 | 9 |
+| [Search](#58-search-src) | 0 | 1 | 8 | 9 |
 | [Contacts](#59-contacts-con) | 6 | 0 | 2 | 8 |
 | [Images and attachments](#510-images-and-attachments-att) | 0 | 4 | 3 | 7 |
 | [Links](#511-links-lnk) | 2 | 0 | 1 | 3 |
@@ -37,7 +37,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Storage and persistence](#81-storage-and-persistence-per) | 0 | 2 | 3 | 5 |
 | [Command palette](#82-command-palette-pal) | 0 | 0 | 3 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 3 | 3 | 7 |
-| **Overall** | **45** | **33** | **103** | **181** |
+| **Overall** | **40** | **38** | **103** | **181** |
 
 ## Contents
 
@@ -177,13 +177,13 @@ The user's own plans, not driven by Google's APIs.
 | FOL-3 | Label list with colours | 🟢 Fully linked | `labels.list`, label `color` |
 | FOL-4 | Label views | 🟢 Fully linked | `threads.list` with `labelIds` |
 | FOL-5 | Apply and remove labels on a thread | 🟢 Fully linked | `threads.modify` |
-| FOL-6 | Create, rename, recolour and delete labels | ⚪ Not done | `labels.create`, `labels.patch`, `labels.update`, `labels.delete` |
+| FOL-6 | Create, rename, recolour and delete labels | 🟡 Partially done | `labels.create`, `labels.patch`, `labels.update`, `labels.delete` |
 | FOL-7 | Report spam and not spam | 🟢 Fully linked | `threads.modify` (add or remove `SPAM`) |
 | FOL-8 | Empty Trash and permanent delete | ⚪ Not done | `threads.delete`, `messages.delete`, `messages.batchDelete` |
-| FOL-9 | Nested labels | ⚪ Not done | Label names with `/` |
-| FOL-10 | Label visibility | ⚪ Not done | Label `labelListVisibility`, `messageListVisibility` |
+| FOL-9 | Nested labels | 🟡 Partially done | Label names with `/` |
+| FOL-10 | Label visibility | 🟡 Partially done | Label `labelListVisibility`, `messageListVisibility` |
 | FOL-11 | Inbox categories | 🟡 Partially done | Backend (W4a) and views (W4b): the Inbox shows Primary; Social, Promotions, Updates, Forums under it. Tester pass pending |
-| FOL-12 | Important marker | ⚪ Not done | `IMPORTANT` label |
+| FOL-12 | Important marker | 🟡 Partially done | `IMPORTANT` label |
 
 #### FOL-1 System folders and go-to shortcuts
 
@@ -610,7 +610,7 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 | SRC-6 | Result count | 🟢 Fully linked | `resultSizeEstimate` |
 | SRC-7 | Full-mailbox search | 🟢 Fully linked | `threads.list` with `q` |
 | SRC-8 | Live search while typing | 🟢 Fully linked | Debounced `threads.list` |
-| SRC-9 | More Gmail operators | ⚪ Not done | Gmail `q` operators |
+| SRC-9 | More Gmail operators | 🟡 Partially done | Gmail `q` operators |
 
 #### SRC-1 Search bar and keys
 
