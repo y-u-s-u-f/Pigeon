@@ -405,6 +405,18 @@ impl MailData {
             .sort_by_key(|t| std::cmp::Reverse(t.last_message().internal_date));
     }
 
+    /// Fresh copies of threads: each replaces its thread, or joins the
+    /// list if it's new; newest first again.
+    pub fn upsert_threads(&mut self, threads: Vec<Thread>) {
+        for thread in threads {
+            match self.thread_ix(&thread.id) {
+                Some(ix) => self.threads[ix] = thread,
+                None => self.threads.push(thread),
+            }
+        }
+        self.sort_threads();
+    }
+
     pub fn label(&self, id: &str) -> Option<&Label> {
         self.labels.iter().find(|l| l.id == id)
     }
@@ -685,6 +697,33 @@ mod tests {
         assert_eq!(Folder::Trash.archive_target(), Some(Folder::Inbox));
         assert_eq!(Folder::Sent.archive_target(), None);
         assert_eq!(Folder::Drafts.archive_target(), None);
+    }
+
+    #[test]
+    fn upserted_threads_replace_or_join_newest_first() {
+        let thread = |id: &str, folder: Folder, at: i64| {
+            let message = Message {
+                internal_date: at,
+                ..Message::new(Contact::default())
+            };
+            Thread::local(id.into(), id.into(), folder, vec![message], None)
+        };
+        let mut data = MailData {
+            account: Account::default(),
+            labels: Vec::new(),
+            threads: vec![
+                thread("b", Folder::Inbox, 20),
+                thread("a", Folder::Inbox, 10),
+            ],
+        };
+        data.upsert_threads(vec![
+            thread("new", Folder::Inbox, 30),
+            thread("a", Folder::Archive, 10),
+            thread("mid", Folder::Inbox, 15),
+        ]);
+        let ids: Vec<&str> = data.threads.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, ["new", "b", "mid", "a"]);
+        assert_eq!(data.threads[3].folder, Folder::Archive);
     }
 
     #[test]

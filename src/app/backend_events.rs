@@ -49,14 +49,7 @@ impl PigeonApp {
             .filter(|id| !threads.iter().any(|t| &t.id == *id))
             .cloned()
             .collect();
-        self.update_threads(|data| {
-            for thread in threads {
-                match data.thread_ix(&thread.id) {
-                    Some(ix) => data.threads[ix] = thread,
-                    None => data.threads.push(thread),
-                }
-            }
-        });
+        self.update_threads(|data| data.upsert_threads(threads));
         if !gone.is_empty() {
             self.on_threads_removed(&gone, cx);
         }

@@ -13,7 +13,7 @@ use std::{
 
 use gpui::{
     AppContext as _, Context, DragMoveEvent, Entity, FocusHandle, Focusable as _,
-    InteractiveElement, IntoElement, KeyContext, ListAlignment, ListState, MouseButton,
+    InteractiveElement, IntoElement, KeyContext, ListAlignment, ListOffset, ListState, MouseButton,
     ParentElement, Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
     Styled, Subscription, Task, Window,
     component::input::{InputEvent, InputState},
@@ -473,8 +473,20 @@ impl PigeonApp {
                 .zip(rows[prefix..].iter().rev())
                 .take_while(|(a, b)| a == b)
                 .count();
+            // A list at its top stays there, so new mail shows above the
+            // rest instead of the splice scrolling it out of view; the
+            // selection, if it was showing, is kept on screen.
+            let top = self.list_state.logical_scroll_top();
+            let at_top = top.item_ix == 0 && top.offset_in_item == Pixels::ZERO;
+            let selected_shown = self
+                .selected_row()
+                .is_some_and(|row| self.list_state.bounds_for_item(row).is_some());
             self.list_state
                 .splice(prefix..old.len() - suffix, rows.len() - prefix - suffix);
+            if at_top && prefix == 0 {
+                self.list_state.scroll_to(ListOffset::default());
+                self.reveal_pending |= selected_shown;
+            }
         } else {
             self.list_state.reset(rows.len());
         }
