@@ -289,7 +289,7 @@ The main agent rebases the branch onto `main` and runs `cargo fmt --check`, `car
 - T2a, labels and Inbox views: pass after fix-5.
 - T2b, compose: pass after fix-6 (signature fetch, discard on quit).
 - T2c, contact card, drills and read-only calendars: pass after fix-7.
-- R2 to R4, retests: pass.
+- R2 to R4, retests: R2 pass; R3 and R4 partial (the tester's screenshots went stale while Pigeon's window was covered), and the user checked the rest by hand.
 - The user's own final check of the rollback, read-only drag and labels: pass.
 
 **Bugs found and fixed:**
