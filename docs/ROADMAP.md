@@ -19,13 +19,13 @@ To update: change the status cell in the area's table, then the counts below.
 | [Planned features](#3-planned-features-pln) | 3 | 0 | 0 | 3 |
 | [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 2 | 3 | 3 | 8 |
 | [Folders and labels](#51-folders-and-labels-fol) | 6 | 2 | 4 | 12 |
-| [Thread list](#52-thread-list-lst) | 0 | 4 | 5 | 9 |
+| [Thread list](#52-thread-list-lst) | 0 | 3 | 6 | 9 |
 | [Reading pane](#53-reading-pane-rdr) | 1 | 3 | 4 | 8 |
 | [Message actions](#54-message-and-thread-actions-act) | 0 | 2 | 5 | 7 |
 | [Compose and sending](#55-compose-and-sending-cmp) | 0 | 3 | 10 | 13 |
 | [Drafts](#56-drafts-drf) | 1 | 1 | 4 | 6 |
 | [Undo](#57-undo-und) | 0 | 1 | 2 | 3 |
-| [Search](#58-search-src) | 1 | 8 | 0 | 9 |
+| [Search](#58-search-src) | 1 | 2 | 6 | 9 |
 | [Contacts](#59-contacts-con) | 6 | 0 | 2 | 8 |
 | [Images and attachments](#510-images-and-attachments-att) | 3 | 3 | 1 | 7 |
 | [Links](#511-links-lnk) | 2 | 1 | 0 | 3 |
@@ -35,9 +35,9 @@ To update: change the status cell in the area's table, then the counts below.
 | [Notifications and background](#72-notifications-and-background-ntf) | 3 | 0 | 0 | 3 |
 | [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 0 | 5 | 0 | 5 |
 | [Storage and persistence](#81-storage-and-persistence-per) | 0 | 2 | 1 | 3 |
-| [Command palette](#82-command-palette-pal) | 0 | 3 | 0 | 3 |
+| [Command palette](#82-command-palette-pal) | 0 | 2 | 1 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 6 | 0 | 7 |
-| **Overall** | **59** | **59** | **58** | **176** |
+| **Overall** | **59** | **51** | **66** | **176** |
 
 ## Contents
 
@@ -258,7 +258,7 @@ The user's own plans, not driven by Google's APIs.
 | LST-4 | Archived section in the Inbox | 🟡 Partially done | `threads.list` (`q=-in:inbox`) |
 | LST-5 | Keyboard list navigation | 🟢 Fully linked | `threads.get` on demand |
 | LST-6 | Unread count in the list header | 🟢 Fully linked | `labels.get` |
-| LST-7 | Pagination and lazy loading | 🟡 Partially done | `pageToken`, `maxResults` |
+| LST-7 | Pagination and lazy loading | 🟢 Fully linked | `pageToken`, `maxResults` |
 | LST-8 | Live refresh and new mail in the list | 🟡 Partially done | `history.list` (SYN-2) |
 | LST-9 | Empty-result text | 🟡 Partially done | None |
 
@@ -592,14 +592,14 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| SRC-1 | Search bar and keys | 🟡 Partially done | `threads.list` with `q` |
-| SRC-2 | Default search scope | 🟡 Partially done | `labelIds`, `q` |
-| SRC-3 | Search operators | 🟡 Partially done | Gmail `q` operators |
+| SRC-1 | Search bar and keys | 🟢 Fully linked | `threads.list` with `q` |
+| SRC-2 | Default search scope | 🟢 Fully linked | `labelIds`, `q` |
+| SRC-3 | Search operators | 🟢 Fully linked | Gmail `q` operators |
 | SRC-4 | Scope operator `in:` | 🟡 Partially done | `in:`, `includeSpamTrash` |
-| SRC-5 | Text matching | 🟡 Partially done | Gmail full-text index |
+| SRC-5 | Text matching | 🟢 Fully linked | Gmail full-text index |
 | SRC-6 | Result count | 🟡 Partially done | `resultSizeEstimate` |
-| SRC-7 | Full-mailbox search | 🟡 Partially done | `threads.list` with `q` |
-| SRC-8 | Live search while typing | 🟡 Partially done | Debounced `threads.list` |
+| SRC-7 | Full-mailbox search | 🟢 Fully linked | `threads.list` with `q` |
+| SRC-8 | Live search while typing | 🟢 Fully linked | Debounced `threads.list` |
 | SRC-9 | More Gmail operators | ⚪ Not done | Gmail `q` operators |
 
 #### SRC-1 Search bar and keys
@@ -1277,7 +1277,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
 | PAL-1 | Command list | 🟡 Partially done | Each command's own |
-| PAL-2 | Thread search in the palette | 🟡 Partially done | `threads.list` with `q` |
+| PAL-2 | Thread search in the palette | 🟢 Fully linked | `threads.list` with `q` |
 | PAL-3 | Label jumps | 🟡 Partially done | `labels.list` |
 
 #### PAL-1 Command list
