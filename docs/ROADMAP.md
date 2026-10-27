@@ -22,11 +22,11 @@ To update: change the status cell in the area's table, then the counts below.
 | [Thread list](#52-thread-list-lst) | 1 | 3 | 5 | 9 |
 | [Reading pane](#53-reading-pane-rdr) | 1 | 4 | 3 | 8 |
 | [Message actions](#54-message-and-thread-actions-act) | 0 | 7 | 0 | 7 |
-| [Compose and sending](#55-compose-and-sending-cmp) | 0 | 13 | 0 | 13 |
-| [Drafts](#56-drafts-drf) | 1 | 4 | 1 | 6 |
-| [Undo](#57-undo-und) | 0 | 3 | 0 | 3 |
+| [Compose and sending](#55-compose-and-sending-cmp) | 0 | 5 | 8 | 13 |
+| [Drafts](#56-drafts-drf) | 1 | 2 | 3 | 6 |
+| [Undo](#57-undo-und) | 0 | 2 | 1 | 3 |
 | [Search](#58-search-src) | 1 | 8 | 0 | 9 |
-| [Contacts](#59-contacts-con) | 6 | 2 | 0 | 8 |
+| [Contacts](#59-contacts-con) | 6 | 0 | 2 | 8 |
 | [Images and attachments](#510-images-and-attachments-att) | 3 | 4 | 0 | 7 |
 | [Links](#511-links-lnk) | 2 | 1 | 0 | 3 |
 | [Mail settings](#512-mail-settings-mst) | 10 | 0 | 0 | 10 |
@@ -37,7 +37,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Storage and persistence](#81-storage-and-persistence-per) | 1 | 1 | 1 | 3 |
 | [Command palette](#82-command-palette-pal) | 0 | 3 | 0 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 6 | 0 | 7 |
-| **Overall** | **63** | **92** | **21** | **176** |
+| **Overall** | **63** | **79** | **34** | **176** |
 
 ## Contents
 
@@ -423,19 +423,19 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| CMP-1 | New message | 🟡 Partially done | `drafts.create` |
+| CMP-1 | New message | 🟢 Fully linked | `drafts.create` |
 | CMP-2 | Reply | 🟡 Partially done | `messages.send` with `threadId` |
 | CMP-3 | Reply all | 🟡 Partially done | As CMP-2 |
-| CMP-4 | Forward | 🟡 Partially done | `messages.send` (no `threadId`) |
-| CMP-5 | Recipient fields | 🟡 Partially done | Server validation on send |
+| CMP-4 | Forward | 🟢 Fully linked | `messages.send` (no `threadId`) |
+| CMP-5 | Recipient fields | 🟢 Fully linked | Server validation on send |
 | CMP-6 | Show Cc and Bcc | 🟡 Partially done | `raw` MIME; Gmail delivers Bcc |
-| CMP-7 | Subject and formatted body | 🟡 Partially done | `raw` MIME (`multipart/alternative`) |
-| CMP-8 | Send | 🟡 Partially done | `messages.send`, `drafts.send` |
+| CMP-7 | Subject and formatted body | 🟢 Fully linked | `raw` MIME (`multipart/alternative`) |
+| CMP-8 | Send | 🟢 Fully linked | `messages.send`, `drafts.send` |
 | CMP-9 | Send validation | 🟡 Partially done | Send errors |
-| CMP-10 | Forward quote block | 🟡 Partially done | `raw` MIME |
-| CMP-11 | Reply appends to the thread | 🟡 Partially done | `threadId`, `In-Reply-To`, `References` |
+| CMP-10 | Forward quote block | 🟢 Fully linked | `raw` MIME |
+| CMP-11 | Reply appends to the thread | 🟢 Fully linked | `threadId`, `In-Reply-To`, `References` |
 | CMP-12 | Send failure feedback | 🟡 Partially done | Send errors |
-| CMP-13 | Sent copy on the server | 🟡 Partially done | `SENT` label (automatic) |
+| CMP-13 | Sent copy on the server | 🟢 Fully linked | `SENT` label (automatic) |
 
 #### CMP-1 New message
 
@@ -519,9 +519,9 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| DRF-1 | Save on close or navigation | 🟡 Partially done | `drafts.create`, `drafts.update` |
+| DRF-1 | Save on close or navigation | 🟢 Fully linked | `drafts.create`, `drafts.update` |
 | DRF-2 | Drafts list | 🟢 Fully linked | `drafts.list` |
-| DRF-3 | Open and edit a draft | 🟡 Partially done | `drafts.get` |
+| DRF-3 | Open and edit a draft | 🟢 Fully linked | `drafts.get` |
 | DRF-4 | Discard a draft | 🟡 Partially done | `drafts.delete` |
 | DRF-5 | Save while typing | ⚪ Not done | `drafts.update` (debounced) |
 | DRF-6 | Sync drafts with the server | 🟡 Partially done | `drafts.list`, `history.list` |
@@ -564,7 +564,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| UND-1 | Undo send | 🟡 Partially done | Hold `messages.send` for the window |
+| UND-1 | Undo send | 🟢 Fully linked | Hold `messages.send` for the window |
 | UND-2 | Undo discard | 🟡 Partially done | Delay `drafts.delete` |
 | UND-3 | Undo for other actions | 🟡 Partially done | Delay or invert `threads.modify` |
 
@@ -651,8 +651,8 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| CON-1 | Recipient suggestions | 🟡 Partially done | `people.searchContacts`, `otherContacts.search`, `people.searchDirectoryPeople` |
-| CON-2 | Typed name and address resolution | 🟡 Partially done | As CON-1 |
+| CON-1 | Recipient suggestions | 🟢 Fully linked | `people.searchContacts`, `otherContacts.search`, `people.searchDirectoryPeople` |
+| CON-2 | Typed name and address resolution | 🟢 Fully linked | As CON-1 |
 | CON-3 | Contact management | ⚪ Not done | `people.createContact`, `updateContact`, `deleteContact`, batch variants |
 | CON-4 | Contact photos | ⚪ Not done | `photos` person field; `updateContactPhoto`, `deleteContactPhoto` |
 | CON-5 | Contact card | ⚪ Not done | `people.get`, `people.getBatchGet` |
