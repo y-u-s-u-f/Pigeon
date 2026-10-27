@@ -42,6 +42,9 @@ const POLL_INACTIVE: Duration = Duration::from_secs(5 * 60);
 /// on (NTF-1).
 const POLL_BACKGROUND: Duration = Duration::from_secs(60);
 const BODY_DEBOUNCE: Duration = Duration::from_millis(150);
+/// How often the send-as addresses are read again, after the first
+/// partial sync of a launch: signatures and aliases change in Gmail.
+const SEND_AS_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 /// The backfill's bounds (6.4 item 2).
 const BACKFILL_MAX: usize = 1000;
 const BACKFILL_QUERY: &str = "newer_than:90d";
@@ -83,6 +86,8 @@ pub struct SyncState {
     contacts_last: Option<Instant>,
     contacts_running: bool,
     _contacts: Option<Task<()>>,
+    /// When the send-as addresses were last asked for.
+    send_as_asked: Option<Instant>,
 }
 
 /// One step of a mail sync plan.
@@ -90,6 +95,8 @@ pub struct SyncState {
 enum Step {
     /// Profile (the history id to continue from), labels, aliases.
     Start,
+    /// The send-as addresses again (aliases, names, signatures).
+    SendAs,
     List {
         kind: ListKind,
         page: Option<String>,
@@ -217,6 +224,16 @@ impl MailSync {
             Step::Fetch(ids) => self.fetch(&ids),
             Step::Drafts => self.drafts(),
             Step::Labels => self.labels(),
+            Step::SendAs => match self.send_as() {
+                Ok(outcome) => outcome,
+                // Offline: the pass stops here and resumes with it.
+                Err(e) if e.is_network() => Outcome::failed(e),
+                // Aliases matter less than the mail; carry on without them.
+                Err(e) => {
+                    eprintln!("Pigeon: couldn't read the send-as addresses: {e}");
+                    Outcome::default()
+                }
+            },
             Step::Loaded(folder) => Outcome {
                 loaded: Some(folder),
                 ..Default::default()
@@ -257,32 +274,39 @@ impl MailSync {
             return outcome;
         }
         // Aliases matter less than the mail; carry on without them.
-        if let Ok(list) = self
-            .gmail
-            .call::<gmail::SendAsList>(&gmail::send_as_request())
-        {
-            let send_as: Vec<crate::data::SendAs> =
-                list.send_as.iter().map(gmail::SendAs::to_send_as).collect();
-            let aliases: Vec<String> = list
-                .send_as
-                .into_iter()
-                .map(|s| s.send_as_email)
-                .filter(|a| !a.eq_ignore_ascii_case(&profile.email_address))
-                .collect();
-            if let Ok(json) = serde_json::to_string(&aliases) {
-                self.store
-                    .set_sync_state(&self.account, ALIASES_KEY, &json)
-                    .ok();
-            }
-            if let Ok(json) = serde_json::to_string(&send_as) {
-                self.store
-                    .set_sync_state(&self.account, SEND_AS_KEY, &json)
-                    .ok();
-            }
-            outcome.aliases = Some(aliases);
-            outcome.send_as = Some(send_as);
+        if let Ok(send_as) = self.send_as() {
+            outcome.aliases = send_as.aliases;
+            outcome.send_as = send_as.send_as;
         }
         outcome
+    }
+
+    /// The send-as addresses (W3, MST-1), stored and reported.
+    fn send_as(&self) -> Result<Outcome, GmailError> {
+        let list: gmail::SendAsList = self.gmail.call(&gmail::send_as_request())?;
+        let send_as: Vec<crate::data::SendAs> =
+            list.send_as.iter().map(gmail::SendAs::to_send_as).collect();
+        let aliases: Vec<String> = list
+            .send_as
+            .into_iter()
+            .filter(|s| !s.is_primary && !s.send_as_email.eq_ignore_ascii_case(&self.account))
+            .map(|s| s.send_as_email)
+            .collect();
+        if let Ok(json) = serde_json::to_string(&aliases) {
+            self.store
+                .set_sync_state(&self.account, ALIASES_KEY, &json)
+                .ok();
+        }
+        if let Ok(json) = serde_json::to_string(&send_as) {
+            self.store
+                .set_sync_state(&self.account, SEND_AS_KEY, &json)
+                .ok();
+        }
+        Ok(Outcome {
+            aliases: Some(aliases),
+            send_as: Some(send_as),
+            ..Default::default()
+        })
     }
 
     fn labels(&self) -> Outcome {
@@ -695,10 +719,23 @@ impl Backend {
             std::mem::take(&mut self.sync.resume)
         } else if self.sync.full_done {
             self.sync.progress = (0, 0);
-            VecDeque::from([Step::Partial])
+            let mut plan = VecDeque::from([Step::Partial]);
+            // Once a launch (an account synced before W3 lacks them), then
+            // every few hours.
+            if self
+                .sync
+                .send_as_asked
+                .is_none_or(|at| at.elapsed() >= SEND_AS_EVERY)
+            {
+                self.sync.send_as_asked = Some(Instant::now());
+                plan.push_front(Step::SendAs);
+            }
+            plan
         } else {
             self.sync.progress = (0, 0);
             self.set_status(SyncStatus::Syncing { done: 0, total: 0 }, cx);
+            // Start reads them.
+            self.sync.send_as_asked = Some(Instant::now());
             full_plan().into()
         };
         self.sync._pass = Some(cx.spawn(async move |this, cx| {
@@ -729,15 +766,23 @@ impl Backend {
     }
 
     fn apply_outcome(&mut self, outcome: Outcome, cx: &mut Context<Self>) {
+        let mut account_changed = false;
         if let Some(aliases) = outcome.aliases
             && let Some(account) = &mut self.account
+            && account.aliases != aliases
         {
             account.aliases = aliases;
+            account_changed = true;
         }
         if let Some(send_as) = outcome.send_as
             && let Some(account) = &mut self.account
+            && account.send_as != send_as
         {
             account.send_as = send_as;
+            account_changed = true;
+        }
+        if account_changed {
+            cx.emit(BackendEvent::AccountChanged);
         }
         if !outcome.changed.is_empty() {
             cx.emit(BackendEvent::ThreadsChanged(outcome.changed));
@@ -1456,6 +1501,56 @@ mod tests {
             r.query()
                 .contains(&("q", "in%3Ainbox%20category%3Aprimary"))
         }));
+    }
+
+    /// An account whose full sync ran before W3 has no send-as stored: the
+    /// launch's first partial pass reads them, and an offline one resumes
+    /// with them.
+    #[test]
+    fn a_partial_pass_reads_the_send_as_addresses() {
+        let send_as = r#"{"sendAs":[{"sendAsEmail":"me@example.com","isPrimary":true,"isDefault":true,"signature":"Cheers, Me"},{"sendAsEmail":"alias@example.com","verificationStatus":"accepted"}]}"#;
+        let (sync, _) = sync(
+            FakeTransport::new()
+                .on(
+                    "GET",
+                    "/gmail/v1/users/me/settings/sendAs",
+                    &[],
+                    &[(0, ""), (200, send_as)],
+                )
+                .on(
+                    "GET",
+                    "/gmail/v1/users/me/history",
+                    &[],
+                    &[(200, r#"{"historyId":"1900"}"#)],
+                ),
+        );
+        sync.store
+            .set_sync_state(ACCOUNT, HISTORY_KEY, "1900")
+            .unwrap();
+        assert!(
+            sync.store
+                .sync_state(ACCOUNT, SEND_AS_KEY)
+                .unwrap()
+                .is_none()
+        );
+        let plan = VecDeque::from([Step::SendAs, Step::Partial]);
+        let (outcomes, rest) = drive_rest(&sync, plan);
+        assert!(outcomes[0].error.as_ref().unwrap().is_network());
+        assert_eq!(rest, [Step::SendAs, Step::Partial]);
+        let outcomes = drive(&sync, rest.into());
+        assert!(outcomes.iter().all(|o| o.error.is_none()));
+        let read = outcomes[0].send_as.clone().unwrap();
+        assert_eq!(read[0].signature, "Cheers, Me");
+        assert_eq!(
+            outcomes[0].aliases.as_deref(),
+            Some(&["alias@example.com".to_string()][..])
+        );
+        let stored = sync
+            .store
+            .sync_state(ACCOUNT, SEND_AS_KEY)
+            .unwrap()
+            .unwrap();
+        assert!(stored.contains("Cheers, Me"));
     }
 
     #[test]

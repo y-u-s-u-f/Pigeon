@@ -20,6 +20,7 @@ impl PigeonApp {
             BackendEvent::ThreadsRemoved(ids) => self.on_threads_removed(ids, cx),
             BackendEvent::IdReplaced { old, new } => self.on_id_replaced(old, new, cx),
             BackendEvent::LabelsChanged => self.on_labels_changed(cx),
+            BackendEvent::AccountChanged => self.on_account_changed(cx),
             BackendEvent::CountsChanged => self.on_counts_changed(cx),
             BackendEvent::EventsChanged(ids) => self.on_events_changed(ids, cx),
             BackendEvent::EventsRemoved(ids) => self.on_events_removed(ids, cx),
@@ -112,18 +113,28 @@ impl PigeonApp {
                 None => self.set_nav(Nav::Folder(crate::data::Folder::Inbox), cx),
             }
         }
-        // Labels come with the account's aliases (sendAs), which `is_me`
-        // checks.
-        // W3: the send-as addresses too, for From and the calendar (ACC-2).
-        if let Some(account) = self.backend.read(cx).account().cloned() {
-            self.data.account.aliases = account.aliases.clone();
-            self.data.account.send_as = account.send_as.clone();
-            self.calendar.update(cx, |calendar, _| {
-                calendar.data.account.aliases = account.aliases;
-                calendar.data.account.send_as = account.send_as;
-            });
-        }
+        // Labels come with the account's aliases (sendAs).
+        self.on_account_changed(cx);
         self.refresh_server_counts(cx);
+        cx.notify();
+    }
+
+    /// The aliases, which `is_me` checks, and W3's send-as addresses, for
+    /// From, signatures and the calendar (ACC-2); an open draft too.
+    fn on_account_changed(&mut self, cx: &mut Context<Self>) {
+        let Some(account) = self.backend.read(cx).account().cloned() else {
+            return;
+        };
+        self.data.account.aliases = account.aliases.clone();
+        self.data.account.send_as = account.send_as.clone();
+        let identities = self.data.account.identities();
+        if let Some((composer, _)) = &self.composer {
+            composer.update(cx, |c, cx| c.set_identities(identities, cx));
+        }
+        self.calendar.update(cx, |calendar, _| {
+            calendar.data.account.aliases = account.aliases;
+            calendar.data.account.send_as = account.send_as;
+        });
         cx.notify();
     }
 

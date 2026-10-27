@@ -521,6 +521,9 @@ pub enum BackendEvent {
     },
     SignedIn,
     SignedOut,
+    /// The account's send-as addresses (aliases, names, signatures) were
+    /// read again and changed.
+    AccountChanged,
     // Sprint 2 W1.
     /// Mail that just arrived and is news (NTF-1); never from a full sync.
     NewMail(Vec<new_mail::NewMail>),

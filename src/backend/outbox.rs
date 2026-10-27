@@ -212,23 +212,37 @@ impl Outbox {
     }
 
     /// Lay the thread ops still to go over `threads` read from the store.
-    pub fn overlay(&self, threads: &mut [Thread]) {
+    /// A draft being discarded or sent is gone already, so one left queued
+    /// at the last quit doesn't come back.
+    pub fn overlay(&self, threads: &mut Vec<Thread>) {
         let Ok(rows) = self.store.outbox_pending(&self.account) else {
             return;
         };
         let me = self.store.me(&self.account);
         for row in rows {
-            if let Ok(Op::Mail(op)) = serde_json::from_str::<Op>(&row.payload) {
-                apply(&op, threads, &me);
+            match serde_json::from_str::<Op>(&row.payload) {
+                Ok(Op::Mail(
+                    MailOp::DeleteDraft { local_id }
+                    | MailOp::Send {
+                        local_id: Some(local_id),
+                        ..
+                    },
+                )) => threads.retain(|t| t.id != local_id),
+                Ok(Op::Mail(op)) => apply(&op, threads, &me),
+                _ => {}
             }
         }
     }
 
-    /// W11, Quit (2.7): sends still waiting out their undo window are due
-    /// at `now`.
+    /// W11, Quit (2.7): sends and discarded drafts still waiting out their
+    /// undo window are due at `now`. Thread actions stay queued: they show
+    /// as made at the next launch, and go then.
     pub fn send_now(&self, now: i64) -> anyhow::Result<()> {
         for row in self.store.outbox_pending(&self.account)? {
-            if row.state == "pending" && row.kind == "mail.send" && row.not_before > now {
+            if row.state == "pending"
+                && matches!(row.kind.as_str(), "mail.send" | "mail.delete_draft")
+                && row.not_before > now
+            {
                 self.store
                     .outbox_update_payload(row.id, &row.payload, now)?;
             }
@@ -640,10 +654,46 @@ mod tests {
             threads: vec!["t1".into()],
         });
         outbox.push(trash, 5_000, 1_000).unwrap();
+        // A discard waiting out its Undo goes too: it never comes back.
+        let discard = Op::Mail(MailOp::DeleteDraft {
+            local_id: "draft-local-1".into(),
+        });
+        let discard = outbox.push(discard, 5_000, 1_000).unwrap();
         outbox.send_now(2_000).unwrap();
         let due = outbox.take_due(2_000).unwrap();
-        assert_eq!(due.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [send]);
+        assert_eq!(
+            due.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [send, discard]
+        );
         assert_eq!(outbox.next_due(), Some(6_000));
+    }
+
+    /// A discard left queued at the last quit: the draft stays gone until
+    /// it goes.
+    #[test]
+    fn a_queued_discard_hides_its_draft() {
+        let store = Store::open_in_memory().unwrap();
+        let outbox = Outbox::new(store.clone(), ACCOUNT.into());
+        let draft = Outgoing {
+            subject: "Plan".into(),
+            ..Outgoing::default()
+        };
+        store
+            .put_draft(ACCOUNT, &draft.to_draft_thread("draft-local-1".into()), 1)
+            .unwrap();
+        let discard = Op::Mail(MailOp::DeleteDraft {
+            local_id: "draft-local-1".into(),
+        });
+        let id = outbox.push(discard, 5_000, 0).unwrap();
+        let mut threads = store.load_all_threads(ACCOUNT).unwrap();
+        assert_eq!(threads.len(), 1);
+        outbox.overlay(&mut threads);
+        assert!(threads.is_empty());
+        // Undone: it's back.
+        assert!(outbox.cancel(id));
+        let mut threads = store.load_all_threads(ACCOUNT).unwrap();
+        outbox.overlay(&mut threads);
+        assert_eq!(threads.len(), 1);
     }
 
     // Commits (W5).

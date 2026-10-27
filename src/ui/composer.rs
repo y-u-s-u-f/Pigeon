@@ -468,6 +468,17 @@ impl Composer {
         self
     }
 
+    /// The account's addresses were read again: From and the signature
+    /// follow, in an open draft too.
+    pub fn set_identities(&mut self, identities: Vec<SendAs>, cx: &mut Context<Self>) {
+        if identities == self.identities {
+            return;
+        }
+        self.identities = identities;
+        self.from = self.resolve_from(&self.from.clone());
+        cx.notify();
+    }
+
     fn resolve_from(&self, email: &str) -> String {
         self.identities
             .iter()
