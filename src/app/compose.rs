@@ -472,6 +472,7 @@ impl PigeonApp {
             markdown: content.body,
             html,
             attachments: content.attachments,
+            dropped_files: composer.dropped_files.clone(),
             reply_to: composer.reply_to.clone(),
             quoted: composer.quoted.as_ref().map(|q| Quote {
                 header: q.header.clone(),
@@ -529,9 +530,14 @@ impl PigeonApp {
             return;
         };
         composer.update(cx, |c, _| c.set_closed(true));
-        if !composer.read(cx).is_pristine(cx) {
+        let c = composer.read(cx);
+        if !c.is_pristine(cx) {
             self.save_draft(&composer, true, cx);
             self.show_toast("Saved to Drafts", None, cx);
+        } else if c.draft_id.is_none() {
+            // Never saved: nothing needs its held copies (ATT-7).
+            let files = c.file_paths();
+            self.backend.read(cx).release_files(&files);
         }
         cx.notify();
     }
@@ -694,7 +700,10 @@ impl PigeonApp {
         }
         composer.update(cx, |c, cx| c.remember_focus(window, cx));
         self.close_composer(window, cx);
-        if !pristine {
+        if pristine {
+            let files = composer.read(cx).file_paths();
+            self.backend.read(cx).release_files(&files);
+        } else {
             self.show_toast(
                 "Draft discarded",
                 Some(UndoAction::Discard {

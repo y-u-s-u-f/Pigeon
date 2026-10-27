@@ -299,9 +299,22 @@ pub struct Outgoing {
     /// one; `html` already has it, the plain-text part gets its text.
     #[serde(default)]
     pub signature: String,
+    /// W2 (ATT-7): held copies of files taken out of the draft, released
+    /// with the send like the ones it carries.
+    #[serde(default)]
+    pub dropped_files: Vec<String>,
 }
 
 impl Outgoing {
+    /// The files on disk it has or had: its attachments', and the held
+    /// copies taken out of it.
+    pub fn file_paths(&self) -> impl Iterator<Item = &str> {
+        self.attachments
+            .iter()
+            .map(|a| a.path.as_str())
+            .chain(self.dropped_files.iter().map(String::as_str))
+    }
+
     /// The message, from the user, dated now, with `labels`.
     pub fn to_message(&self, labels: Vec<String>) -> Message {
         // From the text as shown, without the markdown's syntax.

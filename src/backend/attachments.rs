@@ -130,13 +130,12 @@ impl Files {
         path.starts_with(self.held())
     }
 
-    /// The send went: its held copies go.
-    pub fn release(&self, attachments: &[Attachment]) {
-        for a in attachments {
-            let path = Path::new(&a.path);
-            if !a.path.is_empty()
-                && self.is_held(path)
-                && let Some(dir) = path.parent()
+    /// The send went, or the draft was discarded: its held copies go.
+    /// Other paths (files picked here) stay.
+    pub fn release<'a>(&self, paths: impl IntoIterator<Item = &'a str>) {
+        for path in paths.into_iter().map(Path::new) {
+            if self.is_held(path)
+                && let Some(dir) = path.parent().filter(|d| *d != self.held())
             {
                 fs::remove_dir_all(dir).ok();
             }
@@ -562,6 +561,11 @@ impl Backend {
         }
     }
 
+    /// A discarded draft's held copies go (ATT-7).
+    pub fn release_files(&self, paths: &[String]) {
+        Files::in_data_dir().release(paths.iter().map(String::as_str));
+    }
+
     /// A message's whole source (RDR-8): from Gmail, or made up from the
     /// placeholder data.
     pub fn raw_message(
@@ -782,13 +786,27 @@ mod tests {
         // Someone else's file is never removed.
         let mine = files.root.join("mine.pdf");
         fs::write(&mine, b"x").unwrap();
-        files.release(&[Attachment {
-            path: mine.to_string_lossy().into_owned(),
-            ..attachment.clone()
-        }]);
+        files.release([mine.to_str().unwrap(), ""]);
         assert!(mine.exists());
-        files.release(&[attachment]);
+        files.release([attachment.path.as_str()]);
         assert!(!held.exists());
+        fs::remove_dir_all(&files.root).ok();
+    }
+
+    #[test]
+    fn a_draft_lets_go_of_only_its_own_held_copies() {
+        let files = Files::new(temp_dir("held-own"));
+        let cached = files.put("k", "plan.pdf", b"%PDF-plan", CACHE_CAP).unwrap();
+        let kept = files.hold(&cached).unwrap();
+        let removed = files.hold(&cached).unwrap();
+        let other_draft = files.hold(&cached).unwrap();
+        // Sent with `kept`, `removed` taken out of it in the composer.
+        files.release([kept.to_str().unwrap(), removed.to_str().unwrap()]);
+        assert!(!kept.exists() && !removed.exists());
+        // Another open draft's copy, and the held folder, stay.
+        assert!(other_draft.exists());
+        files.release([files.held().join("x").to_str().unwrap()]);
+        assert!(other_draft.exists());
         fs::remove_dir_all(&files.root).ok();
     }
 

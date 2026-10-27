@@ -339,8 +339,9 @@ fn send(
     if let Some(local) = local_id {
         store.bury_draft(account, local)?;
     }
-    // W2: a forward's held copies aren't needed any more.
-    super::attachments::Files::in_data_dir().release(&draft.attachments);
+    // W2: a forward's held copies aren't needed any more, nor the ones
+    // taken out of it.
+    super::attachments::Files::in_data_dir().release(draft.file_paths());
     let labels = if sent.label_ids.is_empty() {
         vec![gmail::SENT.to_string()]
     } else {
@@ -1191,6 +1192,22 @@ mod tests {
             b"%PDF-plan"
         );
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_send_releases_the_held_copies_taken_out_too() {
+        let draft = Outgoing {
+            attachments: vec![crate::data::Attachment {
+                path: "/held/a/kept.pdf".into(),
+                ..crate::data::Attachment::from_file("kept.pdf".into(), 1)
+            }],
+            dropped_files: vec!["/held/b/removed.pdf".into()],
+            ..outgoing("Fwd: plan")
+        };
+        assert_eq!(
+            draft.file_paths().collect::<Vec<_>>(),
+            ["/held/a/kept.pdf", "/held/b/removed.pdf"]
+        );
     }
 
     #[test]

@@ -269,6 +269,9 @@ pub struct Composer {
     body_rows: usize,
     palette: Rc<Cell<Palette>>,
     attachments: Vec<Attachment>,
+    /// W2 (ATT-7): the paths of files taken out, so their held copies go
+    /// with the send or the discard.
+    pub dropped_files: Vec<String>,
     /// The problem, and the field it's shown under.
     error: Option<(Field, SharedString)>,
     /// Scrolls the fields of a draft alone in the pane, above its send row.
@@ -425,6 +428,7 @@ impl Composer {
             body_rows: 0,
             palette,
             attachments: content.attachments.clone(),
+            dropped_files: Vec::new(),
             error: None,
             scroll: ScrollHandle::new(),
             outer_scroll: None,
@@ -825,6 +829,17 @@ impl Composer {
 
     /// Nothing changed since it opened. Text still in a recipient field
     /// counts as a change, even when it isn't an address yet.
+    /// The files on disk it has or had (W2): for a discard to release
+    /// their held copies.
+    pub fn file_paths(&self) -> Vec<String> {
+        self.attachments
+            .iter()
+            .map(|a| a.path.clone())
+            .chain(self.dropped_files.iter().cloned())
+            .filter(|p| !p.is_empty())
+            .collect()
+    }
+
     pub fn is_pristine(&self, cx: &gpui::App) -> bool {
         self.unchanged_since(&self.initial, cx)
     }
@@ -1562,7 +1577,10 @@ impl Composer {
                         .hover(|s| s.bg(theme.hover_bg))
                         .child(icon(Icon::X, px(12.), theme.text_faint))
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.attachments.remove(ix);
+                            let removed = this.attachments.remove(ix);
+                            if !removed.path.is_empty() {
+                                this.dropped_files.push(removed.path);
+                            }
                             this.edited(cx);
                             if this
                                 .error

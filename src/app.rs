@@ -1024,11 +1024,12 @@ impl PigeonApp {
         let timer = cx.spawn(async |this, cx| {
             cx.background_executor().timer(TOAST_DURATION).await;
             this.update(cx, |this, cx| {
-                this.toast = None;
+                this.retire_toast(cx);
                 cx.notify();
             })
             .ok();
         });
+        self.retire_toast(cx);
         let serial = self.toast.as_ref().map_or(0, |t| t.serial + 1);
         self.toast = Some(Toast {
             message: message.into(),
@@ -1038,6 +1039,19 @@ impl PigeonApp {
             _timer: timer,
         });
         cx.notify();
+    }
+
+    /// The toast goes without its Undo: a discarded draft is gone for good,
+    /// and so are its held copies (ATT-7).
+    fn retire_toast(&mut self, cx: &mut Context<Self>) {
+        if let Some(Toast {
+            undo: Some(UndoAction::Discard { composer, .. }),
+            ..
+        }) = self.toast.take()
+        {
+            let files = composer.read(cx).file_paths();
+            self.backend.read(cx).release_files(&files);
+        }
     }
 
     /// W11 (STA-2): a failure, in the warning tone, with no Undo.

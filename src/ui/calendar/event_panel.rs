@@ -163,6 +163,12 @@ impl EditScope {
         self.before.take()
     }
 
+    /// The answer split the series or took the occurrence out: the panel
+    /// now shows another event, whose first change asks again.
+    pub fn switched_event(&mut self) {
+        *self = Self::default();
+    }
+
     /// The repeat changed while asking (or with this change).
     pub fn mark_rule_changed(&mut self) {
         if self.before.is_some() {
@@ -558,6 +564,7 @@ impl CalendarView {
                 Some(id) => {
                     if let Some(panel) = &mut self.panel {
                         panel.event_id = id.clone();
+                        panel.edit_scope.switched_event();
                     }
                     self.selected = Some(super::Selection {
                         event_id: id,
@@ -584,6 +591,7 @@ impl CalendarView {
             };
             if let Some(panel) = &mut self.panel {
                 panel.event_id = id.clone();
+                panel.edit_scope.switched_event();
             }
             self.selected = Some(super::Selection {
                 event_id: id,
@@ -3472,6 +3480,25 @@ mod tests {
         scope.begin(&series(), day(3));
         assert!(!scope.asking());
         assert!(!scope.wants(&series()));
+    }
+
+    #[test]
+    fn the_new_series_after_a_split_asks_again() {
+        let mut scope = EditScope::default();
+        scope.begin(&series(), day(3));
+        scope.mark_rule_changed();
+        assert!(scope.choose(SeriesScope::Following).is_some());
+        scope.switched_event();
+        // "Does not repeat" on the new series: asked, the rule choices only.
+        let new = Event {
+            id: "n1".into(),
+            ..series()
+        };
+        assert!(scope.wants(&new));
+        scope.begin(&new, day(3));
+        scope.mark_rule_changed();
+        assert!(scope.asking());
+        assert_eq!(scope.choices().len(), 2);
     }
 
     #[test]

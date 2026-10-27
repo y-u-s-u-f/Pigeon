@@ -1160,10 +1160,12 @@ fn attendees_json(event: &Event, raw: Option<&Value>) -> Value {
 }
 
 /// The calendar's default reminders, or the ones the user picked, up to
-/// five, notifications or emails (CAL-33; none is no overrides).
+/// five, notifications or emails (CAL-33; none is no overrides). The
+/// default sends an empty `overrides` too: a PATCH merges, and Google
+/// refuses default reminders next to the event's old overrides.
 fn reminders_json(event: &Event) -> Value {
     if event.reminder_use_default {
-        return json!({ "useDefault": true });
+        return json!({ "useDefault": true, "overrides": [] });
     }
     let overrides: Vec<Value> = event
         .own_reminders()
@@ -1500,10 +1502,9 @@ impl Writer<'_> {
             return Err(Conflict.into());
         }
         if !response.is_success() && !ok.contains(&response.status) {
-            return Err(api_error(
-                "Google Calendar didn't take the change",
-                &response,
-            ));
+            let error = api_error("Google Calendar didn't take the change", &response);
+            eprintln!("Pigeon: {method} {}: {error:#}", response.status);
+            return Err(error);
         }
         Ok(response)
     }
@@ -2915,7 +2916,7 @@ mod tests {
             insert_body(&new, &zone())["reminders"].clone()
         };
         let default = series_with(r#"{"useDefault":true}"#);
-        assert_eq!(split(&default), json!({"useDefault":true}));
+        assert_eq!(split(&default), json!({"useDefault":true,"overrides":[]}));
         let explicit =
             series_with(r#"{"useDefault":false,"overrides":[{"method":"popup","minutes":5}]}"#);
         assert_eq!(
@@ -2936,7 +2937,7 @@ mod tests {
             ..Event::default()
         };
         let reminders = |e: &Event| insert_body(e, &zone())["reminders"].clone();
-        assert_eq!(reminders(&new), json!({"useDefault":true}));
+        assert_eq!(reminders(&new), json!({"useDefault":true,"overrides":[]}));
         let picked = Event {
             reminder_minutes: Some(15),
             reminder_use_default: false,
@@ -3648,6 +3649,12 @@ mod tests {
             p["reminders"],
             json!({"useDefault":false,"overrides":[{"method":"popup","minutes":10}]})
         );
+        // Back to the calendar's default: the old overrides are cleared,
+        // or Google's PATCH refuses both at once.
+        let mut default = e.clone();
+        default.reminder_use_default = true;
+        let p = patch_body(&e, &default, None, &zone());
+        assert_eq!(p["reminders"], json!({"useDefault":true,"overrides":[]}));
         let entry: CalendarListEntry = serde_json::from_str(
             r#"{"id":"c","summary":"C","selected":true,"accessRole":"owner",
                 "defaultReminders":[{"method":"popup","minutes":10},{"method":"email","minutes":60}],
