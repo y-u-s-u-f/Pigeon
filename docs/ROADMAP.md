@@ -30,14 +30,14 @@ To update: change the status cell in the area's table, then the counts below.
 | [Images and attachments](#510-images-and-attachments-att) | 0 | 4 | 3 | 7 |
 | [Links](#511-links-lnk) | 2 | 0 | 1 | 3 |
 | [Mail settings](#512-mail-settings-mst) | 10 | 0 | 0 | 10 |
-| [Calendar](#6-calendar-cal) | 18 | 4 | 20 | 42 |
+| [Calendar](#6-calendar-cal) | 12 | 10 | 20 | 42 |
 | [Sync and push](#71-sync-and-push-syn) | 2 | 0 | 5 | 7 |
 | [Notifications and background](#72-notifications-and-background-ntf) | 0 | 4 | 0 | 4 |
 | [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 0 | 2 | 3 | 5 |
 | [Storage and persistence](#81-storage-and-persistence-per) | 0 | 2 | 3 | 5 |
 | [Command palette](#82-command-palette-pal) | 0 | 0 | 3 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 3 | 3 | 7 |
-| **Overall** | **51** | **25** | **103** | **179** |
+| **Overall** | **45** | **31** | **103** | **179** |
 
 ## Contents
 
@@ -859,7 +859,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | CAL-4a | Go to a date | 🟢 Fully linked | None |
 | CAL-18 | Today and the now-line | 🟢 Fully linked | None |
 | CAL-19 | Event search in the palette | 🟢 Fully linked | `events.list` with `q` |
-| CAL-23 | Persisted calendar UI state | ⚪ Not done | Local; `calendarList.selected` |
+| CAL-23 | Persisted calendar UI state | 🟡 Partially done | Local; `calendarList.selected` |
 | **Events** | | | |
 | CAL-7 | Edit an event in the panel | 🟢 Fully linked | `events.patch` / `events.update` with ETag |
 | CAL-8 | Date, time and all-day editing | 🟢 Fully linked | `start`/`end` (`date` or `dateTime` + `timeZone`) |
@@ -875,14 +875,14 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | CAL-28 | Event colours and labels | ⚪ Not done | `colorId` + `colors.get`; `eventLabelId` + `calendars` `labelProperties` |
 | CAL-30 | Event attachments | ⚪ Not done | `attachments` (`supportsAttachments=true`) |
 | CAL-31 | Event visibility and guest permissions | ⚪ Not done | `visibility`, `guestsCanModify`, `guestsCanInviteOthers`, `guestsCanSeeOtherGuests` |
-| CAL-33 | Several reminders and default reminders | ⚪ Not done | `reminders.overrides` (`popup`, `email`), `calendarList.defaultReminders` |
-| CAL-34 | Create Google Meet links | ⚪ Not done | `conferenceData.createRequest` (`conferenceDataVersion=1`) |
-| CAL-39 | Quick add from text | ⚪ Not done | `events.quickAdd` |
+| CAL-33 | Several reminders and default reminders | 🟡 Partially done | `reminders.overrides` (`popup`, `email`), `calendarList.defaultReminders` |
+| CAL-34 | Create Google Meet links | 🟡 Partially done | `conferenceData.createRequest` (`conferenceDataVersion=1`) |
+| CAL-39 | Quick add from text | 🟡 Partially done | `events.quickAdd` |
 | CAL-40 | Move an event to another calendar | 🟢 Fully linked | `events.move` |
 | **Recurrence** | | | |
 | CAL-5 | Recurring events | 🟢 Fully linked | `recurrence` (RRULE, EXDATE), `events.instances`, `singleEvents` |
 | CAL-6 | This event or all events | 🟢 Fully linked | Instance `events.patch`; series split with `UNTIL` |
-| CAL-29 | Set and edit repeat rules | ⚪ Not done | `recurrence` |
+| CAL-29 | Set and edit repeat rules | 🟡 Partially done | `recurrence` |
 | **Invites and RSVP** | | | |
 | CAL-13 | Guests and invitations | 🟢 Fully linked | `attendees`, `sendUpdates` |
 | CAL-14 | My RSVP | 🟡 Partially done | `attendees[].responseStatus` (`self`) |
@@ -900,7 +900,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | **Free/busy** | | | |
 | CAL-27 | Free/busy and finding a time | ⚪ Not done | `freebusy.query` |
 | **Settings** | | | |
-| CAL-41 | Calendar settings from Google | ⚪ Not done | `settings.list`, `settings.get` |
+| CAL-41 | Calendar settings from Google | 🟡 Partially done | `settings.list`, `settings.get` |
 
 ### Views and navigation
 
