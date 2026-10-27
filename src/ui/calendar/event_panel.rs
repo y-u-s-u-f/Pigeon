@@ -100,6 +100,51 @@ impl Field {
     }
 }
 
+/// A panel edit to a repeating event waits for "This event" or "All
+/// events" (CAL-6). Until the answer nothing of it goes to the backend, and
+/// leaving the panel without one takes it back.
+#[derive(Clone, Debug, Default)]
+pub struct EditScope {
+    /// The series as it was before the panel's first change to it, and
+    /// where the occurrence was then.
+    before: Option<(Event, NaiveDateTime)>,
+    chosen: Option<SeriesScope>,
+}
+
+impl EditScope {
+    /// Whether a change to `event` now is the first one, to be asked about.
+    pub fn wants(&self, event: &Event) -> bool {
+        self.chosen.is_none() && self.before.is_none() && event.is_series()
+    }
+
+    /// Before a change to `event`, whose occurrence is at `occurrence`.
+    pub fn begin(&mut self, event: &Event, occurrence: NaiveDateTime) {
+        if self.wants(event) {
+            self.before = Some((event.clone(), occurrence));
+        }
+    }
+
+    /// Changed, and waiting for the answer.
+    pub fn asking(&self) -> bool {
+        self.chosen.is_none() && self.before.is_some()
+    }
+
+    /// The answer. Returns the series and the occurrence as they were.
+    pub fn choose(&mut self, scope: SeriesScope) -> Option<(Event, NaiveDateTime)> {
+        let before = self.before.take()?;
+        self.chosen = Some(scope);
+        Some(before)
+    }
+
+    /// No answer: what to put back, if anything is waiting.
+    pub fn cancel(&mut self) -> Option<(Event, NaiveDateTime)> {
+        if self.chosen.is_some() {
+            return None;
+        }
+        self.before.take()
+    }
+}
+
 pub struct EventPanel {
     pub event_id: String,
     /// The start of the occurrence shown. Edits apply to its whole series,
@@ -125,14 +170,7 @@ pub struct EventPanel {
     /// The month the date picker shows.
     picker_month: NaiveDate,
     picker_scroll: ScrollHandle,
-    /// A repeating event's series as it was before the panel's first change
-    /// to it, until the user says whether the change is for this event or
-    /// all of them.
-    pub snapshot: Option<Event>,
-    /// Where the occurrence was when that first change came.
-    origin: NaiveDateTime,
-    /// The answer, once given.
-    pub scope: Option<SeriesScope>,
+    pub edit_scope: EditScope,
     /// Indices into the contact book, best first.
     suggestions: Vec<usize>,
     highlighted: usize,
@@ -210,9 +248,7 @@ impl EventPanel {
             picker: None,
             picker_month: month_start(occurrence.date()),
             picker_scroll: ScrollHandle::new(),
-            snapshot: None,
-            origin: occurrence,
-            scope: None,
+            edit_scope: EditScope::default(),
             suggestions: Vec::new(),
             highlighted: 0,
             navigated: false,
@@ -386,17 +422,63 @@ impl CalendarView {
     /// Before the panel's first change to a repeating event: keep the series
     /// as it was, so "This event" can put it back.
     fn before_panel_edit(&mut self) {
-        let Some(panel) = &self.panel else { return };
-        if panel.scope.is_some() || panel.snapshot.is_some() {
-            return;
-        }
-        let Some(event) = self.event(&panel.event_id).filter(|e| e.is_series()) else {
+        let Some((panel, event)) = self.panel_event() else {
             return;
         };
-        let snapshot = event.clone();
-        let panel = self.panel.as_mut().expect("checked above");
-        panel.origin = panel.occurrence;
-        panel.snapshot = Some(snapshot);
+        if !panel.edit_scope.wants(event) {
+            return;
+        }
+        let (event, occurrence) = (event.clone(), panel.occurrence);
+        if let Some(panel) = &mut self.panel {
+            panel.edit_scope.begin(&event, occurrence);
+        }
+    }
+
+    /// Whether the panel's change to a repeating event waits for its scope.
+    pub(crate) fn asking_scope(&self) -> bool {
+        self.panel.as_ref().is_some_and(|p| p.edit_scope.asking())
+    }
+
+    /// The panel's change waiting for its scope is taken back: the series
+    /// and the occurrence go back to how they were, and nothing is sent.
+    /// Returns the series' id and how far its occurrences go back.
+    pub(crate) fn drop_unscoped_edit(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<(String, Duration)> {
+        let panel = self.panel.as_mut()?;
+        let (series, origin) = panel.edit_scope.cancel()?;
+        let id = series.id.clone();
+        let shift = panel.occurrence - origin;
+        panel.occurrence = origin;
+        if let Some(event) = self.event_mut(&id) {
+            *event = series;
+        }
+        // Everything settling for it came after the first change.
+        if self.pending.as_ref().is_some_and(|p| p.id == id) {
+            self.pending = None;
+        }
+        if let Some(selected) = &mut self.selected
+            && selected.event_id == id
+        {
+            selected.start -= shift;
+        }
+        cx.notify();
+        Some((id, shift))
+    }
+
+    /// `drop_unscoped_edit`, the panel staying open on the event as it was.
+    pub(crate) fn cancel_unscoped_edit(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(String, Duration)> {
+        let dropped = self.drop_unscoped_edit(cx)?;
+        if let Some((panel, event)) = self.panel_event() {
+            let (event, occurrence) = (event.clone(), panel.occurrence);
+            self.panel = Some(EventPanel::new(&event, occurrence, window, cx));
+        }
+        Some(dropped)
     }
 
     /// "This event": the occurrence, as edited, becomes an event of its own
@@ -404,13 +486,11 @@ impl CalendarView {
     /// stays on the series.
     fn choose_edit_scope(&mut self, scope: SeriesScope, cx: &mut Context<Self>) {
         let Some(panel) = &mut self.panel else { return };
-        let Some(snapshot) = panel.snapshot.take() else {
+        let Some((snapshot, origin)) = panel.edit_scope.choose(scope) else {
             return;
         };
-        panel.scope = Some(scope);
         if scope == SeriesScope::This {
-            let (series_id, origin, start) =
-                (panel.event_id.clone(), panel.origin, panel.occurrence);
+            let (series_id, start) = (panel.event_id.clone(), panel.occurrence);
             let Some(edited) = self.event(&series_id).cloned() else {
                 return;
             };
@@ -1096,7 +1176,7 @@ impl CalendarView {
             }))
             .children(read_only_note)
             // After the first change to a repeating event: to which?
-            .when(panel.snapshot.is_some() && panel.scope.is_none(), |d| {
+            .when(panel.edit_scope.asking(), |d| {
                 d.child(enter(
                     "scope-choice",
                     div()
@@ -2366,4 +2446,68 @@ fn status_badge(status: RsvpStatus, theme: &Theme) -> impl IntoElement {
         .border_2()
         .border_color(theme.overlay_bg)
         .child(icon(glyph, px(8.), theme.cal_selected_text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::calendar::{Rule, time::at};
+
+    fn series() -> Event {
+        Event {
+            id: "s1".into(),
+            title: "Series".into(),
+            recurrence: Some(Rule::weekly()),
+            ..Event::default()
+        }
+    }
+
+    fn day(n: u32) -> NaiveDateTime {
+        at(NaiveDate::from_ymd_opt(2026, 11, n).unwrap(), 9, 0)
+    }
+
+    #[test]
+    fn an_event_that_does_not_repeat_never_asks() {
+        let mut scope = EditScope::default();
+        scope.begin(&Event::default(), day(3));
+        assert!(!scope.asking());
+        assert!(scope.cancel().is_none());
+    }
+
+    #[test]
+    fn the_first_change_to_a_series_asks_and_keeps_it_as_it_was() {
+        let mut scope = EditScope::default();
+        let before = series();
+        scope.begin(&before, day(3));
+        assert!(scope.asking());
+        // Later changes keep the first snapshot.
+        let renamed = Event {
+            title: "Renamed".into(),
+            ..series()
+        };
+        scope.begin(&renamed, day(4));
+        assert!(scope.asking());
+        assert_eq!(scope.cancel(), Some((before, day(3))));
+        assert!(!scope.asking());
+    }
+
+    #[test]
+    fn an_answer_ends_the_question_for_the_panel() {
+        let mut scope = EditScope::default();
+        scope.begin(&series(), day(3));
+        assert_eq!(scope.choose(SeriesScope::All), Some((series(), day(3))));
+        assert!(!scope.asking());
+        // Nothing to take back once answered, and no second question.
+        assert!(scope.cancel().is_none());
+        scope.begin(&series(), day(3));
+        assert!(!scope.asking());
+        assert!(!scope.wants(&series()));
+    }
+
+    #[test]
+    fn no_answer_without_a_change() {
+        let mut scope = EditScope::default();
+        assert!(scope.choose(SeriesScope::This).is_none());
+        assert!(scope.wants(&series()));
+    }
 }

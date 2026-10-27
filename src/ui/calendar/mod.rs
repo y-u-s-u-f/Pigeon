@@ -791,11 +791,7 @@ impl CalendarView {
             cx.background_executor().timer(EDIT_DEBOUNCE).await;
             this.update(cx, |this, cx| {
                 // A repeating event waits for "This event" or "All events".
-                let asking = this
-                    .panel
-                    .as_ref()
-                    .is_some_and(|p| p.snapshot.is_some() && p.scope.is_none());
-                if !asking {
+                if !this.asking_scope() {
                     this.flush_edit(cx);
                 }
             })
@@ -804,8 +800,11 @@ impl CalendarView {
     }
 
     /// Hand the backend the settling edit now: the new event (once it has
-    /// a title), or a move and a patch from how it was.
+    /// a title), or a move and a patch from how it was. A change to a
+    /// repeating event still waiting for "This event" or "All events" never
+    /// goes: it's taken back (closing the panel cancels it).
     pub(crate) fn flush_edit(&mut self, cx: &mut Context<Self>) {
+        self.drop_unscoped_edit(cx);
         self.read_panel_text(cx);
         self._edit_timer = None;
         let unsent = self
@@ -1201,6 +1200,7 @@ impl CalendarView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_unscoped_edit(window, cx);
         let Some(event) = self.event(id) else {
             return;
         };
@@ -1446,9 +1446,16 @@ impl CalendarView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(prompt) = self.prompt.take() else {
+        let Some(mut prompt) = self.prompt.take() else {
             return;
         };
+        // A change in the panel still waiting for its own answer doesn't
+        // go along (CAL-6).
+        if let Some((series, shift)) = self.cancel_unscoped_edit(window, cx)
+            && series == prompt.event_id
+        {
+            prompt.occurrence -= shift;
+        }
         let id = prompt.event_id.as_str();
         match prompt.kind {
             PromptKind::Delete => self.delete_occurrence(id, prompt.occurrence, scope, window, cx),
