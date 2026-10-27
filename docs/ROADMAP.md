@@ -16,7 +16,7 @@ To update: change the status cell in the area's table, then the counts below.
 
 | Section | ⚪ Not done | 🟡 Partially done | 🟢 Fully linked | Total |
 | --- | --- | --- | --- | --- |
-| [Planned features](#3-planned-features-pln) | 2 | 0 | 0 | 2 |
+| [Planned features](#3-planned-features-pln) | 3 | 0 | 0 | 3 |
 | [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 6 | 2 | 0 | 8 |
 | [Folders and labels](#51-folders-and-labels-fol) | 6 | 6 | 0 | 12 |
 | [Thread list](#52-thread-list-lst) | 2 | 7 | 0 | 9 |
@@ -37,7 +37,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Storage and persistence](#81-storage-and-persistence-per) | 3 | 0 | 0 | 3 |
 | [Command palette](#82-command-palette-pal) | 0 | 3 | 0 | 3 |
 | [Data model](#83-data-model-dat) | 2 | 5 | 0 | 7 |
-| **Overall** | **82** | **93** | **0** | **175** |
+| **Overall** | **83** | **93** | **0** | **176** |
 
 ## Contents
 
@@ -58,7 +58,7 @@ To update: change the status cell in the area's table, then the counts below.
 
 Principles are in [`AGENTS.md`](../AGENTS.md): blazing fast and light (no webviews, no heavy dependencies), keyboard-centric (every action has a shortcut and is in ⌘K), minimal and flat on translucent glass, YAGNI.
 
-**Current phase: front end on placeholder data.** Next: the backend, starting with Google (Gmail, Calendar, People APIs and OAuth).
+**Current phase: front end on placeholder data; backend sprint 1 planned** in [`BACKEND_SPRINT_1.md`](BACKEND_SPRINT_1.md): link every 🟡 item to Google (Gmail, Calendar, People APIs and OAuth). A dev sign-in for the user's account is stored (Keychain + `~/Library/Application Support/Pigeon/`).
 
 - Mail comes from `assets/mailbox.json`, loaded once by `MailData::load()` (`src/data.rs`). Calendar comes from `assets/calendar.json`, loaded by `CalendarData::load()` (`src/calendar/mod.rs`). Both are called from `main()`.
 - There is no network, sync, sending or storage code in `src/`.
@@ -83,6 +83,7 @@ The user's own plans, not driven by Google's APIs.
 | --- | --- | --- | --- |
 | PLN-1a | Vim mode: composing and editing | ⚪ Not done | None |
 | PLN-1b | Vim mode: navigating the app | ⚪ Not done | None |
+| PLN-2 | AI reading view | ⚪ Not done | None (an LLM API) |
 
 #### PLN-1a Vim mode while composing
 
@@ -94,7 +95,12 @@ The user's own plans, not driven by Google's APIs.
 - **Idea:** Vim-style keys across the list, reader, calendar and settings: `hjkl`, `gg`/`G`, counts (`5j`), `/` search, building on the existing Gmail-style `j`/`k`. Same Settings toggle as PLN-1a, or its own.
 - **Open questions:** Conflicts with single-letter Gmail shortcuts (`e`, `s`, `l`, `v`, `x`, `a`, `r`, `c`, `n`/`p`, `g …` chords) in `src/actions.rs`; whether Vim mode replaces or layers over them; showing Vim bindings in ⌘K and the `?` sheet.
 
-> **More user features go here.** Add each as PLN-2, PLN-3, … with status ⚪ Not done.
+#### PLN-2 AI reading view
+
+- **Idea:** A small model (Claude Haiku) turns each email into a clean, consistent reading format for Pigeon: messy HTML, newsletters and forwarded chains become tidy text with the useful structure kept. Later, not in backend sprint 1. During that sprint a Haiku agent may be used offline on sample mails to tune the native renderer (see `docs/BACKEND_SPRINT_1.md` 6.4).
+- **Open questions:** On by default or per message; where the model runs and who pays for it; privacy (mail content leaves the Mac); caching results; always keeping the original one keystroke away.
+
+> **More user features go here.** Add each as PLN-3, PLN-4, … with status ⚪ Not done.
 
 ---
 

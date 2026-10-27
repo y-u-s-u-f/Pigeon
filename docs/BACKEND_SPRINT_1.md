@@ -789,8 +789,8 @@ These go at the top of every tester prompt.
 
 1. Drive only Pigeon (its pid and window) with Cua Driver. Never touch the browser, the Keychain dialog, System Settings or other apps. Sign-in in the browser is done by the user (or skipped, using the stored grant). If a system dialog appears, stop and report.
 2. Mail: send only to the user's own address, with subjects that start with `[Pigeon test]`. Archive, delete, label, star, spam, mark and draft only threads whose subject starts with `[Pigeon test]`. Never empty Trash; never permanently delete.
-3. Labels: use only the `Pigeon Test` label (made by the user beforehand; Open question 6).
-4. Calendar: create, edit and delete only on the `Pigeon Test` calendar, with titles that start with `[Pigeon test]`. Guests: only the user's own second address (Open question 6) or none. Never change or RSVP real events, except a test invite sent for that purpose.
+3. Labels: use only the `Pigeon Test` label (created by the main agent through the API; 6.4 item 6).
+4. Calendar: create, edit and delete only on the `Pigeon Test` calendar, with titles that start with `[Pigeon test]`. Guests: only `guest@example.org` (6.4 item 6) or none. Never change or RSVP real events, except a test invite sent for that purpose.
 5. Don't change Google settings, contacts or calendars' sharing. Don't sign out unless the checklist item says so, and the main agent has confirmed the user can sign back in.
 6. Test dark mode only in a scratch copy, never the system setting (AGENTS.md).
 7. At the end of each run, list every test thread, label change and event created, so the main agent can confirm cleanup.
@@ -865,7 +865,7 @@ Each run is 5–7 items against a release build of the snapshot (`cargo run --re
 
 **T3b: states and reader extras (after W10, W11)**
 
-1. Turn Wi-Fi off. That is a system change, so the user does it, or the main agent uses a firewall rule scoped to Pigeon (Open question 6). The status shows Offline; archive a test thread; it stays archived locally. Reconnect: it syncs, and the status returns to Synced. (STA-3)
+1. Turn on the dev-only offline switch (6.4 item 6; no system change). The status shows Offline; archive a test thread; it stays archived locally. Turn the switch off: it syncs, and the status returns to Synced. (STA-3)
 2. Open a never-opened thread while offline: "isn't downloaded yet"; after reconnect, Retry loads it. (RDR-6, STA-1)
 3. A real invitation in the Inbox shows its card; answering a `[Pigeon test]` invite sent from the second address reaches the organizer. (CAL-20, CAL-14)
 4. A newsletter shows "Load images"; clicking it loads them; with Settings › Images = Never there's no bar. (ATT-1)
@@ -919,47 +919,20 @@ Each run is 5–7 items against a release build of the snapshot (`cargo run --re
 | Real-mailbox tests | Data loss or embarrassment | 5.2 rules; testers only touch `[Pigeon test]` items; never permanent delete. |
 | `app.rs` merge conflicts | Lost time | W1 seams and moves (4.3). |
 
-### 6.4 Open questions
+### 6.4 Decisions (answered by the user, 2026-10-26)
 
-Recommended option first in each.
+The open questions are closed. Where an earlier section says "Open question N", this list wins.
 
-1. **The dev sign-in.** Resolved: done on 2026-10-26 for `alex.rivera@example.com`, after this plan's first check. `accounts.json` and the Keychain item (`Pigeon Google`) exist with all 8 scopes; Gmail, Calendar and People all answer. W2 picks it up on first launch.
-2. **The size of the first Gmail sync.** The quota changed in May 2026, and 90 days can mean several thousand threads (about 7 min per 1,000).
-   - a. The Inbox first page first, then backfill up to 1,000 threads or 90 days, whichever is smaller. Older mail comes through "Load older" and server search.
-   - b. 90 days with no cap.
-   - c. 30 days.
-3. **Keychain prompts during development.**
-   - a. Sign every dev and test build with one stable self-signed code-signing identity (`codesign -s "Pigeon Dev"`, a post-build step in the run instructions), so the Keychain trusts it.
-   - b. Create the Keychain item with an access list that allows any app (`-A`); less safe.
-   - c. Accept prompts, and the user clicks "Always Allow" during tests.
-4. **How contacts are fetched.** The decision says `searchContacts` / `otherContacts.search` with a warm-up. Google's search is prefix-only, needs the warm-up and costs a request per keystroke. Pigeon's `ContactBook` already ranks locally.
-   - a. Sync `connections.list` + `otherContacts.list` with sync tokens into the cache, and search locally (SYN-6).
-   - b. Live search with warm-up, as decided.
-   - c. Both: the local cache, with live search only when it has no match.
-5. **The Sent view and folders.**
-   - a. Keep one folder per thread (2.4), but let the Sent view list every thread that holds a message the user sent, like Gmail (a small change in `nav_contains()`).
-   - b. Strict one folder: Sent shows only threads where every message is from the user.
-6. **Test fixtures in the real account.** Testers can't create these themselves.
-   - a. The user creates, once, before Phase 2: a `Pigeon Test` Gmail label, a `Pigeon Test` calendar with one weekly `[Pigeon test] series` event, and provides a second address they own for guest, invite and inbound tests. For T3b, the user toggles Wi-Fi when asked.
-   - b. The main agent creates the label, calendar and series through the API with the stored grant, and the user only provides the second address.
-   - c. Skip the guest, invite and offline items, and leave CAL-13, CAL-14, CAL-20 and STA-3 at 🟡.
-7. **Mark as unread.**
-   - a. The whole thread (`threads.modify`), which matches the thread-level dot.
-   - b. Only the last message (`messages.modify`), like Gmail web inside a conversation.
-8. **Time zones.**
-   - a. Keep wall-clock times in the local zone this sprint: read with `timeZone=<local>`, write with the event's zone, and accept the DST drift for series in other zones.
-   - b. Add `chrono-tz` (a new, fairly large crate with the tz database) and expand series in their own zone.
-9. **Editing video links (CAL-17).**
-   - a. The Join link is read-only when Google has `conferenceData`/`hangoutLink`. For other events, the field saves into `location` when that's empty, otherwise into the top of `description`.
-   - b. Make the field read-only everywhere until CAL-34 (Meet creation).
-   - c. Save it in `extendedProperties.private`. Only Pigeon would see it.
-10. **Message bodies.** The decision says `threads.get format=full`; this plan uses `messages.get format=raw`, batched, and parsed with `mail-parser`. That gives one parser for charsets, RFC 2047, attachments and `text/calendar`. It costs the same quota for 1–2 message threads and more for long ones.
-    - a. `raw` with `mail-parser`.
-    - b. `format=full` JSON, with charset decoding done by hand.
-11. **The `directory.readonly` scope.** Resolved: keep it. It's already granted, so dropping it saves nothing now; no item in this sprint calls it.
-12. **Remote images (ATT-1)** are the only 🟡 item that adds a new network surface, the user's IP to senders.
-    - a. In this sprint, as W10, default "Ask".
-    - b. Defer; ATT-1 stays 🟡.
-13. **Calendar recurrence.** The decision says "singleEvents handling". Is `singleEvents=false` right?
-    - a. `singleEvents=false`: store series with their RRULE and exceptions, and expand locally. This matches `CalendarView`'s series, exception and "This / Following / All" model. With `singleEvents=true` and a sync token there can be no `timeMax`, so endless series come back expanded far into the future.
-    - b. `singleEvents=true` with a bounded window, and series edits through `recurringEventId`.
+1. **Dev sign-in:** done for `alex.rivera@example.com`. `accounts.json` and the Keychain item (`Pigeon Google`, created by `/usr/bin/security`) exist with all 8 scopes; Gmail, Calendar and People all answer. W2 picks it up on first launch.
+2. **First Gmail sync:** the first Inbox page first, then backfill up to 1,000 threads or 90 days, whichever is smaller. Older mail through "Load older" and server search.
+3. **Keychain prompts:** every dev and test build is signed with one stable self-signed identity, `Pigeon Dev` (a post-build `codesign` step in the run instructions and tester prompts). The main agent creates the identity before Phase 1 and the user approves Pigeon once with "Always Allow".
+4. **Contacts:** sync `connections.list` + `otherContacts.list` with sync tokens into the cache and search locally (SYN-6). No live People search.
+5. **Sent view:** one folder per thread (2.4), but Sent lists every thread that holds a message the user sent, like Gmail.
+6. **Test data:** the main agent creates the `Pigeon Test` Gmail label, the `Pigeon Test` calendar and a weekly `[Pigeon test] series` event through the API with the stored grant, and sends the `[Pigeon test] inbound` mail for T1a through the API. The second address for guests, invites and sending is `guest@example.org`. The user can't sign in there for now, so checks that need that inbox (an invite arriving, a reply from it) are verified by the user later; until then those items stay 🟡. For the offline checks (T3b), W11 adds a dev-only switch that makes the transport fail every request, so nobody toggles Wi-Fi.
+7. **Mark as unread:** the whole thread (`threads.modify`).
+8. **Time zones:** local wall-clock times; accept the DST drift for series in other zones. No `chrono-tz`.
+9. **Video links (CAL-17):** read-only when Google has `conferenceData`/`hangoutLink`; otherwise saved into `location` when that's empty, else the top of `description`.
+10. **Message bodies:** `messages.get format=raw`, batched, parsed with `mail-parser`. If some mails still read badly, the main agent may use a Claude Haiku 5.5 agent (`anthropic/claude-haiku-5-5`) during development to turn sample emails into a clean reading format, to compare against and to tune the renderer. Doing that inside the app is a later feature (PLN-2 in the roadmap), not this sprint.
+11. **`directory.readonly`:** kept; already granted, unused this sprint.
+12. **Remote images (ATT-1):** in this sprint, in W10, default "Ask".
+13. **Recurrence:** `singleEvents=false`: series stored with their RRULE and exceptions, expanded locally.
