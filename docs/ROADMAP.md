@@ -367,7 +367,9 @@ The user's own plans, not driven by Google's APIs.
 
 #### RDR-8 Show original
 
-- **Needs:** "Show original" view of the raw RFC 822 source (`messages.get` `format=raw`), useful for headers and debugging.
+- **Today (W2, sprint 2):** ⌘K "Show Original" (`cmd-alt-u`, again to close) shows the focused message's source (the newest unless `n`/`p` picked one) in place of the conversation: a read-only monospace view of its first 1 MB (`ORIGINAL_SHOWN`; a note says when there's more), long lines broken at 100 characters, in a `uniform_list` so big messages scroll smoothly. Toolbar: Copy (`cmd-c`, the shown text), Save as .eml (`cmd-alt-s`, also from ⌘K "Save Message as .eml…" without opening it; the whole message), Close (`Esc`). The source is fetched each time (`messages.get format=raw`, `Backend::raw_message()`); raw messages aren't kept. Demo mode makes one up from the placeholder message (`demo_raw()`). `Original`, `render_original()` (`src/ui/reader.rs`), `src/app/attachments.rs`, `src/backend/attachments.rs`.
+- **Needs:** A tester pass.
+- **Notes:** Saving uses the save panel (starting in Downloads); the file gets the quarantine attribute. With `PIGEON_DEV=1` and `PIGEON_SAVE_DIR` set, saves go straight to that folder (numbered when the name is taken), so testers can check them.
 
 ### 5.4 Message and thread actions (ACT)
 
@@ -464,7 +466,8 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 #### CMP-4 Forward
 
 - **Today:** `f`, toolbar, palette. Subject "Fwd: …" unless it starts with "fwd:"/"fw:". The original is quoted with From, Date, Subject, To. No `reply_to`, so it opens alone and sending creates a new Sent thread (CMP-11).
-- **Needs:** A tester pass (T2b). Include the original's attachments (ATT-7).
+- **Needs:** A tester pass (T2b).
+- **Notes:** The original's attachments come along as removable chips (ATT-7).
 - **Notes:** With Google (W6) a forward is a new message: no `threadId`, `In-Reply-To` or `References`; the quote goes as a `<blockquote>` in the HTML part (CMP-10).
 
 #### CMP-5 Recipient fields
@@ -720,22 +723,25 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 - **Today:** `Block::Image` (`src/html.rs`) keeps `src` (only safe `http(s)` addresses, or `cid:`), the `width`/`height` attributes, the link around it and its alignment; tracking pixels (≤ 2 px, by attribute or inline style) and `display:none` images are dropped. Images load only when asked: a "Load images" bar above each message with remote images (Settings › Images = Ask, the default), the `cmd-shift-i` "Load Images" command (the whole conversation), or Always. Never shows no bar (the command still loads). Consent is per message: a message shows its images only once it's allowed (or Always), even ones another message already loaded, so the bar's count is always what's hidden (`image_consent()` in `src/ui/reader.rs`). `html::is_safe_image_url()` allows `http(s)` to named public hosts only (no credentials, `localhost`, `.local`/`.internal`, private, loopback or link-local IPv4, IPv6 literals). `backend/images.rs` fetches with its own `ureq` agent: HTTPS only (`http://` is upgraded), no cookies, no referer, `Accept` image types, 10 MB cap, 30 s timeout, at most 4 at a time, off the main thread, each GET logged as one `Pigeon: GET host/path?… status ms` line (query redacted; cache hits log nothing); the type and size are sniffed from the bytes (PNG, JPEG, GIF, WebP; SVG and the rest aren't shown). Kept in the store's `images` table, newest first within 64 MB (`store/images.rs`), cleared on sign-out. Drawn with GPUI's `img()` at the attribute or natural width, scaled down to fit (`LoadedImages`, `Renderer::block()` in `src/ui/html_view.rs`; the bar in `src/ui/reader.rs`). Not in demo mode (no network; the command says so).
 - **Needs:** Nothing more from Google; a proxy would hide the user's IP from senders (later). The setting is Settings › Mail › Load remote images, Ask / Always / Never (saved as `remote_images`).
-- **Notes:** Which messages were allowed is kept in memory only, so the bar asks again after a relaunch (images come from the cache then). An image that fails isn't retried until relaunch. `cid:` images stay placeholders (ATT-2).
+- **Notes:** Which messages were allowed is kept in memory only, so the bar asks again after a relaunch (images come from the cache then). An image that fails isn't retried until relaunch. `cid:` images need no consent (ATT-2).
 
 #### ATT-2 Inline (`cid:`) images
 
-- **Today:** Shown as ATT-1 placeholders; `Block::Image` keeps the `cid:` reference (W10) but nothing resolves it yet.
-- **Needs:** Find the part whose `Content-ID` matches, fetch it (`messages.attachments.get` if it has an `attachmentId`), hand it to the renderer. IMAP: `BODYSTRUCTURE` + `BODY[part]`.
+- **Today (W2, sprint 2):** When a body is parsed (`mime::parse_message()`), every image part with a `Content-ID` (PNG, JPEG, GIF, WebP by sniffing; 10 MB each) goes into the ATT-1 image cache under `cid:pigeon-<hash of its bytes>`, and the HTML's `cid:` references (percent-encoded or any case) are rewritten to that address, so no request fetches them and messages never share an id by accident (`inline_parts()`, `rewrite_cids()`, `Store::put_bodies()`). The reader shows them without the remote-image bar or consent, in demo mode too (`html_view::cid_images()`, `ShowImages`, `load_inline_images()`). One evicted from the cache, or in a body stored before this, comes back from the raw message once (`Backend::inline_images()`), which stores the body again.
+- **Needs:** A tester pass on real mail with inline images (signatures, newsletters). IMAP: `BODYSTRUCTURE` + `BODY[part]`.
+- **Notes:** An inline image that's also an attachment (not marked inline) shows both in the body and as a chip. SVG and other types stay placeholders.
 
 #### ATT-3 Attachment list in messages
 
 - **Today:** Chips under each body: type icon, name, size. `Message::attachments`, `render_message()`, `file_size()`, `Attachment::kind()`, `attachment_icon()`. With Google (W3) they come from the raw message once the body loads (`mime::parse_message()`): RFC 2231/2047 names, decoded size, MIME type, `part_id` = the parser's part id. `.ics` parts and inline `cid:` images aren't listed.
-- **Needs:** A tester pass. Gmail's `attachmentId` (for ATT-4) isn't in `format=raw`; opening needs `messages.get format=full` or the raw part.
+- **Needs:** A tester pass.
+- **Notes:** Gmail's `attachmentId` isn't in `format=raw`; ATT-4 takes the bytes from the raw message by `part_id` instead.
 
 #### ATT-4 Open and download an attachment
 
-- **Today:** Chips are plain tags with no handler, hover or pointer.
-- **Needs:** `messages.attachments.get` (base64url data), cache, open with Quick Look or the default app, save via a file dialog, progress for large files.
+- **Today (W2, sprint 2):** Clicking a chip (or Enter on it, as it's a tab stop) opens the file with the default app; its download button saves it through the save panel, which starts in Downloads. ⌘K "Open Attachment" (`shift-o`) and "Save Attachment…" (`cmd-shift-s`) act on the conversation's attachment, or the focused message's while the reader has focus; with several, a menu lists them (`OpenAttachmentAt`, `SaveAttachmentAt`). The bytes come from the raw message (`messages.get format=raw`) by the attachment's `part_id`, since there's no `attachmentId` (`mime::part_bytes()`); a draft read back from Gmail finds its files by name. Raw messages aren't kept; the file is, in a private cache: `<data dir>/attachments/cache/<generated key>/<sanitised name>` (no directories, control or direction-changing characters, leading dots; 200 bytes at most), with the `com.apple.quarantine` attribute, 256 MB in all, least recently used out first. Apps, installers, scripts and binaries (by extension, MIME type and magic bytes) are revealed in Finder instead of opened. Saved files are quarantined too. `src/backend/attachments.rs`, `src/app/attachments.rs`, chips in `render_message()`. Demo attachments have no bytes: opening or saving one says so in a toast.
+- **Needs:** A tester pass on real attachments. Quick Look, and progress for big files (a "Getting “name”…" toast is all; a 25 MB file arrives in one request).
+- **Notes:** With `PIGEON_DEV=1` and `PIGEON_SAVE_DIR` set, saves go straight to that folder without the panel (dev and testing only). The quarantine attribute is set with `/usr/bin/xattr`.
 
 #### ATT-5 Attachment icon in the list
 
@@ -751,8 +757,9 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 #### ATT-7 Forward keeps attachments
 
-- **Today:** Not built; `reply_content()` and `Quoted` carry only the quote.
-- **Needs:** Fetch the original's attachments (ATT-4) and attach them on send.
+- **Today (W2, sprint 2):** Forward starts with the original's attachments as removable chips (`forwarded_attachments()`, `src/app/compose.rs`): each points at the original by `Attachment::message_id` and `part_id`, and its bytes are taken from the original's raw message when the forward is saved or sent (one fetch per original, `read_files()` in `src/backend/compose.rs`), so they go in the outgoing `multipart/mixed` message. Files already in the ATT-4 cache are copied out to `<data dir>/attachments/held/` when the forward opens, so evicting the cache can't take them from a queued send; held copies go once the send went, or after 30 days. Over 25 MB in all shows "Attachments are over Gmail’s 25 MB limit" at once, and Send refuses until chips are removed. Offline, the send waits in the outbox as before.
+- **Needs:** A tester pass (T2b).
+- **Notes:** Inline images of the original aren't attached, so the quote shows them as placeholders. Only the quoted (newest) message's files come along.
 
 ### 5.11 Links (LNK)
 

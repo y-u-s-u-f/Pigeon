@@ -105,10 +105,30 @@ fn read_files(
         return Err(anyhow!(crate::ui::composer::ATTACHMENT_LIMIT_ERROR));
     }
     let mut saved: Option<Vec<u8>> = None;
+    // W2 (ATT-7): the originals a forward's files come from, by id.
+    let mut originals: Vec<(String, Vec<u8>)> = Vec::new();
     let mut files = Vec::new();
     for attachment in &draft.attachments {
-        let bytes = if !attachment.path.is_empty() {
-            std::fs::read(&attachment.path).ok()
+        let on_disk = (!attachment.path.is_empty())
+            .then(|| std::fs::read(&attachment.path).ok())
+            .flatten();
+        let original = &attachment.message_id;
+        let bytes = if on_disk.is_some() {
+            on_disk
+        } else if !original.is_empty() && !attachment.part_id.is_empty() {
+            if !originals.iter().any(|(id, _)| id == original) {
+                match super::attachments::fetch_raw(gmail, original) {
+                    Ok(raw) => originals.push((original.clone(), raw)),
+                    Err(e) => match e.later() {
+                        Some(e) => return Err(e.into()),
+                        None => originals.push((original.clone(), Vec::new())),
+                    },
+                }
+            }
+            originals
+                .iter()
+                .find(|(id, _)| id == original)
+                .and_then(|(_, raw)| mime::part_bytes(raw, &attachment.part_id))
         } else if let Some(id) = draft_id {
             if saved.is_none() {
                 saved = match gmail.call::<DraftRef>(&gmail::draft_get_raw_request(id)) {
@@ -281,6 +301,8 @@ fn send(
     if let Some(local) = local_id {
         store.delete_threads(account, &[local.to_string()])?;
     }
+    // W2: a forward's held copies aren't needed any more.
+    super::attachments::Files::in_data_dir().release(&draft.attachments);
     let labels = if sent.label_ids.is_empty() {
         vec![gmail::SENT.to_string()]
     } else {
@@ -782,6 +804,148 @@ mod tests {
         assert!(t.last_message().html().contains("<strong>two</strong>"));
         // The drafts sync still sees it unchanged.
         assert_eq!(store.stored_drafts(ME).unwrap()[0].2, "dm4");
+    }
+
+    // W2 (ATT-7).
+
+    fn forward_of_fixture() -> (Outgoing, Vec<u8>) {
+        let eml = include_bytes!("../../tests/fixtures/google/gmail/attachments.eml").to_vec();
+        let attachments = mime::parse_message(&eml)
+            .unwrap()
+            .attachments
+            .into_iter()
+            .map(|a| crate::data::Attachment {
+                message_id: "orig".into(),
+                ..a
+            })
+            .collect();
+        let draft = Outgoing {
+            kind: ComposeKind::Forward,
+            attachments,
+            ..outgoing("Fwd: Q3")
+        };
+        (draft, eml)
+    }
+
+    #[test]
+    fn a_forward_carries_the_originals_files() {
+        use base64::Engine as _;
+        let store = Store::open_in_memory().unwrap();
+        let (draft, eml) = forward_of_fixture();
+        let encoded = base64::engine::general_purpose::URL_SAFE.encode(&eml);
+        let (gmail, fake) = gmail(
+            FakeTransport::new()
+                .on(
+                    "GET",
+                    "/gmail/v1/users/me/messages/orig",
+                    &[("format", "raw")],
+                    &[(200, &format!(r#"{{"id":"orig","raw":"{encoded}"}}"#))],
+                )
+                .on(
+                    "POST",
+                    "/gmail/v1/users/me/messages/send",
+                    &[],
+                    &[(200, r#"{"id":"s9","threadId":"T9","labelIds":["SENT"]}"#)],
+                ),
+        );
+        let op = MailOp::Send {
+            draft: draft.clone(),
+            local_id: None,
+            thread_id: "sent-local-9".into(),
+        };
+        commit_compose(&gmail, &store, ME, &op).0.unwrap();
+        // One fetch of the original for both files.
+        assert_eq!(fake.requests().len(), 2);
+        let sent = raw_of(&fake.requests()[1]);
+        let parsed = mime::parse_message(&sent).unwrap();
+        let names: Vec<_> = parsed.attachments.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["Q3 report.pdf", "résumé.txt"]);
+        for (a, original) in parsed.attachments.iter().zip(&draft.attachments) {
+            assert_eq!(
+                mime::part_bytes(&sent, &a.part_id),
+                mime::part_bytes(&eml, &original.part_id)
+            );
+        }
+    }
+
+    #[test]
+    fn a_forward_queued_offline_stays_queued() {
+        let store = Store::open_in_memory().unwrap();
+        let (draft, _) = forward_of_fixture();
+        let (gmail, _) = gmail(FakeTransport::new().on(
+            "GET",
+            "/gmail/v1/users/me/messages/orig",
+            &[("format", "raw")],
+            &[(0, "")],
+        ));
+        let op = MailOp::Send {
+            draft,
+            local_id: None,
+            thread_id: "sent-local-9".into(),
+        };
+        assert!(is_later(
+            &commit_compose(&gmail, &store, ME, &op).0.unwrap_err()
+        ));
+    }
+
+    #[test]
+    fn a_held_copy_sends_after_the_cache_is_evicted() {
+        let store = Store::open_in_memory().unwrap();
+        let root = std::env::temp_dir().join(format!("pigeon-fwd-{}", uuid::Uuid::new_v4()));
+        let files = super::super::attachments::Files::new(root.clone());
+        let cached = files.put("k", "plan.pdf", b"%PDF-plan", 1 << 20).unwrap();
+        let held = files.hold(&cached).unwrap();
+        files.evict(0, None);
+        let draft = Outgoing {
+            kind: ComposeKind::Forward,
+            attachments: vec![crate::data::Attachment {
+                path: held.to_string_lossy().into_owned(),
+                message_id: "orig".into(),
+                part_id: "3".into(),
+                ..crate::data::Attachment::from_file("plan.pdf".into(), 9)
+            }],
+            ..outgoing("Fwd: plan")
+        };
+        let (gmail, fake) = gmail(FakeTransport::new().on(
+            "POST",
+            "/gmail/v1/users/me/messages/send",
+            &[],
+            &[(200, r#"{"id":"s8","threadId":"T8"}"#)],
+        ));
+        let op = MailOp::Send {
+            draft,
+            local_id: None,
+            thread_id: "sent-local-8".into(),
+        };
+        commit_compose(&gmail, &store, ME, &op).0.unwrap();
+        // No fetch of the original: the held copy went.
+        assert_eq!(fake.requests().len(), 1);
+        let sent = raw_of(&fake.requests()[0]);
+        assert_eq!(
+            mime::attachment_bytes(&sent, "plan.pdf").unwrap(),
+            b"%PDF-plan"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn over_25_mb_is_refused_before_anything_goes() {
+        let store = Store::open_in_memory().unwrap();
+        let (mut draft, _) = forward_of_fixture();
+        draft.attachments[0].size_bytes = crate::ui::composer::ATTACHMENT_LIMIT;
+        let (gmail, fake) = gmail(FakeTransport::new());
+        let op = MailOp::Send {
+            draft,
+            local_id: None,
+            thread_id: "sent-local-7".into(),
+        };
+        let error = commit_compose(&gmail, &store, ME, &op).0.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(crate::ui::composer::ATTACHMENT_LIMIT_ERROR)
+        );
+        assert!(fake.requests().is_empty());
     }
 
     #[test]

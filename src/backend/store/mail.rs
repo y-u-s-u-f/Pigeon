@@ -441,6 +441,18 @@ impl Store {
             let Some(message) = thread.messages.iter_mut().find(|m| m.id == id) else {
                 continue;
             };
+            // W2 (ATT-2): inline images, with the body.
+            for image in &parsed.inline_images {
+                let now = chrono::Utc::now().timestamp_millis();
+                self.put_image(
+                    &image.url,
+                    image.mime,
+                    &image.bytes,
+                    now,
+                    super::IMAGE_CACHE_CAP,
+                )
+                .ok();
+            }
             message.body = Body::Loaded { html: parsed.html };
             message.attachments = parsed.attachments;
             let details = parsed.invite_details;

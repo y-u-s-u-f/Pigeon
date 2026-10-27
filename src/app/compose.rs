@@ -85,6 +85,21 @@ fn reply_recipients(
     (to, cc)
 }
 
+/// W2 (ATT-7): `original`'s files, pointing back at it.
+fn forwarded_attachments(original: &Message) -> Vec<crate::data::Attachment> {
+    original
+        .attachments
+        .iter()
+        .cloned()
+        .map(|mut a| {
+            if a.message_id.is_empty() {
+                a.message_id = original.id.clone();
+            }
+            a
+        })
+        .collect()
+}
+
 impl PigeonApp {
     /// Delete in Drafts discards the draft, like the discard button, then
     /// moves to the neighbor.
@@ -151,7 +166,11 @@ impl PigeonApp {
             (_, None) => return,
             (_, Some(thread)) if thread.folder == Folder::Drafts => return,
             (kind, Some(thread)) => {
-                let (content, quoted) = self.reply_content(kind, thread);
+                let (mut content, quoted) = self.reply_content(kind, thread);
+                // W2 (ATT-7): cached files are held for the send.
+                self.backend
+                    .read(cx)
+                    .hold_attachments(&thread.last_message().id, &mut content.attachments);
                 // A forward starts a new thread, so it answers nothing.
                 let reply_to = (kind != ComposeKind::Forward).then(|| thread.id.clone());
                 (content, reply_to, quoted)
@@ -171,7 +190,13 @@ impl PigeonApp {
             )
         });
         self.set_composer(composer.clone(), cx);
-        composer.update(cx, |c, cx| c.focus_first(window, cx));
+        composer.update(cx, |c, cx| {
+            c.focus_first(window, cx);
+            // W2 (ATT-7): a forward over the limit says so at once.
+            if attachments_size(&c.content(cx).attachments) > ATTACHMENT_LIMIT {
+                c.set_attachment_error(ATTACHMENT_LIMIT_ERROR, cx);
+            }
+        });
         self.reader_focused = reply_to.is_some();
         if reply_to.is_some() {
             self.reader_scroll.scroll_to_bottom();
@@ -220,13 +245,19 @@ impl PigeonApp {
             )
         });
 
+        // W2 (ATT-7): a forward carries the original's files, taken from it
+        // when it goes.
+        let attachments = match kind {
+            ComposeKind::Forward => forwarded_attachments(last),
+            _ => Vec::new(),
+        };
         let content = DraftContent {
             to,
             cc,
             bcc: Vec::new(),
             subject,
             body: String::new(),
-            attachments: Vec::new(),
+            attachments,
         };
         (content, quoted)
     }
@@ -719,6 +750,27 @@ mod tests {
                 .join(", ")
         };
         format!("{} | {}", join(to), join(cc))
+    }
+
+    #[test]
+    fn a_forward_points_its_files_at_the_original() {
+        let mut m = message("ana@x.com", &["me@x.com"], &[], &[]);
+        m.id = "orig".into();
+        m.attachments = vec![
+            crate::data::Attachment {
+                part_id: "3".into(),
+                ..crate::data::Attachment::from_file("a.pdf".into(), 5)
+            },
+            crate::data::Attachment {
+                message_id: "older".into(),
+                ..crate::data::Attachment::from_file("b.pdf".into(), 5)
+            },
+        ];
+        let files = forwarded_attachments(&m);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].message_id, "orig");
+        assert_eq!(files[0].part_id, "3");
+        assert_eq!(files[1].message_id, "older", "already a forward's copy");
     }
 
     #[test]

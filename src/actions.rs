@@ -133,8 +133,26 @@ actions!(
         SendTestNotification,
         ToggleNotifications,
         ToggleOpenAtLogin,
+        // W2: attachments and the original message.
+        OpenAttachment,
+        SaveAttachment,
+        ShowOriginal,
+        SaveOriginal,
+        CopyOriginal,
+        CloseOriginal,
     ]
 );
+
+/// W2: open one attachment of the selected conversation, by message and
+/// attachment index; from its chip and the picker.
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(namespace = pigeon, no_json)]
+pub struct OpenAttachmentAt(pub usize, pub usize);
+
+/// W2: save one attachment, as `OpenAttachmentAt`.
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(namespace = pigeon, no_json)]
+pub struct SaveAttachmentAt(pub usize, pub usize);
 
 /// Move the selected threads to a folder; from the context menu and the
 /// toolbar's "…" menu.
@@ -168,6 +186,8 @@ pub const PANEL_CONTROL: &str = "PanelControl";
 /// A focusable button or row outside the event panel (see
 /// `ui::style::focusable_control`): enter and space press it.
 pub const CONTROL: &str = "Control";
+/// W2: the original message's source, in the reading pane.
+pub const ORIGINAL: &str = "Original";
 
 /// The keymap. Where an action has several bindings, the one added last is
 /// the one the palette shows.
@@ -416,6 +436,13 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-n", command_palette::SelectNext, Some(PALETTE_INPUT)),
         // W1: works with no window open too.
         KeyBinding::new("cmd-o", ShowMainWindow, None),
+        // W2: attachments and the original message.
+        KeyBinding::new("shift-o", OpenAttachment, Some(MAIL)),
+        KeyBinding::new("cmd-shift-s", SaveAttachment, Some(MAILBOX)),
+        KeyBinding::new("cmd-alt-u", ShowOriginal, Some(MAILBOX)),
+        KeyBinding::new("cmd-alt-s", SaveOriginal, Some(MAILBOX)),
+        KeyBinding::new("cmd-c", CopyOriginal, Some(ORIGINAL)),
+        KeyBinding::new("escape", CloseOriginal, Some(ORIGINAL)),
     ]);
 }
 
@@ -450,6 +477,7 @@ pub fn lookup_contexts(scope: Scope, reader_first: bool) -> Vec<KeyContext> {
             mailbox_context(!reader_first),
             with(mailbox_context(false), COMPOSER),
             with(mailbox_context(false), SEARCH),
+            with(mailbox_context(false), ORIGINAL),
         ],
     }
 }
@@ -655,4 +683,11 @@ pub const COMMANDS: &[Command] = commands! {
     App: "Send Test Notification", Bell, SendTestNotification;
     App: "Turn New Mail Notifications On / Off", Bell, ToggleNotifications;
     App: "Turn Open at Login On / Off", Settings, ToggleOpenAtLogin;
+    // W2: attachments and the original message.
+    Conversation: "Open Attachment", Paperclip, OpenAttachment if Thread;
+    Conversation: "Save Attachment…", Download, SaveAttachment if Thread;
+    Conversation: "Show Original", Code, ShowOriginal if Thread;
+    Conversation: "Save Message as .eml…", Download, SaveOriginal if Thread;
+    Conversation: "Copy Original", Code, CopyOriginal, help_only;
+    Conversation: "Close Original", X, CloseOriginal, help_only;
 };

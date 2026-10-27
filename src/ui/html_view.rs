@@ -28,7 +28,8 @@ pub fn render(doc: &Document, theme: &Theme) -> impl IntoElement {
 }
 
 /// Remote images (ATT-1): the messages whose images the user let load, and
-/// the images fetched so far, by address.
+/// the images fetched so far, by address. Inline (`cid:`) images too
+/// (ATT-2), which need no consent.
 #[derive(Default)]
 pub struct LoadedImages {
     /// Message ids.
@@ -36,6 +37,42 @@ pub struct LoadedImages {
     /// Addresses asked for, loaded or not, so each goes out once.
     pub requested: HashSet<SharedString>,
     pub ready: HashMap<SharedString, ReadyImage>,
+}
+
+/// The images a document may show: inline ones always, remote ones once
+/// the user let them load.
+#[derive(Clone, Copy)]
+pub struct ShowImages<'a> {
+    pub loaded: &'a LoadedImages,
+    pub remote: bool,
+}
+
+/// The inline (`cid:`) images a document shows, each once (ATT-2).
+pub fn cid_images(doc: &Document) -> Vec<SharedString> {
+    fn walk(blocks: &[Block], out: &mut Vec<SharedString>) {
+        for block in blocks {
+            match block {
+                Block::Image { src, .. } if is_cid(src) && !out.contains(src) => {
+                    out.push(src.clone())
+                }
+                Block::List { items, .. } => items.iter().for_each(|item| walk(item, out)),
+                Block::Quote(blocks) => walk(blocks, out),
+                Block::Table(table) => table
+                    .rows
+                    .iter()
+                    .flatten()
+                    .for_each(|cell| walk(&cell.blocks, out)),
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&doc.blocks, &mut out);
+    out
+}
+
+fn is_cid(src: &str) -> bool {
+    crate::backend::mime::is_cid(src)
 }
 
 pub struct ReadyImage {
@@ -58,7 +95,7 @@ pub fn render_filtered(
     doc: &Document,
     theme: &Theme,
     selection: Option<Selection>,
-    images: Option<&LoadedImages>,
+    images: Option<ShowImages>,
     keep: impl Fn(&Block) -> bool,
 ) -> impl IntoElement {
     let mut renderer = Renderer {
@@ -88,10 +125,19 @@ struct Renderer<'a> {
     /// Counts the selectable texts, for their ids and reading order.
     next_text: u64,
     /// The images loaded; the rest show as placeholders.
-    images: Option<&'a LoadedImages>,
+    images: Option<ShowImages<'a>>,
 }
 
-impl Renderer<'_> {
+impl<'a> Renderer<'a> {
+    /// The image to show for `src`, if it may show and has loaded.
+    fn ready(&self, src: &str) -> Option<&'a ReadyImage> {
+        let images = self.images?;
+        if !images.remote && !is_cid(src) {
+            return None;
+        }
+        images.loaded.ready.get(src)
+    }
+
     fn blocks(&mut self, blocks: &[Block], gap: gpui::Pixels) -> Div {
         div().flex().flex_col().gap(gap).children(
             blocks
@@ -180,8 +226,8 @@ impl Renderer<'_> {
                 height,
                 link,
                 align,
-            } if self.images.is_some_and(|i| i.ready.contains_key(src)) => {
-                let ready = &self.images.expect("checked").ready[src];
+            } if self.ready(src).is_some() => {
+                let ready = self.ready(src).expect("checked");
                 let shown_width = width.unwrap_or(ready.width).max(1.);
                 let ratio = match (width, height) {
                     (Some(w), Some(h)) if *h > 0. => w / h,

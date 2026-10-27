@@ -27,6 +27,116 @@ pub struct ParsedBody {
     pub invite: Option<(String, InviteMethod)>,
     /// That part's event, as it describes it (W10, CAL-20).
     pub invite_details: Option<InviteDetails>,
+    /// Images the HTML shows by `cid:` (ATT-2), under the address `html`
+    /// now uses for them.
+    pub inline_images: Vec<InlineImage>,
+}
+
+/// An image a message carries for its HTML (ATT-2).
+#[derive(Clone, Debug, PartialEq)]
+pub struct InlineImage {
+    /// `cid:pigeon-<hash of the bytes>`: unique, so it can share the image
+    /// cache with remote images.
+    pub url: String,
+    pub mime: &'static str,
+    pub bytes: Vec<u8>,
+}
+
+/// The `cid:` address an inline image is shown and cached under.
+pub fn inline_url(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    let hash = sha2::Sha256::digest(bytes);
+    let hex: String = hash[..12].iter().map(|b| format!("{b:02x}")).collect();
+    format!("cid:pigeon-{hex}")
+}
+
+/// Whether `src` is an inline image's address.
+pub fn is_cid(src: &str) -> bool {
+    src.get(..4).is_some_and(|s| s.eq_ignore_ascii_case("cid:"))
+}
+
+/// The message's images with a Content-ID, by that id (lower case).
+fn inline_parts(message: &mail_parser::Message) -> Vec<(String, InlineImage)> {
+    let mut out: Vec<(String, InlineImage)> = Vec::new();
+    for part in message.parts() {
+        let Some(id) = part.content_id() else {
+            continue;
+        };
+        if !part
+            .content_type()
+            .is_some_and(|ct| ct.ctype().eq_ignore_ascii_case("image"))
+        {
+            continue;
+        }
+        let bytes = part.decoded();
+        if bytes.len() > super::images::IMAGE_LIMIT {
+            continue;
+        }
+        let Some((mime, _, _)) = super::images::sniff(&bytes) else {
+            continue;
+        };
+        let id = id.trim().trim_matches(['<', '>']).to_lowercase();
+        if out.iter().any(|(seen, _)| *seen == id) {
+            continue;
+        }
+        out.push((
+            id,
+            InlineImage {
+                url: inline_url(&bytes),
+                mime,
+                bytes: bytes.into_owned(),
+            },
+        ));
+    }
+    out
+}
+
+/// `%XX` escapes decoded, as `cid:` URLs may carry them (RFC 2392).
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(v) = s
+                .get(i + 1..i + 3)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(v);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Every `cid:<id>` in `html` whose id is in `ids` (lower case) pointed at
+/// its image's own address.
+fn rewrite_cids(html: &str, ids: &[(String, InlineImage)]) -> String {
+    if ids.is_empty() {
+        return html.to_string();
+    }
+    let lower = html.to_ascii_lowercase();
+    let mut out = String::with_capacity(html.len());
+    let mut last = 0;
+    let mut from = 0;
+    while let Some(at) = lower[from..].find("cid:").map(|i| i + from) {
+        let start = at + 4;
+        let end = html[start..]
+            .find(|c: char| matches!(c, '"' | '\'' | '>' | ')' | '<') || c.is_whitespace())
+            .map_or(html.len(), |i| i + start);
+        let id = percent_decode(&html[start..end]).to_lowercase();
+        if let Some((_, image)) = ids.iter().find(|(seen, _)| *seen == id) {
+            out.push_str(&html[last..at]);
+            out.push_str(&image.url);
+            last = end;
+        }
+        from = end.max(start);
+    }
+    out.push_str(&html[last..]);
+    out
 }
 
 /// Gmail's `raw`: base64url, with or without padding.
@@ -85,17 +195,31 @@ pub fn parse_message(raw: &[u8]) -> Option<ParsedBody> {
                 attachment_id: String::new(),
                 part_id: part.id().to_string(),
                 path: String::new(),
+                message_id: String::new(),
             }
         })
         .collect();
 
+    // ATT-2: the images go to the cache with the body, so no request
+    // fetches them.
+    let inline = inline_parts(&message);
+    let html = rewrite_cids(&html, &inline);
     Some(ParsedBody {
         html,
         plain: (!plain.trim().is_empty()).then_some(plain),
         attachments,
         invite,
         invite_details,
+        inline_images: inline.into_iter().map(|(_, image)| image).collect(),
     })
+}
+
+/// A part's bytes, transfer encoding undone, by the `part_id` that
+/// `parse_message` gave its attachment (ATT-4).
+pub fn part_bytes(raw: &[u8], part_id: &str) -> Option<Vec<u8>> {
+    let id: mail_parser::PartId = part_id.parse().ok()?;
+    let message = MessageParser::default().parse(raw)?;
+    Some(message.part(id)?.decoded().into_owned())
 }
 
 /// An iCalendar object's event UID and METHOD (REQUEST or CANCEL; others
@@ -671,6 +795,86 @@ mod tests {
         let id = new_message_id("me@example.com");
         assert!(id.ends_with("@example.com") && id.len() > 20);
         assert!(new_message_id("").ends_with("@pigeon.local"));
+    }
+
+    // W2 (ATT-2, ATT-4).
+
+    /// A 1×1 PNG.
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0";
+
+    fn nested() -> String {
+        use base64::Engine as _;
+        let png = base64::engine::general_purpose::STANDARD.encode(PNG);
+        let pdf = base64::engine::general_purpose::STANDARD.encode(b"%PDF-1.7 nested");
+        format!(
+            "From: a@example.com\r\nSubject: Nested\r\nMIME-Version: 1.0\r\n\
+             Content-Type: multipart/mixed; boundary=\"outer\"\r\n\r\n\
+             --outer\r\nContent-Type: multipart/alternative; boundary=\"alt\"\r\n\r\n\
+             --alt\r\nContent-Type: text/plain\r\n\r\nHi\r\n\
+             --alt\r\nContent-Type: multipart/related; boundary=\"rel\"\r\n\r\n\
+             --rel\r\nContent-Type: text/html\r\n\r\n\
+             <p>Logo <img src=\"cid:logo%40x\"> and <img src='CID:logo@x'> and <img src=\"cid:missing\"></p>\r\n\
+             --rel\r\nContent-Type: image/png\r\nContent-ID: <logo@x>\r\n\
+             Content-Disposition: inline\r\nContent-Transfer-Encoding: base64\r\n\r\n{png}\r\n\
+             --rel--\r\n--alt--\r\n\
+             --outer\r\nContent-Type: text/plain; charset=utf-8\r\n\
+             Content-Disposition: attachment; filename=\"notes.txt\"\r\n\
+             Content-Transfer-Encoding: quoted-printable\r\n\r\nCaf=C3=A9 =3D good\r\n\
+             --outer\r\nContent-Type: application/pdf\r\n\
+             Content-Disposition: attachment; filename=\"deep.pdf\"\r\n\
+             Content-Transfer-Encoding: base64\r\n\r\n{pdf}\r\n\
+             --outer--\r\n"
+        )
+    }
+
+    #[test]
+    fn parts_come_out_by_id_decoded() {
+        let eml = nested();
+        let body = parse(&eml);
+        let names: Vec<_> = body.attachments.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["notes.txt", "deep.pdf"],
+            "the inline image isn't a file"
+        );
+        let bytes = |n: usize| part_bytes(eml.as_bytes(), &body.attachments[n].part_id).unwrap();
+        assert_eq!(bytes(0), "Café = good".as_bytes());
+        assert_eq!(bytes(1), b"%PDF-1.7 nested");
+        assert_eq!(body.attachments[1].size_bytes, 15);
+        assert!(part_bytes(eml.as_bytes(), "99").is_none());
+        assert!(part_bytes(eml.as_bytes(), "x").is_none());
+
+        // The fixture's files too.
+        let raw = include_bytes!("../../tests/fixtures/google/gmail/attachments.eml");
+        let body = parse_message(raw).unwrap();
+        for a in &body.attachments {
+            assert_eq!(
+                part_bytes(raw, &a.part_id).unwrap(),
+                attachment_bytes(raw, &a.name).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn cid_images_get_their_own_address() {
+        let body = parse(&nested());
+        assert_eq!(body.inline_images.len(), 1);
+        let image = &body.inline_images[0];
+        assert_eq!(image.bytes, PNG);
+        assert_eq!(image.mime, "image/png");
+        assert_eq!(image.url, inline_url(PNG));
+        assert!(image.url.starts_with("cid:pigeon-"));
+        // Encoded and upper-case references both point at it; unknown
+        // ones are left alone.
+        assert_eq!(
+            body.html.matches(image.url.as_str()).count(),
+            2,
+            "{}",
+            body.html
+        );
+        assert!(body.html.contains("cid:missing"));
+        assert!(!body.html.contains("logo"));
+        assert!(is_cid(&image.url) && !is_cid("https://x"));
     }
 
     #[test]

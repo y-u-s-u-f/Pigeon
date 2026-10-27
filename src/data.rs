@@ -312,6 +312,10 @@ pub struct Attachment {
     /// The file on disk, for one picked here: read when it's sent (ATT-6).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub path: String,
+    /// The Gmail message whose `part_id` it is, when that isn't the message
+    /// showing it: a forward's copy of the original's file (ATT-7).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub message_id: String,
 }
 
 /// What an attachment is, for its icon.
@@ -389,6 +393,7 @@ impl Attachment {
             attachment_id: String::new(),
             part_id: String::new(),
             path: String::new(),
+            message_id: String::new(),
         }
     }
 }

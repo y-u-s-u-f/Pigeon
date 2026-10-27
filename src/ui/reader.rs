@@ -3,9 +3,10 @@
 use std::{rc::Rc, sync::Arc};
 
 use gpui::{
-    AnyElement, Context, ElementId, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, Window, base::TextSelection,
-    component::scroll::ScrollableElement as _, div, prelude::FluentBuilder as _, px, relative,
+    AnyElement, Context, ElementId, FocusHandle, FontWeight, InteractiveElement, IntoElement,
+    ParentElement, SharedString, StatefulInteractiveElement, Styled, UniformListScrollHandle,
+    Window, base::TextSelection, component::scroll::ScrollableElement as _, div,
+    prelude::FluentBuilder as _, px, relative, uniform_list,
 };
 
 use super::{
@@ -42,6 +43,21 @@ impl PigeonApp {
             .as_ref()
             .filter(|_| !self.composer_inline(cx))
             .map(|(composer, _)| composer.clone());
+        // W2 (RDR-8): the source, while its conversation is selected.
+        let original = self
+            .original
+            .as_ref()
+            .filter(|o| thread.is_some_and(|t| t.id == o.thread_id));
+        if self.original.is_some() && original.is_none() {
+            cx.defer_in(window, |this, window, cx| {
+                if let Some(original) = this.original.take() {
+                    if original.focus.contains_focused(window, cx) {
+                        window.focus(&this.focus_handle, cx);
+                    }
+                    cx.notify();
+                }
+            });
+        }
 
         div()
             .flex_1()
@@ -58,6 +74,9 @@ impl PigeonApp {
                 None if !self.checked.is_empty() => this
                     .child(window_drag_area(div().id("reader-toolbar")).h(HEADER_HEIGHT))
                     .child(self.render_bulk_summary(&theme, window)),
+                None if original.is_some() => {
+                    this.child(render_original(original.expect("checked"), &theme))
+                }
                 None => this
                     .child(self.render_toolbar(thread, &theme, cx))
                     .child(match thread {
@@ -427,24 +446,25 @@ impl PigeonApp {
             .iter()
             .enumerate()
             .map(|(n, attachment)| {
-                div()
-                    .id(("attachment", ix * 100 + n))
-                    .role(gpui::Role::Group)
-                    .aria_label(format!(
-                        "{}, {}",
-                        attachment.name,
-                        file_size(attachment.size_bytes)
-                    ))
+                let size = file_size(attachment.size_bytes);
+                focusable_control(div().id(("attachment", ix * 100 + n)), theme)
+                    .role(gpui::Role::Button)
+                    .aria_label(format!("Open {}, {size}", attachment.name))
                     .h(px(34.))
-                    .px(SPACE_MD)
+                    .pl(SPACE_MD)
+                    .pr(SPACE_XS)
                     .flex()
                     .items_center()
                     .gap(SPACE_SM)
                     .rounded(RADIUS_MD)
                     .bg(theme.chip_bg)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.selected_bg))
                     .child(super::attachment_icon(attachment, theme))
                     .child(
                         div()
+                            .max_w(px(260.))
+                            .truncate()
                             .text_size(TEXT_SM)
                             .font_weight(FontWeight::MEDIUM)
                             .child(attachment.name.clone()),
@@ -453,8 +473,31 @@ impl PigeonApp {
                         div()
                             .text_size(TEXT_SM)
                             .text_color(theme.text_faint)
-                            .child(file_size(attachment.size_bytes)),
+                            .child(size),
                     )
+                    .child(
+                        div()
+                            .id(("attachment-save", ix * 100 + n))
+                            .role(gpui::Role::Button)
+                            .aria_label(format!("Save {}", attachment.name))
+                            .size(px(24.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(RADIUS_SM)
+                            .hover(|s| s.bg(theme.hover_bg))
+                            .child(icon(Icon::Download, px(13.), theme.text_faint))
+                            .tooltip(|window, cx| {
+                                gpui::component::tooltip::Tooltip::new("Save…").build(window, cx)
+                            })
+                            .on_click(move |_, window, cx| {
+                                cx.stop_propagation();
+                                window.dispatch_action(Box::new(SaveAttachmentAt(ix, n)), cx)
+                            }),
+                    )
+                    .on_click(move |_, window, cx| {
+                        window.dispatch_action(Box::new(OpenAttachmentAt(ix, n)), cx)
+                    })
             });
 
         let mine = self.data.is_me(&message.from);
@@ -577,7 +620,10 @@ impl PigeonApp {
                             &body,
                             show_all,
                             selection,
-                            images.show.then_some(&self.images),
+                            html_view::ShowImages {
+                                loaded: &self.images,
+                                remote: images.show,
+                            },
                             theme,
                         )
                         .into_any_element(),
@@ -822,7 +868,7 @@ fn render_body(
     doc: &Document,
     all: bool,
     selection: html_view::Selection,
-    images: Option<&html_view::LoadedImages>,
+    images: html_view::ShowImages,
     theme: &Theme,
 ) -> impl IntoElement {
     div()
@@ -833,7 +879,7 @@ fn render_body(
             doc,
             theme,
             Some(selection),
-            images,
+            Some(images),
             |block| all || !super::invite::is_invite_summary(block),
         ))
 }
@@ -849,7 +895,27 @@ impl PigeonApp {
         body: &Document,
         cx: &mut Context<Self>,
     ) -> ImageConsent {
-        if !matches!(message.body, Body::Loaded { .. }) || self.backend.read(cx).is_demo() {
+        if !matches!(message.body, Body::Loaded { .. }) {
+            return ImageConsent::default();
+        }
+        // W2 (ATT-2): inline images, part of the mail, need no consent.
+        let inline: Vec<SharedString> = html_view::cid_images(body)
+            .into_iter()
+            .filter(|url| !self.images.requested.contains(url))
+            .collect();
+        if !inline.is_empty()
+            && let Some(thread) = self.selected.map(|ix| self.data.threads[ix].id.clone())
+        {
+            let this = cx.entity().downgrade();
+            let message_id = message.id.clone();
+            cx.defer(move |cx| {
+                this.update(cx, |this, cx| {
+                    this.load_inline_images(&thread, &message_id, inline, cx)
+                })
+                .ok();
+            });
+        }
+        if self.backend.read(cx).is_demo() {
             return ImageConsent::default();
         }
         let remote = crate::html::remote_images(body);
@@ -892,26 +958,60 @@ impl PigeonApp {
         });
         cx.spawn(async move |this, cx| {
             let fetched = task.await;
-            this.update(cx, |this, cx| {
-                for (url, image) in fetched {
-                    let Some(image) = image else { continue };
-                    let Some(format) = gpui::ImageFormat::from_mime_type(image.mime) else {
-                        continue;
-                    };
-                    this.images.ready.insert(
-                        url.into(),
-                        html_view::ReadyImage {
-                            image: Arc::new(gpui::Image::from_bytes(format, image.bytes)),
-                            width: image.width as f32,
-                            height: image.height as f32,
-                        },
-                    );
-                }
-                cx.notify();
-            })
-            .ok();
+            this.update(cx, |this, cx| this.images_ready(fetched, cx))
+                .ok();
         })
         .detach();
+    }
+
+    /// W2 (ATT-2): a message's inline images, from the cache.
+    fn load_inline_images(
+        &mut self,
+        thread_id: &str,
+        message_id: &str,
+        mut urls: Vec<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        urls.retain(|url| self.images.requested.insert(url.clone()));
+        if urls.is_empty() {
+            return;
+        }
+        let task = self.backend.update(cx, |b, cx| {
+            b.inline_images(
+                thread_id,
+                message_id,
+                urls.iter().map(|u| u.to_string()).collect(),
+                cx,
+            )
+        });
+        cx.spawn(async move |this, cx| {
+            let found = task.await;
+            this.update(cx, |this, cx| this.images_ready(found, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    fn images_ready(
+        &mut self,
+        images: Vec<(String, Option<crate::backend::images::FetchedImage>)>,
+        cx: &mut Context<Self>,
+    ) {
+        for (url, image) in images {
+            let Some(image) = image else { continue };
+            let Some(format) = gpui::ImageFormat::from_mime_type(image.mime) else {
+                continue;
+            };
+            self.images.ready.insert(
+                url.into(),
+                html_view::ReadyImage {
+                    image: Arc::new(gpui::Image::from_bytes(format, image.bytes)),
+                    width: image.width as f32,
+                    height: image.height as f32,
+                },
+            );
+        }
+        cx.notify();
     }
 }
 
@@ -983,6 +1083,201 @@ fn render_images_bar(
                 .child("Load images")
                 .child(super::keycap("⇧⌘I", theme))
                 .on_click(cx.listener(move |this, _, _, cx| this.allow_images(&id, cx))),
+        )
+        .into_any_element()
+}
+
+// The original message (W2, RDR-8).
+
+/// A message's source, read-only, in place of its conversation.
+pub struct Original {
+    pub thread_id: String,
+    pub message_id: String,
+    pub subject: String,
+    pub state: OriginalState,
+    pub focus: FocusHandle,
+    pub scroll: UniformListScrollHandle,
+}
+
+pub enum OriginalState {
+    Loading,
+    Failed(SharedString),
+    Loaded {
+        /// The whole message, for Save as .eml.
+        raw: Arc<Vec<u8>>,
+        /// Its first `ORIGINAL_SHOWN` bytes as text, for Copy.
+        shown: SharedString,
+        lines: Arc<Vec<SharedString>>,
+        truncated: bool,
+    },
+}
+
+impl Original {
+    pub fn new(thread_id: String, message_id: String, subject: String, cx: &mut gpui::App) -> Self {
+        Self {
+            thread_id,
+            message_id,
+            subject,
+            state: OriginalState::Loading,
+            focus: cx.focus_handle(),
+            scroll: UniformListScrollHandle::new(),
+        }
+    }
+}
+
+impl OriginalState {
+    pub fn loaded(raw: Vec<u8>) -> Self {
+        let limit = crate::backend::attachments::ORIGINAL_SHOWN;
+        let truncated = raw.len() > limit;
+        let shown = String::from_utf8_lossy(&raw[..raw.len().min(limit)]).into_owned();
+        OriginalState::Loaded {
+            lines: Arc::new(source_lines(&shown)),
+            shown: shown.into(),
+            raw: Arc::new(raw),
+            truncated,
+        }
+    }
+}
+
+/// The source as lines to show: tabs as spaces, long lines broken.
+fn source_lines(text: &str) -> Vec<SharedString> {
+    const WRAP: usize = 100;
+    let mut out = Vec::new();
+    for line in text.split('\n') {
+        let line = line.trim_end_matches('\r').replace('\t', "    ");
+        let chars: Vec<char> = line.chars().collect();
+        if chars.is_empty() {
+            out.push(SharedString::default());
+        }
+        for chunk in chars.chunks(WRAP) {
+            out.push(chunk.iter().collect::<String>().into());
+        }
+    }
+    if text.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+fn render_original(original: &Original, theme: &Theme) -> AnyElement {
+    let toolbar = window_drag_area(div().id("original-toolbar"))
+        .h(HEADER_HEIGHT)
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(SPACE_2XS)
+        .pl(SPACE_XL)
+        .pr(SPACE_MD)
+        .child(
+            div()
+                .flex_none()
+                .text_size(TEXT_LG)
+                .font_weight(FontWeight::SEMIBOLD)
+                .child("Original Message"),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .pl(SPACE_SM)
+                .text_size(TEXT_SM)
+                .text_color(theme.text_faint)
+                .child(original.subject.clone()),
+        )
+        .child(icon_button(
+            "original-copy",
+            Icon::FileText,
+            "Copy",
+            Box::new(CopyOriginal),
+            theme,
+        ))
+        .child(icon_button(
+            "original-save",
+            Icon::Download,
+            "Save as .eml",
+            Box::new(SaveOriginal),
+            theme,
+        ))
+        .child(icon_button(
+            "original-close",
+            Icon::X,
+            "Close original",
+            Box::new(CloseOriginal),
+            theme,
+        ));
+    let note = |text: SharedString| {
+        div()
+            .px(SPACE_XL)
+            .py(SPACE_SM)
+            .text_size(TEXT_SM)
+            .text_color(theme.text_faint)
+            .child(text)
+    };
+    let body = match &original.state {
+        OriginalState::Loading => note("Loading the original…".into()).into_any_element(),
+        OriginalState::Failed(reason) => {
+            note(format!("Couldn't load the original. {reason}").into()).into_any_element()
+        }
+        OriginalState::Loaded {
+            lines, truncated, ..
+        } => {
+            let lines = lines.clone();
+            let count = lines.len();
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .when(*truncated, |this| {
+                    this.child(note(
+                        "Showing the first 1 MB. Save as .eml for the whole message.".into(),
+                    ))
+                })
+                .child(
+                    div().flex_1().min_h_0().px(SPACE_XL).pb(SPACE_LG).child(
+                        uniform_list("original-lines", count, move |range, _, _| {
+                            range
+                                .map(|ix| {
+                                    div()
+                                        .whitespace_nowrap()
+                                        .truncate()
+                                        .child(lines[ix].clone())
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .track_scroll(&original.scroll)
+                        .size_full(),
+                    ),
+                )
+                .into_any_element()
+        }
+    };
+    div()
+        .id("original")
+        .key_context(ORIGINAL)
+        .track_focus(&original.focus)
+        .role(gpui::Role::Region)
+        .aria_label("Original message")
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .child(toolbar)
+        .child(
+            div()
+                .id("original-source")
+                .role(gpui::Role::Document)
+                .aria_label("Message source")
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .font_family("Menlo")
+                .text_size(TEXT_SM)
+                .line_height(relative(1.5))
+                .text_color(theme.text_muted)
+                .child(body),
         )
         .into_any_element()
 }

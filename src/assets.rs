@@ -35,6 +35,7 @@ icons! {
     Clock => "clock",
     Code => "code",
     Command => "command",
+    Download => "download",
     Ellipsis => "ellipsis",
     File => "file",
     FileArchive => "file-archive",

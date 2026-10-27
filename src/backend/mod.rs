@@ -16,6 +16,7 @@
 // demo mode doesn't yet.
 #![allow(dead_code)]
 
+pub mod attachments;
 pub mod auth;
 pub mod calendar;
 pub mod categories;

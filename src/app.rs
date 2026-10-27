@@ -1,5 +1,6 @@
 //! The root view. It owns all app state; the panes in `ui/` render from it.
 
+mod attachments;
 mod backend_events;
 mod compose;
 mod mail;
@@ -229,6 +230,8 @@ pub struct PigeonApp {
     pub server_counts: ui::sidebar::ServerCounts,
     /// W9: Gmail's half of the search, and whether views page (LST-7).
     pub server_search: crate::search::ServerSearch,
+    /// W2 (RDR-8): the source shown in place of the conversation.
+    pub original: Option<ui::reader::Original>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -344,6 +347,7 @@ impl PigeonApp {
             saved,
             server_counts: Default::default(),
             server_search: Default::default(),
+            original: None,
             _subscriptions: vec![
                 settings_events,
                 appearance,
@@ -1709,6 +1713,7 @@ impl Render for PigeonApp {
             .on_action(cx.listener(Self::load_images))
             .on_action(cx.listener(Self::load_older))
             .map(|this| self.on_mail_actions(this, cx))
+            .map(|this| self.on_attachment_actions(this, cx))
             .on_drag_move(cx.listener(Self::resize_pane))
             .relative()
             .size_full()

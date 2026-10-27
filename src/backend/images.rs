@@ -129,7 +129,7 @@ pub fn fetch_image(
     Ok(image)
 }
 
-fn decode(bytes: Vec<u8>) -> anyhow::Result<FetchedImage> {
+pub(super) fn decode(bytes: Vec<u8>) -> anyhow::Result<FetchedImage> {
     let (mime, width, height) = sniff(&bytes).ok_or_else(|| anyhow!("unreadable image"))?;
     if width == 0 || height == 0 {
         bail!("empty image");
