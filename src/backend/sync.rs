@@ -15,7 +15,7 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use gpui::{Context, Task};
@@ -66,6 +66,12 @@ pub struct SyncState {
     /// Messages whose bodies are being fetched, and those that failed.
     body_loading: HashSet<String>,
     body_errors: HashMap<String, String>,
+    /// The calendar pass (W4): when it last ran, whether one runs now,
+    /// and whether the next mail pass should run it early (focus, Sync Now).
+    calendar_last: Option<Instant>,
+    calendar_running: bool,
+    pub(super) calendar_due: bool,
+    _calendar: Option<Task<()>>,
 }
 
 /// One step of a mail sync plan.
@@ -561,6 +567,7 @@ impl Backend {
         let was = self.sync.active;
         self.sync.active = active;
         if active && !was {
+            self.sync.calendar_due = true;
             self.run_sync(cx);
         }
     }
@@ -732,9 +739,48 @@ impl Backend {
     }
 
     // calendar pass (W4) ----------------------------------------------
-    /// The calendar's sync, run after each mail pass. W4 fills it in
-    /// (SYN-4), keeping its own 2-minute interval.
-    fn sync_calendar(&mut self, _cx: &mut Context<Self>) {}
+    /// The calendar's sync (SYN-4), run after each mail pass: every 2
+    /// minutes, or at once on focus and Sync Now.
+    fn sync_calendar(&mut self, cx: &mut Context<Self>) {
+        const INTERVAL: Duration = Duration::from_secs(120);
+        if self.sync.calendar_running || !self.has_scope(super::auth::CALENDAR_SCOPE) {
+            return;
+        }
+        let due = self.sync.calendar_due
+            || self
+                .sync
+                .calendar_last
+                .is_none_or(|last| last.elapsed() >= INTERVAL);
+        let Some(transport) = self.transport().filter(|_| due) else {
+            return;
+        };
+        self.sync.calendar_due = false;
+        self.sync.calendar_running = true;
+        let store = self.store.clone();
+        let email = self.email().to_string();
+        self.sync._calendar = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { super::calendar::sync_pass(&*transport, &store, &email) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.sync.calendar_running = false;
+                this.sync.calendar_last = Some(Instant::now());
+                match result {
+                    Ok(changes) => {
+                        for e in &changes.errors {
+                            eprintln!("Pigeon: calendar sync skipped a calendar: {e}");
+                        }
+                        for event in changes.backend_events() {
+                            cx.emit(event);
+                        }
+                    }
+                    Err(e) => eprintln!("Pigeon: calendar sync stopped: {e:#}"),
+                }
+            })
+            .ok();
+        }));
+    }
     // end calendar pass (W4) ------------------------------------------
 
     // Bodies (RDR-6).

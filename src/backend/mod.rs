@@ -830,6 +830,7 @@ impl Backend {
 
     pub fn sync_now(&mut self, cx: &mut Context<Self>) {
         cx.emit(BackendEvent::Status(self.status.clone()));
+        self.sync.calendar_due = true;
         self.run_sync(cx);
     }
 
