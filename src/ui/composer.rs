@@ -258,6 +258,8 @@ pub struct Composer {
     pub awaiting_body: bool,
     /// Text that arrived, put in at the next frame.
     pending: Option<DraftContent>,
+    /// The field that had focus when the draft closed, for Undo to return to.
+    resume_at: Option<Field>,
     book: SharedContactBook,
     _subscriptions: Vec<Subscription>,
 }
@@ -380,6 +382,7 @@ impl Composer {
             initial: content,
             awaiting_body: false,
             pending: None,
+            resume_at: None,
             book,
             _subscriptions: subscriptions,
         }
@@ -474,6 +477,24 @@ impl Composer {
             Field::Body
         };
         self.focus_field(field, window, cx);
+    }
+
+    /// Closing (sent or discarded): note where the caret was, for Undo.
+    pub fn remember_focus(&mut self, window: &Window, cx: &gpui::App) {
+        self.resume_at = self.focused_field(window, cx);
+    }
+
+    /// Brought back by Undo: focus where it was, else where writing starts.
+    pub fn restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.resume_at.take() {
+            Some(field) if self.fields().contains(&field) => self.focus_field(field, window, cx),
+            _ => self.focus_first(window, cx),
+        }
+    }
+
+    /// Whether one of its fields has focus.
+    pub fn has_focus(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.focused_field(window, cx).is_some()
     }
 
     pub fn focus_to(&mut self, window: &mut Window, cx: &mut Context<Self>) {

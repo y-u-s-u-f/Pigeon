@@ -446,15 +446,15 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 #### CMP-2 Reply
 
-- **Today:** `r`, toolbar, palette. Draft opens under the conversation; subject "Re: …" unless it already starts with "re:". `reply_content()` (`src/app/compose.rs`): if the last message is from the user, reply to its recipients, else to its sender. `reply_to` links the thread.
+- **Today:** `r`, toolbar, palette. Draft opens under the conversation; subject "Re: …" unless it already starts with "re:". `reply_recipients()` (`src/app/compose.rs`): if the last message is from the user (or an alias), reply to its To, else to its sender; never to the user unless they're its only recipient (a mail to yourself replies to yourself), as Gmail does. Unit-tested. `reply_to` links the thread.
 - **Needs:** A tester pass (T2b). Verified on the real account (W6): the reply lands in the same Gmail thread.
 - **Notes:** Earlier participants are ignored. With Google (W6) the send carries `threadId` and `In-Reply-To`/`References` built from the thread's last stored message (`mime::reply_threading()`, `src/backend/mime.rs`); a reply goes to the last message's `Reply-To` when it has one.
 
 #### CMP-3 Reply all
 
-- **Today:** `a`, toolbar, palette. To: sender plus the last message's recipients, minus the user; Cc: its Cc minus anyone in To. Dedupe by email, case-insensitive.
+- **Today:** `a`, toolbar, palette. To: sender plus the last message's recipients, minus the user (and aliases); Cc: its Cc minus anyone in To. To the user's own message: its To and Cc, the sender left out. If only Cc remains it moves to To; if no one remains, it goes to the user. Dedupe by email, case-insensitive. `reply_recipients()`, unit-tested.
 - **Needs:** A tester pass (T2b).
-- **Notes:** `Reply-To` is honoured (W6): its addresses replace the sender's in To (`reply_content()`).
+- **Notes:** `Reply-To` is honoured (W6): its addresses replace the sender's in To (`reply_recipients()`); not on the user's own messages.
 - **Notes:** Mailing lists and no-reply senders are included as is.
 
 #### CMP-4 Forward
@@ -570,13 +570,13 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 #### UND-1 Undo send
 
-- **Today:** Toast "Sending…" with Undo (`cmd-z`, `z`, palette) for 5 s (`TOAST_DURATION`), then "Message sent". Undo removes the message from Sent or the thread, restores the draft and reopens the composer. `UndoAction::Send` (`src/app.rs`), `undo()` (`src/app/compose.rs`). The send is a `MailOp::Send` the outbox holds for the 5 s (PER-2); Undo cancels it, or says "Already sent" if it went. With Google the held send is committed by W6 (CMP-8).
+- **Today:** Toast "Sending…" with Undo (`cmd-z`, `z`, palette) for 5 s (`TOAST_DURATION`), then "Message sent". Undo removes the message from Sent or the thread, restores the draft and reopens the composer, focused where the caret was (`Composer::remember_focus()` / `restore_focus()`), so its shortcuts work at once. `UndoAction::Send` (`src/app.rs`), `undo()` (`src/app/compose.rs`). The send is a `MailOp::Send` the outbox holds for the 5 s (PER-2); Undo cancels it, or says "Already sent" if it went. With Google the held send is committed by W6 (CMP-8).
 - **Needs:** A tester pass (T2b). Gmail's own "undo send" isn't in the API, so the hold is ours.
 - **Notes:** Once sent it can't be recalled.
 
 #### UND-2 Undo discard
 
-- **Today:** Toast "Draft discarded" with Undo for 5 s; Undo puts the draft back and reopens it. `UndoAction::Discard`. Discarding a saved draft queues a delayed `MailOp::DeleteDraft`; Undo cancels it, or saves the draft again if it already went.
+- **Today:** Toast "Draft discarded" with Undo for 5 s; Undo puts the draft back and reopens it, focused in the field it was in (so `cmd-shift-d` works again at once). `UndoAction::Discard`. Discarding a saved draft queues a delayed `MailOp::DeleteDraft`; Undo cancels it, or saves the draft again if it already went.
 - **Needs:** A tester pass (T2b). A never-saved draft only needs the composer back.
 - **Notes (W6):** The delayed `drafts.delete` is committed to Gmail; Undo after it went creates the draft again.
 

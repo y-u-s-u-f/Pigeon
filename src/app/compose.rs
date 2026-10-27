@@ -8,7 +8,7 @@ use super::{ComposeKind, Mode, PigeonApp, UndoAction};
 use crate::{
     actions::*,
     backend::{MailOp, OpId, Outgoing, gmail},
-    data::{Body, Contact, Folder, Quote, Thread, full_date},
+    data::{Body, Contact, Folder, Message, Quote, Thread, full_date},
     html,
     ui::composer::{
         ATTACHMENT_LIMIT, ATTACHMENT_LIMIT_ERROR, Composer, ComposerEvent, DraftContent, Quoted,
@@ -33,6 +33,56 @@ fn draft_content(thread: &Thread) -> DraftContent {
             .unwrap_or_else(|| html::plain_text(&html::parse(message.html()))),
         attachments: message.attachments.clone(),
     }
+}
+
+/// Who a reply to `last` goes to, as (To, Cc), like Gmail: to the sender, or
+/// where they asked (Reply-To); for Reply All also everyone else on it. To a
+/// message I sent: its recipients. Never to me, unless I'm all there is.
+fn reply_recipients(
+    kind: ComposeKind,
+    last: &Message,
+    is_me: impl Fn(&Contact) -> bool,
+) -> (Vec<Contact>, Vec<Contact>) {
+    if matches!(kind, ComposeKind::Forward | ComposeKind::New) {
+        return (Vec::new(), Vec::new());
+    }
+    let mine = is_me(&last.from);
+    let sender = if mine {
+        &[][..]
+    } else if last.reply_to.is_empty() {
+        std::slice::from_ref(&last.from)
+    } else {
+        last.reply_to.as_slice()
+    };
+    let others = |list: &mut Vec<Contact>, from: &[Contact], taken: &[Contact]| {
+        for contact in from {
+            let seen = taken
+                .iter()
+                .chain(list.iter())
+                .any(|c| c.email.eq_ignore_ascii_case(&contact.email));
+            if !is_me(contact) && !seen {
+                list.push(contact.clone());
+            }
+        }
+    };
+    let mut to = Vec::new();
+    let mut cc = Vec::new();
+    match kind {
+        ComposeKind::Reply if mine => others(&mut to, &last.to, &[]),
+        ComposeKind::Reply => others(&mut to, sender, &[]),
+        _ => {
+            others(&mut to, sender, &[]);
+            others(&mut to, &last.to, &[]);
+            others(&mut cc, &last.cc, &to);
+        }
+    }
+    if to.is_empty() {
+        to = std::mem::take(&mut cc);
+    }
+    if to.is_empty() {
+        to.push(last.from.clone());
+    }
+    (to, cc)
 }
 
 impl PigeonApp {
@@ -137,37 +187,7 @@ impl PigeonApp {
         thread: &Thread,
     ) -> (DraftContent, Option<Quoted>) {
         let last = thread.last_message();
-        let mine = self.data.is_me(&last.from);
-        // Answers go where the sender asked (Reply-To), else to them.
-        let sender = if mine || last.reply_to.is_empty() {
-            std::slice::from_ref(&last.from)
-        } else {
-            last.reply_to.as_slice()
-        };
-        let mut to: Vec<Contact> = Vec::new();
-        let mut cc: Vec<Contact> = Vec::new();
-        let add = |list: &mut Vec<Contact>, contact: &Contact, all: &[Contact]| {
-            let taken = all
-                .iter()
-                .chain(list.iter())
-                .any(|c| c.email.eq_ignore_ascii_case(&contact.email));
-            if !self.data.is_me(contact) && !taken {
-                list.push(contact.clone());
-            }
-        };
-        match kind {
-            ComposeKind::Reply if mine => last.to.iter().for_each(|c| add(&mut to, c, &[])),
-            ComposeKind::Reply => sender.iter().for_each(|c| add(&mut to, c, &[])),
-            ComposeKind::ReplyAll => {
-                for c in sender.iter().chain(&last.to) {
-                    add(&mut to, c, &[]);
-                }
-                for c in &last.cc {
-                    add(&mut cc, c, &to);
-                }
-            }
-            ComposeKind::Forward | ComposeKind::New => {}
-        }
+        let (to, cc) = reply_recipients(kind, last, |c| self.data.is_me(c));
 
         let subject = &thread.subject;
         let lower = subject.to_lowercase();
@@ -483,6 +503,7 @@ impl PigeonApp {
         } else if removed_draft.is_some() {
             self.selected = None;
         }
+        composer.update(cx, |c, cx| c.remember_focus(window, cx));
         self.close_composer(window, cx);
         self.sends.push(op);
         self.show_toast(
@@ -541,6 +562,7 @@ impl PigeonApp {
         if removed_draft.is_some() {
             self.selected = None;
         }
+        composer.update(cx, |c, cx| c.remember_focus(window, cx));
         self.close_composer(window, cx);
         if !pristine {
             self.show_toast(
@@ -647,7 +669,122 @@ impl PigeonApp {
         self.composer = None;
         self.set_composer(composer.clone(), cx);
         self.reader_focused = self.composer_inline(cx);
-        composer.update(cx, |c, cx| c.focus_first(window, cx));
+        composer.update(cx, |c, cx| c.restore_focus(window, cx));
+        // Reopening the thread can take focus back once the frame settles,
+        // and the draft's shortcuts need it.
+        cx.on_next_frame(window, move |this, window, cx| {
+            let current = this.composer.as_ref().is_some_and(|(c, _)| *c == composer);
+            if current && !composer.read(cx).has_focus(window, cx) {
+                composer.update(cx, |c, cx| c.focus_first(window, cx));
+            }
+        });
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn person(email: &str) -> Contact {
+        Contact {
+            name: String::new(),
+            email: email.into(),
+        }
+    }
+
+    fn message(from: &str, to: &[&str], cc: &[&str], reply_to: &[&str]) -> Message {
+        Message {
+            to: to.iter().map(|e| person(e)).collect(),
+            cc: cc.iter().map(|e| person(e)).collect(),
+            reply_to: reply_to.iter().map(|e| person(e)).collect(),
+            ..Message::new(person(from))
+        }
+    }
+
+    /// Me, and my alias.
+    fn is_me(c: &Contact) -> bool {
+        ["me@x.com", "alias@x.com"]
+            .iter()
+            .any(|e| e.eq_ignore_ascii_case(&c.email))
+    }
+
+    /// "To | Cc", for comparing.
+    fn recipients(kind: ComposeKind, m: &Message) -> String {
+        let (to, cc) = reply_recipients(kind, m, is_me);
+        let join = |l: Vec<Contact>| {
+            l.into_iter()
+                .map(|c| c.email)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        format!("{} | {}", join(to), join(cc))
+    }
+
+    #[test]
+    fn reply_to_someone_else_goes_to_the_sender() {
+        let m = message("ann@x.com", &["me@x.com", "bob@x.com"], &["cat@x.com"], &[]);
+        assert_eq!(recipients(ComposeKind::Reply, &m), "ann@x.com | ");
+        assert_eq!(
+            recipients(ComposeKind::ReplyAll, &m),
+            "ann@x.com, bob@x.com | cat@x.com"
+        );
+    }
+
+    #[test]
+    fn reply_to_my_sent_mail_goes_to_its_recipients() {
+        let m = message("me@x.com", &["bob@x.com"], &["cat@x.com", "me@x.com"], &[]);
+        assert_eq!(recipients(ComposeKind::Reply, &m), "bob@x.com | ");
+        assert_eq!(
+            recipients(ComposeKind::ReplyAll, &m),
+            "bob@x.com | cat@x.com"
+        );
+    }
+
+    #[test]
+    fn reply_to_my_mail_to_myself_goes_to_me() {
+        let m = message("me@x.com", &["me@x.com"], &[], &[]);
+        assert_eq!(recipients(ComposeKind::Reply, &m), "me@x.com | ");
+        assert_eq!(recipients(ComposeKind::ReplyAll, &m), "me@x.com | ");
+    }
+
+    #[test]
+    fn reply_all_to_my_mail_only_cced_moves_cc_to_to() {
+        let m = message("me@x.com", &["me@x.com"], &["cat@x.com"], &[]);
+        assert_eq!(recipients(ComposeKind::ReplyAll, &m), "cat@x.com | ");
+    }
+
+    #[test]
+    fn reply_all_honours_reply_to() {
+        let m = message(
+            "ann@x.com",
+            &["me@x.com", "bob@x.com"],
+            &["list@x.com", "bob@x.com"],
+            &["list@x.com"],
+        );
+        assert_eq!(recipients(ComposeKind::Reply, &m), "list@x.com | ");
+        assert_eq!(
+            recipients(ComposeKind::ReplyAll, &m),
+            "list@x.com, bob@x.com | "
+        );
+    }
+
+    #[test]
+    fn aliases_count_as_me() {
+        let m = message("ALIAS@x.com", &["bob@x.com", "me@x.com"], &[], &[]);
+        assert_eq!(recipients(ComposeKind::Reply, &m), "bob@x.com | ");
+        let m = message("alias@x.com", &["me@x.com"], &[], &[]);
+        assert_eq!(recipients(ComposeKind::Reply, &m), "alias@x.com | ");
+        let m = message("bob@x.com", &["alias@x.com", "cat@x.com"], &[], &[]);
+        assert_eq!(
+            recipients(ComposeKind::ReplyAll, &m),
+            "bob@x.com, cat@x.com | "
+        );
+    }
+
+    #[test]
+    fn forwards_start_empty() {
+        let m = message("ann@x.com", &["me@x.com"], &[], &[]);
+        assert_eq!(recipients(ComposeKind::Forward, &m), " | ");
     }
 }
