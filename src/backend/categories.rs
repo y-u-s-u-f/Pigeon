@@ -469,6 +469,27 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_answer_counts_as_none() {
+        const PATH: &str = "/gmail/v1/users/me/threads";
+        let fake = FakeTransport::new()
+            .on("GET", PATH, &[("q", "category%3Aforums")], &[(204, "")])
+            .on("GET", PATH, &[("q", "category%3Asocial")], &[(200, "")])
+            .on(
+                "GET",
+                PATH,
+                &[("q", "category%3Aupdates")],
+                &[(200, &ids(4, None))],
+            )
+            .on("GET", PATH, &[], &[(200, &ids(2, None))]);
+        let counts = fetch_counts(&Gmail::new(Arc::new(fake))).unwrap();
+        assert_eq!(counts.unread(Category::Forums), 0);
+        assert_eq!(counts.unread(Category::Social), 0);
+        assert_eq!(counts.unread(Category::Updates), 4);
+        assert_eq!(counts.unread(Category::Primary), 2);
+        assert_eq!(counts.unread(Category::Promotions), 2);
+    }
+
+    #[test]
     fn a_failed_count_is_an_error() {
         let fake = FakeTransport::new().on("GET", "/gmail/v1/users/me/threads", &[], &[(0, "")]);
         assert!(

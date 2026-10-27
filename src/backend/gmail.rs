@@ -360,9 +360,13 @@ fn parse<T: serde::de::DeserializeOwned>(response: &Response) -> Result<T, Gmail
             message,
         });
     }
-    response
-        .json()
-        .map_err(|e| GmailError::Parse(e.to_string()))
+    // A list with no matches can come back as a 204 with no body.
+    let body: &[u8] = if response.body.is_empty() {
+        b"{}"
+    } else {
+        &response.body
+    };
+    serde_json::from_slice(body).map_err(|e| GmailError::Parse(e.to_string()))
 }
 
 /// Percent-encodes a query value.

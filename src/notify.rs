@@ -86,7 +86,16 @@ pub fn dismiss(tag: &str, cx: &mut App) {
 
 fn post(notice: Notice, threads: Vec<String>, cx: &mut App) {
     let tag = full_tag(&notice.tag);
-    logging::info(&format!("notify: tag={tag} title={}", notice.title));
+    let body: String = notice
+        .body
+        .chars()
+        .take(80)
+        .map(|c| if c == '\n' { ' ' } else { c })
+        .collect();
+    logging::info(&format!(
+        "notify: tag={tag} title={} body={body}",
+        notice.title
+    ));
     let actions = notice
         .join_url
         .iter()
