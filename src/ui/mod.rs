@@ -5,6 +5,7 @@ pub mod command_palette;
 pub mod composer;
 pub mod html_view;
 pub mod invite;
+pub mod onboarding;
 pub mod rail;
 pub mod reader;
 pub mod rich_editor;
@@ -12,6 +13,7 @@ pub mod selectable;
 pub mod settings;
 pub mod shortcuts_help;
 pub mod sidebar;
+pub mod status;
 pub mod style;
 pub mod thread_list;
 

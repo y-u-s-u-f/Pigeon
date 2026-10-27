@@ -1,11 +1,23 @@
 //! HTTP: the `Transport` the backend sends requests through, a fake one for
 //! tests, and Google's HTTP batch format (up to 50 calls in one request).
-//! The real transport (ureq), auth headers, retries, backoff and the quota
-//! limiter come with W2.
+//!
+//! - `UreqTransport`: the network, logging each call as
+//!   `METHOD host/path status ms` and nothing else.
+//! - `GoogleTransport`: on top of it, the access token, one refresh and
+//!   retry on 401, backoff on network errors and rate limits, the Gmail
+//!   quota limiter, and at most 4 calls in flight. Sync code calls it
+//!   through `Transport`, so tests swap in `FakeTransport`.
 
-use std::{collections::VecDeque, sync::Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Request {
     pub method: &'static str,
     /// Absolute, with any query string.
@@ -23,16 +35,20 @@ pub struct Response {
     pub body: Vec<u8>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransportError {
     /// No connection, DNS, TLS or a timeout: worth retrying.
     Network(String),
+    /// The refresh token stopped working (`invalid_grant`): nothing goes
+    /// until the user signs in again (STA-4).
+    AuthExpired,
 }
 
 impl std::fmt::Display for TransportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TransportError::Network(e) => write!(f, "network error: {e}"),
+            TransportError::AuthExpired => write!(f, "sign in again"),
         }
     }
 }
@@ -117,6 +133,385 @@ impl Response {
 
     pub fn json<T: serde::de::DeserializeOwned>(&self) -> serde_json::Result<T> {
         serde_json::from_slice(&self.body)
+    }
+}
+
+/// Never the query, the headers' secrets or the body: they hold tokens,
+/// codes and mail.
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let headers: Vec<(&str, &str)> = self
+            .headers
+            .iter()
+            .map(|(name, value)| {
+                let secret = name.eq_ignore_ascii_case("authorization")
+                    || name.eq_ignore_ascii_case("cookie");
+                (name.as_str(), if secret { "***" } else { value.as_str() })
+            })
+            .collect();
+        f.debug_struct("Request")
+            .field("method", &self.method)
+            .field("url", &redact_url(&self.url))
+            .field("headers", &headers)
+            .field("body", &format_args!("{} bytes", self.body.len()))
+            .field("cost", &self.cost)
+            .finish()
+    }
+}
+
+/// `host/path`, without the scheme or the query.
+pub fn redact_url(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+    if url.contains('?') {
+        format!("{rest}?…")
+    } else {
+        rest.to_string()
+    }
+}
+
+/// The one line a call leaves in the log.
+pub fn log_line(method: &str, url: &str, status: Option<u16>, elapsed: Duration) -> String {
+    let status = status.map_or("ERR".to_string(), |s| s.to_string());
+    format!(
+        "{method} {} {status} {}ms",
+        redact_url(url),
+        elapsed.as_millis()
+    )
+}
+
+// The network.
+
+/// Biggest body read: a raw message with its attachments, in base64.
+const BODY_LIMIT: u64 = 64 * 1024 * 1024;
+
+pub struct UreqTransport {
+    agent: ureq::Agent,
+}
+
+impl Default for UreqTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl UreqTransport {
+    pub fn new() -> Self {
+        let config = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_connect(Some(Duration::from_secs(15)))
+            .timeout_global(Some(Duration::from_secs(120)))
+            .user_agent("Pigeon")
+            .build();
+        Self {
+            agent: ureq::Agent::new_with_config(config),
+        }
+    }
+
+    fn run(&self, request: &Request) -> Result<Response, ureq::Error> {
+        let mut builder = ureq::http::Request::builder()
+            .method(request.method)
+            .uri(&request.url);
+        for (name, value) in &request.headers {
+            builder = builder.header(name, value);
+        }
+        let response = if request.body.is_empty() {
+            self.agent.run(builder.body(())?)?
+        } else {
+            self.agent.run(builder.body(request.body.clone())?)?
+        };
+        let status = response.status().as_u16();
+        let headers = response
+            .headers()
+            .iter()
+            .map(|(n, v)| (n.to_string(), v.to_str().unwrap_or_default().to_string()))
+            .collect();
+        let body = response
+            .into_body()
+            .with_config()
+            .limit(BODY_LIMIT)
+            .read_to_vec()?;
+        Ok(Response {
+            status,
+            headers,
+            body,
+        })
+    }
+}
+
+impl Transport for UreqTransport {
+    fn send(&self, request: &Request) -> Result<Response, TransportError> {
+        let started = Instant::now();
+        let result = self.run(request);
+        let status = result.as_ref().ok().map(|r| r.status);
+        eprintln!(
+            "Pigeon: {}",
+            log_line(request.method, &request.url, status, started.elapsed())
+        );
+        // ureq's errors name the host at most; never the query or headers.
+        result.map_err(|e| TransportError::Network(e.to_string()))
+    }
+}
+
+// Time, so tests can run backoff and the limiter without waiting.
+
+pub trait Clock: Send + Sync {
+    fn now(&self) -> Instant;
+    fn sleep(&self, duration: Duration);
+    /// Up to 1 s of jitter added to each backoff.
+    fn jitter(&self) -> Duration;
+}
+
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn sleep(&self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+
+    fn jitter(&self) -> Duration {
+        // Random enough for spreading retries out.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        Duration::from_millis(u64::from(nanos % 1000))
+    }
+}
+
+// Retries (docs/BACKEND_SPRINT_1.md, 2.7).
+
+/// Tries per request, the first included, before it fails.
+pub const MAX_ATTEMPTS: u32 = 8;
+
+/// The wait before retry number `attempt + 1`: 1, 2, 4 … 64 s, plus jitter.
+pub fn backoff(attempt: u32, jitter: Duration) -> Duration {
+    Duration::from_secs(1u64 << attempt.min(6)) + jitter
+}
+
+/// 429, 5xx, and 403 for a rate limit (not for a permission).
+pub fn is_retryable(response: &Response) -> bool {
+    match response.status {
+        429 | 500..=599 => true,
+        403 => {
+            let body = String::from_utf8_lossy(&response.body);
+            body.contains("rateLimitExceeded") || body.contains("userRateLimitExceeded")
+        }
+        _ => false,
+    }
+}
+
+// The Gmail quota (2.6): 6,000 units a minute per user.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Priority {
+    /// Sync: may use all but the reserve.
+    Background,
+    /// Something the user did: goes first, into the reserve too.
+    User,
+}
+
+/// A token bucket in quota units.
+pub struct Limiter {
+    capacity: f64,
+    /// Units only user actions may spend.
+    reserve: f64,
+    per_sec: f64,
+    state: Mutex<(f64, Instant)>,
+}
+
+impl Limiter {
+    pub fn new(capacity: u32, reserve: u32, per_minute: u32, now: Instant) -> Self {
+        Self {
+            capacity: capacity.into(),
+            reserve: reserve.into(),
+            per_sec: f64::from(per_minute) / 60.,
+            state: Mutex::new((capacity.into(), now)),
+        }
+    }
+
+    /// Gmail's: 6,000 a minute, 1,000 of them kept for user actions.
+    pub fn gmail(now: Instant) -> Self {
+        Self::new(6000, 1000, 6000, now)
+    }
+
+    /// Takes `cost` and answers zero, or answers how long until it can.
+    /// A call costing more than the bucket goes once it's full.
+    pub fn try_take(&self, cost: u32, priority: Priority, now: Instant) -> Duration {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let (tokens, last) = &mut *state;
+        let elapsed = now.saturating_duration_since(*last).as_secs_f64();
+        *tokens = (*tokens + elapsed * self.per_sec).min(self.capacity);
+        *last = now;
+        let floor = match priority {
+            Priority::Background => self.reserve,
+            Priority::User => 0.,
+        };
+        let need = f64::from(cost).min(self.capacity - floor);
+        let available = *tokens - floor;
+        if available >= need {
+            *tokens -= f64::from(cost);
+            Duration::ZERO
+        } else {
+            Duration::from_secs_f64((need - available) / self.per_sec)
+        }
+    }
+
+    pub fn acquire(&self, cost: u32, priority: Priority, clock: &dyn Clock) {
+        loop {
+            let wait = self.try_take(cost, priority, clock.now());
+            if wait.is_zero() {
+                return;
+            }
+            clock.sleep(wait);
+        }
+    }
+
+    /// Units left now, for tests.
+    pub fn tokens(&self, now: Instant) -> f64 {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let elapsed = now.saturating_duration_since(state.1).as_secs_f64();
+        (state.0 + elapsed * self.per_sec).min(self.capacity)
+    }
+}
+
+/// At most `max` at once: `ureq` blocks a background thread per call.
+struct InFlight {
+    count: Mutex<usize>,
+    freed: Condvar,
+    max: usize,
+}
+
+struct Permit<'a>(&'a InFlight);
+
+impl InFlight {
+    fn new(max: usize) -> Self {
+        Self {
+            count: Mutex::new(0),
+            freed: Condvar::new(),
+            max,
+        }
+    }
+
+    fn acquire(&self) -> Permit<'_> {
+        let mut count = self.count.lock().unwrap_or_else(|e| e.into_inner());
+        while *count >= self.max {
+            count = self.freed.wait(count).unwrap_or_else(|e| e.into_inner());
+        }
+        *count += 1;
+        Permit(self)
+    }
+}
+
+impl Drop for Permit<'_> {
+    fn drop(&mut self) {
+        *self.0.count.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
+        self.0.freed.notify_one();
+    }
+}
+
+pub const MAX_IN_FLIGHT: usize = 4;
+
+/// Hands out access tokens (`auth::Auth`).
+pub trait Authorizer: Send + Sync {
+    /// A token good for at least the next minute, refreshing if needed.
+    fn access_token(&self) -> Result<String, TransportError>;
+    /// A request using `token` got 401: the next call refreshes.
+    fn invalidate(&self, token: &str);
+}
+
+/// Google's APIs, signed in.
+pub struct GoogleTransport {
+    inner: Arc<dyn Transport>,
+    auth: Arc<dyn Authorizer>,
+    clock: Arc<dyn Clock>,
+    limiter: Limiter,
+    in_flight: InFlight,
+    /// Network failures in a row; two mean offline (2.9).
+    failures: AtomicU32,
+}
+
+impl GoogleTransport {
+    pub fn new(
+        inner: Arc<dyn Transport>,
+        auth: Arc<dyn Authorizer>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        let now = clock.now();
+        Self {
+            inner,
+            auth,
+            clock,
+            limiter: Limiter::gmail(now),
+            in_flight: InFlight::new(MAX_IN_FLIGHT),
+            failures: AtomicU32::new(0),
+        }
+    }
+
+    /// Two network failures in a row, and no answer since.
+    pub fn is_offline(&self) -> bool {
+        self.failures.load(Ordering::Relaxed) >= 2
+    }
+
+    /// For something the user did: ahead of sync, into the quota's reserve.
+    pub fn send_user(&self, request: &Request) -> Result<Response, TransportError> {
+        self.send_with(request, Priority::User)
+    }
+
+    /// Sends with the access token, waiting for quota first. A 401 refreshes
+    /// the token and retries once. Network errors, 429, 5xx and rate-limit
+    /// 403s back off and retry, up to `MAX_ATTEMPTS` tries; then the last
+    /// response or error is the answer.
+    pub fn send_with(
+        &self,
+        request: &Request,
+        priority: Priority,
+    ) -> Result<Response, TransportError> {
+        let mut refreshed = false;
+        let mut attempt = 0;
+        loop {
+            self.limiter.acquire(request.cost, priority, &*self.clock);
+            let result = self.auth.access_token().and_then(|token| {
+                let mut signed = request.clone();
+                signed
+                    .headers
+                    .push(("Authorization".into(), format!("Bearer {token}")));
+                let _permit = self.in_flight.acquire();
+                self.inner.send(&signed).map(|r| (r, token))
+            });
+            match result {
+                Ok((response, token)) => {
+                    self.failures.store(0, Ordering::Relaxed);
+                    if response.status == 401 && !refreshed {
+                        refreshed = true;
+                        self.auth.invalidate(&token);
+                        continue;
+                    }
+                    if !is_retryable(&response) || attempt + 1 >= MAX_ATTEMPTS {
+                        return Ok(response);
+                    }
+                }
+                Err(TransportError::AuthExpired) => return Err(TransportError::AuthExpired),
+                Err(e @ TransportError::Network(_)) => {
+                    self.failures.fetch_add(1, Ordering::Relaxed);
+                    if attempt + 1 >= MAX_ATTEMPTS {
+                        return Err(e);
+                    }
+                }
+            }
+            self.clock.sleep(backoff(attempt, self.clock.jitter()));
+            attempt += 1;
+        }
+    }
+}
+
+impl Transport for GoogleTransport {
+    /// Sync's priority; see `send_user`.
+    fn send(&self, request: &Request) -> Result<Response, TransportError> {
+        self.send_with(request, Priority::Background)
     }
 }
 
@@ -388,6 +783,257 @@ mod tests {
         assert_eq!(second.status, 404);
         // Item 3 is missing from the response.
         assert!(parts[2].is_none());
+    }
+
+    /// Time that moves only when slept through.
+    struct FakeClock {
+        start: Instant,
+        offset: Mutex<Duration>,
+        sleeps: Mutex<Vec<Duration>>,
+    }
+
+    impl FakeClock {
+        fn new() -> Self {
+            Self {
+                start: Instant::now(),
+                offset: Mutex::new(Duration::ZERO),
+                sleeps: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn sleeps(&self) -> Vec<Duration> {
+            self.sleeps.lock().unwrap().clone()
+        }
+    }
+
+    impl Clock for FakeClock {
+        fn now(&self) -> Instant {
+            self.start + *self.offset.lock().unwrap()
+        }
+
+        fn sleep(&self, duration: Duration) {
+            *self.offset.lock().unwrap() += duration;
+            self.sleeps.lock().unwrap().push(duration);
+        }
+
+        fn jitter(&self) -> Duration {
+            Duration::from_millis(250)
+        }
+    }
+
+    /// Hands out `token-1`, then `token-2` after each invalidation.
+    #[derive(Default)]
+    struct FakeAuth {
+        generation: Mutex<u32>,
+    }
+
+    impl Authorizer for FakeAuth {
+        fn access_token(&self) -> Result<String, TransportError> {
+            Ok(format!("token-{}", *self.generation.lock().unwrap() + 1))
+        }
+
+        fn invalidate(&self, token: &str) {
+            let mut generation = self.generation.lock().unwrap();
+            if token == format!("token-{}", *generation + 1) {
+                *generation += 1;
+            }
+        }
+    }
+
+    const PROFILE: &str = "https://gmail.googleapis.com/gmail/v1/users/me/profile";
+
+    fn google(fake: Arc<FakeTransport>) -> (GoogleTransport, Arc<FakeClock>) {
+        let clock = Arc::new(FakeClock::new());
+        (
+            GoogleTransport::new(fake, Arc::new(FakeAuth::default()), clock.clone()),
+            clock,
+        )
+    }
+
+    fn bearer(request: &Request) -> &str {
+        request
+            .headers
+            .iter()
+            .find(|(n, _)| n == "Authorization")
+            .map(|(_, v)| v.as_str())
+            .unwrap()
+    }
+
+    #[test]
+    fn unauthorized_refreshes_and_retries_once() {
+        let fake = Arc::new(FakeTransport::new().on(
+            "GET",
+            "/gmail/v1/users/me/profile",
+            &[],
+            &[(401, ""), (200, "{}")],
+        ));
+        let (transport, clock) = google(fake.clone());
+        let response = transport.send(&Request::get(PROFILE, 1)).unwrap();
+        assert_eq!(response.status, 200);
+        let requests = fake.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(bearer(&requests[0]), "Bearer token-1");
+        assert_eq!(bearer(&requests[1]), "Bearer token-2");
+        // No backoff for a refresh.
+        assert!(clock.sleeps().is_empty());
+
+        // A second 401 in a row is the answer.
+        let fake = Arc::new(FakeTransport::new().on(
+            "GET",
+            "/gmail/v1/users/me/profile",
+            &[],
+            &[(401, "")],
+        ));
+        let (transport, _) = google(fake.clone());
+        assert_eq!(
+            transport.send(&Request::get(PROFILE, 1)).unwrap().status,
+            401
+        );
+        assert_eq!(fake.requests().len(), 2);
+    }
+
+    #[test]
+    fn rate_limits_and_server_errors_back_off() {
+        let fake = Arc::new(FakeTransport::new().on(
+            "GET",
+            "/gmail/v1/users/me/profile",
+            &[],
+            &[(429, ""), (503, ""), (200, "{}")],
+        ));
+        let (transport, clock) = google(fake.clone());
+        assert_eq!(
+            transport.send(&Request::get(PROFILE, 1)).unwrap().status,
+            200
+        );
+        let j = Duration::from_millis(250);
+        assert_eq!(
+            clock.sleeps(),
+            [Duration::from_secs(1) + j, Duration::from_secs(2) + j]
+        );
+        assert_eq!(fake.requests().len(), 3);
+    }
+
+    #[test]
+    fn network_errors_retry_eight_times_then_fail() {
+        let fake =
+            Arc::new(FakeTransport::new().on("GET", "/gmail/v1/users/me/profile", &[], &[(0, "")]));
+        let (transport, clock) = google(fake.clone());
+        assert!(matches!(
+            transport.send(&Request::get(PROFILE, 1)),
+            Err(TransportError::Network(_))
+        ));
+        assert_eq!(fake.requests().len(), MAX_ATTEMPTS as usize);
+        let seconds: Vec<u64> = clock.sleeps().iter().map(|d| d.as_secs()).collect();
+        assert_eq!(seconds, [1, 2, 4, 8, 16, 32, 64]);
+        assert!(transport.is_offline());
+        assert_eq!(backoff(12, Duration::ZERO), Duration::from_secs(64));
+    }
+
+    #[test]
+    fn only_rate_limit_forbiddens_retry() {
+        let response = |status, body: &str| Response {
+            status,
+            headers: Vec::new(),
+            body: body.as_bytes().to_vec(),
+        };
+        let limited = r#"{"error":{"errors":[{"reason":"userRateLimitExceeded"}],"code":403}}"#;
+        assert!(is_retryable(&response(403, limited)));
+        assert!(!is_retryable(&response(
+            403,
+            r#"{"error":{"errors":[{"reason":"insufficientPermissions"}]}}"#
+        )));
+        assert!(is_retryable(&response(500, "")));
+        assert!(!is_retryable(&response(404, "")));
+        assert!(!is_retryable(&response(412, "")));
+    }
+
+    #[test]
+    fn limiter_keeps_a_reserve_for_the_user() {
+        let start = Instant::now();
+        let limiter = Limiter::gmail(start);
+        // Sync spends down to the reserve, then waits.
+        assert_eq!(
+            limiter.try_take(5000, Priority::Background, start),
+            Duration::ZERO
+        );
+        let wait = limiter.try_take(40, Priority::Background, start);
+        assert_eq!(wait, Duration::from_millis(400));
+        // The user still gets through.
+        assert_eq!(limiter.try_take(100, Priority::User, start), Duration::ZERO);
+        assert_eq!(limiter.tokens(start), 900.);
+        // 100 units a second come back.
+        let later = start + Duration::from_secs(2);
+        assert_eq!(limiter.tokens(later), 1100.);
+        assert_eq!(
+            limiter.try_take(100, Priority::Background, later),
+            Duration::ZERO
+        );
+        // A call bigger than the bucket goes once it's full.
+        let full = later + Duration::from_secs(60);
+        assert_eq!(
+            limiter.try_take(9000, Priority::Background, full),
+            Duration::ZERO
+        );
+        assert!(limiter.tokens(full) < 0.);
+    }
+
+    #[test]
+    fn limiter_waits_on_the_clock() {
+        let clock = FakeClock::new();
+        let limiter = Limiter::new(100, 0, 60, clock.now());
+        limiter.acquire(100, Priority::Background, &clock);
+        limiter.acquire(10, Priority::Background, &clock);
+        assert_eq!(clock.sleeps(), [Duration::from_secs(10)]);
+    }
+
+    #[test]
+    fn logs_and_debug_leave_secrets_out() {
+        let mut request = Request::get(
+            "https://oauth2.googleapis.com/token?code=4/secret-code&state=s",
+            0,
+        );
+        request
+            .headers
+            .push(("Authorization".into(), "Bearer secret-token".into()));
+        request.body = b"refresh_token=secret-refresh".to_vec();
+        let printed = format!("{request:?}");
+        for secret in ["secret-code", "secret-token", "secret-refresh"] {
+            assert!(!printed.contains(secret), "{secret} in {printed}");
+        }
+        assert_eq!(
+            log_line("POST", &request.url, Some(200), Duration::from_millis(42)),
+            "POST oauth2.googleapis.com/token?… 200 42ms"
+        );
+        assert_eq!(
+            log_line("GET", PROFILE, None, Duration::from_millis(7)),
+            "GET gmail.googleapis.com/gmail/v1/users/me/profile ERR 7ms"
+        );
+    }
+
+    #[test]
+    fn at_most_four_in_flight() {
+        let in_flight = Arc::new(InFlight::new(MAX_IN_FLIGHT));
+        let peak = Arc::new(Mutex::new((0usize, 0usize)));
+        let threads: Vec<_> = (0..12)
+            .map(|_| {
+                let (in_flight, peak) = (in_flight.clone(), peak.clone());
+                std::thread::spawn(move || {
+                    let _permit = in_flight.acquire();
+                    {
+                        let mut p = peak.lock().unwrap();
+                        p.0 += 1;
+                        p.1 = p.1.max(p.0);
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                    peak.lock().unwrap().0 -= 1;
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let max = peak.lock().unwrap().1;
+        assert!((1..=MAX_IN_FLIGHT).contains(&max));
     }
 
     #[test]

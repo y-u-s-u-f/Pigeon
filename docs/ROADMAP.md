@@ -119,8 +119,8 @@ The user's own plans, not driven by Google's APIs.
 
 #### ACC-1 Account card
 
-- **Today:** The sidebar shows name, email and an initials avatar; clicking does nothing. `render_sidebar()` in `src/ui/sidebar.rs` reads `data.account`. Settings › Accounts shows `MailData::me()` only. Avatar colour comes from the address (`Theme::avatar_color`).
-- **Needs:** The signed-in profile. Gmail `getProfile` gives `emailAddress`, `messagesTotal`, `threadsTotal` and `historyId` but no name; the name and photo come from People `people.get` with `resourceName=people/me` (`personFields=names,photos,emailAddresses`) or the OpenID userinfo.
+- **Today:** The sidebar shows name, email and an initials avatar; clicking does nothing. `render_sidebar()` in `src/ui/sidebar.rs` reads `data.account`. Settings › Accounts shows `MailData::me()`, the granted features and the sync status. Avatar colour comes from the address (`Theme::avatar_color`). Signed in (W2), name and email come from `accounts.json` (the ID token's claims at sign-in), and every launch refreshes the name from People `people/me` (`Backend::check_profile()`), saving it back to `accounts.json`.
+- **Needs:** Photo (`personFields=photos`) not fetched yet. The signed-in profile. Gmail `getProfile` gives `emailAddress`, `messagesTotal`, `threadsTotal` and `historyId` but no name; the name and photo come from People `people.get` with `resourceName=people/me` (`personFields=names,photos,emailAddresses`) or the OpenID userinfo.
 
 #### ACC-2 Identity of "me"
 
@@ -130,8 +130,8 @@ The user's own plans, not driven by Google's APIs.
 
 #### ACC-3 Add, sign in to and remove accounts
 
-- **Today:** Not built. The model holds exactly one account (`MailData::account`).
-- **Needs:** Google's desktop flow: open the system browser, loopback redirect (`http://127.0.0.1:<port>`) with PKCE, exchange the code, store tokens in the Keychain. Ask for mail, calendar and contacts scopes together (CAL-1). Removing an account revokes its token (ACC-7) and deletes its local data (PER-1).
+- **Today:** Built in W2 for one account. Launch without `PIGEON_DEMO` picks the source in `Backend::open()`: `accounts.json` plus the Keychain item (service `Pigeon Google`, read through `/usr/bin/security`) → Google mode with no sign-in screen; neither → the sign-in screen (`src/ui/onboarding.rs`: "Sign in with Google" (Enter), "Try with demo data" (D), waiting state with Cancel (Esc), errors in plain words). Sign-in (`Backend::sign_in()`, `src/backend/auth.rs`): loopback on `127.0.0.1:0`, PKCE S256 with a 64-byte `SecRandom` verifier, random `state`, `access_type=offline`, `prompt=consent`, `include_granted_scopes=true`, the 8 scopes, opened with `cx.open_url()`, 5 min timeout. The code is exchanged at `token_uri`; the refresh token goes to the Keychain through `security -i` (on stdin, never argv) and `{email, name, scopes}` to `accounts.json` (0600). A different account signed in before is forgotten. Sign In with Google from ⌘K; Use Demo Data switches a signed-out window to the placeholder data until relaunch. `PIGEON_DATA_DIR` moves `accounts.json`, `google_client.json` and the cache.
+- **Needs:** Adding a second account (ACC-4). Google's desktop flow: open the system browser, loopback redirect (`http://127.0.0.1:<port>`) with PKCE, exchange the code, store tokens in the Keychain. Ask for mail, calendar and contacts scopes together (CAL-1). Removing an account revokes its token (ACC-7) and deletes its local data (PER-1).
 - **Notes:** IMAP/SMTP credentials would be the non-Google path. See DAT-2 for the one-account model.
 
 #### ACC-4 Account switcher and multiple accounts
@@ -142,16 +142,18 @@ The user's own plans, not driven by Google's APIs.
 
 #### ACC-5 Per-account sync status
 
-- **Today:** Not built. No "last synced" time or indicator.
-- **Needs:** Per account: last successful sync, current state, last error. Links to STA-1, STA-3.
+- **Today:** Basic (W2). A status line under the sidebar's account card and in Settings › Accounts (`src/ui/status.rs`): "Synced just now" / "Synced 3 minutes ago" / "Syncing…" / "Syncing 340 of 1,000" / "Offline · 3 changes waiting" / "Sign in again" (a button that runs Sign In) / "Demo data". `Backend::set_status()` and `Backend::note_error()` are what sync (W3, W4) calls; until then the launch profile check sets "Synced just now".
+- **Needs:** W3/W4 to feed it from their sync loops; last error and a periodic re-render of the relative time (W11). Per account: last successful sync, current state, last error. Links to STA-1, STA-3.
 
 #### ACC-6 Scopes and consent
 
-- **Needs:** Pick the narrowest scopes that cover the features. Likely set: `gmail.modify` (read, label, send, trash; no permanent delete), `gmail.settings.basic` (filters, vacation, send-as, signatures), `calendar` or the narrower `calendar.events` + `calendar.calendarlist` + `calendar.calendars` + `calendar.acls` + `calendar.settings.readonly` + `calendar.freebusy`, `contacts` and `contacts.other.readonly` (and `directory.readonly` for Workspace), plus `openid email profile`. Permanent delete (FOL-8) needs `https://mail.google.com/`.
+- **Today:** W2 asks for `openid`, `userinfo.email`, `userinfo.profile`, `gmail.modify`, `calendar`, `contacts.readonly`, `contacts.other.readonly` and `directory.readonly` (`auth::SCOPES`), stores the granted `scope` in `accounts.json`, and exposes `Backend::has_scope()` / `granted_scopes()`. Settings › Accounts lists the allowed features ("Mail, Calendar and Contacts allowed", or what's not). Calendar without its scope shows "Calendar access wasn't granted. Sign in again to allow it." (CAL-1). A missing scope also makes Sign In available while signed in.
+- **Needs:** W3 and W8 to skip Mail and Contacts sync without their scopes. Pick the narrowest scopes that cover the features. Likely set: `gmail.modify` (read, label, send, trash; no permanent delete), `gmail.settings.basic` (filters, vacation, send-as, signatures), `calendar` or the narrower `calendar.events` + `calendar.calendarlist` + `calendar.calendars` + `calendar.acls` + `calendar.settings.readonly` + `calendar.freebusy`, `contacts` and `contacts.other.readonly` (and `directory.readonly` for Workspace), plus `openid email profile`. Permanent delete (FOL-8) needs `https://mail.google.com/`.
 - **Notes:** Users can untick scopes on the consent screen (granular consent). Read the granted scopes from the token response and turn off features that lack them. Ask for extra scopes later with incremental authorization (`include_granted_scopes=true`).
 
 #### ACC-7 Token refresh, revoke and sign out
 
+- **Today:** W2. `auth::Auth` keeps the access token in memory with its expiry and refreshes 60 s early; one refresh runs at a time and other callers wait for it. `GoogleTransport` refreshes once and retries on a 401. Sign Out (⌘K) revokes at `oauth2.googleapis.com/revoke` (best effort), deletes the Keychain item, the `accounts.json` entry and the account's cached rows (`Store::delete_account()`), then shows the sign-in screen. Settings has no Sign Out button yet (W11).
 - **Needs:** Refresh the access token before it expires, retry once on 401, then show "sign in again" (STA-4). Sign out calls the revoke endpoint and deletes the Keychain item.
 - **Notes:** While the OAuth app is in "Testing" status, refresh tokens expire after 7 days.
 
@@ -880,8 +882,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-1 Switch between Mail and Calendar
 
-- **Today:** Rail icons, `cmd-1`/`cmd-2`, palette "Go to Mail/Calendar". Mail state is kept across switches. `PigeonApp::set_mode()`; `src/ui/rail.rs`.
-- **Needs:** Calendar scopes at sign-in (ACC-6). An empty state for accounts without calendar access (not built).
+- **Today:** Rail icons, `cmd-1`/`cmd-2`, palette "Go to Mail/Calendar". Mail state is kept across switches. `PigeonApp::set_mode()`; `src/ui/rail.rs`. Sign-in asks for `calendar` (W2); without it the calendar pane shows "Calendar access wasn't granted. Sign in again to allow it." (`ui::status::missing_scope()`).
+- **Needs:** A tester to confirm on the real account.
 
 #### CAL-2 Calendar list, colours and visibility
 
@@ -1144,7 +1146,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### SYN-7 Batching, quotas and backoff
 
-- **Needs:** Group calls into HTTP batch requests (up to 100 calls; Gmail advises at most 50) for list-then-get and bulk actions (ACT-6). Respect per-user rate limits with exponential backoff on `429` and `403 rateLimitExceeded`/`userRateLimitExceeded`. Ask for partial responses (`fields`) to cut payloads.
+- **Today:** W2, in `src/backend/http.rs`. `GoogleTransport` (what `Backend::transport()` hands sync) adds the access token, waits on a token-bucket limiter in Gmail quota units (6,000/min, 1,000 kept for user actions: `send_user()`; every `Request` declares `cost`), keeps at most 4 calls in flight, and retries network errors, 429, 5xx and 403 `rateLimitExceeded`/`userRateLimitExceeded` with truncated exponential backoff (1, 2, 4 … 64 s plus up to 1 s jitter, 8 tries). `UreqTransport` logs each call as `METHOD host/path status ms`, query redacted. HTTP batch encode/decode is from W1.
+- **Needs:** W3/W5 to batch their gets and modifies; `fields=` partial responses; a "Waiting for Gmail…" status during long backoffs (2.9). Group calls into HTTP batch requests (up to 100 calls; Gmail advises at most 50) for list-then-get and bulk actions (ACT-6). Respect per-user rate limits with exponential backoff on `429` and `403 rateLimitExceeded`/`userRateLimitExceeded`. Ask for partial responses (`fields`) to cut payloads.
 
 ### 7.2 Notifications and background (NTF)
 
@@ -1193,6 +1196,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### STA-4 Expired sign-in
 
+- **Today:** W2. `invalid_grant` on refresh marks the sign-in expired: requests fail with `TransportError::AuthExpired`, the status line shows a "Sign in again" button, and signing in again (same browser flow) keeps the cache and the outbox. A missing `google_client.json` with a stored account shows the same state.
 - **Needs:** Detect auth errors on every call, refresh (ACC-7), and if refresh fails (`invalid_grant`) show "sign in again" while keeping local changes and the outbox.
 
 #### STA-5 Conflicts with server changes
@@ -1239,7 +1243,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 - **Today:** `cmd-k` or `cmd-shift-p` lists every command in `COMMANDS` (`src/actions.rs`) with its shortcut and runs the same handlers. `open_palette()`, `palette_items()`, `on_palette_event()` (`src/app.rs`). Unavailable commands are left out (`When`, `command_available()` in `src/app/mail.rs`). Recent commands first on an empty query (in memory, PER-3). Each `Group` has a `scope()` (Mail, Calendar, Global); the palette and `?` sheet list the current mode's commands plus global ones. `v` and `l` open it scoped to folders or labels.
 - **Needs:** Each command inherits its action's needs: ACT-1–6, CMP-1–4, CMP-8, DRF-1, DRF-4, UND-1–3, ACT-1a, FOL-5, CAL-9, CAL-10. Navigation, view and app commands need none.
-- **Notes:** The backend's commands are in already, doing nothing (or saying so in a toast) until their workstream lands: Sync Now (`cmd-r`, also File › Sync Now; SYN-2), Sign In with Google and Sign Out (ACC-3, ACC-7), Use Demo Data (W2), Retry Loading Message (RDR-6), Load Images (`cmd-shift-i`, ATT-1), Load Older Conversations (LST-7).
+- **Notes:** Sign In with Google, Sign Out and Use Demo Data work (W2: ACC-3, ACC-7). The backend's other commands are in already, doing nothing (or saying so in a toast) until their workstream lands: Sync Now (`cmd-r`, also File › Sync Now; SYN-2), Retry Loading Message (RDR-6), Load Images (`cmd-shift-i`, ATT-1), Load Older Conversations (LST-7).
 
 #### PAL-2 Thread search in the palette
 

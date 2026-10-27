@@ -26,7 +26,7 @@ use crate::ui::style::*;
 use crate::{
     actions::*,
     assets::Icon,
-    backend::{Backend, MailOp, OpId, UNDO_WINDOW, ViewKey, gmail},
+    backend::{Backend, MailOp, OpId, Source, UNDO_WINDOW, ViewKey, auth::CALENDAR_SCOPE, gmail},
     contacts::ContactBook,
     data::{Folder, MailData, Thread},
     search::{FocusResults, Query},
@@ -675,10 +675,22 @@ impl PigeonApp {
     }
 
     fn sign_in(&mut self, _: &SignIn, _: &mut Window, cx: &mut Context<Self>) {
-        let demo = self.backend.read(cx).is_demo();
-        self.backend.update(cx, |b, cx| b.sign_in(cx));
-        if demo {
-            self.show_toast("Signing in with Google isn't available yet", None, cx);
+        let b = self.backend.read(cx);
+        let message = match b.source() {
+            Source::Demo => Some("Quit and open Pigeon without PIGEON_DEMO to sign in"),
+            Source::Google if !b.needs_sign_in() => Some("Already signed in"),
+            _ => None,
+        };
+        let signed_in = b.source() == Source::Google;
+        match message {
+            Some(message) => self.show_toast(message, None, cx),
+            None => {
+                self.backend.update(cx, |b, cx| b.sign_in(cx));
+                // The sign-in screen isn't showing to say so.
+                if signed_in {
+                    self.show_toast("Finish signing in in your browser", None, cx);
+                }
+            }
         }
     }
 
@@ -691,9 +703,10 @@ impl PigeonApp {
     }
 
     fn use_demo_data(&mut self, _: &UseDemoData, _: &mut Window, cx: &mut Context<Self>) {
-        // W2: from the sign-in screen, switch the backend to demo mode.
-        if self.backend.read(cx).is_demo() {
-            self.show_toast("Already showing demo data", None, cx);
+        match self.backend.read(cx).source() {
+            Source::Demo => self.show_toast("Already showing demo data", None, cx),
+            Source::Google => self.show_toast("Sign out first to use the demo data", None, cx),
+            Source::SignedOut => self.backend.update(cx, |b, cx| b.use_demo(cx)),
         }
     }
 
@@ -1006,6 +1019,10 @@ impl PigeonApp {
     pub(crate) fn pane_focus(&self, cx: &gpui::App) -> FocusHandle {
         if self.settings_page.open {
             return self.settings_page.focus.clone();
+        }
+        // The sign-in screen tracks the panes' handle.
+        if self.backend.read(cx).source() == Source::SignedOut {
+            return self.focus_handle.clone();
         }
         match self.mode {
             Mode::Mail => self.focus_handle.clone(),
@@ -1499,6 +1516,15 @@ impl Render for PigeonApp {
         );
         let sidebar_shown = sidebar_width * sidebar_open;
         let settings_open = self.settings_page.open;
+        let (signed_out, calendar_granted, sign_in) = {
+            let b = self.backend.read(cx);
+            (
+                b.source() == Source::SignedOut,
+                b.has_scope(CALENDAR_SCOPE),
+                b.sign_in_state().clone(),
+            )
+        };
+        let panes = !settings_open && !signed_out;
         let entity = cx.entity();
         let reset = move |kind| {
             let entity = entity.clone();
@@ -1590,7 +1616,10 @@ impl Render for PigeonApp {
                         .child(self.render_settings(window, cx)),
                 )
             })
-            .when(!settings_open && self.mode == Mode::Calendar, |this| {
+            .when(!settings_open && signed_out, |this| {
+                this.child(self.render_onboarding(&sign_in, &self.focus_handle, cx))
+            })
+            .when(panes && self.mode == Mode::Calendar, |this| {
                 this.child(
                     div()
                         .size_full()
@@ -1601,10 +1630,16 @@ impl Render for PigeonApp {
                             self.inbox_unread(),
                             &theme,
                         ))
-                        .child(self.calendar.clone()),
+                        .map(|this| {
+                            if calendar_granted {
+                                this.child(self.calendar.clone())
+                            } else {
+                                this.child(ui::status::missing_scope("Calendar", &theme))
+                            }
+                        }),
                 )
             })
-            .when(!settings_open && self.mode == Mode::Mail, |this| {
+            .when(panes && self.mode == Mode::Mail, |this| {
                 this.child(
                     div()
                         .key_context(self.mailbox_key_context())

@@ -145,6 +145,16 @@ impl PigeonApp {
             )
             .child(
                 div()
+                    .mx(SPACE_MD)
+                    .mb(SPACE_SM)
+                    .child(super::status::status_line(
+                        self.backend.read(cx).status(),
+                        chrono::Utc::now().timestamp_millis(),
+                        &theme,
+                    )),
+            )
+            .child(
+                div()
                     .id("sidebar-nav")
                     .role(gpui::Role::Navigation)
                     .aria_label("Mailboxes")

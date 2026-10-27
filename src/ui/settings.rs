@@ -945,7 +945,12 @@ impl PigeonApp {
         let (title, subtitle): (AnyElement, Option<AnyElement>) = match &control {
             Some(Control::Account(me)) if !in_results => (
                 div().child(me.name.clone()).into_any_element(),
-                Some(div().child(me.email.clone()).into_any_element()),
+                Some(
+                    div()
+                        .child(me.email.clone())
+                        .child(super::status::granted(self.backend.read(cx)))
+                        .into_any_element(),
+                ),
             ),
             _ => (
                 styled(label, found.map(|m| &m.label)).into_any_element(),
@@ -1077,13 +1082,11 @@ impl PigeonApp {
                     }))
                     .into_any_element(),
             ),
-            Some(Control::Account(_)) => Some(
-                div()
-                    .text_size(TEXT_SM)
-                    .text_color(theme.text_faint)
-                    .child("Display only")
-                    .into_any_element(),
-            ),
+            Some(Control::Account(_)) => Some(super::status::status_line(
+                self.backend.read(cx).status(),
+                chrono::Utc::now().timestamp_millis(),
+                &theme,
+            )),
             None => Some(icon(Icon::ChevronRight, px(14.), theme.text_faint).into_any_element()),
         };
 

@@ -16,19 +16,32 @@
 // demo mode doesn't yet.
 #![allow(dead_code)]
 
+pub mod auth;
 pub mod demo;
 pub mod gmail;
 pub mod http;
 pub mod outbox;
 pub mod store;
 
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use chrono::{NaiveDateTime, Utc};
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Task};
 use serde::{Deserialize, Serialize};
 
-use self::{outbox::Outbox, store::Store};
+use self::{
+    auth::{AccountRecord, Auth, ClientConfig, Keychain, Secret, SignInError, TokenStore},
+    http::{GoogleTransport, Request, SystemClock, Transport, TransportError, UreqTransport},
+    outbox::Outbox,
+    store::Store,
+};
 use crate::{
     app::ComposeKind,
     calendar::{CalendarData, Event, RsvpStatus, SeriesScope},
@@ -76,6 +89,90 @@ pub enum SyncStatus {
     },
     /// The refresh token stopped working: "Sign in again".
     AuthExpired,
+}
+
+/// The browser sign-in, for the sign-in screen (ACC-3).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SignInState {
+    #[default]
+    Idle,
+    /// The consent page is open in the browser.
+    Waiting,
+    /// Why the last try didn't work, in plain words.
+    Failed(String),
+}
+
+/// The signed-in account's connection to Google.
+struct Google {
+    /// Authenticated, limited, retrying: what sync and commits use.
+    transport: Arc<GoogleTransport>,
+    auth: Arc<Auth>,
+    /// The bare network, for the token endpoint and revoking.
+    raw: Arc<dyn Transport>,
+}
+
+impl Google {
+    fn new(client: ClientConfig, refresh_token: Secret) -> Self {
+        let raw: Arc<dyn Transport> = Arc::new(UreqTransport::new());
+        let clock = Arc::new(SystemClock);
+        let auth = Arc::new(Auth::new(client, refresh_token, raw.clone(), clock.clone()));
+        Self {
+            transport: Arc::new(GoogleTransport::new(raw.clone(), auth.clone(), clock)),
+            auth,
+            raw,
+        }
+    }
+}
+
+const PEOPLE_ME: &str =
+    "https://people.googleapis.com/v1/people/me?personFields=names,emailAddresses";
+
+/// The signed-in user's name and primary address.
+fn fetch_profile(transport: &dyn Transport) -> Result<auth::Claims, TransportError> {
+    #[derive(Deserialize)]
+    struct Person {
+        #[serde(default)]
+        names: Vec<Field>,
+        #[serde(default, rename = "emailAddresses")]
+        email_addresses: Vec<Field>,
+    }
+    #[derive(Deserialize)]
+    struct Field {
+        #[serde(rename = "displayName")]
+        display_name: Option<String>,
+        value: Option<String>,
+        #[serde(default)]
+        metadata: Metadata,
+    }
+    #[derive(Default, Deserialize)]
+    struct Metadata {
+        #[serde(default)]
+        primary: bool,
+    }
+    let response = transport.send(&Request::get(PEOPLE_ME, 1))?;
+    if !response.is_success() {
+        return Err(TransportError::Network(format!(
+            "people/me answered {}",
+            response.status
+        )));
+    }
+    let person: Person = response
+        .json()
+        .map_err(|_| TransportError::Network("people/me unreadable".into()))?;
+    let primary = |fields: &[Field]| -> Option<usize> {
+        fields
+            .iter()
+            .position(|f| f.metadata.primary)
+            .or((!fields.is_empty()).then_some(0))
+    };
+    Ok(auth::Claims {
+        name: primary(&person.names)
+            .and_then(|ix| person.names[ix].display_name.clone())
+            .unwrap_or_default(),
+        email: primary(&person.email_addresses)
+            .and_then(|ix| person.email_addresses[ix].value.clone())
+            .unwrap_or_default(),
+    })
 }
 
 /// A change to mail, in Gmail's terms: label ids, `INBOX` and `UNREAD`
@@ -387,6 +484,16 @@ pub struct Backend {
     committing: bool,
     _worker: Option<Task<()>>,
     _save_settings: Option<Task<()>>,
+    // Signing in (W2).
+    /// The account as `accounts.json` has it, with its granted scopes.
+    record: Option<AccountRecord>,
+    google: Option<Google>,
+    /// Where refresh tokens live: the Keychain.
+    tokens: Arc<dyn TokenStore>,
+    sign_in: SignInState,
+    sign_in_cancel: Option<Arc<AtomicBool>>,
+    _sign_in: Option<Task<()>>,
+    _profile: Option<Task<()>>,
 }
 
 impl EventEmitter<BackendEvent> for Backend {}
@@ -410,36 +517,62 @@ fn now_ms() -> i64 {
 }
 
 impl Backend {
-    /// Demo if `PIGEON_DEMO=1`, else Google if signed in, else SignedOut.
-    /// Until sign-in lands (W2), every launch is demo mode.
+    /// Demo if `PIGEON_DEMO=1`, else Google if `accounts.json` names an
+    /// account whose refresh token is in the Keychain, else SignedOut.
     pub fn open(cx: &mut App) -> Entity<Backend> {
         let prefs = Store::open(&data_dir().join("pigeon.sqlite")).unwrap_or_else(|e| {
             eprintln!("Pigeon: settings won't be kept: {e:#}");
             Store::open_in_memory().expect("an in-memory store always opens")
         });
-        let source = if demo_requested() {
-            Source::Demo
+        let tokens: Arc<dyn TokenStore> = Arc::new(Keychain);
+        let (source, session) = if demo_requested() {
+            (Source::Demo, None)
         } else {
-            // W2: Source::Google when accounts.json and the Keychain item
-            // exist, else Source::SignedOut.
-            Source::Demo
+            match auth::signed_in(&data_dir(), &*tokens) {
+                Some(session) => (Source::Google, Some(session)),
+                None => (Source::SignedOut, None),
+            }
         };
-        cx.new(|cx| Backend::new(source, prefs, cx))
+        cx.new(|cx| Backend::new(source, prefs, tokens, session, cx))
     }
 
-    fn new(source: Source, prefs: Store, cx: &mut Context<Self>) -> Self {
+    fn new(
+        source: Source,
+        prefs: Store,
+        tokens: Arc<dyn TokenStore>,
+        session: Option<(AccountRecord, Secret)>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut record = None;
+        let mut google = None;
         let (store, account, status) = match source {
             Source::Demo => {
                 let store = Store::open_in_memory().expect("an in-memory store always opens");
                 let account = demo::seed(&store).expect("the placeholder data seeds");
                 (store, Some(account), SyncStatus::Demo)
             }
-            // W2 fills in the account from accounts.json.
-            Source::Google => (
-                prefs.clone(),
-                None,
-                SyncStatus::Syncing { done: 0, total: 0 },
-            ),
+            Source::Google => {
+                let (rec, refresh_token) = session.expect("Google mode has an account");
+                let account = Account {
+                    name: rec.name.clone(),
+                    email: rec.email.clone(),
+                    aliases: Vec::new(),
+                };
+                // Without the client, nothing refreshes: the cache shows,
+                // and signing in again says what's missing.
+                let status = match ClientConfig::load(&data_dir()) {
+                    Ok(client) => {
+                        google = Some(Google::new(client, refresh_token));
+                        SyncStatus::Syncing { done: 0, total: 0 }
+                    }
+                    Err(e) => {
+                        eprintln!("Pigeon: {e:#}");
+                        SyncStatus::AuthExpired
+                    }
+                };
+                record = Some(rec);
+                (prefs.clone(), Some(account), status)
+            }
             Source::SignedOut => (prefs.clone(), None, SyncStatus::SignedOut),
         };
         let email = account
@@ -457,10 +590,32 @@ impl Backend {
             committing: false,
             _worker: None,
             _save_settings: None,
+            record,
+            google,
+            tokens,
+            sign_in: SignInState::Idle,
+            sign_in_cancel: None,
+            _sign_in: None,
+            _profile: None,
         };
         // Whatever was left queued at the last quit goes now.
         this.schedule(cx);
+        this.check_profile(cx);
         this
+    }
+
+    /// Start over on another source, keeping the settings.
+    fn switch(
+        &mut self,
+        source: Source,
+        session: Option<(AccountRecord, Secret)>,
+        cx: &mut Context<Self>,
+    ) {
+        self.flush_settings();
+        if let Some(cancel) = &self.sign_in_cancel {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        *self = Self::new(source, self.prefs.clone(), self.tokens.clone(), session, cx);
     }
 
     pub fn source(&self) -> Source {
@@ -663,11 +818,235 @@ impl Backend {
         cx.emit(BackendEvent::Status(self.status.clone()));
     }
 
-    /// W2: the browser sign-in.
-    pub fn sign_in(&mut self, _cx: &mut Context<Self>) {}
+    // The account (W2).
 
-    /// W2: revoke, forget the account and its cache.
-    pub fn sign_out(&mut self, _cx: &mut Context<Self>) {}
+    /// Google's APIs, authenticated, retrying and within quota. `None` in
+    /// demo mode and when signed out. Sync calls it through `Transport`
+    /// (background priority); user actions use `send_user`.
+    pub fn transport(&self) -> Option<Arc<GoogleTransport>> {
+        self.google.as_ref().map(|g| g.transport.clone())
+    }
+
+    /// The scopes Google granted (ACC-6); empty unless signed in.
+    pub fn granted_scopes(&self) -> &[String] {
+        self.record.as_ref().map_or(&[], |r| r.scopes.as_slice())
+    }
+
+    /// Whether a feature's scope was granted. Demo mode has everything.
+    pub fn has_scope(&self, scope: &str) -> bool {
+        match self.source {
+            Source::Demo => true,
+            Source::Google => self.record.as_ref().is_some_and(|r| r.has_scope(scope)),
+            Source::SignedOut => false,
+        }
+    }
+
+    /// Signed in, but Google stopped accepting it, or a feature's scope is
+    /// missing: signing in again fixes both.
+    pub fn needs_sign_in(&self) -> bool {
+        self.source == Source::Google
+            && (self.status == SyncStatus::AuthExpired
+                || [
+                    auth::GMAIL_SCOPE,
+                    auth::CALENDAR_SCOPE,
+                    auth::CONTACTS_SCOPE,
+                ]
+                .iter()
+                .any(|s| !self.has_scope(s)))
+    }
+
+    pub fn sign_in_state(&self) -> &SignInState {
+        &self.sign_in
+    }
+
+    /// What the status line says, changed by sync (W3, W4).
+    pub fn set_status(&mut self, status: SyncStatus, cx: &mut Context<Self>) {
+        if self.status != status {
+            self.status = status;
+            cx.emit(BackendEvent::Status(self.status.clone()));
+        }
+    }
+
+    /// A request that failed for good: an expired sign-in, or offline once
+    /// the transport has seen two network failures in a row.
+    pub fn note_error(&mut self, error: &TransportError, cx: &mut Context<Self>) {
+        match error {
+            TransportError::AuthExpired => self.set_status(SyncStatus::AuthExpired, cx),
+            TransportError::Network(_) => {
+                if self
+                    .google
+                    .as_ref()
+                    .is_some_and(|g| g.transport.is_offline())
+                {
+                    let waiting = self.outbox.waiting();
+                    self.set_status(SyncStatus::Offline { waiting }, cx);
+                }
+            }
+        }
+    }
+
+    /// Who is signed in, from `people/me` (ACC-1): the name may have
+    /// changed since sign-in. Also the first authenticated call, so an
+    /// expired sign-in or no network shows at once.
+    fn check_profile(&mut self, cx: &mut Context<Self>) {
+        let Some(transport) = self.transport() else {
+            return;
+        };
+        self._profile = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { fetch_profile(&*transport) })
+                .await;
+            this.update(cx, |this, cx| match result {
+                Ok(claims) => {
+                    this.update_profile(claims);
+                    // Sync (W3) takes the status over from here.
+                    if this.status == (SyncStatus::Syncing { done: 0, total: 0 }) {
+                        this.status = SyncStatus::Synced { at: now_ms() };
+                    }
+                    // The app picks the account's name up with the status.
+                    cx.emit(BackendEvent::Status(this.status.clone()));
+                }
+                Err(e) => {
+                    eprintln!("Pigeon: couldn't read the profile: {e}");
+                    this.note_error(&e, cx)
+                }
+            })
+            .ok();
+        }));
+    }
+
+    fn update_profile(&mut self, claims: auth::Claims) {
+        let (Some(account), Some(record)) = (&mut self.account, &mut self.record) else {
+            return;
+        };
+        if claims.name.is_empty() || claims.name == record.name {
+            return;
+        }
+        account.name = claims.name.clone();
+        record.name = claims.name;
+        let record = record.clone();
+        if let Err(e) = auth::save_accounts(&data_dir(), &[record]) {
+            eprintln!("Pigeon: couldn't save the account: {e:#}");
+        }
+    }
+
+    /// The browser sign-in (ACC-3); again after "Sign in again" (STA-4),
+    /// which keeps the cache and the queue.
+    pub fn sign_in(&mut self, cx: &mut Context<Self>) {
+        if self.sign_in == SignInState::Waiting
+            || self.source == Source::Google && !self.needs_sign_in()
+        {
+            return;
+        }
+        let dir = data_dir();
+        let client = match ClientConfig::load(&dir) {
+            Ok(client) => client,
+            Err(e) => return self.sign_in_failed(format!("{e:#}."), cx),
+        };
+        let (listener, port) = match auth::listen() {
+            Ok(listening) => listening,
+            Err(e) => return self.sign_in_failed(format!("Couldn't start signing in: {e}"), cx),
+        };
+        let verifier = auth::random_token(64);
+        let state = auth::random_token(16);
+        let redirect = format!("http://127.0.0.1:{port}");
+        let hint = self.record.as_ref().map(|r| r.email.clone());
+        cx.open_url(&auth::auth_url(
+            &client,
+            &redirect,
+            &auth::challenge(&verifier),
+            &state,
+            hint.as_deref(),
+        ));
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.sign_in_cancel = Some(cancel.clone());
+        self.sign_in = SignInState::Waiting;
+        cx.emit(BackendEvent::Status(self.status.clone()));
+        let tokens = self.tokens.clone();
+        self._sign_in = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let code =
+                        auth::wait_for_code(&listener, &state, &cancel, auth::SIGN_IN_TIMEOUT)?;
+                    auth::finish_sign_in(
+                        &UreqTransport::new(),
+                        &client,
+                        &code,
+                        &verifier,
+                        &redirect,
+                        &*tokens,
+                        &dir,
+                    )
+                })
+                .await;
+            this.update(cx, |this, cx| match result {
+                Ok(session) => {
+                    this.switch(Source::Google, Some(session), cx);
+                    cx.emit(BackendEvent::SignedIn);
+                }
+                Err(SignInError::Cancelled) => {}
+                Err(e) => this.sign_in_failed(e.to_string(), cx),
+            })
+            .ok();
+        }));
+    }
+
+    fn sign_in_failed(&mut self, message: String, cx: &mut Context<Self>) {
+        self.sign_in = SignInState::Failed(message);
+        self.sign_in_cancel = None;
+        cx.emit(BackendEvent::Status(self.status.clone()));
+    }
+
+    /// Esc on the waiting screen.
+    pub fn cancel_sign_in(&mut self, cx: &mut Context<Self>) {
+        if let Some(cancel) = self.sign_in_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self._sign_in = None;
+        self.sign_in = SignInState::Idle;
+        cx.emit(BackendEvent::Status(self.status.clone()));
+    }
+
+    /// From the sign-in screen: the placeholder data, until relaunch.
+    pub fn use_demo(&mut self, cx: &mut Context<Self>) {
+        if self.source == Source::Demo {
+            return;
+        }
+        self.switch(Source::Demo, None, cx);
+        cx.emit(BackendEvent::SignedIn);
+    }
+
+    /// Revoke the grant, delete the Keychain item, the `accounts.json`
+    /// entry and the account's cached rows, then the sign-in screen (ACC-7).
+    pub fn sign_out(&mut self, cx: &mut Context<Self>) {
+        if self.source != Source::Google {
+            return;
+        }
+        let email = self.email().to_string();
+        let raw: Arc<dyn Transport> = self
+            .google
+            .as_ref()
+            .map_or_else(|| Arc::new(UreqTransport::new()) as _, |g| g.raw.clone());
+        let refresh_token = self.google.as_ref().map(|g| g.auth.refresh_token().clone());
+        let tokens = self.tokens.clone();
+        let store = self.store.clone();
+        cx.background_executor()
+            .spawn(async move {
+                if let Err(e) =
+                    auth::forget(&*raw, refresh_token.as_ref(), &email, &*tokens, &data_dir())
+                {
+                    eprintln!("Pigeon: signing out: {e:#}");
+                }
+                if let Err(e) = store.delete_account(&email) {
+                    eprintln!("Pigeon: couldn't clear the cache: {e:#}");
+                }
+            })
+            .detach();
+        self.switch(Source::SignedOut, None, cx);
+        cx.emit(BackendEvent::SignedOut);
+    }
 
     // Settings (PER-3).
 

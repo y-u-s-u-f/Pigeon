@@ -170,7 +170,14 @@ impl PigeonApp {
 
     // Status, the outbox and signing in.
 
+    /// Also the account's name, which the profile check may have updated.
     fn on_status(&mut self, _status: &SyncStatus, cx: &mut Context<Self>) {
+        if let Some(account) = self.backend.read(cx).account().cloned() {
+            self.calendar.update(cx, |calendar, _| {
+                calendar.data.account = account.clone();
+            });
+            self.data.account = account;
+        }
         cx.notify();
     }
 
@@ -182,11 +189,36 @@ impl PigeonApp {
         self.show_toast(message.to_string(), None, cx);
     }
 
+    /// Signed in, signed out or switched to the demo data: everything
+    /// comes from the new source.
     fn on_signed_in(&mut self, cx: &mut Context<Self>) {
-        cx.notify();
+        self.reload_all(cx);
     }
 
     fn on_signed_out(&mut self, cx: &mut Context<Self>) {
+        self.mode = super::Mode::Mail;
+        self.reload_all(cx);
+    }
+
+    fn reload_all(&mut self, cx: &mut Context<Self>) {
+        let (data, calendar, contacts) = {
+            let b = self.backend.read(cx);
+            (b.load_mail(), b.load_calendar(), b.contacts())
+        };
+        self.composer = None;
+        self.selected = None;
+        self.focused_message = None;
+        self.expanded_messages.clear();
+        self.checked.clear();
+        self.toast = None;
+        self.data = data;
+        self.calendar.update(cx, |view, cx| {
+            view.data = calendar;
+            view.selected = None;
+            cx.notify();
+        });
+        self.contact_book = Rc::new(ContactBook::new(contacts));
+        self.refresh_rows(false);
         cx.notify();
     }
 }
