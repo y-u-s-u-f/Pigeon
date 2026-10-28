@@ -3,7 +3,7 @@
 //! each by how often the address appears in the cached mail; then everyone
 //! else in the mail, most frequent first.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::params;
 
@@ -79,10 +79,8 @@ impl Store {
             Changes::Delta(people, token) => (people, token),
         };
         for person in people {
-            tx.execute(
-                "DELETE FROM contacts WHERE account = ?1 AND resource_name = ?2",
-                params![account, person.resource_name],
-            )?;
+            tx.prepare_cached("DELETE FROM contacts WHERE account = ?1 AND resource_name = ?2")?
+                .execute(params![account, person.resource_name])?;
             if !person.deleted() {
                 insert_person(&tx, account, source, person)?;
             }
@@ -195,11 +193,16 @@ impl Store {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         for contact in recipients {
-            tx.execute(
+            tx.prepare_cached(
                 "INSERT OR IGNORE INTO contacts (account, resource_name, email, source, name)
                  VALUES (?1, ?2, ?3, ?2, ?4)",
-                params![account, SENT, contact.email.to_lowercase(), contact.name],
-            )?;
+            )?
+            .execute(params![
+                account,
+                SENT,
+                contact.email.to_lowercase(),
+                contact.name
+            ])?;
         }
         tx.commit()?;
         Ok(())
@@ -216,20 +219,20 @@ fn insert_person(
         .filter(|d| *d != ContactDetails::default())
         .map(|d| json(&d));
     for email in person.emails() {
-        tx.execute(
+        tx.prepare_cached(
             "INSERT OR IGNORE INTO contacts
                  (account, resource_name, email, source, name, etag, details)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                account,
-                person.resource_name,
-                email,
-                source.as_str(),
-                person.name(),
-                person.etag,
-                details
-            ],
-        )?;
+        )?
+        .execute(params![
+            account,
+            person.resource_name,
+            email,
+            source.as_str(),
+            person.name(),
+            person.etag,
+            details
+        ])?;
     }
     Ok(())
 }
@@ -245,21 +248,23 @@ fn rank(synced: Vec<(Contact, bool)>, seen: &[Contact], account: &Account) -> Ve
     for c in seen {
         *count.entry(c.email.to_lowercase()).or_default() += 1;
     }
+    // First match wins, as `find` would.
+    let mut names: HashMap<String, &str> = HashMap::new();
+    for c in &in_mail {
+        names
+            .entry(c.email.to_ascii_lowercase())
+            .or_insert(c.name.as_str());
+    }
+    let mut taken: HashSet<String> = HashSet::new();
     let mut people: Vec<(Contact, bool)> = Vec::new();
     for (mut contact, connection) in synced {
-        if me(&contact)
-            || people
-                .iter()
-                .any(|(p, _)| p.email.eq_ignore_ascii_case(&contact.email))
-        {
+        if me(&contact) || !taken.insert(contact.email.to_ascii_lowercase()) {
             continue;
         }
         if contact.name.is_empty()
-            && let Some(known) = in_mail
-                .iter()
-                .find(|c| c.email.eq_ignore_ascii_case(&contact.email))
+            && let Some(known) = names.get(&contact.email.to_ascii_lowercase())
         {
-            contact.name = known.name.clone();
+            contact.name = known.to_string();
         }
         people.push((contact, connection));
     }
@@ -269,8 +274,9 @@ fn rank(synced: Vec<(Contact, bool)>, seen: &[Contact], account: &Account) -> Ve
     });
     let mut out: Vec<Contact> = people.into_iter().map(|(c, _)| c).collect();
     let rest: Vec<Contact> = in_mail
-        .into_iter()
-        .filter(|c| !out.iter().any(|s| s.email.eq_ignore_ascii_case(&c.email)))
+        .iter()
+        .filter(|c| !taken.contains(&c.email.to_ascii_lowercase()))
+        .cloned()
         .collect();
     out.extend(rest);
     out

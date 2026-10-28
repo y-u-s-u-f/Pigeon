@@ -24,11 +24,11 @@ use gpui::{
     },
     deferred, div,
     prelude::FluentBuilder as _,
-    px, relative,
+    px,
 };
 
 use super::{
-    attachment_icon, avatar, html_view, icon, keycap,
+    attachment_icon, avatar, html_view, icon, keys_caps,
     rich_editor::{self, Palette},
 };
 use crate::ui::style::*;
@@ -1284,7 +1284,7 @@ impl Composer {
             let invalid = parse_address(&contact.email).is_none();
             div()
                 .id(("chip", ix * 1000 + chip_ix))
-                .h(px(24.))
+                .h(CONTROL_SM)
                 .pl(SPACE_XS)
                 .pr(SPACE_XS)
                 .flex()
@@ -1301,7 +1301,7 @@ impl Composer {
                 .child(avatar(
                     contact.initials(),
                     theme.avatar_color(&contact.email),
-                    px(18.),
+                    AVATAR_XS,
                     theme,
                 ))
                 .child(
@@ -1311,18 +1311,16 @@ impl Composer {
                         .child(contact.display_name().to_string()),
                 )
                 .child(
-                    div()
-                        .id(("chip-remove", ix * 1000 + chip_ix))
-                        .size(px(16.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_full()
-                        .hover(|s| s.bg(theme.hover_bg))
-                        .child(icon(Icon::X, px(11.), theme.text_faint))
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.remove_chip(ix, chip_ix, cx)),
-                        ),
+                    super::icon_button_small(
+                        ("chip-remove", ix * 1000 + chip_ix),
+                        Icon::X,
+                        format!("Remove {}", contact.display_name()),
+                        theme,
+                    )
+                    // Inside the chip it looks small; it still takes a
+                    // full-size click.
+                    .m(-SPACE_XS)
+                    .on_click(cx.listener(move |this, _, _, cx| this.remove_chip(ix, chip_ix, cx))),
                 )
         });
 
@@ -1336,7 +1334,8 @@ impl Composer {
                     let highlighted = row == field.highlighted;
                     div()
                         .id(("suggestion", row))
-                        .h(px(40.))
+                        .py(SPACE_XS)
+                        .line_height(LINE_UI)
                         .px(SPACE_SM)
                         .flex()
                         .items_center()
@@ -1347,7 +1346,7 @@ impl Composer {
                         .child(avatar(
                             contact.initials(),
                             theme.avatar_color(&contact.email),
-                            px(26.),
+                            AVATAR_SM,
                             theme,
                         ))
                         .child(
@@ -1410,13 +1409,12 @@ impl Composer {
                     .items_center()
                     .gap(SPACE_XS)
                     .text_size(TEXT_SM)
-                    .text_color(theme.danger)
-                    .child(icon(Icon::OctagonAlert, px(13.), theme.danger))
+                    .text_color(theme.text_danger)
+                    .child(icon(Icon::OctagonAlert, ICON_SM, theme.text_danger))
                     .child(error.clone())
             });
 
         let row = div()
-            .min_h(px(40.))
             .py(SPACE_SM)
             .flex()
             .items_start()
@@ -1435,14 +1433,14 @@ impl Composer {
                         div()
                             .flex_1()
                             .min_w(px(140.))
-                            .h(px(28.))
+                            .h(CONTROL_MD)
                             .flex()
                             .flex_col()
                             .child(
                                 Input::new(&field.input)
                                     .appearance(false)
                                     .px(SPACE_2XS)
-                                    .h(px(28.)),
+                                    .h(CONTROL_MD),
                             )
                             .children(suggestions),
                     ),
@@ -1452,7 +1450,7 @@ impl Composer {
                     div()
                         .id("show-cc-bcc")
                         .flex_none()
-                        .h(px(28.))
+                        .h(CONTROL_MD)
                         .px(SPACE_SM)
                         .flex()
                         .items_center()
@@ -1541,8 +1539,8 @@ impl Composer {
                     .items_center()
                     .gap(SPACE_XS)
                     .text_size(TEXT_SM)
-                    .text_color(theme.danger)
-                    .child(icon(Icon::OctagonAlert, px(13.), theme.danger))
+                    .text_color(theme.text_danger)
+                    .child(icon(Icon::OctagonAlert, ICON_SM, theme.text_danger))
                     .child(error.clone())
             });
         if self.attachments.is_empty() && error.is_none() {
@@ -1551,7 +1549,7 @@ impl Composer {
         let chips = self.attachments.iter().enumerate().map(|(ix, attachment)| {
             div()
                 .id(("attachment", ix))
-                .h(px(32.))
+                .h(CONTROL_LG)
                 .pl(SPACE_SM)
                 .pr(SPACE_XS)
                 .flex()
@@ -1575,32 +1573,27 @@ impl Composer {
                         .child(file_size(attachment.size_bytes)),
                 )
                 .child(
-                    div()
-                        .id(("attachment-remove", ix))
-                        .role(gpui::Role::Button)
-                        .aria_label(format!("Remove {}", attachment.name))
-                        .size(px(22.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(RADIUS_SM)
-                        .hover(|s| s.bg(theme.hover_bg))
-                        .child(icon(Icon::X, px(12.), theme.text_faint))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let removed = this.attachments.remove(ix);
-                            if !removed.path.is_empty() {
-                                this.dropped_files.push(removed.path);
-                            }
-                            this.edited(cx);
-                            if this
-                                .error
-                                .as_ref()
-                                .is_some_and(|(at, _)| *at == Field::Body)
-                            {
-                                this.error = None;
-                            }
-                            cx.notify();
-                        })),
+                    super::icon_button_small(
+                        ("attachment-remove", ix),
+                        Icon::X,
+                        format!("Remove {}", attachment.name),
+                        theme,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let removed = this.attachments.remove(ix);
+                        if !removed.path.is_empty() {
+                            this.dropped_files.push(removed.path);
+                        }
+                        this.edited(cx);
+                        if this
+                            .error
+                            .as_ref()
+                            .is_some_and(|(at, _)| *at == Field::Body)
+                        {
+                            this.error = None;
+                        }
+                        cx.notify();
+                    })),
                 )
         });
         Some(
@@ -1697,7 +1690,7 @@ impl Composer {
                 .h(height)
                 .font_family(cx.theme().font_family.clone())
                 .text_size(TEXT_MD)
-                .line_height(relative(1.55))
+                .line_height(LINE_READING)
                 .text_color(theme.text),
         )
     }
@@ -1728,7 +1721,7 @@ impl Composer {
                             .rounded(RADIUS_SM)
                             .hover(|s| s.bg(theme.hover_bg))
                             .active(|s| s.bg(theme.selected_bg))
-                            .child(icon(glyph, px(15.), theme.icon))
+                            .child(icon(glyph, ICON_MD, theme.icon))
                             // Keeps the body's focus and selection.
                             .on_mouse_down(MouseButton::Left, |_, window, _| {
                                 window.prevent_default()
@@ -1737,7 +1730,7 @@ impl Composer {
                                 this.format(format, window, cx)
                             }))
                             .tooltip(move |window, cx| {
-                                gpui::component::tooltip::Tooltip::new(name)
+                                super::tooltip(name)
                                     .action(action.as_ref(), None)
                                     .build(window, cx)
                             })
@@ -1771,7 +1764,8 @@ impl Composer {
                     .role(gpui::Role::ListBoxOption)
                     .aria_label(label(identity))
                     .aria_selected(chosen)
-                    .h(px(40.))
+                    .py(SPACE_XS)
+                    .line_height(LINE_UI)
                     .px(SPACE_SM)
                     .flex()
                     .items_center()
@@ -1779,8 +1773,8 @@ impl Composer {
                     .rounded(RADIUS_MD)
                     .when(row == highlighted, |d| d.bg(theme.selected_bg))
                     .hover(|d| d.bg(theme.hover_bg))
-                    .child(div().w(px(16.)).flex_none().when(chosen, |d| {
-                        d.child(icon(Icon::Check, px(14.), theme.accent))
+                    .child(div().w(ICON_LG).flex_none().when(chosen, |d| {
+                        d.child(icon(Icon::Check, ICON_MD, theme.accent))
                     }))
                     .child(
                         div()
@@ -1838,7 +1832,6 @@ impl Composer {
         });
         let ring = focus_ring(theme);
         div()
-            .min_h(px(40.))
             .py(SPACE_SM)
             .flex()
             .items_start()
@@ -1865,7 +1858,7 @@ impl Composer {
                             .on_action(cx.listener(Self::picker_dismiss))
                             .role(gpui::Role::ComboBox)
                             .aria_label(format!("From: {current}"))
-                            .h(HIT_TARGET)
+                            .h(CONTROL_MD)
                             .max_w_full()
                             .px(SPACE_SM)
                             .ml(-SPACE_SM)
@@ -1877,7 +1870,7 @@ impl Composer {
                             .hover(|s| s.bg(theme.hover_bg))
                             .when(focused, |d| d.bg(theme.hover_bg).shadow(ring))
                             .child(div().min_w_0().truncate().child(current))
-                            .child(icon(Icon::ChevronDown, px(13.), theme.text_faint))
+                            .child(icon(Icon::ChevronDown, ICON_SM, theme.text_faint))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 if this.from_menu.take().is_none() {
                                     this.open_from_menu(window, cx);
@@ -1918,7 +1911,7 @@ impl Composer {
                         .flex_col()
                         .gap(SPACE_2XS)
                         .text_size(TEXT_BASE)
-                        .line_height(relative(1.55))
+                        .line_height(LINE_READING)
                         .text_color(theme.text_muted)
                         .child(div().text_color(theme.text_faint).child("--"))
                         .child(html_view::render(&doc, theme)),
@@ -2002,19 +1995,19 @@ impl Render for Composer {
                     div()
                         .mt(SPACE_MD)
                         .text_size(TEXT_BASE)
-                        .line_height(relative(1.55))
+                        .line_height(LINE_READING)
                         .text_color(theme.text_muted)
                         .child(html_view::render(&quoted.doc, &theme)),
                 )
         });
 
-        let hint = |keys: &'static [&'static str], label: &'static str| {
+        let hint = |keys: &str, label: &'static str| {
             div()
                 .flex()
                 .items_center()
-                .gap(SPACE_XS)
-                .children(keys.iter().map(|k| keycap(*k, &theme)))
-                .child(div().ml(SPACE_2XS).child(label))
+                .gap(SPACE_SM)
+                .child(label)
+                .child(keys_caps(keys, &theme))
         };
 
         let send_row = div()
@@ -2026,7 +2019,7 @@ impl Render for Composer {
                     .id("send")
                     .role(gpui::Role::Button)
                     .aria_label("Send")
-                    .h(px(32.))
+                    .h(CONTROL_LG)
                     .pl(SPACE_MD)
                     .pr(SPACE_LG)
                     .flex()
@@ -2039,7 +2032,7 @@ impl Render for Composer {
                     .font_weight(FontWeight::SEMIBOLD)
                     .hover(|s| s.opacity(0.9))
                     .active(|s| s.opacity(0.8))
-                    .child(icon(Icon::Send, px(14.), theme.accent_text))
+                    .child(icon(Icon::Send, ICON_MD, theme.accent_text))
                     .child("Send")
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(SendMessage), cx)),
             )
@@ -2050,8 +2043,8 @@ impl Render for Composer {
                     .gap(SPACE_MD)
                     .text_size(TEXT_SM)
                     .text_color(theme.text_faint)
-                    .child(hint(&["⌘", "↵"], "Send"))
-                    .child(hint(&["Esc"], "Save draft")),
+                    .child(hint("cmd-enter", "Send"))
+                    .child(hint("escape", "Save draft")),
             )
             .child(div().flex_1())
             // W3 (DRF-5).
@@ -2062,20 +2055,16 @@ impl Render for Composer {
                     SaveState::Saved => Some("Saved"),
                 }
                 .map(|status| {
-                    div()
-                        .id("save-status")
-                        .role(gpui::Role::Status)
-                        .aria_label(status)
+                    super::live_text("save-status", status, gpui::accesskit::Live::Polite)
                         .text_size(TEXT_SM)
                         .text_color(theme.text_faint)
-                        .child(status)
                 }),
             )
             .child(
                 super::style::focusable_control(div().id("attach"), &theme)
                     .role(gpui::Role::Button)
                     .aria_label("Attach files")
-                    .size(px(30.))
+                    .size(HIT_TARGET)
                     .flex_none()
                     .flex()
                     .items_center()
@@ -2083,10 +2072,9 @@ impl Render for Composer {
                     .rounded(RADIUS_MD)
                     .hover(|s| s.bg(theme.hover_bg))
                     .active(|s| s.bg(theme.selected_bg))
-                    .child(icon(Icon::Paperclip, px(16.), theme.icon))
+                    .child(icon(Icon::Paperclip, ICON_TOOLBAR, theme.icon))
                     .tooltip(|window, cx| {
-                        gpui::component::tooltip::Tooltip::new("Attach files (or drop them here)")
-                            .build(window, cx)
+                        super::tooltip("Attach files (or drop them here)").build(window, cx)
                     })
                     .on_click(cx.listener(|this, _, _, cx| this.pick_files(cx))),
             )
@@ -2127,7 +2115,7 @@ impl Render for Composer {
                                 ComposeKind::Forward => Icon::Forward,
                                 _ => Icon::Reply,
                             },
-                            px(14.),
+                            ICON_MD,
                             theme.icon,
                         ))
                         .child(title),
@@ -2144,7 +2132,7 @@ impl Render for Composer {
             .when(self.edits_subject(), |this| {
                 this.child(
                     div()
-                        .h(px(42.))
+                        .py(SPACE_SM)
                         .flex()
                         .items_center()
                         .gap(SPACE_XS)
@@ -2254,7 +2242,7 @@ impl Render for Composer {
 fn field_label(label: &'static str, theme: &Theme) -> impl IntoElement {
     div()
         .flex_none()
-        .h(px(28.))
+        .h(CONTROL_MD)
         .flex()
         .items_center()
         .text_size(TEXT_SM)

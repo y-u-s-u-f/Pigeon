@@ -422,7 +422,7 @@ impl CalendarView {
                             .border_color(calendar.color)
                             .when(visible, |d| d.bg(calendar.color))
                             .when(visible, |d| {
-                                d.child(icon(Icon::Check, px(12.), theme.cal_selected_text))
+                                d.child(icon(Icon::Check, px(12.), theme.on_fill(calendar.color)))
                             }),
                     )
                     .child(

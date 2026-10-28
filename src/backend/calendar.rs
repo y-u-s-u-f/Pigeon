@@ -28,7 +28,7 @@ use serde_json::{Map, Value, json};
 
 use super::{
     BackendEvent, CalOp, SendUpdates,
-    http::{Request, Response, Transport, TransportError},
+    http::{self, Request, Response, Transport, TransportError},
     store::Store,
 };
 use crate::{
@@ -70,6 +70,26 @@ pub struct CalendarChanges {
 impl CalendarChanges {
     pub fn is_empty(&self) -> bool {
         !self.calendars && self.changed.is_empty() && self.removed.is_empty()
+    }
+
+    /// The events a sync or write touched, split into those still stored
+    /// (changed) and those gone (removed), in id order.
+    fn split_touched(
+        &mut self,
+        store: &Store,
+        account: &str,
+        touched: BTreeSet<String>,
+    ) -> anyhow::Result<()> {
+        let ids: Vec<String> = touched.into_iter().collect();
+        let present = store.existing_event_ids(account, &ids)?;
+        for id in ids {
+            if present.contains(&id) {
+                self.changed.push(id);
+            } else {
+                self.removed.push(id);
+            }
+        }
+        Ok(())
     }
 
     /// The events to emit, in order: calendars first, so events find theirs.
@@ -467,11 +487,13 @@ enum Listing<T> {
     Gone,
 }
 
-/// Every page of a listing at `url` (which has a query already).
+/// Every page of a listing at `url` (which has a query already), the
+/// first one `first` when it came already (in a batch, MC-013).
 fn list_all<T: DeserializeOwned>(
     transport: &dyn Transport,
     url: &str,
     what: &str,
+    mut first: Option<Response>,
 ) -> anyhow::Result<Listing<T>> {
     let mut items = Vec::new();
     let mut page_token: Option<String> = None;
@@ -480,7 +502,10 @@ fn list_all<T: DeserializeOwned>(
             Some(token) => format!("{url}&pageToken={}", enc(token)),
             None => url.to_string(),
         };
-        let response = get(transport, &page_url)?;
+        let response = match first.take() {
+            Some(response) => response,
+            None => get(transport, &page_url)?,
+        };
         if response.status == 410 {
             return Ok(Listing::Gone);
         }
@@ -504,7 +529,8 @@ fn list_all<T: DeserializeOwned>(
 }
 
 fn is_network(e: &anyhow::Error) -> bool {
-    e.downcast_ref::<TransportError>().is_some()
+    e.downcast_ref::<TransportError>()
+        .is_some_and(TransportError::goes_later)
 }
 
 // The sync pass.
@@ -539,17 +565,22 @@ fn sync_pass_at(
         &mut changes,
         &mut touched,
     )?;
-    for (calendar, default_reminder) in store.calendars_to_sync(account)? {
-        let pass = CalendarPass {
+    let calendars = store.calendars_to_sync(account)?;
+    let passes: Vec<CalendarPass> = calendars
+        .iter()
+        .map(|(calendar, default_reminder)| CalendarPass {
             transport,
             store,
             account,
-            calendar: &calendar,
-            default_reminder,
+            calendar,
+            default_reminder: *default_reminder,
             zone,
             now,
-        };
-        match pass.run(&mut touched) {
+        })
+        .collect();
+    let mut first = first_pages(transport, &passes)?;
+    for pass in &passes {
+        match pass.run(first.remove(pass.calendar), &mut touched) {
             Ok(()) => {}
             Err(e) if is_network(&e) => return Err(e),
             Err(e) => changes.errors.push(format!("{e:#}")),
@@ -559,20 +590,53 @@ fn sync_pass_at(
     if let Err(e) = sync_settings(transport, store, account, now, &mut changes) {
         eprintln!("Pigeon: {e:#}");
     }
-    let ids: Vec<String> = touched.into_iter().collect();
-    let present: BTreeSet<String> = store
-        .load_events(account, &ids)?
-        .into_iter()
-        .map(|e| e.id)
-        .collect();
-    for id in ids {
-        if present.contains(&id) {
-            changes.changed.push(id);
-        } else {
-            changes.removed.push(id);
+    changes.split_touched(store, account, touched)?;
+    Ok(changes)
+}
+
+/// Google Calendar's HTTP batch endpoint, and the most calls in one.
+const BATCH_ENDPOINT: &str = "https://www.googleapis.com/batch/calendar/v3";
+const BATCH_SIZE: usize = 50;
+
+/// The first page of every calendar's listing by sync token, by calendar,
+/// asked for in one HTTP batch (MC-013); a calendar left out lists on its
+/// own. One calendar asks on its own anyway. No network stops the pass.
+fn first_pages(
+    transport: &dyn Transport,
+    passes: &[CalendarPass],
+) -> anyhow::Result<HashMap<String, Response>> {
+    let mut calendars = Vec::new();
+    let mut requests = Vec::new();
+    for pass in passes {
+        if let Some(token) = pass
+            .store
+            .calendar_sync_token(pass.account, pass.calendar)?
+        {
+            calendars.push(pass.calendar.to_string());
+            requests.push(Request::get(pass.token_url(&token), COST));
         }
     }
-    Ok(changes)
+    let mut out = HashMap::new();
+    if requests.len() < 2 {
+        return Ok(out);
+    }
+    let answers = http::batch(
+        transport,
+        &http::SystemClock,
+        BATCH_ENDPOINT,
+        BATCH_SIZE,
+        &requests,
+    );
+    for (calendar, answer) in calendars.into_iter().zip(answers) {
+        match answer {
+            Ok(response) => {
+                out.insert(calendar, response);
+            }
+            Err(http::BatchError::Transport(e)) if e.goes_later() => return Err(e.into()),
+            Err(_) => {}
+        }
+    }
+    Ok(out)
 }
 
 const SETTINGS_KEY: &str = "calendar_settings";
@@ -668,12 +732,13 @@ fn sync_calendar_list(
                 enc(token)
             ),
             WHAT,
+            None,
         )?,
-        None => list_all(transport, &full_url, WHAT)?,
+        None => list_all(transport, &full_url, WHAT, None)?,
     };
     if matches!(listing, Listing::Gone) {
         full = true;
-        listing = list_all(transport, &full_url, WHAT)?;
+        listing = list_all(transport, &full_url, WHAT, None)?;
     }
     let Listing::Items { items, sync_token } = listing else {
         return Err(anyhow!("{WHAT}: Google keeps asking for a full sync"));
@@ -731,12 +796,22 @@ impl CalendarPass<'_> {
         format!("Couldn't sync calendar {}", self.calendar)
     }
 
-    fn run(&self, touched: &mut BTreeSet<String>) -> anyhow::Result<()> {
-        let base = format!(
+    fn base_url(&self) -> String {
+        format!(
             "{API}/calendars/{}/events?singleEvents=false&maxResults=2500&timeZone={}",
             enc(self.calendar),
             enc(self.zone.name)
-        );
+        )
+    }
+
+    /// The listing of what changed since `token`.
+    fn token_url(&self, token: &str) -> String {
+        format!("{}&syncToken={}", self.base_url(), enc(token))
+    }
+
+    /// `first`: the token listing's first page, when it came in a batch.
+    fn run(&self, first: Option<Response>, touched: &mut BTreeSet<String>) -> anyhow::Result<()> {
+        let base = self.base_url();
         let full_url = format!(
             "{base}&timeMin={}",
             enc(&rfc3339(self.now - Duration::days(PAST_DAYS)))
@@ -746,12 +821,8 @@ impl CalendarPass<'_> {
             .calendar_sync_token(self.account, self.calendar)?;
         let mut full = token.is_none();
         let mut listing = match &token {
-            Some(token) => list_all(
-                self.transport,
-                &format!("{base}&syncToken={}", enc(token)),
-                &self.what(),
-            )?,
-            None => list_all(self.transport, &full_url, &self.what())?,
+            Some(token) => list_all(self.transport, &self.token_url(token), &self.what(), first)?,
+            None => list_all(self.transport, &full_url, &self.what(), None)?,
         };
         if matches!(listing, Listing::Gone) {
             // The token expired: start this calendar over.
@@ -762,7 +833,7 @@ impl CalendarPass<'_> {
             self.store
                 .set_calendar_sync_token(self.account, self.calendar, None)?;
             full = true;
-            listing = list_all(self.transport, &full_url, &self.what())?;
+            listing = list_all(self.transport, &full_url, &self.what(), None)?;
         }
         let Listing::Items { items, sync_token } = listing else {
             return Err(anyhow!(
@@ -848,7 +919,7 @@ impl CalendarPass<'_> {
                 enc(&rfc3339(self.now + Duration::days(INSTANCES_AHEAD_DAYS))),
             );
             let Listing::Items { items, .. } =
-                list_all::<Value>(self.transport, &url, &self.what())?
+                list_all::<Value>(self.transport, &url, &self.what(), None)?
             else {
                 return Err(anyhow!("{}: the series' occurrences went", self.what()));
             };
@@ -1402,7 +1473,10 @@ fn commit_at(
     let mut touched = BTreeSet::new();
     let mut out = Committed::default();
     if let Err(e) = w.apply(op, &mut touched) {
-        out.retry = e.downcast_ref::<TransportError>().cloned();
+        out.retry = e
+            .downcast_ref::<TransportError>()
+            .filter(|e| e.goes_later())
+            .cloned();
         out.error = Some(if e.is::<Conflict>() {
             Conflict.to_string()
         } else {
@@ -1431,19 +1505,8 @@ fn commit_at(
             }
         }
     }
-    let ids: Vec<String> = touched.into_iter().collect();
-    let present: BTreeSet<String> = store
-        .load_events(account, &ids)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|e| e.id)
-        .collect();
-    for id in ids {
-        if present.contains(&id) {
-            out.changes.changed.push(id);
-        } else {
-            out.changes.removed.push(id);
-        }
+    if let Err(e) = out.changes.split_touched(store, account, touched) {
+        eprintln!("Pigeon: couldn't read the events written back: {e:#}");
     }
     out
 }
@@ -1636,7 +1699,7 @@ impl Writer<'_> {
             enc(&rfc3339(at + Duration::days(1))),
         );
         let Listing::Items { items, .. } =
-            list_all::<Value>(self.transport, &url, "Couldn't find the occurrence")?
+            list_all::<Value>(self.transport, &url, "Couldn't find the occurrence", None)?
         else {
             return Err(anyhow!("Couldn't find the occurrence: the series is gone"));
         };

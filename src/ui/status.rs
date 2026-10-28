@@ -76,23 +76,32 @@ pub fn status_line(status: &SyncStatus, now_ms: i64, theme: &Theme) -> AnyElemen
             .rounded(RADIUS_MD)
             .text_size(TEXT_SM)
             .font_weight(FontWeight::MEDIUM)
-            .text_color(theme.danger)
+            .text_color(theme.text_danger)
             .hover(|s| s.bg(theme.hover_bg))
             .cursor_pointer()
-            .child(super::icon(Icon::User, gpui::px(12.), theme.danger))
+            .child(super::icon(Icon::User, gpui::px(12.), theme.text_danger))
             .child(text)
             .on_click(|_, window, cx| window.dispatch_action(Box::new(SignIn), cx))
             .into_any_element();
     }
+    // ME-057: Offline needs noticing; syncing shows it's under way.
+    let (dot, color) = match status {
+        SyncStatus::Offline { .. } => (Some(theme.warning), theme.text_muted),
+        SyncStatus::Syncing { .. } => (Some(theme.accent), theme.text_faint),
+        _ => (None, theme.text_faint),
+    };
     div()
         .id("sync-status")
         .role(gpui::Role::Status)
         .aria_label(text.clone())
         .px(SPACE_MD)
+        .flex()
+        .items_center()
+        .gap(SPACE_XS)
         .text_size(TEXT_XS)
-        .text_color(theme.text_faint)
-        .truncate()
-        .child(text)
+        .text_color(color)
+        .children(dot.map(|dot| div().flex_none().size(gpui::px(6.)).rounded_full().bg(dot)))
+        .child(div().min_w_0().truncate().child(text))
         .into_any_element()
 }
 

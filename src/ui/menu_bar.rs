@@ -13,20 +13,19 @@ use std::{cell::Cell, rc::Rc, time::Instant};
 
 use chrono::{Duration, NaiveDateTime};
 use gpui::{
-    AnyElement, App, Context, Entity, FocusHandle, FontWeight, Hsla, InteractiveElement,
-    IntoElement, ParentElement, Pixels, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled, Task, Window, actions, div,
-    prelude::FluentBuilder as _, px,
+    AnyElement, App, Context, Entity, FocusHandle, FontWeight, InteractiveElement, IntoElement,
+    ParentElement, Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
+    Styled, Task, Window, actions, div, prelude::FluentBuilder as _, px,
 };
 
-use super::{keycap, style::*};
+use super::{keycap_on_accent, keys_caps, style::*};
 use crate::{
     app::{
         menu_bar::{self, HideReason},
         shell::Show,
         today::{self, Agenda, MailRow, Today},
     },
-    backend::{BackendEvent, MailOp, OpId, UNDO_WINDOW, gmail},
+    backend::{BackendEvent, MailOp, OpId, SyncStatus, UNDO_WINDOW, gmail},
     calendar::{CalendarData, Occurrence, policy, time},
     data::{Folder, list_date},
     settings,
@@ -435,10 +434,8 @@ impl Render for MenuBarPanel {
         let today = today_entity.read(cx);
         let agenda = today::agenda(&today.calendar, now);
         let items = Self::items(&agenda, &today.mail);
-        let status = status::label(
-            today.backend().read(cx).status(),
-            chrono::Utc::now().timestamp_millis(),
-        );
+        let sync = today.backend().read(cx).status().clone();
+        let status = status::label(&sync, chrono::Utc::now().timestamp_millis());
         let header = now.format("%A, %b %-d").to_string();
         let mail = &today.mail;
         let data = &today.calendar;
@@ -509,11 +506,11 @@ impl Render for MenuBarPanel {
                         .flex()
                         .items_center()
                         .gap(SPACE_XS)
-                        .child(keycap("E", &theme))
                         .child("Archive")
+                        .child(keys_caps("e", &theme))
                         .child(div().w(SPACE_2XS))
-                        .child(keycap("⇧I", &theme))
                         .child("Read")
+                        .child(keys_caps("shift-i", &theme))
                         .into_any_element(),
                 )
             } else {
@@ -569,13 +566,14 @@ impl Render for MenuBarPanel {
             .bg(theme.menu_bar_bg)
             .text_color(theme.text)
             .text_size(TEXT_BASE)
+            .line_height(LINE_UI)
             .child(
                 div()
                     .w_full()
                     .max_h(PANEL_MAX_HEIGHT)
                     .flex()
                     .flex_col()
-                    .child(self.header(header, status, &theme))
+                    .child(self.header(header, status, &sync, &theme))
                     .when_some(self.notice.clone(), |el, notice| {
                         el.child(
                             div()
@@ -617,7 +615,20 @@ impl Render for MenuBarPanel {
 }
 
 impl MenuBarPanel {
-    fn header(&self, date: String, status: String, theme: &Theme) -> impl IntoElement {
+    fn header(
+        &self,
+        date: String,
+        status: String,
+        sync: &SyncStatus,
+        theme: &Theme,
+    ) -> impl IntoElement {
+        // Offline needs attention, and syncing is under way: a dot and
+        // brighter text set them apart from "Synced" (ME-057).
+        let dot = match sync {
+            SyncStatus::Offline { .. } => Some(theme.warning),
+            SyncStatus::Syncing { .. } => Some(theme.accent),
+            _ => None,
+        };
         div()
             .flex_none()
             .flex()
@@ -641,10 +652,22 @@ impl MenuBarPanel {
                     .id("menu-bar-sync")
                     .role(gpui::Role::Status)
                     .aria_label(SharedString::from(status.clone()))
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_XS + SPACE_2XS)
                     .text_size(TEXT_XS)
-                    .text_color(theme.text_faint)
-                    .truncate()
-                    .child(status),
+                    .text_color(if dot.is_some() {
+                        theme.text_muted
+                    } else {
+                        theme.text_faint
+                    })
+                    .children(
+                        dot.map(|color| {
+                            div().flex_none().size(UNREAD_DOT).rounded_full().bg(color)
+                        }),
+                    )
+                    .child(div().min_w_0().truncate().child(status)),
             )
     }
 
@@ -747,7 +770,7 @@ impl MenuBarPanel {
                                 .id("menu-bar-join")
                                 .role(gpui::Role::Button)
                                 .aria_label(SharedString::from(format!("Join {title}")))
-                                .h(HIT_TARGET)
+                                .h(CONTROL_MD)
                                 .px(SPACE_MD)
                                 .flex()
                                 .items_center()
@@ -763,7 +786,7 @@ impl MenuBarPanel {
                                     this.join(&Join, window, cx);
                                 }))
                                 .child("Join meeting")
-                                .child(on_accent_cap("J", theme)),
+                                .child(keycap_on_accent("J", theme)),
                         )
                     })
                     .child(
@@ -771,7 +794,7 @@ impl MenuBarPanel {
                             .id("menu-bar-details")
                             .role(gpui::Role::Button)
                             .aria_label("Open in Calendar")
-                            .h(HIT_TARGET)
+                            .h(CONTROL_MD)
                             .px(SPACE_MD)
                             .flex()
                             .items_center()
@@ -787,7 +810,7 @@ impl MenuBarPanel {
                                 this.open_item(&item, cx);
                             }))
                             .child("Details")
-                            .when(selected, |el| el.child(keycap("↵", theme))),
+                            .when(selected, |el| el.child(keys_caps("enter", theme))),
                     ),
             )
     }
@@ -869,7 +892,7 @@ impl MenuBarPanel {
                     )
                 }),
         )
-        .when(selected, |el| el.child(keycap("↵", theme)))
+        .when(selected, |el| el.child(keys_caps("enter", theme)))
         .into_any_element()
     }
 
@@ -970,7 +993,7 @@ impl MenuBarPanel {
             .mb(SPACE_SM)
             .pl(SPACE_MD)
             .pr(SPACE_XS)
-            .h(HIT_TARGET + SPACE_XS)
+            .py(SPACE_2XS)
             .flex()
             .items_center()
             .gap(SPACE_SM)
@@ -981,7 +1004,7 @@ impl MenuBarPanel {
             .child(footer_button(
                 "menu-bar-undo-button",
                 "Undo",
-                "Z",
+                "z",
                 "Undo archive",
                 theme,
                 cx.listener(|this, _, window, cx| this.undo(&Undo, window, cx)),
@@ -1006,7 +1029,7 @@ impl MenuBarPanel {
             .child(footer_button(
                 "menu-bar-compose",
                 "Compose",
-                "C",
+                "c",
                 "Compose a new message",
                 theme,
                 cx.listener(|this, _, window, cx| this.compose(&Compose, window, cx)),
@@ -1014,7 +1037,7 @@ impl MenuBarPanel {
             .child(footer_button(
                 "menu-bar-new-event",
                 "Event",
-                "N",
+                "n",
                 "New event",
                 theme,
                 cx.listener(|this, _, window, cx| this.new_event(&NewEvent, window, cx)),
@@ -1023,7 +1046,7 @@ impl MenuBarPanel {
             .child(footer_button(
                 "menu-bar-open",
                 "Open Pigeon",
-                "⌘O",
+                "cmd-o",
                 "Open Pigeon",
                 theme,
                 cx.listener(|this, _, window, cx| this.open_pigeon(&OpenPigeon, window, cx)),
@@ -1046,7 +1069,7 @@ fn row_shell(
         .mx(SPACE_XS)
         .px(SPACE_MD)
         .py(SPACE_XS + SPACE_2XS)
-        .min_h(HIT_TARGET)
+        .min_h(CONTROL_MD)
         .flex()
         .items_center()
         .gap(SPACE_SM + SPACE_2XS)
@@ -1098,23 +1121,6 @@ fn quiet_line(id: &'static str, text: String, theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// A keycap on the accent button.
-fn on_accent_cap(label: &'static str, theme: &Theme) -> impl IntoElement {
-    let text: Hsla = theme.accent_text;
-    div()
-        .min_w(px(18.))
-        .h(px(18.))
-        .px(SPACE_XS)
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(RADIUS_SM)
-        .bg(text.alpha(0.16))
-        .text_size(TEXT_XS)
-        .text_color(text.alpha(0.85))
-        .child(label)
-}
-
 fn footer_button(
     id: &'static str,
     label: &'static str,
@@ -1127,7 +1133,7 @@ fn footer_button(
         .id(id)
         .role(gpui::Role::Button)
         .aria_label(aria)
-        .h(HIT_TARGET)
+        .h(CONTROL_MD)
         .px(SPACE_SM)
         .flex()
         .items_center()
@@ -1136,8 +1142,8 @@ fn footer_button(
         .cursor_pointer()
         .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
         .on_click(on_click)
-        .child(keycap(key, theme))
         .child(label)
+        .child(keys_caps(key, theme))
 }
 
 #[cfg(test)]

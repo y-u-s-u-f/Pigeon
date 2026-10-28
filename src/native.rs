@@ -1,7 +1,7 @@
 //! The few macOS calls gpui doesn't make (sprint 2, W1): the Dock badge,
-//! waking from sleep, handing over to the Pigeon already running, and the
-//! login item. Everything here runs on the main thread; elsewhere it does
-//! nothing.
+//! handing over to the Pigeon already running, the login item, and the
+//! display options and colors the theme follows. Everything here runs on
+//! the main thread; elsewhere it does nothing.
 
 pub mod menu_bar;
 
@@ -14,24 +14,34 @@ use objc2::{
     sel,
 };
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationOptions, NSRunningApplication, NSWorkspace,
-    NSWorkspaceDidWakeNotification,
+    NSApplication, NSApplicationActivationOptions, NSApplicationDidBecomeActiveNotification,
+    NSColor, NSColorSpace, NSHapticFeedbackManager, NSHapticFeedbackPattern,
+    NSHapticFeedbackPerformanceTime, NSHapticFeedbackPerformer as _, NSRunningApplication,
+    NSSystemColorsDidChangeNotification, NSWorkspace,
+    NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
 };
+use objc2_core_foundation::CFString;
+#[allow(deprecated)]
+use objc2_core_services::{LSCopyDefaultHandlerForURLScheme, LSSetDefaultHandlerForURLScheme};
 use objc2_foundation::{
-    NSCurrentLocaleDidChangeNotification, NSDateFormatter, NSDistributedNotificationCenter,
-    NSError, NSLocale, NSNotification, NSNotificationCenter, NSNotificationSuspensionBehavior,
-    NSString,
+    NSBundle, NSCurrentLocaleDidChangeNotification, NSDateFormatter,
+    NSDistributedNotificationCenter, NSError, NSLocale, NSNotification, NSNotificationCenter,
+    NSNotificationSuspensionBehavior, NSString, NSSystemTimeZoneDidChangeNotification,
+    NSUserDefaults,
 };
 
 /// What the system tells Pigeon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Signal {
-    /// The Mac woke from sleep.
-    Wake,
     /// Pigeon was opened again on the same data folder (PER-5).
     ShowRequested,
     /// The user's region or clock settings changed.
     LocaleChanged,
+    /// The Mac's time zone changed.
+    TimeZoneChanged,
+    /// The accessibility display options or the system colors may have
+    /// changed: on their notifications, and each time Pigeon comes forward.
+    DisplayChanged,
 }
 
 /// The distributed notification a second Pigeon posts, with the data
@@ -62,11 +72,6 @@ define_class!(
     struct Observer;
 
     impl Observer {
-        #[unsafe(method(didWake:))]
-        fn did_wake(&self, _notification: &NSNotification) {
-            signal(Signal::Wake);
-        }
-
         #[unsafe(method(showRequested:))]
         fn show_requested(&self, _notification: &NSNotification) {
             signal(Signal::ShowRequested);
@@ -75,6 +80,16 @@ define_class!(
         #[unsafe(method(localeChanged:))]
         fn locale_changed(&self, _notification: &NSNotification) {
             signal(Signal::LocaleChanged);
+        }
+
+        #[unsafe(method(timeZoneChanged:))]
+        fn time_zone_changed(&self, _notification: &NSNotification) {
+            signal(Signal::TimeZoneChanged);
+        }
+
+        #[unsafe(method(displayChanged:))]
+        fn display_changed(&self, _notification: &NSNotification) {
+            signal(Signal::DisplayChanged);
         }
     }
 );
@@ -87,23 +102,23 @@ impl Observer {
     }
 }
 
-/// Call `handler` on wake, and when another Pigeon on `data_dir` hands
-/// over. Once, at launch.
+/// Call `handler` with each `Signal`; hand-over is from another Pigeon on
+/// `data_dir`. Once, at launch.
 pub fn listen(data_dir: &str, handler: impl Fn(Signal) + 'static) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
     HANDLER.with(|h| *h.borrow_mut() = Some(Box::new(handler)));
     let observer = Observer::new(mtm);
-    // SAFETY: the observer answers both selectors and lives in `OBSERVER`
-    // for the rest of the process.
+    // SAFETY: the observer answers every selector here and lives in
+    // `OBSERVER` for the rest of the process.
     unsafe {
         NSWorkspace::sharedWorkspace()
             .notificationCenter()
             .addObserver_selector_name_object(
                 &observer,
-                sel!(didWake:),
-                Some(NSWorkspaceDidWakeNotification),
+                sel!(displayChanged:),
+                Some(NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification),
                 None,
             );
         // Delivered even while Pigeon is in the background, which AppKit
@@ -122,6 +137,24 @@ pub fn listen(data_dir: &str, handler: impl Fn(Signal) + 'static) {
             Some(NSCurrentLocaleDidChangeNotification),
             None,
         );
+        let center = NSNotificationCenter::defaultCenter();
+        center.addObserver_selector_name_object(
+            &observer,
+            sel!(timeZoneChanged:),
+            Some(NSSystemTimeZoneDidChangeNotification),
+            None,
+        );
+        for name in [
+            NSSystemColorsDidChangeNotification,
+            NSApplicationDidBecomeActiveNotification,
+        ] {
+            center.addObserver_selector_name_object(
+                &observer,
+                sel!(displayChanged:),
+                Some(name),
+                None,
+            );
+        }
     }
     OBSERVER.with(|o| *o.borrow_mut() = Some(observer));
 }
@@ -145,6 +178,74 @@ fn uses_24_hour_pattern(pattern: &str) -> bool {
         .split('\'')
         .step_by(2)
         .any(|unquoted| unquoted.contains(['H', 'k']))
+}
+
+/// System Settings › Accessibility › Display › Increase contrast.
+pub fn increase_contrast() -> bool {
+    NSWorkspace::sharedWorkspace().accessibilityDisplayShouldIncreaseContrast()
+}
+
+/// System Settings › Accessibility › Display › Reduce transparency.
+pub fn reduce_transparency() -> bool {
+    NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceTransparency()
+}
+
+/// System Settings › Accessibility › Display › Differentiate without color.
+#[allow(dead_code)] // used by W2 (status shapes beside colors)
+pub fn differentiate_without_color() -> bool {
+    NSWorkspace::sharedWorkspace().accessibilityDisplayShouldDifferentiateWithoutColor()
+}
+
+/// The system accent color (System Settings › Appearance) in sRGB, or none
+/// for Multicolor, where each app keeps its own.
+pub fn accent_color() -> Option<gpui::Rgba> {
+    // Multicolor is the absence of the default.
+    NSUserDefaults::standardUserDefaults().objectForKey(&NSString::from_str("AppleAccentColor"))?;
+    srgb(&NSColor::controlAccentColor())
+}
+
+/// The highlight color behind selected text, in sRGB.
+pub fn selection_color() -> Option<gpui::Rgba> {
+    srgb(&NSColor::selectedTextBackgroundColor())
+}
+
+fn srgb(color: &NSColor) -> Option<gpui::Rgba> {
+    let color = color.colorUsingColorSpace(&NSColorSpace::sRGBColorSpace())?;
+    Some(gpui::Rgba {
+        r: color.redComponent() as f32,
+        g: color.greenComponent() as f32,
+        b: color.blueComponent() as f32,
+        a: color.alphaComponent() as f32,
+    })
+}
+
+/// The standard About panel, with the bundle's name, version and
+/// `NSHumanReadableCopyright`.
+pub fn show_about() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    NSApplication::sharedApplication(mtm).orderFrontStandardAboutPanel(None);
+}
+
+/// Window › Bring All to Front.
+pub fn bring_all_to_front() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    NSApplication::sharedApplication(mtm).arrangeInFront(None);
+}
+
+/// A light tap on a Force Touch trackpad, as something snaps into place.
+#[allow(dead_code)] // used by later waves (calendar drags)
+pub fn haptic_alignment() {
+    if MainThreadMarker::new().is_none() {
+        return;
+    }
+    NSHapticFeedbackManager::defaultPerformer().performFeedbackPattern_performanceTime(
+        NSHapticFeedbackPattern::Alignment,
+        NSHapticFeedbackPerformanceTime::Default,
+    );
 }
 
 /// From a second Pigeon: ask the one running on `data_dir` to show its
@@ -257,21 +358,6 @@ pub fn open_login_items_settings() {
 // W3 (LNK-3): the default mail app, through Launch Services. Deprecated but
 // synchronous; macOS may ask the user to confirm the change.
 
-#[link(name = "CoreServices", kind = "framework")]
-unsafe extern "C" {
-    fn LSCopyDefaultHandlerForURLScheme(scheme: *const std::ffi::c_void)
-    -> *const std::ffi::c_void;
-    fn LSSetDefaultHandlerForURLScheme(
-        scheme: *const std::ffi::c_void,
-        handler: *const std::ffi::c_void,
-    ) -> i32;
-}
-
-#[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
-    fn CFRelease(object: *const std::ffi::c_void);
-}
-
 /// Who opens `mailto:` links.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MailHandler {
@@ -284,32 +370,20 @@ pub enum MailHandler {
 
 /// This app's bundle id, when it runs as an app.
 fn bundle_id() -> Option<String> {
-    let class = AnyClass::get(c"NSBundle")?;
-    // SAFETY: `+[NSBundle mainBundle]` and `-bundleIdentifier` (nullable).
-    let id: Option<Retained<NSString>> = unsafe {
-        let bundle: Option<Retained<AnyObject>> = msg_send![class, mainBundle];
-        msg_send![&*bundle?, bundleIdentifier]
-    };
-    id.map(|id| id.to_string())
+    NSBundle::mainBundle()
+        .bundleIdentifier()
+        .map(|id| id.to_string())
 }
 
+#[allow(deprecated)]
 pub fn mail_handler() -> MailHandler {
     let Some(me) = bundle_id() else {
         return MailHandler::Unavailable("Available once Pigeon runs as an app.");
     };
-    let scheme = NSString::from_str("mailto");
-    // SAFETY: NSString is toll-free bridged to CFString; the copy is ours
-    // to release.
-    let current = unsafe {
-        let handler = LSCopyDefaultHandlerForURLScheme(Retained::as_ptr(&scheme).cast());
-        if handler.is_null() {
-            String::new()
-        } else {
-            let text = (*handler.cast::<NSString>()).to_string();
-            CFRelease(handler);
-            text
-        }
-    };
+    // SAFETY: a CFString in, an owned CFString (or none) out.
+    let current = unsafe { LSCopyDefaultHandlerForURLScheme(&CFString::from_str("mailto")) }
+        .map(|id| id.to_string())
+        .unwrap_or_default();
     if current.eq_ignore_ascii_case(&me) {
         MailHandler::Pigeon
     } else {
@@ -318,21 +392,18 @@ pub fn mail_handler() -> MailHandler {
 }
 
 /// Make Pigeon open `mailto:` links; Launch Services' error code if not.
+#[allow(deprecated)]
 pub fn make_default_mail_app() -> Result<(), String> {
     let me = bundle_id().ok_or("Pigeon isn’t running as an app.")?;
-    let scheme = NSString::from_str("mailto");
-    let handler = NSString::from_str(&me);
-    // SAFETY: both are CFStrings by toll-free bridging.
+    // SAFETY: both are CFStrings.
     let status = unsafe {
-        LSSetDefaultHandlerForURLScheme(
-            Retained::as_ptr(&scheme).cast(),
-            Retained::as_ptr(&handler).cast(),
-        )
+        LSSetDefaultHandlerForURLScheme(&CFString::from_str("mailto"), &CFString::from_str(&me))
     };
     if status == 0 {
         Ok(())
     } else {
-        Err(format!("macOS said no (error {status})."))
+        eprintln!("Pigeon: LSSetDefaultHandlerForURLScheme: {status}");
+        Err("macOS didn't make Pigeon the default. Try again, or choose it in Mail › Settings › General.".into())
     }
 }
 

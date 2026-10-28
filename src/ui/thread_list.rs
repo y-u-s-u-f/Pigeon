@@ -4,13 +4,15 @@ use gpui::{
     Animation, AnimationExt as _, AnyElement, Context, FontWeight, HighlightStyle,
     InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, StyledText, Window,
-    component::{input::Input, scroll::ScrollableElement as _, tooltip::Tooltip},
+    component::{input::Input, scroll::ScrollableElement as _},
     deferred, div, ease_out_quint, list,
     prelude::FluentBuilder as _,
     px, relative,
 };
 
-use super::{HEADER_HEIGHT, avatar, empty_state, icon, icon_button, window_drag_area};
+use super::{
+    HEADER_HEIGHT, avatar, empty_state, icon, icon_button, is_secondary, tooltip, window_drag_area,
+};
 use crate::ui::style::*;
 use crate::{
     actions::{
@@ -259,7 +261,7 @@ impl PigeonApp {
             .text_color(theme.text_muted)
             .children(self.search_query.operators().into_iter().map(|op| {
                 div()
-                    .h(px(20.))
+                    .h(CONTROL_XS)
                     .px(SPACE_SM)
                     .flex()
                     .items_center()
@@ -304,7 +306,7 @@ impl PigeonApp {
             .role(gpui::Role::Button)
             .aria_label(format!("Search in {scope_label}"))
             .flex_none()
-            .h(px(22.))
+            .h(CONTROL_SM)
             .pl(SPACE_SM)
             .pr(SPACE_XS)
             .flex()
@@ -317,7 +319,7 @@ impl PigeonApp {
             .text_color(theme.text_muted)
             .child(scope_label)
             .when(!fixed, |this| {
-                this.child(icon(Icon::ChevronDown, px(12.), theme.text_faint))
+                this.child(icon(Icon::ChevronDown, ICON_SM, theme.text_faint))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.selected_bg).text_color(theme.text))
                     .on_mouse_down(MouseButton::Left, |_, window, cx| {
@@ -326,13 +328,13 @@ impl PigeonApp {
                     })
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_search_scope(cx)))
                     .tooltip(|window, cx| {
-                        Tooltip::new("Switch between this folder and all mail").build(window, cx)
+                        tooltip("Switch between this folder and all mail").build(window, cx)
                     })
             });
 
         let field = div()
             .key_context(SEARCH)
-            .h(px(32.))
+            .h(CONTROL_LG)
             .pl(SPACE_MD)
             .pr(SPACE_XS)
             .flex()
@@ -344,7 +346,7 @@ impl PigeonApp {
             .border_color(theme.border)
             .text_size(TEXT_BASE)
             .overflow_hidden()
-            .child(icon(Icon::Search, px(14.), theme.text_muted))
+            .child(icon(Icon::Search, ICON_MD, theme.text_muted))
             .child(scope)
             .child(
                 div()
@@ -415,7 +417,7 @@ impl PigeonApp {
                     .gap(SPACE_SM)
                     .child(
                         div()
-                            .font_family("Menlo")
+                            .font_family(MONO)
                             .text_size(TEXT_SM)
                             .text_color(theme.accent)
                             .child(*op),
@@ -427,7 +429,7 @@ impl PigeonApp {
                     .items_center()
                     .gap(SPACE_SM)
                     .min_w_0()
-                    .child(icon(Icon::Clock, px(14.), theme.text_faint))
+                    .child(icon(Icon::Clock, ICON_MD, theme.text_faint))
                     .child(div().min_w_0().truncate().child(query.clone()))
                     .into_any_element(),
                 SearchSuggestion::Contact {
@@ -446,7 +448,7 @@ impl PigeonApp {
                         }
                         .initials(),
                         theme.avatar_color(email),
-                        px(20.),
+                        AVATAR_XS,
                         theme,
                     ))
                     .child(div().flex_none().child(name.clone()))
@@ -465,7 +467,7 @@ impl PigeonApp {
                     .id(("search-suggestion", ix))
                     .role(gpui::Role::ListBoxOption)
                     .aria_selected(highlighted)
-                    .h(px(30.))
+                    .h(ROW_SM)
                     .px(SPACE_SM)
                     .flex()
                     .items_center()
@@ -527,7 +529,7 @@ impl PigeonApp {
                 focusable_control(div().id("load-older"), theme)
                     .role(gpui::Role::Button)
                     .aria_label(label)
-                    .h(HIT_TARGET)
+                    .h(CONTROL_MD)
                     .pl(ROW_INSET)
                     .pr(SPACE_MD)
                     .flex()
@@ -539,15 +541,15 @@ impl PigeonApp {
                     .text_color(if enabled {
                         theme.text_muted
                     } else {
-                        theme.text_faint
+                        theme.text_disabled
                     })
-                    .child(icon(Icon::ChevronDown, px(14.), theme.text_faint))
+                    .child(icon(Icon::ChevronDown, ICON_MD, theme.text_faint))
                     .child(label)
                     .when(enabled, |this| {
                         this.cursor_pointer()
                             .hover(|s| s.bg(theme.hover_bg))
                             .tooltip(|window, cx| {
-                                Tooltip::new("Load older conversations")
+                                tooltip("Load older conversations")
                                     .action(&LoadOlderConversations, None)
                                     .build(window, cx)
                             })
@@ -576,7 +578,7 @@ impl PigeonApp {
                     .role(gpui::Role::Button)
                     .aria_label(format!("Archived, {count}"))
                     .aria_expanded(expanded)
-                    .h(px(30.))
+                    .h(ROW_SM)
                     .pl(ROW_INSET)
                     .pr(SPACE_MD)
                     .flex()
@@ -587,7 +589,7 @@ impl PigeonApp {
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_muted)
                     .hover(|s| s.bg(theme.hover_bg))
-                    .child(icon(Icon::Archive, px(14.), theme.text_faint))
+                    .child(icon(Icon::Archive, ICON_MD, theme.text_faint))
                     .child("Archived")
                     .child(
                         div()
@@ -603,11 +605,11 @@ impl PigeonApp {
                         } else {
                             Icon::ChevronRight
                         },
-                        px(14.),
+                        ICON_MD,
                         theme.text_faint,
                     ))
                     .tooltip(move |window, cx| {
-                        Tooltip::new(if expanded {
+                        tooltip(if expanded {
                             "Hide archived conversations"
                         } else {
                             "Show archived conversations"
@@ -672,7 +674,7 @@ impl PigeonApp {
         let (primary, secondary) = if unread {
             (theme.text, theme.text_muted)
         } else {
-            (theme.text_dim, theme.text_faint)
+            (theme.text_muted, theme.text_faint)
         };
 
         // Labels as dots (Linear-style): the subject keeps its room. The
@@ -710,7 +712,7 @@ impl PigeonApp {
                             .child(format!("+{}", labels.len() - LABEL_DOTS)),
                     )
                 })
-                .tooltip(move |window, cx| Tooltip::new(names.clone()).build(window, cx))
+                .tooltip(move |window, cx| tooltip(names.clone()).build(window, cx))
         });
 
         // The date, or on hover the quick actions in its place.
@@ -724,7 +726,7 @@ impl PigeonApp {
                 .items_center()
                 .gap(SPACE_SM)
                 .when(thread.has_attachments(), |this| {
-                    this.child(icon(Icon::Paperclip, px(13.), secondary))
+                    this.child(icon(Icon::Paperclip, ICON_SM, secondary))
                 })
                 .when(thread.important, |this| {
                     // W4b (FOL-12): Gmail's Important marker.
@@ -733,12 +735,12 @@ impl PigeonApp {
                             .id(("important", thread_ix))
                             .role(gpui::Role::Image)
                             .aria_label("Important")
-                            .child(icon(Icon::Important, px(13.), theme.star))
-                            .tooltip(|window, cx| Tooltip::new("Important").build(window, cx)),
+                            .child(icon(Icon::Important, ICON_SM, theme.star))
+                            .tooltip(|window, cx| tooltip("Important").build(window, cx)),
                     )
                 })
                 .when(thread.starred, |this| {
-                    this.child(icon(Icon::StarFilled, px(13.), theme.star))
+                    this.child(icon(Icon::StarFilled, ICON_SM, theme.star))
                 })
                 .child(
                     div()
@@ -951,15 +953,16 @@ impl PigeonApp {
                 }
                 cx.notify();
             }))
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                    this.row_context_menu(thread_ix, event.position, window, cx)
-                }),
-            )
+            .on_any_mouse_down(cx.listener(
+                move |this, event: &gpui::MouseDownEvent, window, cx| {
+                    if is_secondary(event) {
+                        this.row_context_menu(thread_ix, event.position, window, cx)
+                    }
+                },
+            ))
             .on_click(
                 cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
-                    if !event.is_right_click() {
+                    if !event.is_right_click() && !event.modifiers().control {
                         this.click_row(thread_ix, event.modifiers(), window, cx)
                     }
                 }),
@@ -986,15 +989,15 @@ impl PigeonApp {
                 .id((id, thread_ix))
                 .role(gpui::Role::Button)
                 .aria_label(tip)
-                .size(px(26.))
+                .size(HIT_TARGET)
                 .flex()
                 .items_center()
                 .justify_center()
                 .rounded(RADIUS_SM)
                 .hover(|s| s.bg(theme.selected_bg))
                 .active(|s| s.opacity(0.7))
-                .child(icon(glyph, px(15.), color))
-                .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+                .child(icon(glyph, ICON_MD, color))
+                .tooltip(move |window, cx| tooltip(tip).build(window, cx))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         };
         div()
@@ -1094,14 +1097,15 @@ fn checkbox(thread_ix: usize, checked: bool, theme: &Theme) -> gpui::Stateful<gp
         } else {
             gpui::Toggled::False
         })
-        .size(px(20.))
+        .size(HIT_TARGET)
+        .flex_none()
         .flex()
         .items_center()
         .justify_center()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(
             div()
-                .size(px(14.))
+                .size(ICON_MD)
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1109,7 +1113,7 @@ fn checkbox(thread_ix: usize, checked: bool, theme: &Theme) -> gpui::Stateful<gp
                 .map(|d| {
                     if checked {
                         d.bg(theme.accent)
-                            .child(icon(Icon::Check, px(11.), theme.accent_text))
+                            .child(icon(Icon::Check, ICON_SM, theme.accent_text))
                     } else {
                         d.border_1().border_color(theme.text_faint)
                     }

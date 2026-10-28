@@ -535,21 +535,23 @@ pub fn rank_contacts<'a>(
     me: impl Fn(&Contact) -> bool,
 ) -> Vec<Contact> {
     let mut seen: Vec<(Contact, usize)> = Vec::new();
+    let mut index: std::collections::HashMap<String, usize> = Default::default();
     for contact in seen_in_mail {
         if me(contact) {
             continue;
         }
-        match seen
-            .iter_mut()
-            .find(|(c, _)| c.email.eq_ignore_ascii_case(&contact.email))
-        {
-            Some((known, count)) => {
+        match index.entry(contact.email.to_ascii_lowercase()) {
+            std::collections::hash_map::Entry::Occupied(ix) => {
+                let (known, count) = &mut seen[*ix.get()];
                 *count += 1;
                 if known.name.is_empty() {
                     known.name = contact.name.clone();
                 }
             }
-            None => seen.push((contact.clone(), 1)),
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(seen.len());
+                seen.push((contact.clone(), 1));
+            }
         }
     }
     seen.sort_by_key(|(_, count)| std::cmp::Reverse(*count));

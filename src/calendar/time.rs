@@ -373,6 +373,15 @@ fn parse_relative(text: &str, today: NaiveDate) -> Option<NaiveDate> {
     })
 }
 
+/// The system zone's name as last read; cleared when macOS says it changed.
+static ZONE_NAME: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+
+/// Forget the cached zone name, so the next `LocalZone::system()` reads it
+/// again (MC-Q20 b).
+pub fn reset_zone_name() {
+    *ZONE_NAME.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
 /// The user's zone: its IANA name, and conversions between UTC and its
 /// wall clock. Tests pass a fixed one, so they don't depend on the machine.
 #[derive(Clone, Copy, Debug)]
@@ -386,9 +395,13 @@ pub struct LocalZone {
 impl LocalZone {
     /// The system's zone (`iana-time-zone`, converted with `chrono::Local`).
     pub fn system() -> Self {
-        static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-        let name =
-            NAME.get_or_init(|| iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into()));
+        let name = *ZONE_NAME
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(|| {
+                // Leaked once per zone change, which is rare.
+                String::leak(iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into()))
+            });
         Self {
             name,
             to_local: |t| t.with_timezone(&Local).naive_local(),

@@ -108,9 +108,10 @@ fn read_files(
     if total > crate::ui::composer::ATTACHMENT_LIMIT {
         return Err(anyhow!(crate::ui::composer::ATTACHMENT_LIMIT_ERROR));
     }
-    let mut saved: Option<Vec<u8>> = None;
+    // Each parsed once, however many files come from it (MC-008).
+    let mut saved: Option<Option<mail_parser::Message<'static>>> = None;
     // W2 (ATT-7): the originals a forward's files come from, by id.
-    let mut originals: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut originals: Vec<(String, Option<mail_parser::Message<'static>>)> = Vec::new();
     let mut files = Vec::new();
     for attachment in &draft.attachments {
         let on_disk = (!attachment.path.is_empty())
@@ -122,30 +123,37 @@ fn read_files(
         } else if !original.is_empty() && !attachment.part_id.is_empty() {
             if !originals.iter().any(|(id, _)| id == original) {
                 match super::attachments::fetch_raw(gmail, original) {
-                    Ok(raw) => originals.push((original.clone(), raw)),
+                    Ok(raw) => originals.push((original.clone(), mime::parse(&raw))),
                     Err(e) => match e.later() {
                         Some(e) => return Err(e.into()),
-                        None => originals.push((original.clone(), Vec::new())),
+                        None => originals.push((original.clone(), None)),
                     },
                 }
             }
             originals
                 .iter()
                 .find(|(id, _)| id == original)
-                .and_then(|(_, raw)| mime::part_bytes(raw, &attachment.part_id))
+                .and_then(|(_, message)| mime::part_of(message.as_ref()?, &attachment.part_id))
         } else if let Some(id) = draft_id {
             if saved.is_none() {
-                saved = match gmail.call::<DraftRef>(&gmail::draft_get_raw_request(id)) {
-                    Ok(d) => d.message.raw.and_then(|raw| mime::decode_raw(&raw)),
-                    Err(e) => match e.later() {
-                        Some(e) => return Err(e.into()),
-                        None => None,
+                saved = Some(
+                    match gmail.call::<DraftRef>(&gmail::draft_get_raw_request(id)) {
+                        Ok(d) => d
+                            .message
+                            .raw
+                            .and_then(|raw| mime::decode_raw(&raw))
+                            .and_then(|raw| mime::parse(&raw)),
+                        Err(e) => match e.later() {
+                            Some(e) => return Err(e.into()),
+                            None => None,
+                        },
                     },
-                };
+                );
             }
             saved
-                .as_deref()
-                .and_then(|raw| mime::attachment_bytes(raw, &attachment.name))
+                .as_ref()
+                .and_then(Option::as_ref)
+                .and_then(|message| mime::attachment_of(message, &attachment.name))
         } else {
             None
         };
@@ -208,7 +216,8 @@ fn refused(what: &str, e: GmailError) -> anyhow::Error {
 
 /// Whether `e` is no network or no sign-in: the op goes again later.
 pub fn is_later(e: &anyhow::Error) -> bool {
-    e.downcast_ref::<TransportError>().is_some()
+    e.downcast_ref::<TransportError>()
+        .is_some_and(TransportError::goes_later)
 }
 
 fn save_draft(

@@ -369,7 +369,7 @@ impl CalendarView {
                 .bg(theme.cal_now)
                 .text_size(TEXT_XS)
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.cal_selected_text)
+                .text_color(theme.on_fill(theme.cal_now))
                 .child(time::clock_label(now.time()))
         });
 
@@ -460,15 +460,16 @@ impl CalendarView {
         let cascaded = overlapped;
 
         let (fill, text, muted) = if selected {
-            let text = theme.cal_selected_text;
-            (theme.event_selected_fill(color), text, text.alpha(0.82))
+            let fill = theme.event_selected_fill(color);
+            let text = theme.on_fill(fill);
+            (fill, text, text.alpha(0.82))
         } else {
             let text = theme.event_text(color, past);
             let fill = match look {
                 Look::Normal => theme.event_fill(color, past),
                 Look::Pending | Look::Declined => theme.event_fill(color, true).alpha(0.25),
             };
-            (fill, text, text.alpha(if past { 0.5 } else { 0.75 }))
+            (fill, text, text.alpha(0.75))
         };
         let fill = if cascaded {
             theme.overlay_bg.alpha(1.).blend(fill)
@@ -680,7 +681,10 @@ impl CalendarView {
         let selected = self.is_selected(&occurrence);
         let past = occurrence.end <= now();
         let (fill, text) = if selected {
-            (theme.event_selected_fill(color), theme.cal_selected_text)
+            (
+                theme.event_selected_fill(color),
+                theme.on_fill(theme.event_selected_fill(color)),
+            )
         } else {
             (theme.event_fill(color, past), theme.event_text(color, past))
         };

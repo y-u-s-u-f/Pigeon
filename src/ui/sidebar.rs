@@ -4,11 +4,14 @@ use std::collections::{HashMap, HashSet};
 
 use gpui::{
     AnyElement, AppContext as _, Context, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, StatefulInteractiveElement, Styled, Window, component::tooltip::Tooltip, div,
-    prelude::FluentBuilder as _, px,
+    ParentElement, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _,
+    px,
 };
 
-use super::{HEADER_HEIGHT, account_avatar, icon, icon_button, window_drag_area};
+use super::{
+    HEADER_HEIGHT, account_avatar, icon, icon_button, icon_button_small, is_secondary, tooltip,
+    window_drag_area,
+};
 use crate::ui::style::*;
 use crate::{
     actions::{NewLabel, ToggleHiddenLabels, ToggleSidebar},
@@ -26,9 +29,9 @@ use crate::{
 /// W4b: the Inbox's other categories, as views under it (FOL-11).
 const CATEGORIES: [(Category, Icon); 4] = [
     (Category::Social, Icon::Users),
-    (Category::Promotions, Icon::Tag),
+    (Category::Promotions, Icon::Megaphone),
     (Category::Updates, Icon::Bell),
-    (Category::Forums, Icon::Layers),
+    (Category::Forums, Icon::MessagesSquare),
 ];
 
 /// The categories the sidebar lists: those with threads in the Inbox or
@@ -144,7 +147,7 @@ impl gpui::Render for DragGhost {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx);
         div()
-            .h(HIT_TARGET)
+            .h(CONTROL_MD)
             .px(SPACE_MD)
             .flex()
             .items_center()
@@ -167,7 +170,7 @@ const FOLDERS: [(Nav, &str, Icon); 7] = [
     (Nav::Folder(Folder::Sent), "Sent", Icon::Send),
     (Nav::Folder(Folder::Drafts), "Drafts", Icon::FilePen),
     (Nav::Folder(Folder::Archive), "Archive", Icon::Archive),
-    (Nav::Folder(Folder::Spam), "Spam", Icon::OctagonAlert),
+    (Nav::Folder(Folder::Spam), "Spam", Icon::ShieldAlert),
     (Nav::Folder(Folder::Trash), "Trash", Icon::Trash),
 ];
 
@@ -322,7 +325,7 @@ impl PigeonApp {
                     .role(gpui::Role::Button)
                     .aria_label(text.clone())
                     .aria_expanded(show_hidden)
-                    .h(px(26.))
+                    .h(CONTROL_MD)
                     .flex_none()
                     .px(SPACE_MD)
                     .flex()
@@ -338,12 +341,12 @@ impl PigeonApp {
                         } else {
                             Icon::ChevronDown
                         },
-                        px(14.),
+                        ICON_MD,
                         theme.text_faint,
                     ))
                     .child(text)
                     .tooltip(|window, cx| {
-                        Tooltip::new("Show or leave out hidden labels")
+                        tooltip("Show or leave out hidden labels")
                             .action(&ToggleHiddenLabels, None)
                             .build(window, cx)
                     })
@@ -396,7 +399,7 @@ impl PigeonApp {
                     .aria_label(format!("{}, {}", account.name, account.email))
                     .mx(SPACE_MD)
                     .mb(SPACE_SM)
-                    .h(HIT_TARGET)
+                    .h(CONTROL_MD)
                     .px(SPACE_MD)
                     .flex()
                     .items_center()
@@ -407,7 +410,7 @@ impl PigeonApp {
                         self.backend.read(cx).profile_photo(),
                         account.initials(),
                         theme.avatar_color(&account.email),
-                        px(18.),
+                        AVATAR_XS,
                         &theme,
                     ))
                     .child(
@@ -420,7 +423,7 @@ impl PigeonApp {
                     )
                     .tooltip({
                         let email = account.email.clone();
-                        move |window, cx| Tooltip::new(email.clone()).build(window, cx)
+                        move |window, cx| tooltip(email.clone()).build(window, cx)
                     }),
             )
             .child(
@@ -468,7 +471,7 @@ impl PigeonApp {
                                     Box::new(NewLabel),
                                     &theme,
                                 )
-                                .size(px(22.)),
+                                .my(-SPACE_XS),
                             ),
                     )
                     .children(labels),
@@ -525,34 +528,24 @@ impl PigeonApp {
         item.when(row.children > 0, |this| {
             let name = row.name.clone();
             this.aria_expanded(!row.folded).child(
-                div()
-                    .id(("fold-label", ix))
-                    .role(gpui::Role::Button)
-                    .aria_label(format!(
+                icon_button_small(
+                    ("fold-label", ix),
+                    if row.folded {
+                        Icon::ChevronRight
+                    } else {
+                        Icon::ChevronDown
+                    },
+                    format!(
                         "{} sublabels of {name}",
                         if row.folded { "Show" } else { "Hide" }
-                    ))
-                    .size(px(18.))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(RADIUS_SM)
-                    .hover(|s| s.bg(theme.selected_bg))
-                    .child(icon(
-                        if row.folded {
-                            Icon::ChevronRight
-                        } else {
-                            Icon::ChevronDown
-                        },
-                        px(12.),
-                        theme.text_faint,
-                    ))
-                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.toggle_label_folded(ix, cx);
-                    })),
+                    ),
+                    theme,
+                )
+                .mr(-SPACE_SM)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.toggle_label_folded(ix, cx);
+                })),
             )
         })
         .when(movable, |this| {
@@ -575,10 +568,11 @@ impl PigeonApp {
                 this.drop_label(&dragged.id, &target, cx)
             }))
         })
-        .on_mouse_down(
-            gpui::MouseButton::Right,
+        .on_any_mouse_down(
             cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                this.show_label_menu(ix, event.position, window, cx)
+                if is_secondary(event) {
+                    this.show_label_menu(ix, event.position, window, cx)
+                }
             }),
         )
         .into_any_element()
@@ -606,7 +600,7 @@ impl PigeonApp {
             .role(gpui::Role::Link)
             .aria_label(name.clone())
             .aria_selected(active)
-            .h(px(30.))
+            .h(ROW_SM)
             .flex_none()
             .pl(SPACE_MD + SPACE_LG * depth as f32)
             .pr(SPACE_MD)
@@ -628,7 +622,7 @@ impl PigeonApp {
             .child(match marker {
                 Marker::Icon(glyph) => icon(
                     glyph,
-                    px(16.),
+                    ICON_LG,
                     if active {
                         theme.icon_active
                     } else {
@@ -637,7 +631,7 @@ impl PigeonApp {
                 )
                 .into_any_element(),
                 Marker::Dot(color) => div()
-                    .size(px(16.))
+                    .size(ICON_LG)
                     .flex_none()
                     .flex()
                     .items_center()
@@ -664,6 +658,10 @@ impl PigeonApp {
             })
             .on_click(
                 cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                    // Control-click opens a label's menu instead.
+                    if event.modifiers().control {
+                        return;
+                    }
                     this.set_nav(nav, cx);
                     // A click hands the keyboard back to the list; Enter on a
                     // focused row keeps focus on the row.

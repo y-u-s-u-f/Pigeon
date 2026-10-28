@@ -9,7 +9,7 @@ use gpui::{
     component::native_menu::NativeMenu, prelude::*,
 };
 
-use super::{Nav, PigeonApp};
+use super::{Nav, PigeonApp, ToastKind};
 use crate::{
     actions::*,
     assets::Icon,
@@ -489,7 +489,7 @@ impl PigeonApp {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| match result {
-                Ok(()) => this.show_toast(done, None, cx),
+                Ok(()) => this.show_toast(ToastKind::Done, done, None, cx),
                 Err(e) => this.show_error_toast(e, cx),
             })
             .ok();
@@ -516,24 +516,23 @@ impl PigeonApp {
             return;
         }
         let important = targets.iter().any(|&ix| !self.data.threads[ix].important);
+        let changed = self.ids_where(&targets, |t| t.important != important);
         for &ix in &targets {
             self.data.threads[ix].important = important;
         }
         let label = vec![gmail::IMPORTANT.to_string()];
-        if important {
-            self.queue_labels(&targets, label, Vec::new(), cx);
+        let (add, remove) = if important {
+            (label, Vec::new())
         } else {
-            self.queue_labels(&targets, Vec::new(), label, cx);
-        }
-        self.show_toast(
-            if important {
-                "Marked as important"
-            } else {
-                "Marked as not important"
-            },
-            None,
-            cx,
-        );
+            (Vec::new(), label)
+        };
+        self.queue_labels(&targets, add.clone(), remove.clone(), cx);
+        let (title, message) = if important {
+            ("Mark as Important", "Marked as important")
+        } else {
+            ("Mark as Not Important", "Marked as not important")
+        };
+        self.push_label_change(title, changed, add, remove, Some(message.into()), cx);
         cx.notify();
     }
 

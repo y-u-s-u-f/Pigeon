@@ -6,7 +6,7 @@ use gpui::{
     AnyElement, Context, ElementId, FocusHandle, FontWeight, InteractiveElement, IntoElement,
     ParentElement, SharedString, StatefulInteractiveElement, Styled, UniformListScrollHandle,
     Window, base::TextSelection, component::scroll::ScrollableElement as _, div,
-    prelude::FluentBuilder as _, px, relative, uniform_list,
+    prelude::FluentBuilder as _, px, uniform_list,
 };
 
 use super::{
@@ -150,7 +150,9 @@ impl PigeonApp {
             .flex()
             .items_center()
             .gap(SPACE_2XS)
-            .px(SPACE_MD);
+            // The first glyph lines up with the content's edge below.
+            .pl(SPACE_XL - (HIT_TARGET - ICON_TOOLBAR) / 2.)
+            .pr(SPACE_MD);
         let Some(thread) = thread else {
             return header;
         };
@@ -220,7 +222,7 @@ impl PigeonApp {
             } else {
                 icon_button(
                     "important",
-                    Icon::Important,
+                    Icon::ImportantOutline,
                     "Mark as important",
                     Box::new(ToggleImportant),
                     theme,
@@ -347,8 +349,8 @@ impl PigeonApp {
                             .id("subject")
                             .role(gpui::Role::Heading)
                             .aria_label(thread.subject.clone())
-                            .text_size(TEXT_XL)
-                            .line_height(relative(1.3))
+                            .text_size(TEXT_TITLE2)
+                            .line_height(LINE_UI)
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(
                                 Selectable::plain(
@@ -391,14 +393,14 @@ impl PigeonApp {
     ) -> AnyElement {
         div()
             .id(("message", ix))
-            .h(px(46.))
+            .py(SPACE_MD)
             .px(SPACE_LG)
             .flex()
             .items_center()
             .gap(SPACE_SM)
             .rounded(RADIUS_LG)
             .hover(|s| s.bg(theme.hover_bg))
-            .child(self.sender_avatar(&message.from, px(24.), theme))
+            .child(self.sender_avatar(&message.from, AVATAR_SM, theme))
             .child(
                 div()
                     .flex_none()
@@ -475,7 +477,7 @@ impl PigeonApp {
                 focusable_control(div().id(("attachment", ix * 100 + n)), theme)
                     .role(gpui::Role::Button)
                     .aria_label(format!("Open {}, {size}", attachment.name))
-                    .h(px(34.))
+                    .h(CONTROL_LG)
                     .pl(SPACE_MD)
                     .pr(SPACE_XS)
                     .flex()
@@ -501,24 +503,16 @@ impl PigeonApp {
                             .child(size),
                     )
                     .child(
-                        div()
-                            .id(("attachment-save", ix * 100 + n))
-                            .role(gpui::Role::Button)
-                            .aria_label(format!("Save {}", attachment.name))
-                            .size(px(24.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(RADIUS_SM)
-                            .hover(|s| s.bg(theme.hover_bg))
-                            .child(icon(Icon::Download, px(13.), theme.text_faint))
-                            .tooltip(|window, cx| {
-                                gpui::component::tooltip::Tooltip::new("Save…").build(window, cx)
-                            })
-                            .on_click(move |_, window, cx| {
-                                cx.stop_propagation();
-                                window.dispatch_action(Box::new(SaveAttachmentAt(ix, n)), cx)
-                            }),
+                        super::icon_button_small(
+                            ("attachment-save", ix * 100 + n),
+                            Icon::Download,
+                            format!("Save {}…", attachment.name),
+                            theme,
+                        )
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            window.dispatch_action(Box::new(SaveAttachmentAt(ix, n)), cx)
+                        }),
                     )
                     .on_click(move |_, window, cx| {
                         window.dispatch_action(Box::new(OpenAttachmentAt(ix, n)), cx)
@@ -542,7 +536,7 @@ impl PigeonApp {
                     cx,
                 )
                 .flex_none()
-                .child(self.sender_avatar(&message.from, px(34.), theme)),
+                .child(self.sender_avatar(&message.from, AVATAR_MD, theme)),
             )
             .child(
                 div()
@@ -648,7 +642,9 @@ impl PigeonApp {
                 div()
                     .id(("message-body", ix))
                     .mt(SPACE_LG)
-                    .pl(px(46.))
+                    // Under the sender's name: past the avatar and the gap.
+                    .ml(SPACE_MD)
+                    .pl(AVATAR_MD)
                     .when_some(images.ask, |this, hidden| {
                         this.child(render_images_bar(ix, &message.id, hidden, theme, cx))
                     })
@@ -671,7 +667,8 @@ impl PigeonApp {
                 this.child(
                     div()
                         .mt(SPACE_LG)
-                        .pl(px(46.))
+                        .ml(SPACE_MD)
+                        .pl(AVATAR_MD)
                         .flex()
                         .flex_wrap()
                         .gap(SPACE_SM)
@@ -702,7 +699,7 @@ impl PigeonApp {
                 .items_center()
                 .gap(SPACE_SM)
                 .min_w_0()
-                .child(icon(Icon::Mail, px(13.), theme.text_faint))
+                .child(icon(Icon::Mail, ICON_SM, theme.text_faint))
                 .child(
                     div()
                         .min_w_0()
@@ -722,7 +719,7 @@ impl PigeonApp {
                 focusable_control(div().id(id), theme)
                     .role(gpui::Role::Button)
                     .aria_label(label)
-                    .h(px(36.))
+                    .h(CONTROL_LG)
                     .px(SPACE_MD)
                     .flex()
                     .items_center()
@@ -732,7 +729,7 @@ impl PigeonApp {
                     .hover(|s| s.bg(theme.selected_bg))
                     .active(|s| s.opacity(0.8))
                     .text_size(TEXT_BASE)
-                    .child(icon(glyph, px(15.), theme.icon))
+                    .child(icon(glyph, ICON_MD, theme.icon))
                     .child(div().flex_1().child(label))
                     .children(caps)
                     .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
@@ -757,13 +754,16 @@ impl PigeonApp {
                     .flex_col()
                     .gap(SPACE_LG)
                     .child(
-                        div()
-                            .text_size(TEXT_XL)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(match count {
+                        super::label(
+                            "bulk-title",
+                            match count {
                                 1 => "1 conversation selected".to_string(),
                                 n => format!("{n} conversations selected"),
-                            }),
+                            },
+                        )
+                        .text_size(TEXT_TITLE2)
+                        .line_height(LINE_UI)
+                        .font_weight(FontWeight::SEMIBOLD),
                     )
                     .child(
                         div()
@@ -776,8 +776,10 @@ impl PigeonApp {
                             .when(count > 5, |d| {
                                 d.child(
                                     div()
-                                        .pl(px(21.))
+                                        .flex()
+                                        .gap(SPACE_SM)
                                         .text_color(theme.text_faint)
+                                        .child(div().flex_none().w(ICON_SM))
                                         .child(format!("and {} more", count - 5)),
                                 )
                             }),
@@ -840,7 +842,7 @@ impl PigeonApp {
                             .gap(SPACE_SM)
                             .text_size(TEXT_SM)
                             .text_color(theme.text_faint)
-                            .child(super::keycap("Esc", theme))
+                            .child(super::keys_caps("escape", theme))
                             .child("to clear the selection"),
                     ),
             )
@@ -881,7 +883,7 @@ impl PigeonApp {
         }
     }
 
-    fn sender_avatar(&self, contact: &Contact, size: gpui::Pixels, theme: &Theme) -> gpui::Div {
+    fn sender_avatar(&self, contact: &Contact, size: gpui::Rems, theme: &Theme) -> gpui::Div {
         avatar(
             contact.initials(),
             theme.avatar_color(&contact.email),
@@ -900,7 +902,7 @@ fn render_body(
 ) -> impl IntoElement {
     div()
         .text_size(TEXT_MD)
-        .line_height(relative(1.55))
+        .line_height(LINE_READING)
         .text_color(theme.text)
         .child(html_view::render_with(
             doc,
@@ -1085,7 +1087,7 @@ fn render_images_bar(
         .bg(theme.chip_bg)
         .text_size(TEXT_SM)
         .text_color(theme.text_muted)
-        .child(icon(Icon::Image, px(14.), theme.text_faint))
+        .child(icon(Icon::Image, ICON_MD, theme.text_faint))
         .child(div().flex_1().min_w_0().child(match hidden {
             1 => "1 remote image is hidden to protect your privacy".to_string(),
             n => format!("{n} remote images are hidden to protect your privacy"),
@@ -1095,7 +1097,7 @@ fn render_images_bar(
                 .role(gpui::Role::Button)
                 .aria_label("Load images")
                 .flex_none()
-                .h(HIT_TARGET)
+                .h(CONTROL_MD)
                 .px(SPACE_MD)
                 .flex()
                 .items_center()
@@ -1107,7 +1109,7 @@ fn render_images_bar(
                 .text_color(theme.text)
                 .font_weight(FontWeight::MEDIUM)
                 .child("Load images")
-                .child(super::keycap("⇧⌘I", theme))
+                .child(super::keys_caps("cmd-shift-i", theme))
                 .on_click(cx.listener(move |this, _, _, cx| this.allow_images(&id, cx))),
         )
         .into_any_element()
@@ -1213,7 +1215,7 @@ fn render_original(original: &Original, theme: &Theme) -> AnyElement {
         )
         .child(icon_button(
             "original-copy",
-            Icon::FileText,
+            Icon::Copy,
             "Copy",
             Box::new(CopyOriginal),
             theme,
@@ -1299,9 +1301,9 @@ fn render_original(original: &Original, theme: &Theme) -> AnyElement {
                 .min_h_0()
                 .flex()
                 .flex_col()
-                .font_family("Menlo")
+                .font_family(MONO)
                 .text_size(TEXT_SM)
-                .line_height(relative(1.5))
+                .line_height(LINE_READING)
                 .text_color(theme.text_muted)
                 .child(body),
         )
@@ -1310,13 +1312,9 @@ fn render_original(original: &Original, theme: &Theme) -> AnyElement {
 
 /// In place of a body still on its way (RDR-6).
 fn render_body_loading(theme: &Theme) -> AnyElement {
-    div()
-        .id("message-loading")
-        .role(gpui::Role::Status)
-        .aria_label("Loading message")
+    super::live_text("message-loading", "Loading…", gpui::accesskit::Live::Polite)
         .text_size(TEXT_BASE)
         .text_color(theme.text_faint)
-        .child("Loading…")
         .into_any_element()
 }
 
@@ -1346,7 +1344,7 @@ fn render_body_failed(ix: usize, reason: &str, theme: &Theme) -> AnyElement {
             focusable_control(div().id(("message-retry", ix)), theme)
                 .role(gpui::Role::Button)
                 .aria_label("Retry loading message")
-                .h(HIT_TARGET)
+                .h(CONTROL_MD)
                 .px(SPACE_MD)
                 .flex()
                 .items_center()
@@ -1367,7 +1365,7 @@ fn more_button(theme: &Theme) -> gpui::Stateful<gpui::Div> {
     focusable_control(div().id("more-actions"), theme)
         .aria_label("More actions")
         .role(gpui::Role::Button)
-        .size(px(30.))
+        .size(HIT_TARGET)
         .flex_none()
         .flex()
         .items_center()
@@ -1375,11 +1373,9 @@ fn more_button(theme: &Theme) -> gpui::Stateful<gpui::Div> {
         .rounded(RADIUS_MD)
         .hover(|s| s.bg(theme.hover_bg))
         .active(|s| s.bg(theme.selected_bg))
-        .child(icon(Icon::Ellipsis, px(16.), theme.icon))
+        .child(icon(Icon::Ellipsis, ICON_TOOLBAR, theme.icon))
         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .tooltip(|window, cx| {
-            gpui::component::tooltip::Tooltip::new("More: move, label, mark read").build(window, cx)
-        })
+        .tooltip(|window, cx| super::tooltip("More: move, label, mark read").build(window, cx))
 }
 
 #[cfg(test)]

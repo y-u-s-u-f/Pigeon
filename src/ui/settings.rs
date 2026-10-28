@@ -22,7 +22,11 @@ use gpui::{
 };
 
 use super::{
-    HEADER_HEIGHT, account_avatar, binding_caps, empty_state, icon, keycap, window_drag_area,
+    HEADER_HEIGHT, account_avatar, binding_caps,
+    controls::{self, ButtonKind, dropdown, menu_check, menu_row, popup, push_button},
+    empty_state, icon, keycap,
+    motion::{self, Rise},
+    window_drag_area,
 };
 use crate::ui::style::*;
 use crate::{
@@ -33,7 +37,8 @@ use crate::{
     data::Contact,
     native::{self, LoginItem},
     settings::{
-        self, Appearance, Entry, HotKey, Match, RemoteImages, Section, SettingId, TimeFormat,
+        self, Appearance, Entry, HotKey, KeymapPreset, Match, RemoteImages, Section, SettingId,
+        TimeFormat,
     },
     theme::Theme,
     ui::{calendar::ViewKind, shortcuts_help::live_bindings},
@@ -70,11 +75,22 @@ const IMAGES: &[&str] = &["Ask", "Always", "Never"];
 // As `TimeFormat::ALL`.
 const TIME_FORMATS: &[&str] = &["System", "12-hour", "24-hour"];
 // W5 (CAL-41).
-const EVENT_LENGTHS: &[&str] = &["15 min", "30 min", "45 min", "1 hr", "1.5 hrs", "2 hrs"];
+const EVENT_LENGTHS: &[&str] = &[
+    "15 minutes",
+    "30 minutes",
+    "45 minutes",
+    "1 hour",
+    "1.5 hours",
+    "2 hours",
+];
 const EVENT_MINUTES: [u32; 6] = [15, 30, 45, 60, 90, 120];
 // W7b: as `HotKey::PANEL` and `HotKey::JOIN`.
 const PANEL_KEYS: &[&str] = &["⌃⌥⌘Space", "⌃⌥⌘P", "Off"];
 const JOIN_KEYS: &[&str] = &["⌃⌥⌘J", "⌃⌥⌘M", "Off"];
+// As `KeymapPreset::ALL`.
+const KEYMAPS: &[&str] = &["Gmail", "Apple Mail"];
+/// A slider's keyboard step.
+const SLIDER_STEP: f32 = 0.1;
 
 pub struct SettingsPage {
     pub open: bool,
@@ -94,8 +110,8 @@ pub struct SettingsPage {
     scroll: ScrollHandle,
     /// Sign Out was pressed once: the row asks to confirm.
     confirm_sign_out: bool,
-    /// The default calendar's list is open.
-    calendar_menu: bool,
+    /// The pop-up menu of this setting is open.
+    menu: Option<SettingId>,
     _flash: Option<Task<()>>,
 }
 
@@ -115,7 +131,7 @@ impl SettingsPage {
             search,
             scroll: ScrollHandle::new(),
             confirm_sign_out: false,
-            calendar_menu: false,
+            menu: None,
             _flash: None,
         };
         (page, events)
@@ -126,8 +142,14 @@ impl SettingsPage {
 enum Control {
     Switch(bool),
     Choice(usize, &'static [&'static str]),
-    /// A list: Automatic, then the calendars that take new events.
-    Calendars(usize, Vec<(String, Option<Hsla>)>),
+    /// A pop-up menu; options may have a color swatch.
+    Menu(usize, Vec<(String, Option<Hsla>)>),
+    /// 0…1 in steps of `SLIDER_STEP`; `locked` while the system decides.
+    Slider {
+        value: f32,
+        text: String,
+        locked: bool,
+    },
     Stepper {
         value: String,
         can_down: bool,
@@ -149,6 +171,8 @@ enum Change {
     Switch(bool),
     Choice(usize),
     Step(i32),
+    /// A slider's new value, 0…1.
+    Set(f32),
     Reset,
 }
 
@@ -217,6 +241,20 @@ impl PigeonApp {
             window.focus(&page.focus, cx);
             cx.notify();
         }
+    }
+
+    /// ⌘K's "… Settings" rows (ME-060): Settings open at that section.
+    pub(crate) fn open_settings_section(
+        &mut self,
+        action: &crate::actions::OpenSettingsSection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.settings_page.open {
+            self.close_overlays(window, cx);
+            self.settings_page.open = true;
+        }
+        self.jump_to_setting(Entry::Section(action.0), window, cx);
     }
 
     /// Sign Out from ⌘K or the menu (ACC-7): Settings › Accounts with the
@@ -342,7 +380,7 @@ impl PigeonApp {
         }
         page.row = None;
         page.confirm_sign_out = false;
-        page.calendar_menu = false;
+        page.menu = None;
         cx.notify();
     }
 
@@ -358,7 +396,7 @@ impl PigeonApp {
         };
         self.settings_page.keyboard = true;
         self.settings_page.confirm_sign_out = false;
-        self.settings_page.calendar_menu = false;
+        self.settings_page.menu = None;
         if !self.settings_query(cx).is_empty() {
             let len = self.settings_results(window, cx).len();
             self.settings_page.result = step(self.settings_page.result, len);
@@ -427,10 +465,13 @@ impl PigeonApp {
         let change = match self.control(id, window, cx) {
             Control::Switch(on) => Change::Switch(!on),
             Control::Choice(ix, options) => Change::Choice((ix + 1) % options.len()),
-            Control::Calendars(ix, options) => Change::Choice((ix + 1) % options.len()),
+            Control::Menu(ix, options) => Change::Choice((ix + 1) % options.len()),
             Control::Stepper { .. } => Change::Reset,
+            Control::Slider { locked, .. } if !locked => Change::Reset,
             Control::Button { .. } => return self.press_setting(id, window, cx),
-            Control::Account(_) | Control::Keys(_) | Control::Info(_) => return,
+            Control::Account(_) | Control::Keys(_) | Control::Info(_) | Control::Slider { .. } => {
+                return;
+            }
         };
         self.change_setting(id, change, window, cx);
     }
@@ -477,14 +518,15 @@ impl PigeonApp {
         let change = match self.control(id, window, cx) {
             Control::Switch(_) => Change::Switch(up),
             Control::Choice(ix, options) if up => Change::Choice((ix + 1).min(options.len() - 1)),
-            Control::Calendars(ix, options) if up => {
-                Change::Choice((ix + 1).min(options.len() - 1))
-            }
-            Control::Choice(ix, _) | Control::Calendars(ix, _) => {
-                Change::Choice(ix.saturating_sub(1))
-            }
+            Control::Menu(ix, options) if up => Change::Choice((ix + 1).min(options.len() - 1)),
+            Control::Choice(ix, _) | Control::Menu(ix, _) => Change::Choice(ix.saturating_sub(1)),
             Control::Stepper { .. } => Change::Step(if up { 1 } else { -1 }),
-            Control::Account(_) | Control::Keys(_) | Control::Info(_) | Control::Button { .. } => {
+            Control::Slider { locked, .. } if !locked => Change::Step(if up { 1 } else { -1 }),
+            Control::Account(_)
+            | Control::Keys(_)
+            | Control::Info(_)
+            | Control::Button { .. }
+            | Control::Slider { .. } => {
                 return;
             }
         };
@@ -492,7 +534,7 @@ impl PigeonApp {
     }
 
     fn settings_close(&mut self, _: &Close, window: &mut Window, cx: &mut Context<Self>) {
-        if std::mem::take(&mut self.settings_page.calendar_menu)
+        if self.settings_page.menu.take().is_some()
             || std::mem::take(&mut self.settings_page.confirm_sign_out)
         {
             cx.notify();
@@ -562,7 +604,13 @@ impl PigeonApp {
                 let ix = (0..EVENT_MINUTES.len())
                     .min_by_key(|&i| EVENT_MINUTES[i].abs_diff(minutes))
                     .unwrap_or(3);
-                Control::Choice(ix, EVENT_LENGTHS)
+                Control::Menu(
+                    ix,
+                    EVENT_LENGTHS
+                        .iter()
+                        .map(|l| (l.to_string(), None))
+                        .collect(),
+                )
             }
             SettingId::DefaultCalendar => {
                 let writable: Vec<_> = calendar.writable_calendars().collect();
@@ -574,7 +622,7 @@ impl PigeonApp {
                     .map_or(0, |ix| ix + 1);
                 let mut options = vec![("Automatic".to_string(), None)];
                 options.extend(writable.iter().map(|c| (c.name.clone(), Some(c.color))));
-                Control::Calendars(selected, options)
+                Control::Menu(selected, options)
             }
             SettingId::TimeZone => Control::Info(calendar.time_zone_note()),
             SettingId::Account => Control::Account(self.data.me()),
@@ -628,6 +676,20 @@ impl PigeonApp {
                     danger: false,
                 },
             },
+            // W1-THM contract; W1-KITA gives these their slider and choice.
+            SettingId::Transparency => {
+                let transparency = 100 - settings::current(cx).glass.min(100);
+                Control::Slider {
+                    value: transparency as f32 / 100.,
+                    text: format!("{transparency}%"),
+                    locked: native::reduce_transparency() || native::increase_contrast(),
+                }
+            }
+            SettingId::ShortcutPreset => {
+                let keymap = settings::current(cx).keymap;
+                let ix = KeymapPreset::ALL.iter().position(|k| *k == keymap);
+                Control::Choice(ix.unwrap_or(0), KEYMAPS)
+            }
         }
     }
 
@@ -689,6 +751,8 @@ impl PigeonApp {
                 self.saved.menu_bar = settings::current(cx).menu_bar;
                 self.saved.signatures = settings::current(cx).signatures;
                 self.saved.time_format = settings::current(cx).time_format;
+                self.saved.glass = settings::current(cx).glass;
+                self.saved.keymap = settings::current(cx).keymap;
                 settings::remember(&self.saved, cx);
                 let map = self.saved.to_map();
                 self.backend.update(cx, |b, cx| b.save_settings(map, cx));
@@ -710,13 +774,16 @@ impl PigeonApp {
                 menu_bar::set_prefs(prefs, cx);
             }
             SettingId::TimeFormat => shell::set_time_format(TimeFormat::ALL[choice], cx),
-            SettingId::EventLength => self.calendar.update(cx, |c, cx| {
-                c.prefs.event_minutes = Some(EVENT_MINUTES[choice]);
-                c.apply_display();
-                cx.notify();
-            }),
+            SettingId::EventLength => {
+                self.settings_page.menu = None;
+                self.calendar.update(cx, |c, cx| {
+                    c.prefs.event_minutes = Some(EVENT_MINUTES[choice]);
+                    c.apply_display();
+                    cx.notify();
+                })
+            }
             SettingId::DefaultCalendar => {
-                self.settings_page.calendar_menu = false;
+                self.settings_page.menu = None;
                 self.calendar.update(cx, |c, cx| {
                     c.prefs.default_calendar = choice
                         .checked_sub(1)
@@ -735,6 +802,21 @@ impl PigeonApp {
             | SettingId::LoginItemStatus
             | SettingId::MenuBarShortcutStatus
             | SettingId::DefaultMailApp => {}
+            SettingId::Transparency => {
+                let transparency = 100 - settings::current(cx).glass.min(100);
+                let transparency = match change {
+                    Change::Step(delta) => transparency as f32 / 100. + delta as f32 * SLIDER_STEP,
+                    Change::Set(value) => value,
+                    _ => 1.,
+                };
+                let glass = 100 - (transparency.clamp(0., 1.) * 100.).round() as u8;
+                shell::set_glass(glass, cx);
+            }
+            SettingId::ShortcutPreset => {
+                let preset = KeymapPreset::ALL[choice];
+                shell::change_app_settings(cx, |s| s.keymap = preset);
+                crate::set_keymap(preset, cx);
+            }
         }
         cx.notify();
     }
@@ -1117,7 +1199,7 @@ impl PigeonApp {
         cursor: bool,
         ring: bool,
         ix: usize,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = Theme::of(cx).clone();
@@ -1144,6 +1226,9 @@ impl PigeonApp {
         let description = match (&control, found) {
             // The account's own row says whose it is; info rows say it.
             (Some(Control::Account(_) | Control::Info(_)), None) => "",
+            (Some(Control::Slider { locked: true, .. }), None) => {
+                "Reduce Transparency or Increase Contrast is on in System Settings, so the window is opaque."
+            }
             _ => entry.description(),
         };
         let confirming = entry == Entry::Setting(SettingId::SignOut)
@@ -1205,33 +1290,45 @@ impl PigeonApp {
                     unreachable!()
                 };
                 Some(
-                    switch(("settings-switch", ix), on, label, &theme)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                            cx.stop_propagation();
-                            this.change_setting(id, Change::Switch(!on), window, cx);
-                        }))
-                        .into_any_element(),
+                    controls::switch(
+                        ("settings-switch", id as usize),
+                        on,
+                        label,
+                        &theme,
+                        window,
+                        cx,
+                    )
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.settings_control_changed(id, Change::Switch(!on), window, cx);
+                    }))
+                    .into_any_element(),
                 )
             }
             Some(Control::Choice(selected, options)) => {
                 let Entry::Setting(id) = entry else {
                     unreachable!()
                 };
+                let pick = Self::settings_listener(id, Change::Choice, cx);
                 Some(
-                    segmented(ix, label, options, selected, &theme, |option| {
-                        cx.listener(move |this, _: &ClickEvent, window, cx| {
-                            cx.stop_propagation();
-                            this.change_setting(id, Change::Choice(option), window, cx);
-                        })
-                    })
+                    controls::segmented(
+                        ("settings-choice", id as usize),
+                        label,
+                        options,
+                        selected,
+                        &theme,
+                        window,
+                        cx,
+                        pick,
+                    )
                     .into_any_element(),
                 )
             }
-            Some(Control::Calendars(selected, options)) => {
+            Some(Control::Menu(selected, options)) => {
                 let Entry::Setting(id) = entry else {
                     unreachable!()
                 };
-                Some(self.calendar_dropdown(ix, id, label, selected, options, &theme, window, cx))
+                Some(self.settings_menu(ix, id, label, selected, options, &theme, window, cx))
             }
             Some(Control::Stepper {
                 value,
@@ -1241,74 +1338,43 @@ impl PigeonApp {
                 let Entry::Setting(id) = entry else {
                     unreachable!()
                 };
-                let button = |name: &'static str,
-                              glyph: Icon,
-                              label: &'static str,
-                              enabled,
-                              delta| {
-                    div()
-                        .id((name, ix))
-                        .role(gpui::Role::Button)
-                        .aria_label(label)
-                        .size(px(24.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(RADIUS_SM)
-                        .bg(theme.control_track)
-                        .when(enabled, |this| {
-                            this.cursor_pointer()
-                                .hover(|s| s.bg(theme.selected_bg))
-                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                    cx.stop_propagation();
-                                    this.change_setting(id, Change::Step(delta), window, cx);
-                                }))
-                        })
-                        .child(icon(
-                            glyph,
-                            px(14.),
-                            if enabled {
-                                theme.icon
-                            } else {
-                                theme.text_faint
-                            },
-                        ))
-                };
                 Some(
-                    div()
-                        .id(("settings-stepper", ix))
-                        .role(gpui::Role::SpinButton)
-                        .aria_label(label)
-                        .aria_value(value.clone())
-                        .flex()
-                        .items_center()
-                        .gap(SPACE_SM)
-                        .child(button(
-                            "settings-smaller",
-                            Icon::Minus,
-                            "Smaller text",
-                            can_down,
-                            -1,
-                        ))
-                        .child(
-                            div()
-                                .min_w(px(44.))
-                                .flex()
-                                .justify_center()
-                                .text_size(TEXT_SM)
-                                .font_weight(FontWeight::MEDIUM)
-                                .font_features(tabular_figures())
-                                .child(value),
-                        )
-                        .child(button(
-                            "settings-bigger",
-                            Icon::Plus,
-                            "Bigger text",
-                            can_up,
-                            1,
-                        ))
-                        .into_any_element(),
+                    controls::stepper(
+                        ("settings-stepper", id as usize),
+                        label,
+                        value,
+                        (can_down, can_up),
+                        &theme,
+                        Self::settings_listener(id, Change::Step, cx),
+                    )
+                    .into_any_element(),
                 )
+            }
+            Some(Control::Slider {
+                value,
+                text,
+                locked,
+            }) => {
+                let Entry::Setting(id) = entry else {
+                    unreachable!()
+                };
+                Some(if locked {
+                    div()
+                        .text_size(TEXT_SM)
+                        .text_color(theme.text_muted)
+                        .child("Opaque")
+                        .into_any_element()
+                } else {
+                    controls::slider(
+                        ("settings-slider", id as usize),
+                        label,
+                        value,
+                        text,
+                        &theme,
+                        Self::settings_listener(id, Change::Set, cx),
+                    )
+                    .into_any_element()
+                })
             }
             Some(Control::Keys(bindings)) => Some(
                 div()
@@ -1350,17 +1416,31 @@ impl PigeonApp {
                         .items_center()
                         .gap(SPACE_SM)
                         .child(
-                            button(("settings-cancel", ix), "Cancel", Tone::Plain, &theme)
-                                .on_click(press("settings-cancel")),
+                            push_button(
+                                ("settings-cancel", ix),
+                                "Cancel",
+                                ButtonKind::Plain,
+                                &theme,
+                            )
+                            .on_click(press("settings-cancel")),
                         )
                         .child(
-                            button(("settings-confirm", ix), label, Tone::Confirm, &theme)
-                                .on_click(press("settings-confirm")),
+                            push_button(
+                                ("settings-confirm", ix),
+                                label,
+                                ButtonKind::Destructive,
+                                &theme,
+                            )
+                            .on_click(press("settings-confirm")),
                         )
                         .into_any_element()
                 } else {
-                    let tone = if danger { Tone::Danger } else { Tone::Plain };
-                    button(("settings-button", ix), label, tone, &theme)
+                    let kind = if danger {
+                        ButtonKind::Danger
+                    } else {
+                        ButtonKind::Plain
+                    };
+                    push_button(("settings-button", ix), label, kind, &theme)
                         .on_click(press("settings-button"))
                         .into_any_element()
                 })
@@ -1452,10 +1532,39 @@ impl PigeonApp {
 }
 
 impl PigeonApp {
-    /// The default calendar: a button showing the choice, and under it,
-    /// while open, the list.
+    /// A change made with the mouse on a row's control. The control took
+    /// focus on the press; the page takes it back so its keys keep working.
+    fn settings_control_changed(
+        &mut self,
+        id: SettingId,
+        change: Change,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings_page.keyboard = false;
+        self.change_setting(id, change, window, cx);
+        window.focus(&self.settings_page.focus, cx);
+    }
+
+    /// A shared control's callback that changes setting `id`.
+    fn settings_listener<T: 'static>(
+        id: SettingId,
+        change: impl Fn(T) -> Change + 'static,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(T, &mut Window, &mut App) + 'static {
+        let this = cx.entity().downgrade();
+        move |value, window, cx| {
+            this.update(cx, |this, cx| {
+                this.settings_control_changed(id, change(value), window, cx)
+            })
+            .ok();
+        }
+    }
+
+    /// A pop-up menu: a button showing the choice, and under it, while
+    /// open, the list. Default calendar and Event length.
     #[allow(clippy::too_many_arguments)]
-    fn calendar_dropdown(
+    fn settings_menu(
         &self,
         ix: usize,
         id: SettingId,
@@ -1466,72 +1575,56 @@ impl PigeonApp {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let open = self.settings_page.calendar_menu;
+        let open = self.settings_page.menu == Some(id);
         let width = px(220.);
+        let swatches = options.iter().any(|(_, color)| color.is_some());
         let swatch = |color: Option<Hsla>| {
-            div()
-                .flex_none()
-                .size(px(10.))
-                .rounded_full()
-                .when_some(color, |d, color| d.bg(color))
+            swatches.then(|| {
+                div()
+                    .flex_none()
+                    .size(px(10.))
+                    .rounded_full()
+                    .when_some(color, |d, color| d.bg(color))
+            })
         };
         let current = options[selected].clone();
         let menu = open.then(|| {
             let rows = options.iter().enumerate().map(|(option, (name, color))| {
-                div()
-                    .id(("settings-calendar", ix * 64 + option))
-                    .role(gpui::Role::MenuItem)
-                    .aria_label(name.clone())
-                    .h(px(30.))
-                    .px(SPACE_MD)
-                    .flex()
-                    .items_center()
-                    .gap(SPACE_SM)
-                    .rounded(RADIUS_MD)
-                    .text_size(TEXT_BASE)
-                    .text_color(theme.text)
-                    .cursor_pointer()
-                    .when(option == selected, |d| d.bg(theme.selected_bg))
-                    .hover(|s| s.bg(theme.hover_bg))
-                    .child(swatch(*color))
-                    .child(div().flex_1().min_w_0().truncate().child(name.clone()))
-                    .when(option == selected, |d| {
-                        d.child(icon(Icon::Check, px(14.), theme.accent))
-                    })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        cx.stop_propagation();
-                        this.change_setting(id, Change::Choice(option), window, cx);
-                    }))
+                let chosen = option == selected;
+                menu_row(
+                    ("settings-menu-row", option),
+                    name.clone(),
+                    chosen,
+                    chosen,
+                    theme,
+                )
+                .child(menu_check(chosen, theme))
+                .children(swatch(*color))
+                .child(div().flex_1().min_w_0().truncate().child(name.clone()))
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.settings_control_changed(id, Change::Choice(option), window, cx);
+                }))
             });
-            div()
-                .id("settings-calendar-list")
-                .role(gpui::Role::Menu)
-                .aria_label(label)
-                .occlude()
-                .mt(SPACE_XS)
-                .w(width)
-                .max_h(px(280.))
-                .overflow_y_scroll()
-                .p(SPACE_XS)
-                .flex()
-                .flex_col()
-                .rounded(RADIUS_MD)
-                .bg(theme.overlay_bg)
-                .border_1()
-                .border_color(theme.overlay_border)
-                .shadow(super::popover_shadow(theme))
-                .children(rows)
+            motion::enter(
+                ("settings-menu", id as usize),
+                Rise::Down,
+                dropdown("settings-menu-list", label, width, theme)
+                    .mt(SPACE_XS)
+                    .max_h(px(280.))
+                    .overflow_y_scroll()
+                    .children(rows),
+            )
         });
         let size = window.viewport_size();
         div()
             .child(
-                div()
-                    .id(("settings-calendar-button", ix))
+                focusable_control(div().id(("settings-menu-button", ix)), theme)
                     .role(gpui::Role::ComboBox)
                     .aria_label(format!("{label}: {}", current.0))
                     .aria_expanded(open)
                     .w(width)
-                    .h(px(28.))
+                    .h(HIT_TARGET)
                     .px(SPACE_MD)
                     .flex()
                     .items_center()
@@ -1541,15 +1634,21 @@ impl PigeonApp {
                     .text_size(TEXT_SM)
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text)
-                    .cursor_pointer()
                     .hover(|s| s.bg(theme.selected_bg))
-                    .child(swatch(current.1))
+                    .active(|s| s.bg(theme.selected_bg).opacity(0.8))
+                    .children(swatch(current.1))
                     .child(div().flex_1().min_w_0().truncate().child(current.0))
                     .child(icon(Icon::ChevronDown, px(13.), theme.text_faint))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         cx.stop_propagation();
-                        this.settings_page.calendar_menu = !this.settings_page.calendar_menu;
+                        let page = &mut this.settings_page;
+                        page.menu = if page.menu == Some(id) {
+                            None
+                        } else {
+                            Some(id)
+                        };
+                        window.focus(&page.focus, cx);
                         cx.notify();
                     })),
             )
@@ -1558,14 +1657,14 @@ impl PigeonApp {
                     deferred(
                         anchored().position(point(px(0.), px(0.))).child(
                             div()
-                                .id("settings-calendar-backdrop")
+                                .id("settings-menu-backdrop")
                                 .occlude()
                                 .w(size.width)
                                 .h(size.height)
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, _, _, cx| {
-                                        this.settings_page.calendar_menu = false;
+                                        this.settings_page.menu = None;
                                         cx.stop_propagation();
                                         cx.notify();
                                     }),
@@ -1575,58 +1674,9 @@ impl PigeonApp {
                     .with_priority(1),
                 )
             })
-            .children(menu.map(|m| {
-                div().w_full().h(px(0.)).child(
-                    deferred(anchored().snap_to_window_with_margin(px(8.)).child(m))
-                        .with_priority(2),
-                )
-            }))
+            .children(menu.map(popup))
             .into_any_element()
     }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Tone {
-    Plain,
-    /// Red text: it asks first.
-    Danger,
-    /// Filled red: the confirmation.
-    Confirm,
-}
-
-fn button(
-    id: impl Into<gpui::ElementId>,
-    label: &'static str,
-    tone: Tone,
-    theme: &Theme,
-) -> gpui::Stateful<gpui::Div> {
-    focusable_control(div().id(id), theme)
-        .role(gpui::Role::Button)
-        .aria_label(label)
-        .h(HIT_TARGET)
-        .px(SPACE_MD)
-        .flex()
-        .items_center()
-        .gap(SPACE_SM)
-        .rounded(RADIUS_MD)
-        .text_size(TEXT_SM)
-        .font_weight(FontWeight::MEDIUM)
-        .cursor_pointer()
-        .map(|this| match tone {
-            Tone::Plain => this
-                .bg(theme.control_track)
-                .text_color(theme.text)
-                .hover(|s| s.bg(theme.selected_bg)),
-            Tone::Danger => this
-                .bg(theme.control_track)
-                .text_color(theme.danger)
-                .hover(|s| s.bg(theme.selected_bg)),
-            Tone::Confirm => this
-                .bg(theme.danger)
-                .text_color(theme.accent_text)
-                .hover(|s| s.opacity(0.9)),
-        })
-        .child(label)
 }
 
 fn now_ms() -> i64 {
@@ -1643,95 +1693,4 @@ fn group_header(title: &'static str, theme: &Theme) -> AnyElement {
         .text_color(theme.text_faint)
         .child(title.to_uppercase())
         .into_any_element()
-}
-
-fn switch(
-    id: impl Into<gpui::ElementId>,
-    on: bool,
-    label: &'static str,
-    theme: &Theme,
-) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .role(gpui::Role::Switch)
-        .aria_label(label)
-        .aria_toggled(if on {
-            gpui::Toggled::True
-        } else {
-            gpui::Toggled::False
-        })
-        .w(px(32.))
-        .h(px(18.))
-        .p(SPACE_2XS)
-        .flex()
-        .items_center()
-        .when(on, |this| this.justify_end())
-        .rounded_full()
-        .cursor_pointer()
-        .bg(if on {
-            theme.accent
-        } else {
-            theme.control_track
-        })
-        .child(
-            div()
-                .size(px(14.))
-                .rounded_full()
-                .bg(theme.control_knob)
-                .shadow(super::segment_shadow(theme)),
-        )
-}
-
-fn segmented<L>(
-    ix: usize,
-    label: &'static str,
-    options: &'static [&'static str],
-    selected: usize,
-    theme: &Theme,
-    mut on_select: impl FnMut(usize) -> L,
-) -> gpui::Stateful<gpui::Div>
-where
-    L: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-{
-    div()
-        .id(("settings-choice", ix))
-        .role(gpui::Role::RadioGroup)
-        .aria_label(label)
-        .flex()
-        .p(SPACE_2XS)
-        .gap(SPACE_2XS)
-        .rounded(RADIUS_MD)
-        .bg(theme.control_track)
-        .children(options.iter().enumerate().map(|(option, name)| {
-            let chosen = option == selected;
-            div()
-                .id(("settings-option", ix * 8 + option))
-                .role(gpui::Role::RadioButton)
-                .aria_label(*name)
-                .aria_toggled(if chosen {
-                    gpui::Toggled::True
-                } else {
-                    gpui::Toggled::False
-                })
-                .h(px(24.))
-                .px(SPACE_MD)
-                .flex()
-                .items_center()
-                .rounded(RADIUS_SM)
-                .text_size(TEXT_SM)
-                .font_weight(FontWeight::MEDIUM)
-                .cursor_pointer()
-                .map(|this| {
-                    if chosen {
-                        this.bg(theme.segment_bg)
-                            .text_color(theme.text)
-                            .shadow(super::segment_shadow(theme))
-                    } else {
-                        this.text_color(theme.text_muted)
-                            .hover(|s| s.text_color(theme.text))
-                    }
-                })
-                .child(*name)
-                .on_click(on_select(option))
-        }))
 }

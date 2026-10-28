@@ -420,9 +420,7 @@ impl Today {
             cx.notify();
         }
         if std::mem::take(&mut self.mail_due) {
-            let load = self
-                .backend
-                .update(cx, |b, cx| b.load_threads_in_background(cx));
+            let load = self.backend.update(cx, |b, cx| b.load_inbox_heads(cx));
             self._load = Some(cx.spawn(async move |this, cx| {
                 let threads = load.await;
                 this.update(cx, |this, cx| {

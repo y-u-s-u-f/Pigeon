@@ -1866,7 +1866,7 @@ impl CalendarView {
             .child(header)
             .child(body)
             .when(is_new || editable, |d| {
-                d.child(self.render_footer(is_new, self.panel_dirty(), &theme))
+                d.child(self.render_footer(is_new, self.panel_dirty(), &theme, window))
             })
             .into_any_element()
             .into()
@@ -1875,7 +1875,21 @@ impl CalendarView {
     /// Save and Discard for a new event; Done for one whose edits already
     /// went as they were made, with Discard once there's something to take
     /// back.
-    fn render_footer(&self, is_new: bool, dirty: bool, theme: &Theme) -> impl IntoElement {
+    fn render_footer(
+        &self,
+        is_new: bool,
+        dirty: bool,
+        theme: &Theme,
+        window: &Window,
+    ) -> impl IntoElement {
+        // The preset decides Discard's keys (⇧⌘D or ⇧⌘⌫).
+        let discard_keys = crate::ui::shortcuts_help::live_bindings(
+            &DiscardEventChanges,
+            crate::actions::Scope::Calendar,
+            window,
+        )
+        .first()
+        .map(|binding| crate::ui::binding_caps(binding, theme));
         let button = |id: &'static str, label: &'static str, primary: bool| {
             focusable_control(div().id(id), theme)
                 .role(gpui::Role::Button)
@@ -1934,7 +1948,7 @@ impl CalendarView {
             .when(!is_new && dirty, |d| {
                 d.child(
                     button("event-discard", "Discard", false)
-                        .child(keycap("⇧⌘D", theme))
+                        .children(discard_keys)
                         .on_click(|_, window, cx| {
                             window.dispatch_action(Box::new(DiscardEventChanges), cx)
                         }),
@@ -2030,15 +2044,15 @@ impl CalendarView {
                     .rounded(RADIUS_MD)
                     .text_size(TEXT_BASE)
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.danger)
+                    .text_color(theme.text_danger)
                     .hover(|s| s.bg(theme.danger.alpha(0.1)))
-                    .child(icon(Icon::Trash, px(15.), theme.danger))
+                    .child(icon(Icon::Trash, px(15.), theme.text_danger))
                     .child(label)
                     .child(div().flex_1())
                     .child(
                         div()
                             .text_size(TEXT_XS)
-                            .text_color(theme.danger.alpha(0.7))
+                            .text_color(theme.text_danger)
                             .child("⌫"),
                     )
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(DeleteEvent), cx)),
@@ -2067,7 +2081,7 @@ impl CalendarView {
                     menu_row(("calendar-choice", ix), ix == highlight, theme)
                         .role(gpui::Role::MenuItem)
                         .aria_label(calendar.name.clone())
-                        .when(!writable, |d| d.opacity(0.4))
+                        .when(!writable, |d| d.text_color(theme.text_disabled))
                         .child(div().size(px(10.)).rounded_full().bg(calendar.color))
                         .child(div().flex_1().child(calendar.name.clone()))
                         .when(current, |d| {
@@ -3719,14 +3733,16 @@ fn step_button(
         .justify_center()
         .rounded(RADIUS_SM)
         .bg(theme.chip_bg)
-        .map(|d| {
+        .when(enabled, |d| d.hover(|s| s.bg(theme.hover_bg)))
+        .child(icon(
+            glyph,
+            px(13.),
             if enabled {
-                d.hover(|s| s.bg(theme.hover_bg))
+                theme.text_muted
             } else {
-                d.opacity(0.4)
-            }
-        })
-        .child(icon(glyph, px(13.), theme.text_muted))
+                theme.text_disabled
+            },
+        ))
 }
 
 /// "Add Google Meet", "Adding…", or "Retry" after Google said no (CAL-34).
@@ -3737,7 +3753,7 @@ fn meet_button(state: MeetState, theme: &Theme, cx: &mut Context<CalendarView>) 
         MeetState::Failed => (
             "Retry Meet",
             "Couldn't add Google Meet. Try again",
-            theme.danger,
+            theme.text_danger,
         ),
     };
     let busy = state == MeetState::Adding;
@@ -3853,7 +3869,7 @@ fn status_text(status: RsvpStatus) -> &'static str {
 fn status_color(status: RsvpStatus, theme: &Theme) -> Hsla {
     match status {
         RsvpStatus::Accepted => theme.success,
-        RsvpStatus::Tentative => theme.star,
+        RsvpStatus::Tentative => theme.warning,
         RsvpStatus::Declined => theme.danger,
         RsvpStatus::NeedsAction => theme.text_faint,
     }
@@ -3879,7 +3895,11 @@ fn status_badge(status: RsvpStatus, theme: &Theme) -> impl IntoElement {
         .bg(status_color(status, theme))
         .border_2()
         .border_color(theme.overlay_bg)
-        .child(icon(glyph, px(8.), theme.cal_selected_text))
+        .child(icon(
+            glyph,
+            px(8.),
+            theme.on_fill(status_color(status, theme)),
+        ))
 }
 
 #[cfg(test)]

@@ -3,8 +3,7 @@
 
 use gpui::{
     Action, InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString,
-    StatefulInteractiveElement as _, Styled, component::tooltip::Tooltip, div,
-    prelude::FluentBuilder as _, px,
+    StatefulInteractiveElement as _, Styled, div, prelude::FluentBuilder as _, px,
 };
 
 use super::{HEADER_HEIGHT, icon, window_drag_area};
@@ -41,7 +40,7 @@ pub fn render(mode: Option<Mode>, unread: usize, theme: &Theme) -> impl IntoElem
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
             .tooltip(move |window, cx| {
-                Tooltip::new(tooltip.clone())
+                super::tooltip(tooltip.clone())
                     .action(tooltip_action.as_ref(), None)
                     .build(window, cx)
             })
@@ -54,7 +53,7 @@ pub fn render(mode: Option<Mode>, unread: usize, theme: &Theme) -> impl IntoElem
             })
             .child(icon(
                 glyph,
-                px(18.),
+                ICON_RAIL,
                 if active {
                     theme.icon_active
                 } else {

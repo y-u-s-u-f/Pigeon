@@ -464,7 +464,7 @@ impl CalendarView {
         let top_px = top as f32 / 60. * HOUR_HEIGHT + 1.;
         let height = ((bottom - top) as f32 / 60. * HOUR_HEIGHT - 2.).max(18.);
         let compact = height < 34.;
-        let text = theme.cal_selected_text;
+        let text = theme.on_fill(theme.event_selected_fill(color));
         let time = time_range_label(start.time(), end.time());
         // The times, floating above the block (below it at the top of the
         // day), so the snap reads at a glance.

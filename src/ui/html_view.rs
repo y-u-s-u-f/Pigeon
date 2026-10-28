@@ -17,10 +17,9 @@ use super::selectable::{OnClear, Selectable};
 use crate::ui::style::*;
 use crate::{
     html::{Align, Block, Document, Inline, Style, Table, TextKind},
-    theme::Theme,
+    theme::{self, Theme, contrast},
 };
 
-const MONO: &str = "Menlo";
 const BLOCK_GAP: gpui::Pixels = SPACE_MD;
 
 pub fn render(doc: &Document, theme: &Theme) -> impl IntoElement {
@@ -302,11 +301,7 @@ impl<'a> Renderer<'a> {
                     .filter(|c| contrast(*c, theme.text) >= 1.5 || !theme.is_dark)
                     .map(|c| Hsla { a: 1., ..c })
                     .unwrap_or(theme.accent);
-                let text = if contrast(fill, gpui::white()) >= contrast(fill, gpui::black()) {
-                    gpui::white()
-                } else {
-                    gpui::black()
-                };
+                let text = theme::on_fill(fill);
                 let url = url.clone();
                 let tip = url.clone();
                 let id = self.next_id;
@@ -465,8 +460,8 @@ impl<'a> Renderer<'a> {
         let theme = self.theme;
         let color = style
             .color
-            .map(|c| readable(c, theme.is_dark))
-            .or(style.link.is_some().then_some(theme.accent));
+            .map(|c| readable(c, theme.solid(theme.reader_bg)))
+            .or(style.link.is_some().then_some(theme.link));
         let underline = style.underline || style.link.is_some();
         HighlightStyle {
             color,
@@ -478,7 +473,7 @@ impl<'a> Renderer<'a> {
                 color: style
                     .link
                     .is_some()
-                    .then(|| color.unwrap_or(theme.accent).alpha(0.4)),
+                    .then(|| color.unwrap_or(theme.link).alpha(0.4)),
                 wavy: false,
             }),
             strikethrough: style.strike.then(|| StrikethroughStyle {
@@ -499,52 +494,15 @@ fn aligned(div: Div, align: Align) -> Div {
 }
 
 /// `color` with its lightness moved just far enough to reach WCAG AA contrast
-/// on the reading pane, keeping its hue. A mid gray stays a muted gray in both
+/// on the reading pane (`background`, opaque), keeping its hue. A mid gray stays a muted gray in both
 /// modes, and dark text from a light-mode email turns light in dark mode.
-fn readable(color: Hsla, dark: bool) -> Hsla {
-    let background = if dark { 0.012 } else { 1.0 };
-    let passes = |c: Hsla| {
-        let (a, b) = (luminance(c), background);
-        (a.max(b) + 0.05) / (a.min(b) + 0.05) >= 4.5
-    };
-    let mut c = Hsla { a: 1., ..color };
-    if passes(c) {
+fn readable(color: Hsla, background: Hsla) -> Hsla {
+    let c = Hsla { a: 1., ..color };
+    if contrast(c, background) >= 4.5 {
         return c;
     }
     // Mirror the lightness first, so relative emphasis survives the switch.
-    c.l = 1. - c.l;
-    if passes(c) {
-        return c;
-    }
-    let (mut failing, mut passing) = (c.l, if dark { 1. } else { 0. });
-    for _ in 0..12 {
-        c.l = (failing + passing) / 2.;
-        if passes(c) {
-            passing = c.l;
-        } else {
-            failing = c.l;
-        }
-    }
-    c.l = passing;
-    c
-}
-
-/// WCAG contrast ratio between two opaque colors.
-fn contrast(a: Hsla, b: Hsla) -> f32 {
-    let (a, b) = (luminance(a), luminance(b));
-    (a.max(b) + 0.05) / (a.min(b) + 0.05)
-}
-
-fn luminance(color: Hsla) -> f32 {
-    let rgb = color.to_rgb();
-    let channel = |v: f32| {
-        if v <= 0.039_28 {
-            v / 12.92
-        } else {
-            ((v + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    0.2126 * channel(rgb.r) + 0.7152 * channel(rgb.g) + 0.0722 * channel(rgb.b)
+    theme::readable(Hsla { l: 1. - c.l, ..c }, background, 4.5)
 }
 
 /// W3 (LNK-3): `mailto:` opens Pigeon's composer; other links the browser.
@@ -562,11 +520,12 @@ mod tests {
 
     #[test]
     fn readable_colors() {
+        let dark_pane: Hsla = gpui::rgb(0x18181c).into();
         let gray: Hsla = gpui::rgb(0x666666).into();
         // Fine on white, too dark on the dark pane.
-        assert_eq!(readable(gray, false).l, gray.l);
-        assert!(readable(gray, true).l > 0.55);
+        assert_eq!(readable(gray, gpui::white()).l, gray.l);
+        assert!(readable(gray, dark_pane).l > 0.55);
         let white: Hsla = gpui::rgb(0xffffff).into();
-        assert!(readable(white, false).l < 0.5);
+        assert!(readable(white, gpui::white()).l < 0.5);
     }
 }

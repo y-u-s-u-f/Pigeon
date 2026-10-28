@@ -508,7 +508,12 @@ pub fn wait_for_code(
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(100));
             }
-            Err(e) => return Err(SignInError::Failed(format!("Sign-in stopped: {e}"))),
+            Err(e) => {
+                eprintln!("Pigeon: sign-in listener: {e}");
+                return Err(SignInError::Failed(
+                    "Sign-in stopped: the browser's answer didn't arrive. Try again.".into(),
+                ));
+            }
         }
     }
 }
@@ -600,6 +605,7 @@ fn post_token(
     let response = transport.send(&request).map_err(|e| match e {
         TransportError::Network(e) => TokenError::Network(e),
         TransportError::AuthExpired => TokenError::InvalidGrant,
+        TransportError::TooLarge => TokenError::Other(e.to_string()),
     })?;
     if response.status >= 500 {
         return Err(TokenError::Network(format!("status {}", response.status)));
@@ -686,7 +692,9 @@ pub fn id_token_claims(id_token: &str) -> Option<Claims> {
 
 /// After the browser came back: the tokens, then the account saved, its
 /// refresh token in `tokens` and its entry the only one in `accounts.json`.
-/// A different account signed in before is forgotten.
+/// Another account still set up here (its refresh token kept) stays, and
+/// the new grant is revoked: switching takes signing out first (MB-056).
+/// One whose token is gone already is forgotten.
 pub fn finish_sign_in(
     transport: &dyn Transport,
     client: &ClientConfig,
@@ -711,16 +719,33 @@ pub fn finish_sign_in(
         name: claims.name,
         scopes: granted.scopes,
     };
-    for old in load_accounts(dir) {
-        if old.email != account.email {
-            tokens.delete(&old.email).ok();
+    let others: Vec<AccountRecord> = load_accounts(dir)
+        .into_iter()
+        .filter(|old| !old.email.eq_ignore_ascii_case(&account.email))
+        .collect();
+    if let Some(old) = others
+        .iter()
+        .find(|old| tokens.get(&old.email).is_ok_and(|t| t.is_some()))
+    {
+        if let Err(e) = revoke(transport, &refresh_token) {
+            eprintln!("Pigeon: couldn't revoke the sign-in: {e}");
         }
+        return Err(SignInError::Failed(format!(
+            "You signed in as {}. Pigeon is set up for {}. Sign out first to switch accounts.",
+            account.email, old.email
+        )));
     }
-    tokens
-        .set(&account.email, &refresh_token)
-        .map_err(|e| SignInError::Failed(format!("{e:#}")))?;
-    save_accounts(dir, std::slice::from_ref(&account))
-        .map_err(|e| SignInError::Failed(format!("Couldn't save the account: {e:#}")))?;
+    for old in &others {
+        tokens.delete(&old.email).ok();
+    }
+    tokens.set(&account.email, &refresh_token).map_err(|e| {
+        eprintln!("Pigeon: keychain: {e:#}");
+        SignInError::Failed("Couldn't save the sign-in to the Keychain. Try again.".into())
+    })?;
+    save_accounts(dir, std::slice::from_ref(&account)).map_err(|e| {
+        eprintln!("Pigeon: accounts.json: {e:#}");
+        SignInError::Failed("Couldn't save the account. Try again.".into())
+    })?;
     Ok((account, refresh_token))
 }
 
@@ -1098,7 +1123,7 @@ mod tests {
     fn sign_in_saves_and_sign_out_forgets() {
         let dir = scratch_dir("accounts");
         let tokens = MemoryTokens::default();
-        // Someone else was signed in before.
+        // Someone else is set up here.
         save_accounts(
             &dir,
             &[AccountRecord {
@@ -1119,22 +1144,37 @@ mod tests {
         let fake = FakeTransport::new()
             .on("POST", TOKEN_PATH, &[], &[(200, answer.as_str())])
             .on("POST", "/revoke", &[], &[(200, "")]);
-        let (account, refresh) = finish_sign_in(
-            &fake,
-            &client(),
-            &Secret::new("code-1"),
-            "verifier",
-            "http://127.0.0.1:1",
-            &tokens,
-            &dir,
-        )
-        .unwrap();
+        let sign_in = || {
+            finish_sign_in(
+                &fake,
+                &client(),
+                &Secret::new("code-1"),
+                "verifier",
+                "http://127.0.0.1:1",
+                &tokens,
+                &dir,
+            )
+        };
+        // MB-056: not over them; the new grant goes, the old one stays.
+        let Err(SignInError::Failed(message)) = sign_in() else {
+            panic!("signed in over another account");
+        };
+        assert!(message.contains("me@example.com") && message.contains("old@example.com"));
+        assert!(message.contains("Sign out first"));
+        assert_eq!(fake.requests().last().unwrap().path(), "/revoke");
+        assert!(tokens.get("old@example.com").unwrap().is_some());
+        assert_eq!(load_accounts(&dir)[0].email, "old@example.com");
+
+        // Its sign-in already gone (only the entry left): it's forgotten.
+        tokens.delete("old@example.com").unwrap();
+        let before = fake.requests().len();
+        let (account, refresh) = sign_in().unwrap();
         assert_eq!(account.email, "me@example.com");
         assert_eq!(account.name, "Me Example");
         assert!(account.has_scope(CALENDAR_SCOPE));
         assert!(!account.has_scope(GMAIL_SCOPE));
         assert_eq!(refresh.expose(), "fake-refresh");
-        let body = String::from_utf8(fake.requests()[0].body.clone()).unwrap();
+        let body = String::from_utf8(fake.requests()[before].body.clone()).unwrap();
         assert!(body.contains("grant_type=authorization_code"));
         assert!(body.contains("code_verifier=verifier"));
         assert_eq!(load_accounts(&dir), std::slice::from_ref(&account));

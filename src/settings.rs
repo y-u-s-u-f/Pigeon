@@ -120,6 +120,34 @@ pub struct Saved {
     pub menu_bar: MenuBarPrefs,
     /// W3 (MST-2): new drafts carry the From address's Gmail signature.
     pub signatures: bool,
+    /// How solid the panes are, 0–100 (MA-010): 0, the default, is the
+    /// theme's own glass tints; 100 is fully opaque, with an opaque window
+    /// behind. Reduce Transparency forces 100. A "Transparency" slider shows
+    /// `100 - glass`.
+    pub glass: u8,
+    /// Which ⌘ shortcuts the keymap uses (MA-038).
+    pub keymap: KeymapPreset,
+}
+
+/// The keyboard shortcuts preset (MA-038, MA-089). Single-key shortcuts are
+/// the same in both; only ⌘ shortcuts differ.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeymapPreset {
+    #[default]
+    Gmail,
+    AppleMail,
+}
+
+impl KeymapPreset {
+    pub const ALL: [KeymapPreset; 2] = [KeymapPreset::Gmail, KeymapPreset::AppleMail];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            KeymapPreset::Gmail => "Gmail",
+            KeymapPreset::AppleMail => "Apple Mail",
+        }
+    }
 }
 
 /// W7b: Settings › Menu bar.
@@ -218,6 +246,8 @@ impl Default for Saved {
             default_calendar: None,
             menu_bar: MenuBarPrefs::default(),
             signatures: true,
+            glass: 0,
+            keymap: KeymapPreset::Gmail,
         }
     }
 }
@@ -384,6 +414,9 @@ pub enum SettingId {
     // Sprint 2 W3.
     Signatures,
     DefaultMailApp,
+    // Polish W1.
+    Transparency,
+    ShortcutPreset,
 }
 
 pub struct SettingMeta {
@@ -411,13 +444,15 @@ macro_rules! settings {
 pub const SETTINGS: &[SettingMeta] = settings! {
     Appearance: Appearance, "Appearance", "Follow the system, or always use light or dark.",
         ["theme", "dark", "light", "mode", "color", "colour", "night"];
+    Appearance: Transparency, "Transparency", "How much the desktop shows through the window. Reduce Transparency or Increase Contrast in System Settings makes it opaque.",
+        ["glass", "opaque", "opacity", "blur", "translucent", "see-through", "accessibility", "solid"];
     Appearance: TextSize, "Text size", "Make all text bigger or smaller. Also ⌘= and ⌘-.",
         ["font", "zoom", "scale", "bigger", "smaller", "larger", "accessibility"];
     Appearance: ReduceMotion, "Reduce motion", "Turn animations off. Off follows the system setting.",
         ["animation", "animations", "transitions", "accessibility", "movement"];
     Mail: CompactList, "Compact list", "One line per conversation in the list.",
         ["density", "dense", "comfortable", "condensed", "rows", "spacing"];
-    Mail: Sidebar, "Show sidebar", "Mailboxes and labels beside the list. Also ⌘\\.",
+    Mail: Sidebar, "Show sidebar", "Mailboxes and labels beside the list.",
         ["folders", "labels", "panel", "hide"];
     Mail: ArchivedInInbox, "Expand Archived in Inbox", "Show archived conversations at the end of the Inbox.",
         ["archive", "collapse", "section"];
@@ -443,7 +478,7 @@ pub const SETTINGS: &[SettingMeta] = settings! {
         ["scopes", "permissions", "granted", "consent"];
     Accounts: LastSync, "Last sync", "When Pigeon last checked Google for changes.",
         ["synced", "updated", "offline", "status"];
-    Accounts: SyncNow, "Sync now", "Check Gmail and Google Calendar for changes. Also ⌘R.",
+    Accounts: SyncNow, "Sync now", "Check Gmail and Google Calendar for changes.",
         ["refresh", "reload", "fetch", "update"];
     Accounts: SignOut, "Sign out", "Removes this account and its cached mail and calendar from this Mac.",
         ["log out", "logout", "sign off", "remove account", "disconnect"];
@@ -471,6 +506,8 @@ pub const SETTINGS: &[SettingMeta] = settings! {
         ["signature", "sign off", "footer", "gmail", "alias"];
     General: DefaultMailApp, "Default mail app", "Open mailto: links from other apps in Pigeon.",
         ["mailto", "default", "email app", "mail client", "links", "handler"];
+    Shortcuts: ShortcutPreset, "Shortcut preset", "Gmail's or Apple Mail's ⌘ shortcuts. Single-key shortcuts are the same in both.",
+        ["apple mail", "gmail", "preset", "keymap", "command", "bindings"];
 };
 
 pub fn meta(id: SettingId) -> &'static SettingMeta {
@@ -554,24 +591,24 @@ impl Entry {
     }
 }
 
-/// The rows of a section, in order.
+/// The rows of a section, in order: its settings, then for Shortcuts
+/// every command.
 pub fn entries(section: Section) -> Vec<Entry> {
-    if section == Section::Shortcuts {
-        return SHORTCUT_GROUPS
-            .iter()
-            .flat_map(|&group| {
-                COMMANDS
-                    .iter()
-                    .enumerate()
-                    .filter(move |(_, c)| c.group == group)
-                    .map(|(ix, _)| Entry::Shortcut(ix))
-            })
-            .collect();
-    }
-    SETTINGS
+    let settings = SETTINGS
         .iter()
         .filter(|m| m.section == section)
-        .map(|m| Entry::Setting(m.id))
+        .map(|m| Entry::Setting(m.id));
+    if section != Section::Shortcuts {
+        return settings.collect();
+    }
+    settings
+        .chain(SHORTCUT_GROUPS.iter().flat_map(|&group| {
+            COMMANDS
+                .iter()
+                .enumerate()
+                .filter(move |(_, c)| c.group == group)
+                .map(|(ix, _)| Entry::Shortcut(ix))
+        }))
         .collect()
 }
 
@@ -670,6 +707,8 @@ mod tests {
             time_format: TimeFormat::TwentyFour,
             event_minutes: Some(30),
             default_calendar: Some("team@group.calendar.google.com".into()),
+            glass: 60,
+            keymap: KeymapPreset::AppleMail,
             ..Saved::default()
         };
         assert_eq!(Saved::from_map(saved.to_map()), saved);
@@ -783,6 +822,8 @@ mod tests {
         for m in SETTINGS {
             assert!(entries(m.section).contains(&Entry::Setting(m.id)));
         }
-        assert_eq!(entries(Section::Shortcuts).len(), COMMANDS.len());
+        let shortcuts = entries(Section::Shortcuts);
+        assert_eq!(shortcuts[0], Entry::Setting(SettingId::ShortcutPreset));
+        assert_eq!(shortcuts.len(), COMMANDS.len() + 1);
     }
 }

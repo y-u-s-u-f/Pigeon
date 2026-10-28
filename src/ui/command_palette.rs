@@ -16,7 +16,7 @@ use nucleo_matcher::{
     pattern::{AtomKind, CaseMatching, Normalization, Pattern},
 };
 
-use super::{binding_caps, icon, keycap, overlay_shadow};
+use super::{binding_caps, icon, keycap, keys_caps, overlay_shadow};
 use crate::ui::style::*;
 use crate::{
     actions::PALETTE,
@@ -30,7 +30,6 @@ use crate::{
 actions!(command_palette, [SelectNext, SelectPrev, Confirm, Dismiss]);
 
 const WIDTH: f32 = 620.;
-const ROW_HEIGHT: f32 = 38.;
 /// The result area is always this many rows tall, so the panel keeps its
 /// size as the results change.
 const VISIBLE_ROWS: usize = 8;
@@ -368,7 +367,7 @@ impl CommandPalette {
             .role(gpui::Role::ListBoxOption)
             .aria_label(item.title.clone())
             .aria_selected(selected)
-            .h(px(ROW_HEIGHT))
+            .h(ROW_PALETTE)
             .px(SPACE_SM)
             .child(
                 div()
@@ -382,7 +381,7 @@ impl CommandPalette {
                     .child(match item.leading {
                         Leading::Icon(glyph) => icon(
                             glyph,
-                            px(16.),
+                            ICON_LG,
                             if selected {
                                 theme.icon_active
                             } else {
@@ -391,7 +390,7 @@ impl CommandPalette {
                         )
                         .into_any_element(),
                         Leading::Dot(color) => div()
-                            .size(px(16.))
+                            .size(ICON_LG)
                             .flex_none()
                             .flex()
                             .items_center()
@@ -400,7 +399,7 @@ impl CommandPalette {
                             .into_any_element(),
                         Leading::Nested(color, depth) => div()
                             .ml(SPACE_LG * depth as f32)
-                            .size(px(16.))
+                            .size(ICON_LG)
                             .flex_none()
                             .flex()
                             .items_center()
@@ -459,7 +458,7 @@ impl CommandPalette {
             .role(gpui::Role::ListBoxOption)
             .aria_label(SharedString::from(format!("{title}, {when}")))
             .aria_selected(selected)
-            .h(px(ROW_HEIGHT))
+            .h(ROW_PALETTE)
             .px(SPACE_SM)
             .child(
                 div()
@@ -472,7 +471,7 @@ impl CommandPalette {
                     .when(selected, |this| this.bg(theme.selected_bg))
                     .child(icon(
                         Icon::Plus,
-                        px(16.),
+                        ICON_LG,
                         if selected {
                             theme.icon_active
                         } else {
@@ -532,7 +531,8 @@ impl Render for CommandPalette {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         let rows = self.matches.len();
-        let list_height = px(ROW_HEIGHT * VISIBLE_ROWS as f32);
+        // In rems like the rows, so the list scales with the text.
+        let list_height = gpui::rems(ROW_PALETTE.0 * VISIBLE_ROWS as f32);
 
         let results = if rows == 0 {
             div()
@@ -560,13 +560,13 @@ impl Render for CommandPalette {
             .into_any_element()
         };
 
-        let hint = |keys: &'static [&'static str], label: &'static str| {
+        let hint = |label: &'static str, caps: gpui::Div| {
             div()
                 .flex()
                 .items_center()
-                .gap(SPACE_XS)
-                .children(keys.iter().map(|k| keycap(*k, &theme)))
-                .child(div().ml(SPACE_2XS).child(label))
+                .gap(SPACE_SM)
+                .child(label)
+                .child(caps)
         };
 
         div()
@@ -596,7 +596,7 @@ impl Render for CommandPalette {
                     .gap(SPACE_MD)
                     .border_b_1()
                     .border_color(theme.border)
-                    .child(icon(Icon::Search, px(17.), theme.text_faint))
+                    .child(icon(Icon::Search, ICON_XL, theme.text_faint))
                     .child(
                         div()
                             .flex_1()
@@ -607,7 +607,7 @@ impl Render for CommandPalette {
             .child(div().py(SPACE_SM).child(results))
             .child(
                 div()
-                    .h(px(34.))
+                    .py(SPACE_SM)
                     .px(SPACE_LG)
                     .flex()
                     .items_center()
@@ -616,9 +616,16 @@ impl Render for CommandPalette {
                     .border_color(theme.border)
                     .text_size(TEXT_SM)
                     .text_color(theme.text_faint)
-                    .child(hint(&["↑", "↓"], "Navigate"))
-                    .child(hint(&["↵"], "Run"))
-                    .child(hint(&["Esc"], "Close"))
+                    .child(hint(
+                        "Navigate",
+                        div()
+                            .flex()
+                            .gap(SPACE_XS)
+                            .child(keycap("↑", &theme))
+                            .child(keycap("↓", &theme)),
+                    ))
+                    .child(hint("Run", keys_caps("enter", &theme)))
+                    .child(hint("Close", keys_caps("escape", &theme)))
                     .child(div().flex_1())
                     .child(format!("{rows} result{}", if rows == 1 { "" } else { "s" })),
             )

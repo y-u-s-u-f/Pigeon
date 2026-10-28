@@ -5,7 +5,7 @@
 
 use gpui::{Context, Entity};
 
-use super::{Nav, PigeonApp};
+use super::{Nav, PigeonApp, ToastAction, ToastKind};
 use crate::backend::{Backend, BackendEvent, OpId, SyncStatus};
 
 impl PigeonApp {
@@ -248,9 +248,19 @@ impl PigeonApp {
 
     /// The backend put the server's state back already (as `ThreadsChanged`
     /// or `EventsChanged`); say why.
+    /// A failed send's draft is back in Drafts (CMP-12): the toast goes
+    /// there.
     fn on_op_failed(&mut self, op: OpId, message: &str, cx: &mut Context<Self>) {
+        let send = self.sends.contains(&op);
         self.sends.retain(|s| *s != op);
-        self.show_error_toast(message.to_string(), cx);
+        self.forget_send(op, cx);
+        log::warn!("op failed: {message}");
+        let fix = send.then(|| {
+            ToastAction::run("Open Drafts", |this, window, cx| {
+                this.go_to(Nav::Folder(crate::data::Folder::Drafts), window, cx)
+            })
+        });
+        self.show_toast(ToastKind::Error, message.to_string(), fix, cx);
     }
 
     /// Signed in, signed out or switched to the demo data: everything
@@ -275,6 +285,7 @@ impl PigeonApp {
         self.expanded_messages.clear();
         self.checked.clear();
         self.toast = None;
+        self.clear_undo(cx);
         self.data = data;
         self.calendar.update(cx, |view, cx| {
             view.data = calendar;

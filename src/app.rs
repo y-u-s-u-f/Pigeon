@@ -8,21 +8,22 @@ mod labels;
 mod mail;
 pub mod menu_bar;
 pub mod shell;
+pub(crate) mod toast;
 pub mod today;
+mod undo;
 pub use labels::LabelCommand;
 pub use mail::{Density, SearchSuggestion};
+pub use toast::{Toast, ToastAction, ToastKind};
+#[allow(unused_imports)] // `Retime`: used by W2-CALG
+pub use undo::{Retime, UndoAction};
 
-use std::{
-    collections::{HashMap, HashSet},
-    time::Duration,
-};
+use std::collections::{HashMap, HashSet};
 
 use gpui::{
     AppContext as _, Bounds, Context, DragMoveEvent, Entity, FocusHandle, Focusable as _,
     InteractiveElement, IntoElement, KeyContext, ListAlignment, ListOffset, ListState, MouseButton,
-    ParentElement, Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
-    Styled, Subscription, Task, Window,
-    component::input::{InputEvent, InputState},
+    ParentElement, Pixels, Render, ScrollHandle, SharedString, Styled, Subscription, Window,
+    component::input::{self, InputEvent, InputState},
     div, point,
     prelude::FluentBuilder as _,
     px,
@@ -32,7 +33,7 @@ use crate::ui::style::*;
 use crate::{
     actions::*,
     assets::Icon,
-    backend::{Backend, MailOp, OpId, Source, UNDO_WINDOW, auth::CALENDAR_SCOPE, gmail},
+    backend::{Backend, MailOp, OpId, Source, auth::CALENDAR_SCOPE, gmail},
     contacts::{ContactBook, SharedContactBook},
     data::{Folder, MailData, Thread},
     search::{FocusResults, Query},
@@ -40,16 +41,12 @@ use crate::{
     theme::Theme,
     ui::{
         self, PaneResize,
-        calendar::{CalendarEvent, CalendarView, Discarded, Removal, ViewKind},
+        calendar::{CalendarEvent, CalendarView, ViewKind},
         command_palette::{CommandPalette, Leading, PaletteCommand, PaletteEvent, PaletteItem},
         composer::Composer,
         settings::SettingsPage,
     },
 };
-
-/// How long the "Sent" toast, and its Undo, stays up: as long as the
-/// backend holds an undoable op back.
-const TOAST_DURATION: Duration = UNDO_WINDOW;
 
 /// Wide enough to hold the traffic lights above its icons.
 pub const RAIL_WIDTH: Pixels = px(80.);
@@ -127,47 +124,6 @@ pub enum ComposeKind {
     Forward,
 }
 
-/// A brief note at the bottom of the window, optionally undoable.
-pub struct Toast {
-    pub message: SharedString,
-    pub undo: Option<UndoAction>,
-    /// Something failed (STA-2): a warning tone, never an Undo.
-    pub error: bool,
-    /// Counts toasts shown back to back, so each one animates in.
-    serial: usize,
-    _timer: Task<()>,
-}
-
-pub enum UndoAction {
-    /// Take back a sent message and reopen its draft.
-    Send {
-        thread_id: String,
-        /// Appended to an existing thread, rather than a new one in Sent.
-        appended: bool,
-        /// The Drafts thread sending removed.
-        removed_draft: Option<Thread>,
-        composer: Entity<Composer>,
-        op: OpId,
-    },
-    Discard {
-        removed_draft: Option<Thread>,
-        composer: Entity<Composer>,
-        /// Deleting the saved draft, if there was one.
-        op: Option<OpId>,
-    },
-    /// Put deleted calendar events (or occurrences) back, or a split series
-    /// together again.
-    DeleteEvent(Box<Removal>),
-    /// Bring back a discarded new calendar event, open and still unsaved.
-    DiscardEvent(Box<Discarded>),
-    /// Put moved threads back in their folders: (thread id, old folder).
-    Move {
-        moves: Vec<(String, Folder)>,
-        selected: Option<String>,
-        ops: Vec<OpId>,
-    },
-}
-
 pub struct PigeonApp {
     pub mode: Mode,
     /// Where the data comes from and changes go (`backend`).
@@ -219,6 +175,8 @@ pub struct PigeonApp {
     /// The message `n` and `p` move between, in the selected thread.
     pub focused_message: Option<usize>,
     pub toast: Option<Toast>,
+    /// The session's undo and redo (MA-071).
+    pub undo_stack: undo::UndoStack,
     /// Sends waiting to go, for "Message sent" once they have (W6).
     sends: Vec<OpId>,
     // Mail lists and search; see `app/mail.rs`.
@@ -311,11 +269,32 @@ impl PigeonApp {
         let backend_events = cx.subscribe(&backend, Self::on_backend_event);
         // Settings are saved whenever they change, here or in the calendar.
         let settings_changed = cx.observe_self(|this, cx| this.save_settings(cx));
-        let calendar_changed = cx.observe(&calendar, |this, _, cx| this.save_settings(cx));
+        let calendar_changed = cx.observe_in(&calendar, window, |this, _, window, cx| {
+            this.save_settings(cx);
+            this.refresh_menus(window, cx);
+        });
         let quit = cx.on_app_quit(|this, cx| {
             this.save_settings(cx);
             this.backend.update(cx, |b, _| b.flush_settings());
             async {}
+        });
+        // Escape takes an error toast away before anything else (ME-056).
+        let window_id = window.window_handle().window_id();
+        let app = cx.weak_entity();
+        let escape = cx.intercept_keystrokes(move |event, window, cx| {
+            let k = &event.keystroke;
+            if k.key != "escape"
+                || k.modifiers.modified()
+                || window.window_handle().window_id() != window_id
+            {
+                return;
+            }
+            if app
+                .update(cx, |this, cx| this.dismiss_error_on_escape(cx))
+                .unwrap_or(false)
+            {
+                cx.stop_propagation();
+            }
         });
         let calendar_events =
             cx.subscribe_in(
@@ -324,11 +303,11 @@ impl PigeonApp {
                 |this, _, event, window, cx| match event {
                     CalendarEvent::Undoable { message, removal } => {
                         let undo = UndoAction::DeleteEvent(removal.clone());
-                        this.show_toast(message.clone(), Some(undo), cx);
+                        this.show_undoable(message.clone(), "Delete Event", undo, cx);
                     }
                     CalendarEvent::Discarded { message, discarded } => {
                         let undo = UndoAction::DiscardEvent(discarded.clone());
-                        this.show_toast(message.clone(), Some(undo), cx);
+                        this.show_undoable(message.clone(), "Discard Event", undo, cx);
                     }
                     // W6 (CAL-22, CON-5).
                     CalendarEvent::Refused(why) => this.show_error_toast(why.clone(), cx),
@@ -371,6 +350,7 @@ impl PigeonApp {
             search_query: Query::default(),
             focused_message: None,
             toast: None,
+            undo_stack: Default::default(),
             sends: Vec::new(),
             checked: HashSet::new(),
             select_anchor: None,
@@ -403,6 +383,7 @@ impl PigeonApp {
                 settings_changed,
                 calendar_changed,
                 quit,
+                escape,
             ],
         };
         this.apply_settings(saved, window, cx);
@@ -476,6 +457,8 @@ impl PigeonApp {
             default_calendar: calendar.prefs.default_calendar.clone(),
             menu_bar: crate::settings::current(cx).menu_bar,
             signatures: crate::settings::current(cx).signatures,
+            glass: crate::settings::current(cx).glass,
+            keymap: crate::settings::current(cx).keymap,
         }
     }
 
@@ -689,6 +672,28 @@ impl PigeonApp {
         }
     }
 
+    /// Home / End: the first or last conversation in the list.
+    fn select_edge(&mut self, last: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let thread_at = |r: &Row| match r {
+            Row::Thread(ix) => Some(*ix),
+            _ => None,
+        };
+        let edge = if last {
+            self.rows.iter().rev().find_map(thread_at)
+        } else {
+            self.rows.iter().find_map(thread_at)
+        };
+        match edge {
+            Some(ix) if !self.checked.is_empty() => {
+                self.selected = Some(ix);
+                self.reveal_selected();
+                cx.notify();
+            }
+            Some(ix) => self.select_thread(ix, window, cx),
+            None => {}
+        }
+    }
+
     /// The thread that takes the selection when the selected one leaves the
     /// list: the next one, or the previous when there is none after it.
     fn next_after_selected(&self) -> Option<usize> {
@@ -782,9 +787,110 @@ impl PigeonApp {
         cx.notify();
     }
 
+    // The Edit menu (MA-070): a focused text field's own, else Pigeon's.
+
+    fn edit_undo(&mut self, _: &EditUndo, window: &mut Window, cx: &mut Context<Self>) {
+        if text_field_focused(window) {
+            return window.dispatch_action(Box::new(input::Undo), cx);
+        }
+        self.undo_last(window, cx);
+    }
+
+    fn edit_redo(&mut self, _: &EditRedo, window: &mut Window, cx: &mut Context<Self>) {
+        if text_field_focused(window) {
+            return window.dispatch_action(Box::new(input::Redo), cx);
+        }
+        self.redo_last(window, cx);
+    }
+
+    /// The field's text, else the selected text (the base root copies it),
+    /// else the source or the contact card's address.
+    fn edit_copy(&mut self, _: &EditCopy, window: &mut Window, cx: &mut Context<Self>) {
+        if text_field_focused(window) || gpui::base::TextSelection::has_selection(window, cx) {
+            window.dispatch_action(Box::new(input::Copy), cx);
+        } else if window.is_action_available(&CopyOriginal, cx) {
+            window.dispatch_action(Box::new(CopyOriginal), cx);
+        } else if self.contact_card.is_some() {
+            window.dispatch_action(Box::new(ui::contact_card::CopyAddress), cx);
+        }
+    }
+
+    /// The field's text, the message's text in the reader, else every
+    /// conversation in the list (MA-078).
+    fn edit_select_all(&mut self, _: &EditSelectAll, window: &mut Window, cx: &mut Context<Self>) {
+        if text_field_focused(window) {
+            return window.dispatch_action(Box::new(input::SelectAll), cx);
+        }
+        if self.mode != Mode::Mail || self.settings_page.open || self.overlay_open() {
+            return;
+        }
+        if self.reader_focused {
+            self.select_message_text(&SelectMessageText, window, cx);
+        } else {
+            self.select_all_threads(cx);
+        }
+    }
+
+    fn toggle_full_screen(
+        &mut self,
+        _: &ToggleFullScreen,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        window.toggle_fullscreen();
+    }
+
+    /// MB-006: the menu bar follows the app's state: checkmarks, Show/Hide
+    /// and the undo's title. Rebuilt only when that changes.
+    fn refresh_menus(&self, window: &Window, cx: &mut Context<Self>) {
+        let targets = self.targets();
+        let all = |f: fn(&Thread) -> bool| {
+            !targets.is_empty() && targets.iter().all(|&ix| f(&self.data.threads[ix]))
+        };
+        let calendar = self.calendar.read(cx);
+        let state = crate::MenuState {
+            calendar: self.mode == Mode::Calendar,
+            calendar_view: calendar.view,
+            sidebar: self.pane_layout(window.viewport_size().width).sidebar > px(0.),
+            compact_list: self.density == Density::Compact,
+            week_numbers: calendar.show_week_numbers,
+            starred: all(|t| t.starred),
+            important: all(|t| t.important),
+            full_screen: window.is_fullscreen(),
+            signed_in: self.backend.read(cx).source() == Source::Google,
+            undo: self
+                .undo_stack
+                .undo_title()
+                .map(|t| format!("Undo {t}").into()),
+            redo: self
+                .undo_stack
+                .redo_title()
+                .map(|t| format!("Redo {t}").into()),
+        };
+        crate::set_menu_state(state, cx);
+    }
+
+    /// The palette, the shortcuts sheet or the contact card.
+    pub(crate) fn overlay_open(&self) -> bool {
+        self.palette.is_some() || self.help_open || self.contact_card.is_some()
+    }
+
+    /// MB-008: the standard About panel; the unbundled dev build, which
+    /// has no Info.plist for it, says the version instead.
     fn about(&mut self, _: &About, _: &mut Window, cx: &mut Context<Self>) {
-        let version = env!("CARGO_PKG_VERSION");
-        self.show_toast(format!("Pigeon {version} · mail and calendar"), None, cx);
+        let bundled = std::env::current_exe()
+            .is_ok_and(|exe| exe.to_string_lossy().contains(".app/Contents/MacOS/"));
+        if bundled {
+            crate::native::show_about();
+        } else {
+            let version = env!("CARGO_PKG_VERSION");
+            self.show_toast(
+                ToastKind::Info,
+                format!("Pigeon {version} · mail and calendar"),
+                None,
+                cx,
+            );
+        }
     }
 
     // The account and the backend. Demo data has no server, so these only
@@ -794,7 +900,7 @@ impl PigeonApp {
         let demo = self.backend.read(cx).is_demo();
         self.backend.update(cx, |b, cx| b.sync_now(cx));
         if demo {
-            self.show_toast("Demo data is always up to date", None, cx);
+            self.show_toast(ToastKind::Info, "Demo data is always up to date", None, cx);
         }
     }
 
@@ -807,12 +913,17 @@ impl PigeonApp {
         };
         let signed_in = b.source() == Source::Google;
         match message {
-            Some(message) => self.show_toast(message, None, cx),
+            Some(message) => self.show_toast(ToastKind::Info, message, None, cx),
             None => {
                 self.backend.update(cx, |b, cx| b.sign_in(cx));
                 // The sign-in screen isn't showing to say so.
                 if signed_in {
-                    self.show_toast("Finish signing in in your browser", None, cx);
+                    self.show_toast(
+                        ToastKind::Info,
+                        "Finish signing in in your browser",
+                        None,
+                        cx,
+                    );
                 }
             }
         }
@@ -825,14 +936,24 @@ impl PigeonApp {
         let demo = self.backend.read(cx).is_demo();
         self.backend.update(cx, |b, cx| b.sign_out(cx));
         if demo {
-            self.show_toast("Demo data has no account to sign out of", None, cx);
+            self.show_toast(
+                ToastKind::Info,
+                "Demo data has no account to sign out of",
+                None,
+                cx,
+            );
         }
     }
 
     fn use_demo_data(&mut self, _: &UseDemoData, _: &mut Window, cx: &mut Context<Self>) {
         match self.backend.read(cx).source() {
-            Source::Demo => self.show_toast("Already showing demo data", None, cx),
-            Source::Google => self.show_toast("Sign out first to use the demo data", None, cx),
+            Source::Demo => self.show_toast(ToastKind::Info, "Already showing demo data", None, cx),
+            Source::Google => self.show_toast(
+                ToastKind::Info,
+                "Sign out first to use the demo data",
+                None,
+                cx,
+            ),
             Source::SignedOut => self.backend.update(cx, |b, cx| b.use_demo(cx)),
         }
     }
@@ -852,7 +973,12 @@ impl PigeonApp {
     /// W10 (ATT-1): load the selected conversation's remote images.
     fn load_images(&mut self, _: &LoadImages, _: &mut Window, cx: &mut Context<Self>) {
         if self.backend.read(cx).is_demo() {
-            self.show_toast("Remote images don't load on the placeholder data", None, cx);
+            self.show_toast(
+                ToastKind::Info,
+                "Remote images don't load on the placeholder data",
+                None,
+                cx,
+            );
             return;
         }
         let Some(ix) = self.selected else {
@@ -877,7 +1003,7 @@ impl PigeonApp {
         let demo = self.backend.read(cx).is_demo();
         self.activate_load_older(cx);
         if demo {
-            self.show_toast("That's all the demo mail", None, cx);
+            self.show_toast(ToastKind::Info, "That's all the demo mail", None, cx);
         }
     }
 
@@ -974,6 +1100,14 @@ impl PigeonApp {
         self.select_adjacent(false, window, cx);
     }
 
+    fn select_first(&mut self, _: &SelectFirstThread, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_edge(false, window, cx);
+    }
+
+    fn select_last(&mut self, _: &SelectLastThread, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_edge(true, window, cx);
+    }
+
     fn archive(&mut self, _: &Archive, window: &mut Window, cx: &mut Context<Self>) {
         self.archive_threads(self.targets(), window, cx);
     }
@@ -1021,57 +1155,6 @@ impl PigeonApp {
         }
         self.refresh_rows(true);
         result
-    }
-
-    fn show_toast(
-        &mut self,
-        message: impl Into<SharedString>,
-        undo: Option<UndoAction>,
-        cx: &mut Context<Self>,
-    ) {
-        let timer = cx.spawn(async |this, cx| {
-            cx.background_executor().timer(TOAST_DURATION).await;
-            this.update(cx, |this, cx| {
-                this.retire_toast(cx);
-                cx.notify();
-            })
-            .ok();
-        });
-        self.retire_toast(cx);
-        let serial = self.toast.as_ref().map_or(0, |t| t.serial + 1);
-        self.toast = Some(Toast {
-            message: message.into(),
-            undo,
-            error: false,
-            serial,
-            _timer: timer,
-        });
-        cx.notify();
-    }
-
-    /// The toast goes without its Undo: a discarded draft is gone for good,
-    /// and so are its held copies (ATT-7).
-    fn retire_toast(&mut self, cx: &mut Context<Self>) {
-        if let Some(Toast {
-            undo: Some(UndoAction::Discard { composer, .. }),
-            ..
-        }) = self.toast.take()
-        {
-            let files = composer.read(cx).file_paths();
-            self.backend.read(cx).release_files(&files);
-        }
-    }
-
-    /// W11 (STA-2): a failure, in the warning tone, with no Undo.
-    pub(crate) fn show_error_toast(
-        &mut self,
-        message: impl Into<SharedString>,
-        cx: &mut Context<Self>,
-    ) {
-        self.show_toast(message, None, cx);
-        if let Some(toast) = &mut self.toast {
-            toast.error = true;
-        }
     }
 
     // Keyboard focus between the list and the reader.
@@ -1338,7 +1421,7 @@ impl PigeonApp {
             .filter(|c| {
                 !c.help_only
                     && (c.scope() == Scope::Global || c.scope() == scope)
-                    && self.command_available(c.when)
+                    && self.command_available(c.when, cx)
             })
             .collect::<Vec<_>>();
         // Most recently used first; the rest keep their order.
@@ -1351,7 +1434,7 @@ impl PigeonApp {
         });
         let commands = available.into_iter().map(|c| PaletteItem {
             command: PaletteCommand::Action(c.action),
-            title: c.name.into(),
+            title: self.command_title(c, window, cx),
             subtitle: None,
             leading: Leading::Icon(c.icon),
             binding: binding(&*(c.action)()),
@@ -1427,6 +1510,24 @@ impl PigeonApp {
             }
         });
         commands.chain(labels).chain(threads).collect()
+    }
+
+    /// What running `command` will do: "Undo Archive", "Unstar" (ME-055).
+    fn command_title(&self, command: &Command, window: &Window, cx: &gpui::App) -> SharedString {
+        use gpui::Action as _;
+        let name = (command.action)().name();
+        if name == Undo.name() || name == EditUndo.name() {
+            if let Some(title) = self.undo_stack.undo_title() {
+                return format!("Undo {title}").into();
+            }
+        } else if name == EditRedo.name()
+            && let Some(title) = self.undo_stack.redo_title()
+        {
+            return format!("Redo {title}").into();
+        }
+        command
+            .title(|toggle| self.toggle_on(toggle, window, cx))
+            .into()
     }
 
     fn on_palette_event(
@@ -1528,73 +1629,6 @@ impl PigeonApp {
         cx.notify();
     }
 
-    fn render_toast(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        let toast = self.toast.as_ref()?;
-        let theme = Theme::of(cx);
-        Some(
-            div()
-                .absolute()
-                .bottom(SPACE_XL)
-                .left_0()
-                .right_0()
-                .flex()
-                .justify_center()
-                .child(ui::style::enter(
-                    ("toast-enter", toast.serial),
-                    div()
-                        .id("toast")
-                        .occlude()
-                        .h(px(40.))
-                        .pl(SPACE_LG)
-                        .pr(SPACE_SM)
-                        .flex()
-                        .items_center()
-                        .gap(SPACE_SM)
-                        .rounded(RADIUS_MD)
-                        .bg(theme.overlay_bg)
-                        .border_1()
-                        .border_color(theme.overlay_border)
-                        .shadow(ui::overlay_shadow(theme))
-                        .text_size(TEXT_BASE)
-                        .role(if toast.error {
-                            gpui::Role::Alert
-                        } else {
-                            gpui::Role::Status
-                        })
-                        .aria_label(toast.message.clone())
-                        .map(|this| {
-                            if toast.error {
-                                this.child(ui::icon(Icon::OctagonAlert, px(15.), theme.danger))
-                            } else {
-                                this.child(ui::icon(Icon::Check, px(15.), theme.accent))
-                            }
-                        })
-                        .child(toast.message.clone())
-                        .when(toast.undo.is_some(), |this| {
-                            this.child(
-                                ui::style::focusable_control(div().id("toast-undo"), theme)
-                                    .h(px(28.))
-                                    .px(SPACE_MD)
-                                    .flex()
-                                    .items_center()
-                                    .gap(SPACE_SM)
-                                    .rounded(RADIUS_MD)
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(theme.accent)
-                                    .hover(|s| s.bg(theme.hover_bg))
-                                    .child("Undo")
-                                    .child(ui::keycap("⌘Z", theme))
-                                    .on_click(|_, window, cx| {
-                                        window.dispatch_action(Box::new(Undo), cx)
-                                    }),
-                            )
-                        })
-                        .when(toast.undo.is_none(), |this| this.pr(SPACE_LG)),
-                ))
-                .into_any_element(),
-        )
-    }
-
     fn render_overlay(
         &self,
         window: &mut Window,
@@ -1686,6 +1720,7 @@ impl Render for PigeonApp {
         window.set_rem_size(px(ui::style::BASE_REM * self.text_scale));
         self.schedule_reveal(window, cx);
         let theme = Theme::of(cx).clone();
+        self.refresh_menus(window, cx);
 
         let width = window.viewport_size().width;
         if self.sidebar_fits(width) {
@@ -1757,6 +1792,8 @@ impl Render for PigeonApp {
             .on_action(cx.listener(Self::toggle_search))
             .on_action(cx.listener(Self::toggle_archived_section))
             .on_action(cx.listener(Self::select_next))
+            .on_action(cx.listener(Self::select_first))
+            .on_action(cx.listener(Self::select_last))
             .on_action(cx.listener(Self::select_prev))
             .on_action(cx.listener(Self::archive))
             .on_action(cx.listener(Self::delete))
@@ -1773,6 +1810,12 @@ impl Render for PigeonApp {
             .on_action(cx.listener(Self::change_from))
             .on_action(cx.listener(Self::toggle_signature))
             .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::edit_undo))
+            .on_action(cx.listener(Self::edit_redo))
+            .on_action(cx.listener(Self::edit_copy))
+            .on_action(cx.listener(Self::edit_select_all))
+            .on_action(cx.listener(Self::toggle_full_screen))
+            .on_action(cx.listener(Self::save_draft_now))
             .on_action(cx.listener(Self::close_search))
             .on_action(cx.listener(Self::focus_results))
             .on_action(cx.listener(Self::next_message))
@@ -1788,6 +1831,7 @@ impl Render for PigeonApp {
             .on_action(cx.listener(Self::focus_panes))
             .on_action(cx.listener(Self::about))
             .on_action(cx.listener(Self::toggle_settings))
+            .on_action(cx.listener(Self::open_settings_section))
             .on_action(cx.listener(Self::close_window))
             .on_action(cx.listener(Self::minimize))
             .on_action(cx.listener(Self::zoom_window))
@@ -1806,6 +1850,7 @@ impl Render for PigeonApp {
             .relative()
             .size_full()
             .overflow_hidden()
+            .line_height(LINE_UI)
             .text_color(theme.text)
             .when(settings_open, |this| {
                 this.child(
@@ -1921,6 +1966,11 @@ impl Render for PigeonApp {
             .children(self.render_toast(cx))
             .children(self.render_overlay(window, cx))
     }
+}
+
+/// Whether a text field has focus, so the Edit menu acts on its text.
+fn text_field_focused(window: &Window) -> bool {
+    window.context_stack().iter().any(|c| c.contains("Input"))
 }
 
 /// Whether a list row overlaps the viewport. `bounds_for_item` also gives

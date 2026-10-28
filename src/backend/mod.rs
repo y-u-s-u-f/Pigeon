@@ -696,7 +696,8 @@ fn commit_google(
             let outcome = match result {
                 Ok(()) => outbox::Outcome::Committed,
                 Err(e) => match e.downcast::<TransportError>() {
-                    Ok(e) => outbox::Outcome::Later(e),
+                    Ok(e) if e.goes_later() => outbox::Outcome::Later(e),
+                    Ok(e) => outbox::Outcome::failed(e.to_string()),
                     Err(e) => outbox::Outcome::failed(e.to_string()),
                 },
             };
@@ -891,6 +892,34 @@ impl Backend {
         self.outbox.overlay(&mut data.threads);
         data.sort_threads();
         data
+    }
+
+    /// `load_mail` without the messages' bodies (`Body::NotLoaded`), for a
+    /// first frame that doesn't wait on them (MA-072). On selection,
+    /// `load_threads` reads the stored bodies; `fetch_body` the rest.
+    #[allow(dead_code)] // used by W2-SHELL
+    pub fn load_mail_heads(&self) -> MailData {
+        let mut data = MailData {
+            account: self.account.clone().unwrap_or_default(),
+            labels: self.load_labels(),
+            threads: self
+                .store
+                .load_all_thread_heads(self.email())
+                .unwrap_or_else(|e| {
+                    eprintln!("Pigeon: couldn't read mail from the store: {e:#}");
+                    Vec::new()
+                }),
+        };
+        self.outbox.overlay(&mut data.threads);
+        data.sort_threads();
+        data
+    }
+
+    /// The threads with a send still queued (offline, or in its undo
+    /// window), by thread id: "Waiting to send" (MA-069).
+    #[allow(dead_code)] // used by W2-COMP
+    pub fn queued_sends(&self) -> std::collections::HashSet<String> {
+        self.outbox.queued_sends()
     }
 
     pub fn load_labels(&self) -> Vec<Label> {
@@ -1376,6 +1405,7 @@ impl Backend {
                     self.set_status(SyncStatus::Offline { waiting }, cx);
                 }
             }
+            TransportError::TooLarge => {}
         }
     }
 
@@ -1643,15 +1673,18 @@ impl Backend {
 
     // Sprint 2 W7b ------------------------------------------------------
 
-    /// Every stored thread, read off the main thread, with the changes
-    /// still queued shown as made: the menu bar's recent mail.
-    pub fn load_threads_in_background(&self, cx: &mut Context<Self>) -> Task<Vec<Thread>> {
+    /// The Inbox threads without their bodies, read off the main thread,
+    /// with the changes still queued shown as made: the menu bar's recent
+    /// mail (MC-009). Threads a queued change touches come too, since it
+    /// may bring them back to the Inbox.
+    pub fn load_inbox_heads(&self, cx: &mut Context<Self>) -> Task<Vec<Thread>> {
         let store = self.store.clone();
         let email = self.email().to_string();
+        let also = self.outbox.queued_threads();
         cx.spawn(async move |this, cx| {
             let mut threads = cx
                 .background_executor()
-                .spawn(async move { store.load_all_threads(&email).unwrap_or_default() })
+                .spawn(async move { store.load_inbox_heads(&email, &also).unwrap_or_default() })
                 .await;
             this.update(cx, |this, _| this.outbox.overlay(&mut threads))
                 .ok();

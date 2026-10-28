@@ -8,7 +8,7 @@ use gpui::{
     Window, actions, div, prelude::FluentBuilder as _, px,
 };
 
-use super::{avatar, icon, keycap, overlay_shadow};
+use super::{avatar, icon, keycap, keys_caps, label, overlay_shadow};
 use crate::ui::style::*;
 use crate::{
     assets::Icon,
@@ -33,7 +33,6 @@ actions!(
 pub const CONTACT_CARD: &str = "ContactCard";
 
 const WIDTH: f32 = 440.;
-const ROW_HEIGHT: f32 = 36.;
 
 pub enum CardEvent {
     OpenThread(String),
@@ -105,11 +104,11 @@ impl ContactCardView {
     /// A line of what the card knows: an icon, the value and its label.
     fn detail(glyph: Icon, value: String, label: &str, theme: &Theme) -> gpui::Div {
         div()
-            .min_h(px(ROW_HEIGHT - 8.))
+            .min_h(CONTROL_MD)
             .flex()
             .items_center()
             .gap(SPACE_MD)
-            .child(icon(glyph, px(14.), theme.text_faint))
+            .child(icon(glyph, ICON_MD, theme.text_faint))
             .child(div().min_w_0().truncate().text_size(TEXT_BASE).child(value))
             .when(!label.is_empty(), |d| {
                 d.child(
@@ -133,7 +132,7 @@ impl ContactCardView {
             .id(id)
             .role(gpui::Role::Button)
             .aria_label(label)
-            .h(HIT_TARGET)
+            .h(CONTROL_MD)
             .px(SPACE_MD)
             .flex()
             .items_center()
@@ -144,9 +143,9 @@ impl ContactCardView {
             .hover(|s| s.bg(theme.selected_bg))
             .text_size(TEXT_SM)
             .font_weight(FontWeight::MEDIUM)
-            .child(icon(glyph, px(13.), theme.icon))
+            .child(icon(glyph, ICON_SM, theme.icon))
             .child(label)
-            .child(keycap(key, theme))
+            .child(keys_caps(key, theme))
     }
 }
 
@@ -200,7 +199,7 @@ impl Render for ContactCardView {
                 .role(gpui::Role::ListBoxOption)
                 .aria_label(format!("{subject}, {date}"))
                 .aria_selected(selected)
-                .h(px(ROW_HEIGHT))
+                .h(ROW_PALETTE)
                 .px(SPACE_MD)
                 .flex()
                 .items_center()
@@ -210,7 +209,7 @@ impl Render for ContactCardView {
                 .when(selected, |d| d.bg(theme.selected_bg))
                 .child(icon(
                     Icon::Mail,
-                    px(14.),
+                    ICON_MD,
                     if selected {
                         theme.icon_active
                     } else {
@@ -242,13 +241,13 @@ impl Render for ContactCardView {
         });
         let no_threads = card.threads.is_empty();
 
-        let hint = |keys: &'static [&'static str], label: &'static str| {
+        let hint = |label: &'static str, caps: gpui::Div| {
             div()
                 .flex()
                 .items_center()
-                .gap(SPACE_XS)
-                .children(keys.iter().map(|k| keycap(*k, &theme)))
-                .child(div().ml(SPACE_2XS).child(label))
+                .gap(SPACE_SM)
+                .child(label)
+                .child(caps)
         };
 
         div()
@@ -284,7 +283,7 @@ impl Render for ContactCardView {
                     .child(avatar(
                         contact.initials(),
                         theme.avatar_color(&contact.email),
-                        px(48.),
+                        AVATAR_LG,
                         &theme,
                     ))
                     .child(
@@ -300,7 +299,7 @@ impl Render for ContactCardView {
                                     .role(gpui::Role::Heading)
                                     .aria_label(name.clone())
                                     .truncate()
-                                    .text_size(TEXT_XL)
+                                    .text_size(TEXT_TITLE2)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(name.clone()),
                             )
@@ -334,7 +333,7 @@ impl Render for ContactCardView {
                             "contact-compose",
                             Icon::SquarePen,
                             "Compose",
-                            "C",
+                            "c",
                             &theme,
                         )
                         .on_click(
@@ -346,7 +345,7 @@ impl Render for ContactCardView {
                             "contact-copy",
                             Icon::Copy,
                             "Copy Address",
-                            "⌘C",
+                            "cmd-c",
                             &theme,
                         )
                         .on_click(
@@ -378,20 +377,19 @@ impl Render for ContactCardView {
                     .children(threads)
                     .when(no_threads, |d| {
                         d.child(
-                            div()
-                                .h(px(ROW_HEIGHT))
+                            label("contact-no-threads", "No conversations in this Mac’s cache")
+                                .h(ROW_PALETTE)
                                 .px(SPACE_MD)
                                 .flex()
                                 .items_center()
                                 .text_size(TEXT_BASE)
-                                .text_color(theme.text_faint)
-                                .child("No conversations in this Mac’s cache"),
+                                .text_color(theme.text_faint),
                         )
                     }),
             )
             .child(
                 div()
-                    .h(px(34.))
+                    .py(SPACE_SM)
                     .px(SPACE_LG)
                     .flex()
                     .items_center()
@@ -400,9 +398,16 @@ impl Render for ContactCardView {
                     .border_color(theme.border)
                     .text_size(TEXT_SM)
                     .text_color(theme.text_faint)
-                    .child(hint(&["↑", "↓"], "Navigate"))
-                    .child(hint(&["↵"], "Open"))
-                    .child(hint(&["Esc"], "Close")),
+                    .child(hint(
+                        "Navigate",
+                        div()
+                            .flex()
+                            .gap(SPACE_XS)
+                            .child(keycap("↑", &theme))
+                            .child(keycap("↓", &theme)),
+                    ))
+                    .child(hint("Open", keys_caps("enter", &theme)))
+                    .child(hint("Close", keys_caps("escape", &theme))),
             )
     }
 }

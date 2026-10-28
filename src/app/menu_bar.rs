@@ -13,8 +13,8 @@ use std::{
 };
 
 use gpui::{
-    App, AppContext as _, AsyncApp, Bounds, Entity, SharedString, WindowBackgroundAppearance,
-    WindowBounds, WindowHandle, WindowKind, WindowOptions, point, px, size,
+    App, AppContext as _, AsyncApp, Bounds, Entity, SharedString, WindowBounds, WindowHandle,
+    WindowKind, WindowOptions, point, px, size,
 };
 
 use super::{
@@ -109,7 +109,7 @@ pub fn install(today: Entity<Today>, cx: &mut App) {
         is_movable: false,
         is_resizable: false,
         is_minimizable: false,
-        window_background: WindowBackgroundAppearance::Blurred,
+        window_background: shell::window_background(cx),
         ..Default::default()
     };
     let panel = cx.open_window(options, |window, cx| {
@@ -328,13 +328,10 @@ fn update_status(cx: &mut App) {
 
 /// Settings › Menu bar: save, then put into effect.
 pub fn set_prefs(prefs: MenuBarPrefs, cx: &mut App) {
-    let mut saved = settings::current(cx);
-    if saved.menu_bar == prefs {
+    if settings::current(cx).menu_bar == prefs {
         return;
     }
-    saved.menu_bar = prefs;
-    settings::remember(&saved, cx);
-    shell::save_app_settings(cx);
+    shell::change_app_settings(cx, |s| s.menu_bar = prefs);
     apply(prefs, cx);
 }
 
@@ -380,10 +377,13 @@ fn register_hot_keys(prefs: MenuBarPrefs) -> String {
                 "{} is taken by another app; pick another.",
                 key.label()
             )),
-            Err(status) => problems.push(format!(
-                "Couldn't register {} (error {status}).",
-                key.label()
-            )),
+            Err(status) => {
+                eprintln!("Pigeon: RegisterEventHotKey {}: {status}", key.label());
+                problems.push(format!(
+                    "macOS didn't turn on {}. Pick another shortcut.",
+                    key.label()
+                ))
+            }
         }
     }
     if !problems.is_empty() {

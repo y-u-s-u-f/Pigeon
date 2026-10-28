@@ -1,6 +1,8 @@
 //! Calendars and events in the store. Events are kept whole as JSON
 //! (`model`), with the columns lookups need beside it.
 
+use std::collections::HashSet;
+
 use chrono::NaiveDateTime;
 use rusqlite::{OptionalExtension as _, Transaction, params};
 
@@ -79,7 +81,7 @@ impl Store {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         for event in events {
-            write_event(&tx, account, event)?;
+            write_event(&tx, account, event, None)?;
         }
         tx.commit()?;
         Ok(())
@@ -100,30 +102,53 @@ impl Store {
     ) -> anyhow::Result<Vec<Event>> {
         let conn = self.conn();
         // Cancelled instances are kept only as their series' exceptions.
-        let mut stmt = conn.prepare(
-            "SELECT id, model FROM events
-             WHERE account = ?1 AND (status IS NULL OR status != 'cancelled') ORDER BY rowid",
-        )?;
-        let mut rows = stmt.query([account])?;
+        const LIVE: &str = "(status IS NULL OR status != 'cancelled')";
+        let mut stmt;
+        let mut rows = match ids {
+            None => {
+                stmt = conn.prepare_cached(&format!(
+                    "SELECT model FROM events WHERE account = ?1 AND {LIVE} ORDER BY rowid"
+                ))?;
+                stmt.query([account])?
+            }
+            Some(ids) => {
+                stmt = conn.prepare_cached(&format!(
+                    "SELECT model FROM events WHERE account = ?1 AND {LIVE}
+                        AND id IN (SELECT value FROM json_each(?2)) ORDER BY rowid"
+                ))?;
+                stmt.query(params![account, super::json(&ids)])?
+            }
+        };
         let mut events = Vec::new();
         while let Some(r) = rows.next()? {
-            let id: String = r.get(0)?;
-            if ids.is_some_and(|ids| !ids.contains(&id)) {
-                continue;
-            }
-            events.push(serde_json::from_str(&r.get::<_, String>(1)?)?);
+            events.push(serde_json::from_str(&r.get::<_, String>(0)?)?);
         }
         Ok(events)
+    }
+
+    /// Which of `ids` are stored events, cancelled instances aside: what
+    /// a sync touched that's still there (MC-002).
+    pub fn existing_event_ids(
+        &self,
+        account: &str,
+        ids: &[String],
+    ) -> anyhow::Result<HashSet<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare_cached(
+            "SELECT id FROM events WHERE account = ?1
+                AND (status IS NULL OR status != 'cancelled')
+                AND id IN (SELECT value FROM json_each(?2))",
+        )?;
+        let rows = stmt.query_map(params![account, super::json(&ids)], |r| r.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     pub fn delete_events(&self, account: &str, ids: &[String]) -> anyhow::Result<()> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         for id in ids {
-            tx.execute(
-                "DELETE FROM events WHERE account = ?1 AND id = ?2",
-                params![account, id],
-            )?;
+            tx.prepare_cached("DELETE FROM events WHERE account = ?1 AND id = ?2")?
+                .execute(params![account, id])?;
         }
         tx.commit()?;
         Ok(())
@@ -253,11 +278,14 @@ impl Store {
 
     /// A calendar and its events; returns the events' ids.
     pub fn delete_calendar(&self, account: &str, id: &str) -> anyhow::Result<Vec<String>> {
-        let removed = self.delete_calendar_events(account, id, None)?;
-        self.conn().execute(
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let removed = delete_calendar_events(&tx, account, id, None)?;
+        tx.execute(
             "DELETE FROM calendars WHERE account = ?1 AND id = ?2",
             params![account, id],
         )?;
+        tx.commit()?;
         Ok(removed)
     }
 
@@ -306,30 +334,7 @@ impl Store {
     ) -> anyhow::Result<Vec<String>> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        let mut removed = Vec::new();
-        {
-            let mut select = tx.prepare(
-                "SELECT id, recurring_event_id FROM events WHERE account = ?1 AND calendar_id = ?2",
-            )?;
-            let rows = select.query_map(params![account, calendar], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-            })?;
-            for row in rows {
-                let (id, series) = row?;
-                let goes = ids.is_none_or(|ids| {
-                    ids.contains(&id) || series.as_ref().is_some_and(|s| ids.contains(s))
-                });
-                if goes {
-                    removed.push(id);
-                }
-            }
-            let mut delete = tx.prepare(
-                "DELETE FROM events WHERE account = ?1 AND calendar_id = ?2 AND id = ?3",
-            )?;
-            for id in &removed {
-                delete.execute(params![account, calendar, id])?;
-            }
-        }
+        let removed = delete_calendar_events(&tx, account, calendar, ids)?;
         tx.commit()?;
         Ok(removed)
     }
@@ -343,11 +348,7 @@ impl Store {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         for (event, json) in events {
-            write_event(&tx, account, event)?;
-            tx.execute(
-                "UPDATE events SET json = ?4 WHERE account = ?1 AND calendar_id = ?2 AND id = ?3",
-                params![account, event.calendar, event.id, json],
-            )?;
+            write_event(&tx, account, event, Some(json))?;
         }
         tx.commit()?;
         Ok(())
@@ -443,15 +444,15 @@ impl Store {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         match op {
-            CalOp::Insert { event, .. } => write_event(&tx, account, event)?,
+            CalOp::Insert { event, .. } => write_event(&tx, account, event, None)?,
             // "This and following", whole: the series ends, the new one
             // starts.
             CalOp::Split { after, new, .. } => {
-                write_event(&tx, account, after)?;
+                write_event(&tx, account, after, None)?;
                 if let Some(until) = after.recurrence.as_ref().and_then(|r| r.until) {
                     drop_instances_from(&tx, account, &after.id, until)?;
                 }
-                write_event(&tx, account, new)?;
+                write_event(&tx, account, new, None)?;
             }
             CalOp::Patch {
                 before,
@@ -459,7 +460,7 @@ impl Store {
                 scope,
                 ..
             } => {
-                write_event(&tx, account, event)?;
+                write_event(&tx, account, event, None)?;
                 // No longer repeating: its occurrences of their own go.
                 if before.is_series() && !event.is_series() {
                     tx.execute(
@@ -496,7 +497,7 @@ impl Store {
                             }
                         }
                     }
-                    write_event(&tx, account, &series)?;
+                    write_event(&tx, account, &series, None)?;
                 } else {
                     tx.execute(
                         "DELETE FROM events WHERE account = ?1 AND id = ?2",
@@ -520,7 +521,7 @@ impl Store {
                         params![account, id],
                     )?;
                     event.calendar = to_calendar.clone();
-                    write_event(&tx, account, &event)?;
+                    write_event(&tx, account, &event, None)?;
                 }
             }
             CalOp::Rsvp { id, status } => {
@@ -530,7 +531,7 @@ impl Store {
                             attendee.status = *status;
                         }
                     }
-                    write_event(&tx, account, &event)?;
+                    write_event(&tx, account, &event, None)?;
                 }
             }
             CalOp::SetSelected { calendar, selected } => {
@@ -545,13 +546,43 @@ impl Store {
     }
 }
 
+/// The events `ids` in a calendar and their series' instances, or with
+/// `None` all of the calendar's. Returns the ids deleted.
+fn delete_calendar_events(
+    tx: &Transaction,
+    account: &str,
+    calendar: &str,
+    ids: Option<&[String]>,
+) -> anyhow::Result<Vec<String>> {
+    let mut removed = Vec::new();
+    let mut select = tx.prepare_cached(
+        "SELECT id, recurring_event_id FROM events WHERE account = ?1 AND calendar_id = ?2",
+    )?;
+    let rows = select.query_map(params![account, calendar], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+    })?;
+    let wanted: Option<HashSet<&str>> = ids.map(|ids| ids.iter().map(String::as_str).collect());
+    for row in rows {
+        let (id, series) = row?;
+        let goes = wanted.as_ref().is_none_or(|ids| {
+            ids.contains(id.as_str()) || series.as_deref().is_some_and(|s| ids.contains(s))
+        });
+        if goes {
+            removed.push(id);
+        }
+    }
+    let mut delete = tx
+        .prepare_cached("DELETE FROM events WHERE account = ?1 AND calendar_id = ?2 AND id = ?3")?;
+    for id in &removed {
+        delete.execute(params![account, calendar, id])?;
+    }
+    Ok(removed)
+}
+
 fn read_event(tx: &Transaction, account: &str, id: &str) -> anyhow::Result<Option<Event>> {
     let model: Option<String> = tx
-        .query_row(
-            "SELECT model FROM events WHERE account = ?1 AND id = ?2",
-            params![account, id],
-            |r| r.get(0),
-        )
+        .prepare_cached("SELECT model FROM events WHERE account = ?1 AND id = ?2")?
+        .query_row(params![account, id], |r| r.get(0))
         .optional()?;
     Ok(match model {
         Some(model) => Some(serde_json::from_str(&model)?),
@@ -574,32 +605,41 @@ fn drop_instances_from(
     )?)
 }
 
-fn write_event(tx: &Transaction, account: &str, event: &Event) -> anyhow::Result<()> {
+/// Writes the event, with Google's JSON when given; without, the JSON
+/// stored stays.
+fn write_event(
+    tx: &Transaction,
+    account: &str,
+    event: &Event,
+    json: Option<&str>,
+) -> anyhow::Result<()> {
     let status = serde_json::to_value(event.status)?;
-    tx.execute(
+    tx.prepare_cached(
         "INSERT INTO events (account, calendar_id, id, etag, ical_uid, status, start, \"end\",
-            all_day, recurring_event_id, original_start, model)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            all_day, recurring_event_id, original_start, model, json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
          ON CONFLICT (account, calendar_id, id) DO UPDATE SET
             etag = excluded.etag, ical_uid = excluded.ical_uid, status = excluded.status,
             start = excluded.start, \"end\" = excluded.\"end\", all_day = excluded.all_day,
             recurring_event_id = excluded.recurring_event_id,
-            original_start = excluded.original_start, model = excluded.model",
-        params![
-            account,
-            event.calendar,
-            event.id,
-            event.etag,
-            event.ical_uid,
-            status.as_str(),
-            event.start.to_string(),
-            event.end.to_string(),
-            event.all_day,
-            event.recurring_event_id,
-            event.original_start.map(|s| s.to_string()),
-            serde_json::to_string(event)?,
-        ],
-    )?;
+            original_start = excluded.original_start, model = excluded.model,
+            json = COALESCE(excluded.json, json)",
+    )?
+    .execute(params![
+        account,
+        event.calendar,
+        event.id,
+        event.etag,
+        event.ical_uid,
+        status.as_str(),
+        event.start.to_string(),
+        event.end.to_string(),
+        event.all_day,
+        event.recurring_event_id,
+        event.original_start.map(|s| s.to_string()),
+        serde_json::to_string(event)?,
+        json,
+    ])?;
     Ok(())
 }
 
@@ -685,5 +725,12 @@ mod tests {
             .unwrap()[0];
         let me = after.attendees.iter().find(|a| a.email == account).unwrap();
         assert_eq!(me.status, RsvpStatus::Declined);
+
+        // MC-002: which ids are still stored, in one query.
+        let ids = vec![invite.id.clone(), "gone".to_string()];
+        let present = store.existing_event_ids(&account, &ids).unwrap();
+        assert_eq!(present.len(), 1);
+        assert!(present.contains(&invite.id));
+        assert_eq!(store.load_events(&account, &ids).unwrap().len(), 1);
     }
 }

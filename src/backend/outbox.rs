@@ -257,6 +257,40 @@ impl Outbox {
             .map_or(0, |rows| rows.len())
     }
 
+    /// The threads with label, trash or untrash ops still to go: those a
+    /// queued change may move into the Inbox.
+    pub fn queued_threads(&self) -> Vec<String> {
+        self.queued_mail()
+            .iter()
+            .filter_map(label_change)
+            .flat_map(|(ids, ..)| ids.iter().cloned())
+            .collect()
+    }
+
+    /// The threads a send still to go goes in (MA-069): "Waiting to send".
+    pub fn queued_sends(&self) -> HashSet<String> {
+        self.queued_mail()
+            .into_iter()
+            .filter_map(|op| match op {
+                MailOp::Send { thread_id, .. } => Some(thread_id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn queued_mail(&self) -> Vec<MailOp> {
+        self.store
+            .outbox_pending(&self.account)
+            .unwrap_or_default()
+            .iter()
+            .filter(|r| r.kind.starts_with("mail."))
+            .filter_map(|r| match serde_json::from_str::<Op>(&r.payload) {
+                Ok(Op::Mail(op)) => Some(op),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The events with calendar ops still to go: the app keeps its own
     /// copy of them until the last one commits (CAL-29).
     pub fn queued_events(&self) -> HashSet<String> {

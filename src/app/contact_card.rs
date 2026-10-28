@@ -4,7 +4,7 @@
 
 use gpui::{ClipboardItem, Context, Div, Entity, Focusable as _, Stateful, Window, prelude::*};
 
-use super::{ComposeKind, Mode, PigeonApp};
+use super::{ComposeKind, Mode, PigeonApp, ToastKind};
 use crate::{
     actions::ShowContact,
     data::Contact,
@@ -89,7 +89,7 @@ impl PigeonApp {
             CardEvent::Compose(contact) => self.compose_to(contact.clone(), window, cx),
             CardEvent::Copy(email) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(email.clone()));
-                self.show_toast(format!("Copied {email}"), None, cx);
+                self.show_toast(ToastKind::Done, format!("Copied {email}"), None, cx);
             }
             CardEvent::Dismiss => {}
         }

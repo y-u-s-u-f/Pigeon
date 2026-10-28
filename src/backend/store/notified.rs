@@ -38,10 +38,10 @@ impl Store {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         for id in ids {
-            tx.execute(
+            tx.prepare_cached(
                 "INSERT OR IGNORE INTO notified (account, message_id, at) VALUES (?1, ?2, ?3)",
-                params![account, id, now],
-            )?;
+            )?
+            .execute(params![account, id, now])?;
         }
         tx.execute(
             "DELETE FROM notified WHERE account = ?1 AND rowid NOT IN

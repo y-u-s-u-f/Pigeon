@@ -376,6 +376,10 @@ impl From<TransportError> for GmailError {
                 message: String::new(),
             },
             TransportError::Network(_) => GmailError::Network(e.to_string()),
+            TransportError::TooLarge => GmailError::Status {
+                status: 413,
+                message: "This message is too large to download".into(),
+            },
         }
     }
 }
@@ -544,83 +548,36 @@ impl Gmail {
     }
 
     /// Each request's answer, in order, sent in HTTP batches of at most
-    /// `BATCH_SIZE`, one after another. Calls answered with a rate limit or
-    /// a server error (429, 5xx, rate-limit 403) go again after the
-    /// transport's backoff, up to `MAX_ATTEMPTS` tries; the others are
-    /// answered as they came.
+    /// `BATCH_SIZE`, one after another, with `http::batch`'s retries.
     pub fn batch<T: serde::de::DeserializeOwned>(
         &self,
         requests: &[Request],
     ) -> Vec<Result<T, GmailError>> {
-        let mut out: Vec<Option<Result<T, GmailError>>> = std::iter::repeat_with(|| None)
-            .take(requests.len())
-            .collect();
-        let mut pending: Vec<usize> = (0..requests.len()).collect();
-        let mut attempt = 0;
-        while !pending.is_empty() {
-            let last = attempt + 1 >= http::MAX_ATTEMPTS;
-            let mut retry = Vec::new();
-            for chunk in pending.chunks(BATCH_SIZE) {
-                let calls: Vec<Request> = chunk.iter().map(|&ix| requests[ix].clone()).collect();
-                for (&ix, part) in chunk.iter().zip(self.send_batch(&calls)) {
-                    match part {
-                        Ok(r) if !last && http::is_retryable(&r) => retry.push(ix),
-                        Ok(r) => out[ix] = Some(parse(&r)),
-                        Err(e) => out[ix] = Some(Err(e)),
-                    }
-                }
-            }
-            if !retry.is_empty() {
-                let wait = http::backoff(attempt, self.clock.jitter());
-                eprintln!(
-                    "Pigeon: Gmail batch: {} of {} calls rate-limited; retrying in {:.1}s",
-                    retry.len(),
-                    pending.len(),
-                    wait.as_secs_f32()
-                );
-                self.clock.sleep(wait);
-            }
-            pending = retry;
-            attempt += 1;
-        }
-        out.into_iter()
-            .map(|r| r.expect("every call answered"))
+        let one = OneBatch {
+            transport: &*self.transport,
+            batching: &self.batching,
+        };
+        http::batch(&one, &*self.clock, BATCH_ENDPOINT, BATCH_SIZE, requests)
+            .into_iter()
+            .map(|part| match part {
+                Ok(r) | Err(http::BatchError::Refused(r)) => parse(&r),
+                Err(http::BatchError::Transport(e)) => Err(e.into()),
+                Err(http::BatchError::Malformed(e)) => Err(GmailError::Parse(e)),
+            })
             .collect()
     }
+}
 
-    /// One HTTP batch: each call's response, or why there's none.
-    fn send_batch(&self, calls: &[Request]) -> Vec<Result<Response, GmailError>> {
-        let batch = http::encode_batch(BATCH_ENDPOINT, calls, "batch_pigeon");
-        let sent = {
-            let _one = self.batching.lock().unwrap_or_else(|e| e.into_inner());
-            self.transport.send(&batch)
-        };
-        let response = match sent {
-            Ok(r) if r.is_success() => r,
-            Ok(r) => {
-                let e = parse::<serde_json::Value>(&r)
-                    .err()
-                    .unwrap_or(GmailError::Status {
-                        status: r.status,
-                        message: String::new(),
-                    });
-                return calls.iter().map(|_| Err(e.clone())).collect();
-            }
-            Err(e) => {
-                let e = GmailError::from(e);
-                return calls.iter().map(|_| Err(e.clone())).collect();
-            }
-        };
-        match http::decode_batch(&response, calls.len()) {
-            Ok(parts) => parts
-                .into_iter()
-                .map(|part| part.ok_or_else(|| GmailError::Parse("missing from the batch".into())))
-                .collect(),
-            Err(e) => calls
-                .iter()
-                .map(|_| Err(GmailError::Parse(e.clone())))
-                .collect(),
-        }
+/// The transport, one batch at a time across `Gmail`'s clones.
+struct OneBatch<'a> {
+    transport: &'a dyn Transport,
+    batching: &'a Mutex<()>,
+}
+
+impl Transport for OneBatch<'_> {
+    fn send(&self, request: &Request) -> Result<Response, TransportError> {
+        let _one = self.batching.lock().unwrap_or_else(|e| e.into_inner());
+        self.transport.send(request)
     }
 }
 

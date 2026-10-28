@@ -360,7 +360,10 @@ impl CalendarView {
 
         let pill = if item.bar {
             let (fill, text) = if selected {
-                (theme.event_selected_fill(color), theme.cal_selected_text)
+                (
+                    theme.event_selected_fill(color),
+                    theme.on_fill(theme.event_selected_fill(color)),
+                )
             } else {
                 (theme.event_fill(color, past), theme.event_text(color, past))
             };
@@ -378,7 +381,7 @@ impl CalendarView {
                 )
         } else {
             let (title, muted) = if selected {
-                let text = theme.cal_selected_text;
+                let text = theme.on_fill(theme.event_selected_fill(color));
                 (text, text.alpha(0.8))
             } else if past {
                 (theme.text_muted, theme.text_muted)
@@ -394,7 +397,7 @@ impl CalendarView {
                         .flex_none()
                         .rounded_full()
                         .map(|d| match look {
-                            _ if selected => d.bg(theme.cal_selected_text),
+                            _ if selected => d.bg(theme.on_fill(theme.event_selected_fill(color))),
                             Look::Normal => d.bg(accent),
                             Look::Pending | Look::Declined => d.border_1().border_color(accent),
                         }),

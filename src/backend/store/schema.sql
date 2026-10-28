@@ -232,3 +232,9 @@ ALTER TABLE bodies DROP COLUMN invite_uid;
 ALTER TABLE bodies DROP COLUMN invite_method;
 ALTER TABLE bodies DROP COLUMN invite_event_id;
 ALTER TABLE bodies DROP COLUMN invite_details;
+
+-- migration: 190
+-- Events by id and by series, which writes, deletes and series refreshes
+-- look up without the calendar (MC-005).
+CREATE INDEX events_by_id ON events (account, id);
+CREATE INDEX events_by_series ON events (account, recurring_event_id);

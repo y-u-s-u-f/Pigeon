@@ -8,7 +8,7 @@ use gpui::{
     px,
 };
 
-use super::{binding_caps, icon, keycap, overlay_shadow};
+use super::{binding_caps, icon, keys_caps, overlay_shadow};
 use crate::ui::style::*;
 use crate::{
     actions::{COMMANDS, Command, Group, HELP, Scope, lookup_contexts},
@@ -126,7 +126,7 @@ impl PigeonApp {
                     .child(
                         div()
                             .w(px(220.))
-                            .h(px(30.))
+                            .h(CONTROL_MD)
                             .px(SPACE_SM)
                             .flex()
                             .items_center()
@@ -134,7 +134,7 @@ impl PigeonApp {
                             .rounded(RADIUS_MD)
                             .bg(theme.search_bg)
                             .text_size(TEXT_BASE)
-                            .child(icon(Icon::Search, px(13.), theme.text_faint))
+                            .child(icon(Icon::Search, ICON_SM, theme.text_faint))
                             .child(
                                 div().flex_1().min_w_0().child(
                                     Input::new(&self.help_filter).appearance(false).px(px(0.)),
@@ -149,8 +149,8 @@ impl PigeonApp {
                             .gap(SPACE_SM)
                             .text_size(TEXT_SM)
                             .text_color(theme.text_faint)
-                            .child(keycap("Esc", &theme))
-                            .child("to close"),
+                            .child("Close")
+                            .child(keys_caps("escape", &theme)),
                     ),
             )
             .child(
@@ -212,7 +212,7 @@ impl PigeonApp {
 fn render_group(group: Group, rows: &[HelpRow], theme: &Theme) -> AnyElement {
     let rows = rows.iter().map(|(command, bindings)| {
         div()
-            .h(px(30.))
+            .h(ROW_SM)
             .flex()
             .items_center()
             .gap(SPACE_MD)

@@ -48,16 +48,20 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSGeometry",
     "NSLocale",
     "NSDictionary",
+    "NSBundle",
     "NSDistributedNotificationCenter",
     "NSNotification",
     "NSObject",
     "NSString",
     "NSError",
+    "NSTimeZone",
     "NSURL",
+    "NSUserDefaults",
 ] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "std",
     "block2",
+    "NSAccessibility",
     "NSAnimation",
     "NSAnimationContext",
     "NSApplication",
@@ -65,11 +69,13 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "NSButton",
     "NSCell",
     "NSColor",
+    "NSColorSpace",
     "NSControl",
     "NSFont",
     "NSFontDescriptor",
     "NSGraphics",
     "NSDockTile",
+    "NSHapticFeedback",
     "NSEvent",
     "NSImage",
     "NSPanel",
@@ -84,11 +90,21 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "NSWorkspace",
     "libc",
     "objc2-core-foundation",
+    "objc2-quartz-core",
 ] }
+# Polish W1 (MC-092): typed Launch Services, CFString and timing functions,
+# all already in the lock file.
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFString"] }
+objc2-core-services = { version = "0.3.2", default-features = false, features = ["std", "LaunchServices", "LSInfo"] }
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CAMediaTimingFunction"] }
 # W7b: the menu bar's click-away monitor and drawn icon, and the panel's
 # NSWindow behind its gpui window. Both already in the lock file.
 block2 = "0.6"
 raw-window-handle = "0.6"
+
+# MA-011: Increase Contrast appearances; see vendor/gpui-pre-macos/PIGEON_PATCHES.md.
+[patch.crates-io]
+gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
 
 [profile.release]
 opt-level = 3

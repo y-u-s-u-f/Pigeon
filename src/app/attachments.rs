@@ -10,7 +10,7 @@ use gpui::{
     prelude::*,
 };
 
-use super::PigeonApp;
+use super::{PigeonApp, ToastAction, ToastKind, toast::plain_error};
 use crate::{
     actions::*,
     backend::attachments::{self, DEMO_NO_BYTES},
@@ -81,7 +81,12 @@ impl PigeonApp {
     fn pick_attachment(&mut self, save: bool, window: &mut Window, cx: &mut Context<Self>) {
         let targets = self.attachment_targets();
         match targets.as_slice() {
-            [] => self.show_toast("No attachments in this conversation", None, cx),
+            [] => self.show_toast(
+                ToastKind::Info,
+                "No attachments in this conversation",
+                None,
+                cx,
+            ),
             [(m, a)] if save => self.save_attachment(*m, *a, cx),
             [(m, a)] => self.open_attachment(*m, *a, cx),
             _ => {
@@ -104,32 +109,58 @@ impl PigeonApp {
         }
     }
 
-    /// The file for an attachment, then `then` with its path.
+    /// The file for an attachment, then `then` with its path. A failure
+    /// offers to try again (`save` or open), while the conversation is
+    /// still the one selected.
     fn with_attachment_file(
         &mut self,
         m: usize,
         a: usize,
+        save: bool,
         then: impl FnOnce(&mut Self, attachments::Ready, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) {
         let Some((message_id, attachment)) = self.attachment_at(m, a) else {
             return;
         };
+        let thread_id = self.selected.map(|ix| self.data.threads[ix].id.clone());
+        let retry = ToastAction::run("Try Again", move |this, _, cx| {
+            if this.selected.map(|ix| &this.data.threads[ix].id) != thread_id.as_ref() {
+                return;
+            }
+            if save {
+                this.save_attachment(m, a, cx)
+            } else {
+                this.open_attachment(m, a, cx)
+            }
+        });
         let task = self
             .backend
             .update(cx, |b, cx| b.attachment_file(&message_id, &attachment, cx));
         let name = attachment.name.clone();
         if !self.backend.read(cx).is_demo() {
-            self.show_toast(format!("Getting “{name}”…"), None, cx);
+            self.show_toast(ToastKind::Working, format!("Getting “{name}”…"), None, cx);
         }
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| match result {
-                Ok(ready) => then(this, ready, cx),
-                Err(e) if e.to_string() == DEMO_NO_BYTES => {
-                    this.show_toast(DEMO_NO_BYTES, None, cx)
+                Ok(ready) => {
+                    if this
+                        .toast
+                        .as_ref()
+                        .is_some_and(|t| t.kind == ToastKind::Working)
+                    {
+                        this.dismiss_toast(cx);
+                    }
+                    then(this, ready, cx)
                 }
-                Err(e) => this.show_error_toast(format!("Couldn't get “{name}”: {e}"), cx),
+                Err(e) if e.to_string() == DEMO_NO_BYTES => {
+                    this.show_toast(ToastKind::Info, DEMO_NO_BYTES, None, cx)
+                }
+                Err(e) => {
+                    let message = plain_error(&format!("Couldn't get “{name}”"), &e);
+                    this.show_toast(ToastKind::Error, message, Some(retry), cx)
+                }
             })
             .ok();
         })
@@ -146,10 +177,12 @@ impl PigeonApp {
         self.with_attachment_file(
             m,
             a,
+            false,
             move |this, ready, cx| {
                 if ready.executable {
                     cx.reveal_path(&ready.path);
                     this.show_toast(
+                        ToastKind::Info,
                         format!("“{name}” could run code, so it's shown in Finder instead"),
                         None,
                         cx,
@@ -170,6 +203,7 @@ impl PigeonApp {
         self.with_attachment_file(
             m,
             a,
+            true,
             move |this, ready, cx| this.save_as(name, Saving::File(ready.path), cx),
             cx,
         );
@@ -209,8 +243,15 @@ impl PigeonApp {
                 .spawn(async move { write(dest) })
                 .await;
             this.update(cx, |this, cx| match written {
-                Ok(dest) => this.show_toast(format!("Saved to {}", dest.display()), None, cx),
-                Err(e) => this.show_error_toast(format!("Couldn't save “{name}”: {e}"), cx),
+                Ok(dest) => this.show_toast(
+                    ToastKind::Done,
+                    format!("Saved to {}", dest.display()),
+                    None,
+                    cx,
+                ),
+                Err(e) => {
+                    this.show_error_toast(plain_error(&format!("Couldn't save “{name}”"), &e), cx)
+                }
             })
             .ok();
         })
@@ -291,7 +332,7 @@ impl PigeonApp {
         } else {
             "Copied the original"
         };
-        self.show_toast(message, None, cx);
+        self.show_toast(ToastKind::Done, message, None, cx);
     }
 
     /// The whole message as an `.eml` file: the one showing, else the
@@ -328,7 +369,7 @@ impl PigeonApp {
             let result = task.await;
             this.update(cx, |this, cx| match result {
                 Ok(raw) => this.save_as(name, Saving::Bytes(Arc::new(raw)), cx),
-                Err(e) => this.show_error_toast(format!("Couldn't get the message: {e}"), cx),
+                Err(e) => this.show_error_toast(plain_error("Couldn't get the message", &e), cx),
             })
             .ok();
         })

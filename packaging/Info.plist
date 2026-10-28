@@ -20,6 +20,8 @@
 	<string>@VERSION@</string>
 	<key>CFBundleVersion</key>
 	<string>@VERSION@</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Mail and calendar for Gmail. © 2026 Pigeon.</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>LSApplicationCategoryType</key>

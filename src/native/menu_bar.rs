@@ -35,6 +35,7 @@ use objc2_app_kit::{
     NSWindowAnimationBehavior,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+use objc2_quartz_core::{CAMediaTimingFunction, kCAMediaTimingFunctionEaseOut};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 /// What the system tells the menu bar.
@@ -384,17 +385,10 @@ fn animate_to(panel: &NSWindow, frame: NSRect, seconds: f64) {
     NSAnimationContext::beginGrouping();
     let context = NSAnimationContext::currentContext();
     context.setDuration(seconds);
-    if let Some(class) = AnyClass::get(c"CAMediaTimingFunction") {
-        let name = NSString::from_str("easeOut");
-        // SAFETY: `+functionWithName:` takes a name and returns the
-        // function (or nil); the context takes it as `timingFunction`.
-        unsafe {
-            let function: Option<Retained<AnyObject>> = msg_send![class, functionWithName: &*name];
-            if let Some(function) = function {
-                let _: () = msg_send![&*context, setTimingFunction: &*function];
-            }
-        }
-    }
+    // SAFETY: a constant name from QuartzCore.
+    let ease_out =
+        CAMediaTimingFunction::functionWithName(unsafe { kCAMediaTimingFunctionEaseOut });
+    context.setTimingFunction(Some(&ease_out));
     let animator = panel.animator();
     animator.setAlphaValue(1.);
     animator.setFrame_display(frame, true);
@@ -498,7 +492,7 @@ fn place(panel: &NSWindow, anchor: Option<&Anchor>, mtm: MainThreadMarker) {
         })
         .flatten()?;
         let same = match (window.screen(), &pointer) {
-            (Some(a), Some(b)) => same_rect(a.frame(), b.frame()),
+            (Some(a), Some(b)) => a.frame() == b.frame(),
             _ => false,
         };
         same.then_some(window)
@@ -545,13 +539,6 @@ fn screen_with_pointer(mtm: MainThreadMarker) -> Option<Retained<NSScreen>> {
             && at.y >= f.origin.y
             && at.y <= f.origin.y + f.size.height
     })
-}
-
-fn same_rect(a: NSRect, b: NSRect) -> bool {
-    a.origin.x == b.origin.x
-        && a.origin.y == b.origin.y
-        && a.size.width == b.size.width
-        && a.size.height == b.size.height
 }
 
 /// The `NSWindow` behind a gpui window (gpui hands out its `NSView`).

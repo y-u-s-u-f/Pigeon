@@ -4,15 +4,16 @@
 //! Dock, notification clicks, the menu bar, `mailto:` and a second launch
 //! all go through them. App-level handlers run Compose, New Event, Open
 //! Thread and the rest of the menus with no window open. Also here: what
-//! the backend reports app-wide (new-mail notifications, the Dock badge)
-//! and wake from sleep.
+//! the backend reports app-wide (new-mail notifications, the Dock badge),
+//! wake from sleep, and the system's display options (MA-009, MA-010).
 
 use std::cell::RefCell;
 
 use chrono::NaiveDateTime;
 use gpui::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, Global, TitlebarOptions,
-    WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowOptions, point, px, size,
+    AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, Global, Task, TitlebarOptions,
+    WeakEntity, Window, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowOptions,
+    point, px, size,
 };
 
 use super::{Mode, PigeonApp, RAIL_WIDTH};
@@ -21,8 +22,8 @@ use crate::{
     backend::{self, Backend, BackendEvent},
     logging, native,
     notify::{self, NoticeTarget},
-    settings::{self, Saved, TimeFormat},
-    theme::Theme,
+    settings::{self, Appearance, Saved, TimeFormat},
+    theme::{Display, Theme},
 };
 
 /// A `mailto:` link's fields (LNK-3).
@@ -141,6 +142,8 @@ struct Shell {
     main: Option<MainWindow>,
     /// The Dock badge's count as last set.
     badge: Option<u64>,
+    /// The Transparency slider's pending save, replaced on every move.
+    glass_save: Option<Task<()>>,
 }
 
 impl Global for Shell {}
@@ -171,12 +174,14 @@ pub fn open_urls(urls: Vec<String>) {
 pub fn init(backend: Entity<Backend>, cx: &mut App) {
     let saved = Saved::from_map(backend.read(cx).load_settings());
     settings::remember(&saved, cx);
+    cx.set_global(Display::read());
     apply_time_format(saved.time_format);
     backend.update(cx, |b, _| b.set_notifications(saved.notifications));
     cx.set_global(Shell {
         backend: backend.clone(),
         main: None,
         badge: None,
+        glass_save: None,
     });
     notify::init(cx);
     cx.subscribe(&backend, on_backend_event).detach();
@@ -204,8 +209,14 @@ pub fn init(backend: Entity<Backend>, cx: &mut App) {
         set_open_at_login(on, cx);
     });
 
-    // Wake and hand-over come from AppKit, outside gpui's callbacks: hop
-    // onto the foreground executor to reach the app.
+    cx.on_system_wake(|cx| {
+        logging::info("wake: syncing now");
+        backend_of(cx).update(cx, |b, cx| b.wake(cx));
+    })
+    .detach();
+
+    // The rest come from AppKit, outside gpui's callbacks: hop onto the
+    // foreground executor to reach the app.
     let async_cx = cx.to_async();
     let executor = cx.foreground_executor().clone();
     native::listen(&backend::data_dir().to_string_lossy(), move |signal| {
@@ -239,10 +250,6 @@ fn backend_of(cx: &App) -> Entity<Backend> {
 
 fn on_signal(signal: native::Signal, cx: &mut App) {
     match signal {
-        native::Signal::Wake => {
-            logging::info("wake: syncing now");
-            backend_of(cx).update(cx, |b, cx| b.wake(cx));
-        }
         native::Signal::ShowRequested => {
             logging::info("instance: opened again; showing the window");
             show(Show::Main, cx);
@@ -251,8 +258,66 @@ fn on_signal(signal: native::Signal, cx: &mut App) {
             apply_time_format(settings::current(cx).time_format);
             cx.refresh_windows();
         }
+        native::Signal::TimeZoneChanged => {
+            logging::info("time zone changed");
+            crate::calendar::time::reset_zone_name();
+            cx.refresh_windows();
+        }
+        native::Signal::DisplayChanged => {
+            let display = Display::read();
+            if cx.try_global::<Display>() != Some(&display) {
+                logging::info(&format!("display options: {display:?}"));
+                cx.set_global(display);
+                refresh_theme(cx);
+            }
+        }
     }
 }
+
+/// Re-apply the theme in every window, after the display options or the
+/// glass changed. Not from inside a window's update: that window is skipped.
+fn refresh_theme(cx: &mut App) {
+    let appearance = settings::current(cx).appearance;
+    for window in cx.windows() {
+        window
+            .update(cx, |_, window, cx| {
+                let appearance = match appearance {
+                    Appearance::System => window.appearance(),
+                    Appearance::Light => WindowAppearance::Light,
+                    Appearance::Dark => WindowAppearance::Dark,
+                };
+                Theme::apply(appearance, window, cx);
+            })
+            .ok();
+    }
+    cx.refresh_windows();
+}
+
+/// MC-094: change one app-wide setting, remember it and save it.
+pub fn change_app_settings(cx: &mut App, change: impl FnOnce(&mut Saved)) {
+    let mut saved = settings::current(cx);
+    change(&mut saved);
+    settings::remember(&saved, cx);
+    backend_of(cx).update(cx, |b, cx| b.save_settings(saved.to_map(), cx));
+}
+
+/// Settings › Appearance › Transparency (MA-010): `Saved::glass`, 0–100.
+/// Re-themes at once; saves once the slider has rested a moment, not on
+/// every drag tick.
+pub fn set_glass(glass: u8, cx: &mut App) {
+    let mut saved = settings::current(cx);
+    saved.glass = glass.min(100);
+    settings::remember(&saved, cx);
+    // After the update this came from, when every window can be reached.
+    cx.defer(refresh_theme);
+    let save = cx.spawn(async |cx| {
+        cx.background_executor().timer(GLASS_SAVE_DELAY).await;
+        cx.update(|cx| change_app_settings(cx, |_| {}));
+    });
+    cx.global_mut::<Shell>().glass_save = Some(save);
+}
+
+const GLASS_SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// Times show on the clock `format` asks for, `System` reading macOS's now.
 fn apply_time_format(format: TimeFormat) {
@@ -261,11 +326,8 @@ fn apply_time_format(format: TimeFormat) {
 
 /// Settings › General › Time format, for mail and calendar alike.
 pub fn set_time_format(format: TimeFormat, cx: &mut App) {
-    let mut saved = settings::current(cx);
-    saved.time_format = format;
-    settings::remember(&saved, cx);
+    change_app_settings(cx, |s| s.time_format = format);
     apply_time_format(format);
-    backend_of(cx).update(cx, |b, cx| b.save_settings(saved.to_map(), cx));
     cx.refresh_windows();
 }
 
@@ -357,15 +419,23 @@ fn window_options(cx: &mut App) -> WindowOptions {
         }),
         // Panes move the window themselves (see `ui::window_drag_area`).
         app_owns_titlebar_drag: true,
-        window_background: WindowBackgroundAppearance::Blurred,
+        window_background: window_background(cx),
         ..Default::default()
     }
 }
 
-/// Save the app's settings as they are now (W7b's menu bar rows).
-pub fn save_app_settings(cx: &mut App) {
-    let map = settings::current(cx).to_map();
-    backend_of(cx).update(cx, |b, cx| b.save_settings(map, cx));
+/// Glass, or opaque under Reduce Transparency, Increase Contrast or a
+/// glass of 100, for a window about to open; `Theme::apply` keeps it in step.
+pub fn window_background(cx: &App) -> WindowBackgroundAppearance {
+    let display = cx.try_global::<Display>().copied().unwrap_or_default();
+    let opaque = display.reduce_transparency
+        || display.increase_contrast
+        || settings::current(cx).glass >= 100;
+    if opaque {
+        WindowBackgroundAppearance::Opaque
+    } else {
+        WindowBackgroundAppearance::Blurred
+    }
 }
 
 /// The menu bar, its model and the reminders (W7b). Once, at launch, after
@@ -377,25 +447,17 @@ pub fn install_menu_bar(cx: &mut App) {
 
 /// Settings › Notifications and ⌘K: on or off, app-wide.
 pub fn set_notifications(on: bool, cx: &mut App) {
-    let mut saved = settings::current(cx);
-    saved.notifications = on;
-    settings::remember(&saved, cx);
+    change_app_settings(cx, |s| s.notifications = on);
     logging::info(&format!(
         "notify: new mail notifications {}",
         if on { "on" } else { "off" }
     ));
-    backend_of(cx).update(cx, |b, cx| {
-        b.set_notifications(on);
-        b.save_settings(saved.to_map(), cx);
-    });
+    backend_of(cx).update(cx, |b, _| b.set_notifications(on));
 }
 
 /// W3: Settings › Mail › Signatures (MST-2).
 pub fn set_signatures(on: bool, cx: &mut App) {
-    let mut saved = settings::current(cx);
-    saved.signatures = on;
-    settings::remember(&saved, cx);
-    backend_of(cx).update(cx, |b, cx| b.save_settings(saved.to_map(), cx));
+    change_app_settings(cx, |s| s.signatures = on);
     cx.refresh_windows();
 }
 
@@ -435,7 +497,7 @@ thread_local! {
 /// What Settings › General says about the login item, as macOS has it.
 pub fn login_item_status() -> String {
     if let Some(error) = LOGIN_ERROR.with(|e| e.borrow().clone()) {
-        return format!("Couldn't change it: {error}");
+        return format!("Couldn't change it. {error}");
     }
     match native::login_item() {
         native::LoginItem::Unavailable(why) => why.to_string(),

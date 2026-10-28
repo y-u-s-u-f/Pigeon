@@ -558,19 +558,25 @@ impl MailSync {
         partial_plan(&history, latest)
     }
 
-    /// Fetch, parse and store the bodies of `messages` in `thread_id`;
-    /// the messages that failed, with why.
-    fn fetch_bodies(&self, thread_id: &str, messages: &[String]) -> Vec<(String, String)> {
-        let requests: Vec<_> = messages
-            .iter()
-            .map(|id| gmail::message_raw_request(id))
-            .collect();
+    /// Fetch, parse and store the bodies of `messages` (id, Gmail's size
+    /// estimate) in `thread_id`; the messages that failed, with why.
+    fn fetch_bodies(&self, thread_id: &str, messages: &[(String, u64)]) -> Vec<(String, String)> {
+        let mut answers = Vec::new();
+        for chunk in body_chunks(messages) {
+            let requests: Vec<_> = chunk
+                .iter()
+                .map(|(id, _)| gmail::message_raw_request(id))
+                .collect();
+            answers.extend(
+                chunk
+                    .iter()
+                    .map(|(id, _)| id)
+                    .zip(self.gmail.batch::<gmail::GMessage>(&requests)),
+            );
+        }
         let mut bodies = Vec::new();
         let mut failed = Vec::new();
-        for (id, result) in messages
-            .iter()
-            .zip(self.gmail.batch::<gmail::GMessage>(&requests))
-        {
+        for (id, result) in answers {
             let parsed = result.map_err(|e| e.to_string()).and_then(|m| {
                 m.raw
                     .as_deref()
@@ -588,6 +594,30 @@ impl MailSync {
         }
         failed
     }
+}
+
+/// Most of a raw-body batch's answer, estimated: under `http`'s limit on
+/// what's read, with room for the batch's own framing (MC-012).
+const BODY_BATCH_BYTES: u64 = 40 * 1024 * 1024;
+
+/// `messages` (id, size estimate) in batches whose raw answers, in base64
+/// at 4/3 of the size, stay under `BODY_BATCH_BYTES`; a message too big
+/// for that goes alone. In order.
+fn body_chunks(messages: &[(String, u64)]) -> Vec<&[(String, u64)]> {
+    let mut chunks = Vec::new();
+    let (mut start, mut bytes) = (0, 0);
+    for (ix, (_, size)) in messages.iter().enumerate() {
+        let size = size.saturating_mul(4) / 3;
+        if ix > start && bytes + size > BODY_BATCH_BYTES {
+            chunks.push(&messages[start..ix]);
+            (start, bytes) = (ix, 0);
+        }
+        bytes += size;
+    }
+    if start < messages.len() {
+        chunks.push(&messages[start..]);
+    }
+    chunks
 }
 
 /// Puts the steps `outcome` asks for at the front of `plan`. A step that
@@ -1019,16 +1049,16 @@ impl Backend {
             cx.background_executor().timer(BODY_DEBOUNCE).await;
             let Ok(Some((worker, messages))) = this.update(cx, |this, cx| {
                 let thread = this.load_threads(std::slice::from_ref(&thread_id)).pop()?;
-                let messages: Vec<String> = thread
+                let messages: Vec<(String, u64)> = thread
                     .messages
                     .iter()
                     .filter(|m| matches!(m.body, Body::NotLoaded | Body::Failed(_)))
-                    .map(|m| m.id.clone())
+                    .map(|m| (m.id.clone(), m.size_estimate))
                     .collect();
                 if messages.is_empty() {
                     return None;
                 }
-                for id in &messages {
+                for (id, _) in &messages {
                     this.sync.body_errors.remove(id);
                     this.sync.body_loading.insert(id.clone());
                 }
@@ -1051,7 +1081,7 @@ impl Backend {
                     .spawn(async move { worker.fetch_bodies(&tid, &ids) })
                     .await;
                 this.update(cx, |this, cx| {
-                    for id in &messages {
+                    for (id, _) in &messages {
                         this.sync.body_loading.remove(id);
                     }
                     this.sync.body_errors.extend(failed);
@@ -1137,6 +1167,26 @@ mod tests {
             account: ACCOUNT.into(),
         };
         (sync, fake)
+    }
+
+    /// MC-012: big raw bodies go in batches the read limit takes; one
+    /// too big for a batch goes alone.
+    #[test]
+    fn body_batches_stay_under_the_read_limit() {
+        const MB: u64 = 1024 * 1024;
+        let messages: Vec<(String, u64)> = [1, 20, 20, 50, 2, 2]
+            .iter()
+            .enumerate()
+            .map(|(ix, mb)| (format!("m{ix}"), mb * MB))
+            .collect();
+        let ids =
+            |chunk: &[(String, u64)]| chunk.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+        let chunks: Vec<Vec<String>> = body_chunks(&messages).into_iter().map(ids).collect();
+        assert_eq!(
+            chunks,
+            [vec!["m0", "m1"], vec!["m2"], vec!["m3"], vec!["m4", "m5"]]
+        );
+        assert!(body_chunks(&[]).is_empty());
     }
 
     #[test]
@@ -1314,7 +1364,10 @@ mod tests {
                 vec![gmail::thread_from_gmail(&t, &Default::default()).unwrap()],
             )
             .unwrap();
-        let failed = sync.fetch_bodies("thread-a1", &["msg-a1".into(), "msg-a2".into()]);
+        let failed = sync.fetch_bodies(
+            "thread-a1",
+            &[("msg-a1".into(), 1000), ("msg-a2".into(), 1000)],
+        );
         assert_eq!(
             failed,
             [("msg-a2".to_string(), "Gmail: Bad Request".to_string())]

@@ -9,7 +9,8 @@ use gpui::{
 
 use std::time::Duration;
 
-use super::{Mode, Nav, PigeonApp, Row, UndoAction};
+use super::{Mode, Nav, PigeonApp, Row, ToastKind, UndoAction};
+use crate::backend::Source;
 use crate::{
     actions::*,
     assets::Icon,
@@ -77,6 +78,7 @@ impl PigeonApp {
                 this.extend_selection(false, window, cx)
             }))
             .on_action(cx.listener(Self::clear_selection))
+            .on_action(cx.listener(|this, _: &SelectAllThreads, _, cx| this.select_all_threads(cx)))
             .on_action(
                 cx.listener(|this, _: &MoveTo, window, cx| this.open_move_palette(window, cx)),
             )
@@ -301,6 +303,41 @@ impl PigeonApp {
         cx.notify();
     }
 
+    /// ⌘A in the list (MA-078): pick every conversation loaded, keeping
+    /// the anchor.
+    pub(super) fn select_all_threads(&mut self, cx: &mut Context<Self>) {
+        let rows: Vec<usize> = self
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Thread(ix) => Some(*ix),
+                _ => None,
+            })
+            .collect();
+        let Some(&first) = rows.first() else {
+            return;
+        };
+        let ids: Vec<String> = rows
+            .iter()
+            .map(|&ix| self.data.threads[ix].id.clone())
+            .collect();
+        self.stash_composer(cx);
+        if self.select_anchor.is_none() {
+            let anchor = self.selected.unwrap_or(first);
+            self.select_anchor = self.data.threads.get(anchor).map(|t| t.id.clone());
+        }
+        // Saving a draft can reorder the threads: back by id.
+        self.checked = ids.into_iter().collect();
+        if self.selected_row().is_none() {
+            self.selected = self.rows.iter().find_map(|row| match row {
+                Row::Thread(ix) => Some(*ix),
+                _ => None,
+            });
+        }
+        self.reader_focused = false;
+        cx.notify();
+    }
+
     /// Escape: let go of the picked threads, back to the selected one.
     fn clear_selection(&mut self, _: &ClearSelection, window: &mut Window, cx: &mut Context<Self>) {
         if self.checked.is_empty() {
@@ -416,7 +453,7 @@ impl PigeonApp {
                     1 => "Discarded draft".to_string(),
                     n => format!("Discarded {n} drafts"),
                 };
-                self.show_toast(message, None, cx);
+                self.show_toast(ToastKind::Done, message, None, cx);
             }
         }
         let rest = self
@@ -540,18 +577,22 @@ impl PigeonApp {
             1 => String::new(),
             n => format!(" {n} conversations"),
         };
-        let message = match destination {
-            Folder::Archive => format!("Archived{what}"),
-            Folder::Trash => format!("Moved{what} to Trash"),
-            folder => format!("Moved{what} to {}", folder.title()),
+        let (message, title) = match destination {
+            Folder::Archive => (format!("Archived{what}"), "Archive".to_string()),
+            Folder::Trash => (format!("Moved{what} to Trash"), "Move to Trash".into()),
+            folder => (
+                format!("Moved{what} to {}", folder.title()),
+                format!("Move to {}", folder.title()),
+            ),
         };
-        self.show_toast(
+        self.show_undoable(
             message,
-            Some(UndoAction::Move {
+            title,
+            UndoAction::Move {
                 moves,
                 selected,
                 ops,
-            }),
+            },
             cx,
         );
         cx.notify();
@@ -615,22 +656,31 @@ impl PigeonApp {
         });
     }
 
-    /// Put moved threads back, and the selection where it was.
+    /// Put moved threads in the folders `moves` names, and the selection
+    /// where it was; returns what moves them back again. Undo puts them
+    /// back at once; redo holds the moves back for the undo window again.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn undo_move(
         &mut self,
         moves: Vec<(String, Folder)>,
         selected: Option<String>,
         ops: Vec<OpId>,
+        fresh: bool,
+        undoing: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        // Inside the undo window nothing went; past it, move them back at
-        // once (for a delete: untrash, then back to the folder).
-        let all_cancelled = self.backend.update(cx, |b, _| {
-            // Every one, not just up to the first that already went.
-            let cancelled: Vec<bool> = ops.iter().map(|&op| b.cancel(op)).collect();
-            cancelled.into_iter().all(|c| c)
-        });
+    ) -> UndoAction {
+        // Inside the undo window nothing went; past it, move them back
+        // with the inverse ops (for a delete: untrash, then back to the
+        // folder).
+        let all_cancelled = fresh
+            && !ops.is_empty()
+            && self.backend.update(cx, |b, _| {
+                // Every one, not just up to the first that already went.
+                let cancelled: Vec<bool> = ops.iter().map(|&op| b.cancel(op)).collect();
+                cancelled.into_iter().all(|c| c)
+            });
+        let selected_before = self.selected.map(|ix| self.data.threads[ix].id.clone());
         let mut back = Vec::new();
         for (id, folder) in moves {
             if let Some(ix) = self.data.thread_ix(&id) {
@@ -638,34 +688,63 @@ impl PigeonApp {
                 self.data.threads[ix].folder = folder;
             }
         }
-        if !all_cancelled {
-            self.queue_moves(back, true, cx);
-        }
+        let inverse: Vec<(String, Folder)> = back
+            .iter()
+            .map(|(id, from, _)| (id.clone(), *from))
+            .collect();
+        let ops = if all_cancelled {
+            Vec::new()
+        } else {
+            self.queue_moves(back, undoing, cx)
+        };
         self.refresh_rows(true);
-        // Back where it was, without marking it read.
+        // Back where it was, without marking it read. Undone from the
+        // calendar: the list changes, but focus and the view stay there.
+        let in_mail = self.mode == Mode::Mail;
         if let Some(ix) = selected.and_then(|id| self.data.thread_ix(&id)) {
             if self.rows.contains(&Row::Thread(ix)) {
                 self.selected = Some(ix);
-                self.reveal_selected();
-            } else {
+                if in_mail {
+                    self.reveal_selected();
+                }
+            } else if in_mail {
                 self.reveal_thread(ix, window, cx);
             }
+        } else if self.selected_row().is_none() {
+            // A redo took the selected thread out of view.
+            self.selected = None;
         }
-        window.focus(&self.focus_handle, cx);
+        if in_mail {
+            window.focus(&self.focus_handle, cx);
+        }
         cx.notify();
+        UndoAction::Move {
+            moves: inverse,
+            selected: if undoing { None } else { selected_before },
+            ops,
+        }
     }
 
     pub(crate) fn star_threads(&mut self, targets: Vec<usize>, cx: &mut Context<Self>) {
         let star = targets.iter().any(|&ix| !self.data.threads[ix].starred);
+        let changed = self.ids_where(&targets, |t| t.starred != star);
         for &ix in &targets {
             self.data.threads[ix].starred = star;
         }
         let label = vec![gmail::STARRED.to_string()];
-        if star {
-            self.queue_labels(&targets, label, Vec::new(), cx);
+        let (add, remove) = if star {
+            (label, Vec::new())
         } else {
-            self.queue_labels(&targets, Vec::new(), label, cx);
-        }
+            (Vec::new(), label)
+        };
+        self.queue_labels(&targets, add.clone(), remove.clone(), cx);
+        let (title, done) = if star {
+            ("Star", "Starred")
+        } else {
+            ("Unstar", "Unstarred")
+        };
+        let message = several(changed.len()).map(|n| format!("{done} {n} conversations"));
+        self.push_label_change(title, changed, add, remove, message, cx);
         if self.nav == Nav::Starred {
             self.refresh_rows(true);
         }
@@ -673,16 +752,39 @@ impl PigeonApp {
     }
 
     pub(crate) fn set_unread(&mut self, targets: Vec<usize>, unread: bool, cx: &mut Context<Self>) {
+        let changed = self.ids_where(&targets, |t| t.unread != unread);
         for &ix in &targets {
             self.data.threads[ix].unread = unread;
         }
         let label = vec![gmail::UNREAD.to_string()];
-        if unread {
-            self.queue_labels(&targets, label, Vec::new(), cx);
+        let (add, remove) = if unread {
+            (label, Vec::new())
         } else {
-            self.queue_labels(&targets, Vec::new(), label, cx);
-        }
+            (Vec::new(), label)
+        };
+        self.queue_labels(&targets, add.clone(), remove.clone(), cx);
+        let (title, how) = if unread {
+            ("Mark as Unread", "unread")
+        } else {
+            ("Mark as Read", "read")
+        };
+        let message = several(changed.len()).map(|n| format!("Marked {n} conversations as {how}"));
+        self.push_label_change(title, changed, add, remove, message, cx);
         cx.notify();
+    }
+
+    /// The ids of the threads at `targets` that `pick` picks.
+    pub(super) fn ids_where(
+        &self,
+        targets: &[usize],
+        pick: impl Fn(&Thread) -> bool,
+    ) -> Vec<String> {
+        targets
+            .iter()
+            .map(|&ix| &self.data.threads[ix])
+            .filter(|t| pick(t))
+            .map(|t| t.id.clone())
+            .collect()
     }
 
     /// Add the label to the targets, or take it off when they all have it.
@@ -697,6 +799,7 @@ impl PigeonApp {
         let remove = targets
             .iter()
             .all(|&ix| self.data.threads[ix].labels.contains(&id));
+        let changed = self.ids_where(&targets, |t| t.labels.contains(&id) == remove);
         for &ix in &targets {
             let labels = &mut self.data.threads[ix].labels;
             if remove {
@@ -705,21 +808,22 @@ impl PigeonApp {
                 labels.push(id.clone());
             }
         }
-        if remove {
-            self.queue_labels(&targets, Vec::new(), vec![id], cx);
+        let (add, take) = if remove {
+            (Vec::new(), vec![id])
         } else {
-            self.queue_labels(&targets, vec![id], Vec::new(), cx);
-        }
+            (vec![id], Vec::new())
+        };
+        self.queue_labels(&targets, add.clone(), take.clone(), cx);
         if matches!(self.nav, Nav::Label(_)) {
             self.refresh_rows(true);
         }
         let name = &self.data.labels[label].name;
-        let message = if remove {
-            format!("Removed “{name}”")
+        let (title, message) = if remove {
+            ("Remove Label", format!("Removed “{name}”"))
         } else {
-            format!("Labelled “{name}”")
+            ("Label", format!("Labeled “{name}”"))
         };
-        self.show_toast(message, None, cx);
+        self.push_label_change(title, changed, add, take, Some(message), cx);
         cx.notify();
     }
 
@@ -893,7 +997,7 @@ impl PigeonApp {
 
     /// Whether a command can do anything now; the palette offers only
     /// those.
-    pub(crate) fn command_available(&self, when: When) -> bool {
+    pub(crate) fn command_available(&self, when: When, cx: &App) -> bool {
         let thread = self.selected.map(|ix| &self.data.threads[ix]);
         let mail = self.mode == Mode::Mail;
         match when {
@@ -905,7 +1009,8 @@ impl PigeonApp {
             }
             When::Messages => mail && thread.is_some_and(|t| t.messages.len() > 1),
             When::Draft => mail && self.composer.is_some(),
-            When::Undo => self.toast.as_ref().is_some_and(|t| t.undo.is_some()),
+            When::Undo => self.undo_stack.can_undo(),
+            When::Redo => self.undo_stack.can_redo(),
             When::Searching => mail && self.search_open,
             When::Selection => mail && !self.checked.is_empty(),
             When::Inbox => mail && self.nav == Nav::Folder(Folder::Inbox),
@@ -914,6 +1019,59 @@ impl PigeonApp {
             When::FromChoice => {
                 mail && self.composer.is_some() && self.data.account.identities().len() > 1
             }
+            When::Event => !mail && self.calendar.read(cx).selected.is_some(),
+            When::EventOpen => !mail && self.calendar.read(cx).panel.is_some(),
+            When::CalendarInvite => {
+                let calendar = self.calendar.read(cx);
+                !mail
+                    && calendar
+                        .selected
+                        .as_ref()
+                        .and_then(|s| calendar.event(&s.event_id))
+                        .is_some_and(|e| {
+                            crate::calendar::policy::my_answer(&calendar.data, e).is_some()
+                        })
+            }
+            When::SignedIn => self.backend.read(cx).source() == Source::Google,
+            When::SignedOut => self.backend.read(cx).source() == Source::SignedOut,
+            When::Pending => false,
+        }
+    }
+
+    /// Whether a command's toggle is on now, for its title (ME-055).
+    pub(crate) fn toggle_on(&self, toggle: Toggle, window: &Window, cx: &App) -> bool {
+        let targets = self.targets();
+        let all = |f: fn(&Thread) -> bool| {
+            !targets.is_empty() && targets.iter().all(|&ix| f(&self.data.threads[ix]))
+        };
+        match toggle {
+            Toggle::Star => all(|t| t.starred),
+            Toggle::Important => all(|t| t.important),
+            Toggle::Selected => self.selected.is_some_and(|ix| self.is_checked(ix)),
+            Toggle::ArchivedSection => self.archived_expanded,
+            Toggle::CompactList => self.density == Density::Compact,
+            Toggle::Sidebar => {
+                self.pane_layout(window.viewport_size().width).sidebar > Pixels::ZERO
+            }
+            Toggle::WeekNumbers => self.calendar.read(cx).show_week_numbers,
+            Toggle::FullScreen => window.is_fullscreen(),
+            Toggle::Notifications => crate::settings::current(cx).notifications,
+            Toggle::OpenAtLogin => crate::native::login_item() == crate::native::LoginItem::On,
+            // Not a setting yet (W3-SYS).
+            Toggle::EventReminders => true,
+            Toggle::HiddenLabels => self.labels_ui.show_hidden,
+            Toggle::LabelFolded => match self.nav {
+                Nav::Label(ix) => self
+                    .data
+                    .labels
+                    .get(ix)
+                    .is_some_and(|l| self.labels_ui.folded.contains(&l.id)),
+                _ => false,
+            },
+            Toggle::Signature => self
+                .composer
+                .as_ref()
+                .is_some_and(|(c, _)| c.read(cx).signature_html().is_some()),
         }
     }
 
@@ -1209,7 +1367,7 @@ pub fn folder_icon(folder: Folder) -> Icon {
         Folder::Archive => Icon::Archive,
         Folder::Sent => Icon::Send,
         Folder::Drafts => Icon::FilePen,
-        Folder::Spam => Icon::OctagonAlert,
+        Folder::Spam => Icon::ShieldAlert,
         Folder::Trash => Icon::Trash,
     }
 }
@@ -1230,6 +1388,12 @@ fn action_targets(
     } else {
         picked
     }
+}
+
+/// `Some(n)` when `n` is more than one: a change to one thread shows
+/// itself, to several it says so.
+fn several(n: usize) -> Option<usize> {
+    (n > 1).then_some(n)
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@
 
 use gpui::{AppContext as _, Context, Entity, Window, point, px};
 
-use super::{ComposeKind, Mode, PigeonApp, UndoAction};
+use super::{ComposeKind, Mode, PigeonApp, ToastAction, ToastKind, UndoAction};
 use crate::{
     actions::*,
     backend::{MailOp, OpId, Outgoing, gmail, mime},
@@ -405,16 +405,12 @@ impl PigeonApp {
             return;
         };
         self.sends.remove(ix);
-        let replaces = match &self.toast {
-            None => true,
-            Some(toast) => match &toast.undo {
-                None => true,
-                Some(UndoAction::Send { op: sent, .. }) => *sent == op,
-                Some(_) => false,
-            },
-        };
+        self.forget_send(op, cx);
+        let replaces = self.toast.as_ref().is_none_or(|t| {
+            t.kind == ToastKind::Working || (t.action.is_none() && t.kind != ToastKind::Error)
+        });
         if replaces {
-            self.show_toast("Message sent", None, cx);
+            self.show_toast(ToastKind::Done, "Message sent", None, cx);
         }
     }
 
@@ -536,7 +532,7 @@ impl PigeonApp {
         let c = composer.read(cx);
         if !c.is_pristine(cx) {
             self.save_draft(&composer, true, cx);
-            self.show_toast("Saved to Drafts", None, cx);
+            self.show_toast(ToastKind::Done, "Saved to Drafts", None, cx);
         } else if c.draft_id.is_none() {
             // Never saved: nothing needs its held copies (ATT-7).
             let files = c.file_paths();
@@ -644,17 +640,33 @@ impl PigeonApp {
         });
         self.close_composer(window, cx);
         self.sends.push(op);
-        self.show_toast(
-            "Sending…",
-            Some(UndoAction::Send {
+        let undo = self.push_undo(
+            "Send",
+            UndoAction::Send {
                 thread_id,
                 appended,
                 removed_draft,
                 composer,
                 op,
-            }),
+            },
             cx,
         );
+        self.show_toast(
+            ToastKind::Working,
+            "Sending…",
+            Some(ToastAction::Undo(undo)),
+            cx,
+        );
+    }
+
+    /// ⌘S: save the open draft to Drafts now, and keep writing.
+    pub(super) fn save_draft_now(&mut self, _: &SaveDraft, _: &mut Window, cx: &mut Context<Self>) {
+        let Some((composer, _)) = &self.composer else {
+            return cx.propagate();
+        };
+        let composer = composer.clone();
+        self.save_draft(&composer, true, cx);
+        self.show_toast(ToastKind::Done, "Saved to Drafts", None, cx);
     }
 
     /// Escape: close the draft, keeping it in Drafts if it says anything.
@@ -707,13 +719,14 @@ impl PigeonApp {
             let files = composer.read(cx).file_paths();
             self.backend.read(cx).release_files(&files);
         } else {
-            self.show_toast(
+            self.show_undoable(
                 "Draft discarded",
-                Some(UndoAction::Discard {
+                "Discard Draft",
+                UndoAction::Discard {
                     removed_draft,
                     composer,
                     op,
-                }),
+                },
                 cx,
             );
         }
@@ -787,31 +800,17 @@ impl PigeonApp {
         }
     }
 
-    pub(super) fn undo(&mut self, _: &Undo, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(undo) = self.toast.take().and_then(|t| t.undo) else {
-            return;
-        };
-        let (composer, removed_draft) = match undo {
-            UndoAction::DeleteEvent(removal) => {
-                self.calendar
-                    .update(cx, |c, cx| c.restore(*removal, window, cx));
-                // Undone in Mail: focus stays with the mail.
-                if self.mode == Mode::Mail {
-                    window.focus(&self.focus_handle, cx);
-                }
-                cx.notify();
-                return;
-            }
-            UndoAction::DiscardEvent(discarded) => {
-                // The event comes back open in the calendar.
-                if self.mode != Mode::Calendar {
-                    self.set_mode(Mode::Calendar, window, cx);
-                }
-                self.calendar
-                    .update(cx, |c, cx| c.restore_discarded(*discarded, window, cx));
-                cx.notify();
-                return;
-            }
+    /// Undo a send or a discard: the draft comes back open. A send can
+    /// be taken back while it hasn't started; a discard past its window
+    /// saves the draft again.
+    pub(super) fn undo_compose(
+        &mut self,
+        action: UndoAction,
+        fresh: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (composer, removed_draft) = match action {
             UndoAction::Send {
                 thread_id,
                 appended,
@@ -819,8 +818,10 @@ impl PigeonApp {
                 composer,
                 op,
             } => {
+                // Whatever the time: a send still queued (offline) can be
+                // cancelled until it starts.
                 if !self.backend.update(cx, |b, _| b.cancel(op)) {
-                    self.show_toast("Already sent", None, cx);
+                    self.show_toast(ToastKind::Info, "Already sent", None, cx);
                     return;
                 }
                 self.sends.retain(|s| *s != op);
@@ -852,19 +853,13 @@ impl PigeonApp {
             } => {
                 // Too late to take back: save it again.
                 if let Some(op) = op
-                    && !self.backend.update(cx, |b, _| b.cancel(op))
+                    && (!fresh || !self.backend.update(cx, |b, _| b.cancel(op)))
                 {
                     self.save_draft(&composer, true, cx);
                 }
                 (composer, removed_draft)
             }
-            UndoAction::Move {
-                moves,
-                selected,
-                ops,
-            } => {
-                return self.undo_move(moves, selected, ops, window, cx);
-            }
+            _ => return,
         };
         let draft_id = removed_draft.as_ref().map(|t| t.id.clone());
         if let Some(thread) = removed_draft {

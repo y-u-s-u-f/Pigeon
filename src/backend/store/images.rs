@@ -65,7 +65,8 @@ impl Store {
             over
         };
         for hash in over {
-            tx.execute("DELETE FROM images WHERE url_hash = ?1", [hash])?;
+            tx.prepare_cached("DELETE FROM images WHERE url_hash = ?1")?
+                .execute([hash])?;
         }
         tx.commit()?;
         Ok(())

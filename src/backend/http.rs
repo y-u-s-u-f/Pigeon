@@ -43,23 +43,51 @@ pub enum TransportError {
     /// The refresh token stopped working (`invalid_grant`): nothing goes
     /// until the user signs in again (STA-4).
     AuthExpired,
+    /// The answer was bigger than `BODY_LIMIT`: an answer all the same,
+    /// so never a sign of being offline (MC-012).
+    TooLarge,
 }
 
 impl std::fmt::Display for TransportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TransportError::Network(e) => write!(f, "network error: {e}"),
-            TransportError::AuthExpired => write!(f, "sign in again"),
+            // `{:#}` adds the raw cause, for the log.
+            TransportError::Network(e) if f.alternate() => {
+                write!(f, "Couldn't reach Google. Check your connection. ({e})")
+            }
+            TransportError::Network(_) => {
+                write!(f, "Couldn't reach Google. Check your connection.")
+            }
+            TransportError::AuthExpired => write!(f, "Sign in again to keep syncing."),
+            TransportError::TooLarge => write!(f, "It's too large to download."),
         }
     }
 }
 
 impl std::error::Error for TransportError {}
 
+impl TransportError {
+    /// No network or no sign-in: trying again later may work. A too large
+    /// answer stays too large.
+    pub fn goes_later(&self) -> bool {
+        !matches!(self, TransportError::TooLarge)
+    }
+}
+
 /// Sends one request and blocks for its response. Called off the main
 /// thread.
 pub trait Transport: Send + Sync {
     fn send(&self, request: &Request) -> Result<Response, TransportError>;
+
+    /// `send` with `Authorization: Bearer {token}`. The network adds the
+    /// header as it goes, so a large upload isn't copied for it (MC-014).
+    fn send_authorized(&self, request: &Request, token: &str) -> Result<Response, TransportError> {
+        let mut signed = request.clone();
+        signed
+            .headers
+            .push(("Authorization".into(), format!("Bearer {token}")));
+        self.send(&signed)
+    }
 }
 
 impl Request {
@@ -188,6 +216,8 @@ const BODY_LIMIT: u64 = 64 * 1024 * 1024;
 
 pub struct UreqTransport {
     agent: ureq::Agent,
+    /// `BODY_LIMIT`; smaller in tests.
+    body_limit: u64,
     /// The dev offline switch's file, with `PIGEON_DEV=1` (`offline_switch`).
     offline_switch: Option<PathBuf>,
     /// W6: the folder the failure drills' files go in, with `PIGEON_DEV=1`.
@@ -289,10 +319,14 @@ impl UreqTransport {
             .http_status_as_error(false)
             .timeout_connect(Some(Duration::from_secs(15)))
             .timeout_global(Some(Duration::from_secs(120)))
-            .user_agent("Pigeon")
+            // Google gzips only for a User-Agent saying so (MC-011).
+            .user_agent("Pigeon (gzip)")
+            // As many as `GoogleTransport` sends at once (MC-022).
+            .max_idle_connections_per_host(MAX_IN_FLIGHT)
             .build();
         Self {
             agent: ureq::Agent::new_with_config(config),
+            body_limit: BODY_LIMIT,
             offline_switch: offline_switch(),
             drills: drill_dir(),
         }
@@ -316,17 +350,20 @@ impl UreqTransport {
         }
     }
 
-    fn run(&self, request: &Request) -> Result<Response, ureq::Error> {
+    fn run(&self, request: &Request, token: Option<&str>) -> Result<Response, ureq::Error> {
         let mut builder = ureq::http::Request::builder()
             .method(request.method)
             .uri(&request.url);
         for (name, value) in &request.headers {
             builder = builder.header(name, value);
         }
+        if let Some(token) = token {
+            builder = builder.header("Authorization", format!("Bearer {token}"));
+        }
         let response = if request.body.is_empty() {
             self.agent.run(builder.body(())?)?
         } else {
-            self.agent.run(builder.body(request.body.clone())?)?
+            self.agent.run(builder.body(&request.body[..])?)?
         };
         let status = response.status().as_u16();
         let headers = response
@@ -337,7 +374,7 @@ impl UreqTransport {
         let body = response
             .into_body()
             .with_config()
-            .limit(BODY_LIMIT)
+            .limit(self.body_limit)
             .read_to_vec()?;
         Ok(Response {
             status,
@@ -349,6 +386,16 @@ impl UreqTransport {
 
 impl Transport for UreqTransport {
     fn send(&self, request: &Request) -> Result<Response, TransportError> {
+        self.send_as(request, None)
+    }
+
+    fn send_authorized(&self, request: &Request, token: &str) -> Result<Response, TransportError> {
+        self.send_as(request, Some(token))
+    }
+}
+
+impl UreqTransport {
+    fn send_as(&self, request: &Request, token: Option<&str>) -> Result<Response, TransportError> {
         let started = Instant::now();
         if self.offline_switch.as_ref().is_some_and(|f| f.exists()) {
             eprintln!(
@@ -360,14 +407,17 @@ impl Transport for UreqTransport {
         if let Some(response) = self.drills.as_deref().and_then(|dir| drill(dir, request)) {
             return Ok(response);
         }
-        let result = self.run(request);
+        let result = self.run(request, token);
         let status = result.as_ref().ok().map(|r| r.status);
         eprintln!(
             "Pigeon: {}",
             log_line(request.method, &request.url, status, started.elapsed())
         );
         // ureq's errors name the host at most; never the query or headers.
-        result.map_err(|e| TransportError::Network(e.to_string()))
+        result.map_err(|e| match e {
+            ureq::Error::BodyExceedsLimit(_) => TransportError::TooLarge,
+            e => TransportError::Network(e.to_string()),
+        })
     }
 }
 
@@ -606,12 +656,10 @@ impl GoogleTransport {
             let mut long_wait = false;
             self.limiter.acquire(request.cost, priority, &*self.clock);
             let result = self.auth.access_token().and_then(|token| {
-                let mut signed = request.clone();
-                signed
-                    .headers
-                    .push(("Authorization".into(), format!("Bearer {token}")));
                 let _permit = self.in_flight.acquire();
-                self.inner.send(&signed).map(|r| (r, token))
+                self.inner
+                    .send_authorized(request, &token)
+                    .map(|r| (r, token))
             });
             match result {
                 Ok((response, token)) => {
@@ -627,6 +675,12 @@ impl GoogleTransport {
                     long_wait = true;
                 }
                 Err(TransportError::AuthExpired) => return Err(TransportError::AuthExpired),
+                // It answered: the network is there, and asking again
+                // gets the same.
+                Err(TransportError::TooLarge) => {
+                    self.failures.store(0, Ordering::Relaxed);
+                    return Err(TransportError::TooLarge);
+                }
                 Err(e @ TransportError::Network(_)) => {
                     self.failures.fetch_add(1, Ordering::Relaxed);
                     if self.is_offline() || attempt + 1 >= MAX_ATTEMPTS {
@@ -759,6 +813,12 @@ impl Transport for FakeTransport {
                     .iter()
                     .all(|(k, v)| query.contains(&(k.as_str(), v.as_str())))
         });
+        // A Calendar batch no route answers whole: each call by its own
+        // route. (Gmail tests script their batches whole.)
+        if route.is_none() && request.path() == "/batch/calendar/v3" {
+            drop(routes);
+            return self.answer_batch(request);
+        }
         let Some(route) = route else {
             return Ok(Response {
                 status: 404,
@@ -781,6 +841,60 @@ impl Transport for FakeTransport {
         Ok(Response {
             status,
             headers: vec![("Content-Type".into(), "application/json".into())],
+            body: body.into_bytes(),
+        })
+    }
+}
+
+impl FakeTransport {
+    /// Answers each call of a batch (as `encode_batch` writes them) by its
+    /// route, as Google's batch answer.
+    fn answer_batch(&self, batch: &Request) -> Result<Response, TransportError> {
+        let rest = batch.url.split_once("://").map_or("", |(_, r)| r);
+        let host = rest.split('/').next().unwrap_or_default();
+        let text = String::from_utf8_lossy(&batch.body).into_owned();
+        let mut body = String::new();
+        for (ix, part) in text.split("--batch_pigeon").skip(1).enumerate() {
+            if part.starts_with("--") {
+                break;
+            }
+            let Some((_, http)) = part.split_once("\r\n\r\n") else {
+                continue;
+            };
+            let (head, call_body) = http.split_once("\r\n\r\n").unwrap_or((http, ""));
+            let mut words = head.lines().next().unwrap_or_default().split_whitespace();
+            let method = match words.next() {
+                Some("POST") => "POST",
+                Some("PATCH") => "PATCH",
+                Some("PUT") => "PUT",
+                Some("DELETE") => "DELETE",
+                _ => "GET",
+            };
+            let path = words.next().unwrap_or("/");
+            let call = Request {
+                method,
+                url: format!("https://{host}{path}"),
+                headers: Vec::new(),
+                body: call_body.trim_end_matches("\r\n").as_bytes().to_vec(),
+                cost: 0,
+            };
+            let answer = self.send(&call)?;
+            body.push_str(&format!(
+                "--fake_batch\r\nContent-Type: application/http\r\n\
+                 Content-ID: <response-item-{}>\r\n\r\nHTTP/1.1 {} X\r\n\
+                 Content-Type: application/json\r\n\r\n{}\r\n",
+                ix + 1,
+                answer.status,
+                String::from_utf8_lossy(&answer.body)
+            ));
+        }
+        body.push_str("--fake_batch--\r\n");
+        Ok(Response {
+            status: 200,
+            headers: vec![(
+                "Content-Type".into(),
+                "multipart/mixed; boundary=fake_batch".into(),
+            )],
             body: body.into_bytes(),
         })
     }
@@ -829,9 +943,88 @@ pub fn encode_batch(endpoint: &str, requests: &[Request], boundary: &str) -> Req
     }
 }
 
+/// Why a call sent in a batch has no answer of its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BatchError {
+    /// The batch didn't go, or no answer came.
+    Transport(TransportError),
+    /// Google refused the whole batch with this answer (the transport
+    /// already retried it).
+    Refused(Response),
+    /// The batch's answer, or the call's part of it, didn't parse.
+    Malformed(String),
+}
+
+/// Each request's answer, in order, sent to `endpoint` in HTTP batches of
+/// at most `size`, one after another. Calls answered with a rate limit
+/// or a server error (429, 5xx, rate-limit 403) go again after a backoff,
+/// up to `MAX_ATTEMPTS` tries; the others are answered as they came.
+pub fn batch(
+    transport: &dyn Transport,
+    clock: &dyn Clock,
+    endpoint: &str,
+    size: usize,
+    requests: &[Request],
+) -> Vec<Result<Response, BatchError>> {
+    let mut out: Vec<Option<Result<Response, BatchError>>> = vec![None; requests.len()];
+    let mut pending: Vec<usize> = (0..requests.len()).collect();
+    let mut attempt = 0;
+    while !pending.is_empty() {
+        let last = attempt + 1 >= MAX_ATTEMPTS;
+        let mut retry = Vec::new();
+        for chunk in pending.chunks(size) {
+            let calls: Vec<Request> = chunk.iter().map(|&ix| requests[ix].clone()).collect();
+            for (&ix, part) in chunk.iter().zip(send_batch(transport, endpoint, &calls)) {
+                match part {
+                    Ok(r) if !last && is_retryable(&r) => retry.push(ix),
+                    part => out[ix] = Some(part),
+                }
+            }
+        }
+        if !retry.is_empty() {
+            let wait = backoff(attempt, clock.jitter());
+            eprintln!(
+                "Pigeon: batch {}: {} of {} calls rate-limited; retrying in {:.1}s",
+                redact_url(endpoint),
+                retry.len(),
+                pending.len(),
+                wait.as_secs_f32()
+            );
+            clock.sleep(wait);
+        }
+        pending = retry;
+        attempt += 1;
+    }
+    out.into_iter()
+        .map(|r| r.expect("every call answered"))
+        .collect()
+}
+
+/// One HTTP batch: each call's response, or why there's none.
+fn send_batch(
+    transport: &dyn Transport,
+    endpoint: &str,
+    calls: &[Request],
+) -> Vec<Result<Response, BatchError>> {
+    let whole = |e: BatchError| calls.iter().map(|_| Err(e.clone())).collect();
+    let response = match transport.send(&encode_batch(endpoint, calls, "batch_pigeon")) {
+        Ok(r) if r.is_success() => r,
+        Ok(r) => return whole(BatchError::Refused(r)),
+        Err(e) => return whole(BatchError::Transport(e)),
+    };
+    match decode_batch(&response, calls.len()) {
+        Ok(parts) => parts
+            .into_iter()
+            .map(|part| part.ok_or_else(|| BatchError::Malformed("missing from the batch".into())))
+            .collect(),
+        Err(e) => whole(BatchError::Malformed(e)),
+    }
+}
+
 /// The parts of a batch response, put back in the order of the requests
 /// (by their `Content-ID: <response-item-N>`). A part missing from the
-/// response, or one that doesn't parse, is `None`.
+/// response, or one that doesn't parse, is `None`. Parts are split on the
+/// boundary's bytes, CRLF or LF, and each body copied once (MC-015).
 pub fn decode_batch(response: &Response, count: usize) -> Result<Vec<Option<Response>>, String> {
     let content_type = response.header("Content-Type").unwrap_or_default();
     let boundary = content_type
@@ -839,24 +1032,26 @@ pub fn decode_batch(response: &Response, count: usize) -> Result<Vec<Option<Resp
         .find_map(|p| p.trim().strip_prefix("boundary="))
         .map(|b| b.trim_matches('"'))
         .ok_or("batch response without a boundary")?;
-    let text = String::from_utf8_lossy(&response.body).replace("\r\n", "\n");
-    let mut out: Vec<Option<Response>> = vec![None; count];
     let delimiter = format!("--{boundary}");
-    for part in text.split(&delimiter).skip(1) {
-        if part.starts_with("--") {
+    let mut out: Vec<Option<Response>> = vec![None; count];
+    for part in split_bytes(&response.body, delimiter.as_bytes()).skip(1) {
+        if part.starts_with(b"--") {
             break;
         }
-        let Some((part_headers, http)) = part.trim_start_matches('\n').split_once("\n\n") else {
+        let part = trim_start_newlines(part);
+        let Some((part_headers, http)) = split_head(part) else {
             continue;
         };
-        let index = part_headers.lines().find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            if !name.trim().eq_ignore_ascii_case("content-id") {
-                return None;
-            }
-            let id = value.trim().trim_start_matches('<').trim_end_matches('>');
-            id.rsplit('-').next()?.parse::<usize>().ok()
-        });
+        let index = String::from_utf8_lossy(part_headers)
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if !name.trim().eq_ignore_ascii_case("content-id") {
+                    return None;
+                }
+                let id = value.trim().trim_start_matches('<').trim_end_matches('>');
+                id.rsplit('-').next()?.parse::<usize>().ok()
+            });
         let Some(slot) = index.and_then(|n| n.checked_sub(1)).filter(|&n| n < count) else {
             continue;
         };
@@ -865,9 +1060,57 @@ pub fn decode_batch(response: &Response, count: usize) -> Result<Vec<Option<Resp
     Ok(out)
 }
 
+/// The pieces of `bytes` between occurrences of `delimiter`.
+fn split_bytes<'a>(bytes: &'a [u8], delimiter: &'a [u8]) -> impl Iterator<Item = &'a [u8]> {
+    let mut rest = Some(bytes);
+    std::iter::from_fn(move || {
+        let current = rest?;
+        match find(current, delimiter) {
+            Some(ix) => {
+                rest = Some(&current[ix + delimiter.len()..]);
+                Some(&current[..ix])
+            }
+            None => {
+                rest = None;
+                Some(current)
+            }
+        }
+    })
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+fn trim_start_newlines(mut bytes: &[u8]) -> &[u8] {
+    while let [b'\r' | b'\n', rest @ ..] = bytes {
+        bytes = rest;
+    }
+    bytes
+}
+
+fn trim_end_newlines(mut bytes: &[u8]) -> &[u8] {
+    while let [rest @ .., b'\r' | b'\n'] = bytes {
+        bytes = rest;
+    }
+    bytes
+}
+
+/// The head before the first blank line (CRLF or LF), and what follows.
+fn split_head(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
+    let crlf = find(bytes, b"\r\n\r\n").map(|ix| (ix, 4));
+    let lf = find(bytes, b"\n\n").map(|ix| (ix, 2));
+    let (ix, len) = match (crlf, lf) {
+        (Some(a), Some(b)) => a.min(b),
+        (a, b) => a.or(b)?,
+    };
+    Some((&bytes[..ix], &bytes[ix + len..]))
+}
+
 /// "HTTP/1.1 200 OK", headers, a blank line, the body.
-fn parse_http(text: &str) -> Option<Response> {
-    let (head, body) = text.split_once("\n\n").unwrap_or((text, ""));
+fn parse_http(bytes: &[u8]) -> Option<Response> {
+    let (head, body) = split_head(bytes).unwrap_or((bytes, b""));
+    let head = String::from_utf8_lossy(head);
     let mut lines = head.lines();
     let status = lines.next()?.split_whitespace().nth(1)?.parse().ok()?;
     let headers = lines
@@ -879,7 +1122,7 @@ fn parse_http(text: &str) -> Option<Response> {
     Some(Response {
         status,
         headers,
-        body: body.trim_end_matches('\n').as_bytes().to_vec(),
+        body: trim_end_newlines(body).to_vec(),
     })
 }
 
@@ -962,6 +1205,82 @@ mod tests {
         assert_eq!(second.status, 404);
         // Item 3 is missing from the response.
         assert!(parts[2].is_none());
+    }
+
+    #[test]
+    fn batch_response_with_bare_newlines_decodes() {
+        let body = "--b\nContent-Type: application/http\nContent-ID: <response-item-2>\n\n\
+                    HTTP/1.1 200 OK\nContent-Type: application/json\n\n{\"id\":\"x\"}\n\
+                    --b\r\nContent-ID: <response-item-1>\r\n\r\nHTTP/1.1 404 X\r\n\r\n{}\r\n--b--\n";
+        let response = Response {
+            status: 200,
+            headers: vec![("Content-Type".into(), "multipart/mixed; boundary=b".into())],
+            body: body.as_bytes().to_vec(),
+        };
+        let parts = decode_batch(&response, 2).unwrap();
+        assert_eq!(parts[0].as_ref().unwrap().status, 404);
+        assert_eq!(parts[0].as_ref().unwrap().body, b"{}");
+        let second = parts[1].as_ref().unwrap();
+        assert_eq!(second.header("content-type"), Some("application/json"));
+        assert_eq!(second.body, br#"{"id":"x"}"#);
+    }
+
+    /// MC-012: an answer over the read limit is `TooLarge`, not a network
+    /// error, served by a one-shot local server.
+    #[test]
+    fn an_answer_over_the_limit_is_too_large() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut seen = Vec::new();
+            let mut buf = [0; 1024];
+            while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = stream.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                seen.extend_from_slice(&buf[..n]);
+            }
+            let body = vec![b'x'; 256];
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: 256\r\n\r\n").unwrap();
+            stream.write_all(&body).unwrap();
+        });
+        let transport = UreqTransport {
+            body_limit: 64,
+            offline_switch: None,
+            drills: None,
+            ..UreqTransport::new()
+        };
+        let request = Request::get(format!("http://127.0.0.1:{port}/big"), 1);
+        assert_eq!(transport.send(&request), Err(TransportError::TooLarge));
+        server.join().unwrap();
+    }
+
+    /// MC-012: a too large answer fails at once and never counts toward
+    /// offline.
+    #[test]
+    fn too_large_is_never_offline() {
+        struct Big(Mutex<usize>);
+        impl Transport for Big {
+            fn send(&self, _: &Request) -> Result<Response, TransportError> {
+                *self.0.lock().unwrap() += 1;
+                Err(TransportError::TooLarge)
+            }
+        }
+        let big = Arc::new(Big(Mutex::new(0)));
+        let clock = Arc::new(FakeClock::new());
+        let transport = GoogleTransport::new(big.clone(), Arc::new(FakeAuth::default()), clock);
+        for _ in 0..3 {
+            assert_eq!(
+                transport.send(&Request::get(PROFILE, 1)),
+                Err(TransportError::TooLarge)
+            );
+        }
+        assert_eq!(*big.0.lock().unwrap(), 3, "no retries");
+        assert!(!transport.is_offline());
+        assert!(!TransportError::TooLarge.goes_later());
     }
 
     /// Hands out `token-1`, then `token-2` after each invalidation.

@@ -143,7 +143,16 @@ pub fn decode_raw(raw: &str) -> Option<Vec<u8>> {
 
 /// The body as HTML (plain text converted) and its attachments. Charsets, transfer encodings and RFC 2047 names are decoded.
 pub fn parse_message(raw: &[u8]) -> Option<ParsedBody> {
-    let message = MessageParser::default().parse(raw)?;
+    Some(parsed_body(&parse(raw)?))
+}
+
+/// The raw message parsed, to read several things from once (MC-008).
+pub fn parse(raw: &[u8]) -> Option<mail_parser::Message<'static>> {
+    Some(MessageParser::default().parse(raw)?.into_owned())
+}
+
+/// `parse_message` of a message parsed already.
+pub fn parsed_body(message: &mail_parser::Message) -> ParsedBody {
     let html: String = message.html_bodies().collect::<Vec<_>>().join("\n");
     let plain: String = message.text_bodies().collect::<Vec<_>>().join("\n");
 
@@ -179,21 +188,25 @@ pub fn parse_message(raw: &[u8]) -> Option<ParsedBody> {
 
     // ATT-2: the images go to the cache with the body, so no request
     // fetches them.
-    let inline = inline_parts(&message);
+    let inline = inline_parts(message);
     let html = rewrite_cids(&html, &inline);
-    Some(ParsedBody {
+    ParsedBody {
         html,
         plain: (!plain.trim().is_empty()).then_some(plain),
         attachments,
         inline_images: inline.into_iter().map(|(_, image)| image).collect(),
-    })
+    }
 }
 
 /// A part's bytes, transfer encoding undone, by the `part_id` that
 /// `parse_message` gave its attachment (ATT-4).
 pub fn part_bytes(raw: &[u8], part_id: &str) -> Option<Vec<u8>> {
+    part_of(&MessageParser::default().parse(raw)?, part_id)
+}
+
+/// `part_bytes` of a message parsed already.
+pub fn part_of(message: &mail_parser::Message, part_id: &str) -> Option<Vec<u8>> {
     let id: mail_parser::PartId = part_id.parse().ok()?;
-    let message = MessageParser::default().parse(raw)?;
     Some(message.part(id)?.decoded().into_owned())
 }
 
@@ -418,7 +431,7 @@ pub fn parse_draft(raw: &[u8]) -> Option<ParsedDraft> {
         .text_body()
         .find(|p| p.is_content_type("text", "plain"))
         .and_then(|p| p.text().map(|t| t.into_owned()));
-    let body = parse_message(raw)?;
+    let body = parsed_body(&message);
     // Written in Gmail with its signature: the signature comes out before
     // the text goes to the editor, so it isn't added twice (MST-2).
     let web_signed = (!ours).then(|| strip_signature(&body.html)).flatten();
@@ -449,7 +462,11 @@ pub fn parse_draft(raw: &[u8]) -> Option<ParsedDraft> {
 
 /// A file a raw message carries, by name: to send a draft's files again.
 pub fn attachment_bytes(raw: &[u8], name: &str) -> Option<Vec<u8>> {
-    let message = MessageParser::default().parse(raw)?;
+    attachment_of(&MessageParser::default().parse(raw)?, name)
+}
+
+/// `attachment_bytes` of a message parsed already.
+pub fn attachment_of(message: &mail_parser::Message, name: &str) -> Option<Vec<u8>> {
     message
         .attachments()
         .find(|p| p.attachment_name() == Some(name))

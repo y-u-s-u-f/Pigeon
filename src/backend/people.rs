@@ -258,7 +258,8 @@ fn api_error(source: Source, response: &Response) -> anyhow::Error {
 }
 
 pub fn is_network(e: &anyhow::Error) -> bool {
-    e.downcast_ref::<TransportError>().is_some()
+    e.downcast_ref::<TransportError>()
+        .is_some_and(TransportError::goes_later)
 }
 
 fn enc(text: &str) -> String {

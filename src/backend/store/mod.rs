@@ -56,6 +56,8 @@ impl Store {
 
     fn new(mut conn: Connection) -> anyhow::Result<Self> {
         migrate(&mut conn)?;
+        // Room for every statement a sync step writes with (MC-004).
+        conn.set_prepared_statement_cache_capacity(64);
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -89,11 +91,11 @@ impl Store {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         for (key, value) in settings {
-            tx.execute(
+            tx.prepare_cached(
                 "INSERT INTO settings (key, value) VALUES (?1, ?2)
                  ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-                params![key, value.to_string()],
-            )?;
+            )?
+            .execute(params![key, value.to_string()])?;
         }
         tx.commit()?;
         Ok(())
