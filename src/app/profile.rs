@@ -22,12 +22,17 @@ use std::{
 };
 
 use gpui::{
-    AnyWindowHandle, AsyncApp, Context, IntoElement, Keystroke, Styled as _, WeakEntity, Window,
-    canvas,
+    AnyWindowHandle, App, AsyncApp, Context, IntoElement, Keystroke, Styled as _, WeakEntity,
+    Window, canvas,
 };
 
 use super::{Mode, PigeonApp, Row};
-use crate::{actions::*, data::Body, logging, ui::calendar::ViewKind};
+use crate::{
+    actions::*,
+    data::Body,
+    logging,
+    ui::calendar::{CalendarView, ViewKind},
+};
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 /// The sequence takes about 30 s; past this the process exits.
@@ -144,6 +149,11 @@ pub fn start(demo: bool, window: &Window, cx: &mut Context<PigeonApp>) {
     .detach();
 }
 
+// Each step runs from the sequence's own task, a top-level update: never
+// inside a render, a paint or another update of `PigeonApp`. What dispatches
+// input (keystrokes, actions) or updates a child view runs outside the app's
+// update, since their handlers update the app themselves.
+
 /// Run `f` on the app in the main window; nothing once it's gone.
 fn step(
     cx: &mut AsyncApp,
@@ -154,6 +164,29 @@ fn step(
     cx.update(|cx| {
         main.update(cx, |_, window, cx| {
             app.update(cx, |this, cx| f(this, window, cx)).ok();
+        })
+        .ok();
+    });
+}
+
+/// Run `f` in the main window, with no view being updated: for input.
+fn in_window(cx: &mut AsyncApp, main: AnyWindowHandle, f: impl FnOnce(&mut Window, &mut App)) {
+    cx.update(|cx| main.update(cx, |_, window, cx| f(window, cx)).ok());
+}
+
+/// Run `f` on the calendar view, outside the app's update.
+fn calendar_step(
+    cx: &mut AsyncApp,
+    main: AnyWindowHandle,
+    app: &WeakEntity<PigeonApp>,
+    f: impl FnOnce(&mut CalendarView, &mut Window, &mut Context<CalendarView>),
+) {
+    cx.update(|cx| {
+        let Some(calendar) = app.upgrade().map(|app| app.read(cx).calendar.clone()) else {
+            return;
+        };
+        main.update(cx, |_, window, cx| {
+            calendar.update(cx, |c, cx| f(c, window, cx))
         })
         .ok();
     });
@@ -239,7 +272,7 @@ async fn run(main: AnyWindowHandle, app: &WeakEntity<PigeonApp>, cx: &mut AsyncA
         });
         wait(cx, 200).await;
         for key in ["a", "r", "c", "h"] {
-            step(cx, main, app, move |_, window, cx| {
+            in_window(cx, main, move |window, cx| {
                 if let Ok(keystroke) = Keystroke::parse(key) {
                     window.dispatch_keystroke(keystroke, cx);
                 }
@@ -254,22 +287,19 @@ async fn run(main: AnyWindowHandle, app: &WeakEntity<PigeonApp>, cx: &mut AsyncA
 
     set_scenario(Some("switch to Calendar week"));
     step(cx, main, app, |this, window, cx| {
-        this.set_mode(Mode::Calendar, window, cx);
-        this.calendar
-            .update(cx, |c, cx| c.set_view(ViewKind::Week, cx));
+        this.set_mode(Mode::Calendar, window, cx)
     });
+    calendar_step(cx, main, app, |c, _, cx| c.set_view(ViewKind::Week, cx));
     wait(cx, 800).await;
     for _ in 0..30 {
-        step(cx, main, app, |this, _, cx| {
-            this.calendar.update(cx, |_, cx| cx.notify())
-        });
+        calendar_step(cx, main, app, |_, _, cx| cx.notify());
         wait(cx, 16).await;
     }
 
     set_scenario(Some("calendar period steps"));
     for forward in [true, false] {
         for _ in 0..8 {
-            step(cx, main, app, move |_, window, cx| {
+            in_window(cx, main, move |window, cx| {
                 if forward {
                     window.dispatch_action(Box::new(NextPeriod), cx);
                 } else {
@@ -282,30 +312,25 @@ async fn run(main: AnyWindowHandle, app: &WeakEntity<PigeonApp>, cx: &mut AsyncA
 
     set_scenario(Some("event panel open and close (pane spring)"));
     for n in 0..4 {
-        step(cx, main, app, move |this, window, cx| {
-            this.calendar.update(cx, |c, cx| {
-                let occurrences = c.visible_occurrences();
-                if let Some(o) = occurrences.get(n % occurrences.len().max(1)) {
-                    let id = c.data.events[o.event].id.clone();
-                    c.open_event(&id, o.start, false, window, cx);
-                }
-            })
+        calendar_step(cx, main, app, move |c, window, cx| {
+            let occurrences = c.visible_occurrences();
+            if let Some(o) = occurrences.get(n % occurrences.len().max(1)) {
+                let id = c.data.events[o.event].id.clone();
+                c.open_event(&id, o.start, false, window, cx);
+            }
         });
         wait(cx, 600).await;
-        step(cx, main, app, |this, window, cx| {
-            this.calendar.update(cx, |c, cx| c.close_panel(window, cx))
-        });
+        calendar_step(cx, main, app, |c, window, cx| c.close_panel(window, cx));
         wait(cx, 600).await;
     }
     set_scenario(None);
 }
 
 impl PigeonApp {
-    /// The conversation whose messages hold the most HTML, by id.
-    fn largest_html_thread(&mut self, cx: &mut Context<Self>) -> Option<String> {
-        for ix in 0..self.data.threads.len() {
-            self.ensure_bodies(ix, cx);
-        }
+    /// The conversation whose stored messages hold the most HTML, by id.
+    /// Read from the store, so the open still loads its bodies (MA-072).
+    fn largest_html_thread(&self, cx: &mut Context<Self>) -> Option<String> {
+        let ids: Vec<String> = self.data.threads.iter().map(|t| t.id.clone()).collect();
         let size = |t: &crate::data::Thread| -> usize {
             t.messages
                 .iter()
@@ -315,12 +340,17 @@ impl PigeonApp {
                 })
                 .sum()
         };
-        let thread = self.data.threads.iter().max_by_key(|t| size(t))?;
+        let (id, bytes) = self
+            .backend
+            .read(cx)
+            .load_threads(&ids)
+            .iter()
+            .map(|t| (t.id.clone(), size(t)))
+            .max_by_key(|(_, bytes)| *bytes)?;
         logging::info(&format!(
-            "profile: largest HTML conversation: {} KB",
-            size(thread) / 1024
+            "profile: largest HTML conversation: {id}, {bytes} bytes of HTML"
         ));
-        Some(thread.id.clone())
+        Some(id)
     }
 }
 
