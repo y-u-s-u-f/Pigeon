@@ -1089,7 +1089,6 @@ pub fn message_from_gmail(m: &GMessage) -> (Message, String) {
         snippet: unescape(&m.snippet),
         body: Body::NotLoaded,
         attachments: Vec::new(),
-        invite: None,
         message_id: h.message_id,
         in_reply_to: h.in_reply_to,
         references: h.references,

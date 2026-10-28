@@ -668,7 +668,6 @@ mod tests {
             snippet: String::new(),
             body: Body::NotLoaded,
             attachments: Vec::new(),
-            invite: None,
             message_id: String::new(),
             in_reply_to: String::new(),
             references: Vec::new(),

@@ -2,7 +2,6 @@
 //! building outgoing ones and reading drafts back (W6).
 
 use base64::Engine as _;
-use chrono::NaiveDateTime;
 use mail_builder::{
     MessageBuilder,
     headers::{address::Address, message_id::MessageId, raw::Raw},
@@ -10,10 +9,7 @@ use mail_builder::{
 use mail_parser::MessageParser;
 
 use super::Outgoing;
-use crate::{
-    calendar::time::LocalZone,
-    data::{Attachment, Contact, InviteDetails, InviteMethod, Message},
-};
+use crate::data::{Attachment, Contact, Message};
 
 // Parse (W3).
 
@@ -23,10 +19,6 @@ pub struct ParsedBody {
     pub html: String,
     pub plain: Option<String>,
     pub attachments: Vec<Attachment>,
-    /// A `text/calendar` part's UID and METHOD.
-    pub invite: Option<(String, InviteMethod)>,
-    /// That part's event, as it describes it (W10, CAL-20).
-    pub invite_details: Option<InviteDetails>,
     /// Images the HTML shows by `cid:` (ATT-2), under the address `html`
     /// now uses for them.
     pub inline_images: Vec<InlineImage>,
@@ -149,33 +141,18 @@ pub fn decode_raw(raw: &str) -> Option<Vec<u8>> {
     URL_SAFE_ANY.decode(raw.trim()).ok()
 }
 
-/// The body as HTML (plain text converted), its attachments and any
-/// invitation. Charsets, transfer encodings and RFC 2047 names are decoded.
+/// The body as HTML (plain text converted) and its attachments. Charsets, transfer encodings and RFC 2047 names are decoded.
 pub fn parse_message(raw: &[u8]) -> Option<ParsedBody> {
     let message = MessageParser::default().parse(raw)?;
     let html: String = message.html_bodies().collect::<Vec<_>>().join("\n");
     let plain: String = message.text_bodies().collect::<Vec<_>>().join("\n");
 
-    let mut invite = None;
-    let mut invite_details = None;
-    for part in message.parts() {
-        if part.is_content_type("text", "calendar")
-            && invite.is_none()
-            && let Some(text) = part.text()
-        {
-            invite = parse_ics(&text);
-            invite_details = invite
-                .is_some()
-                .then(|| parse_ics_details(&text, &LocalZone::system()))
-                .flatten();
-        }
-    }
-
     let attachments = message
         .attachments()
         .filter(|part| {
-            !part.is_content_type("text", "calendar")
-                && !part.is_content_type("application", "ics")
+            // An invitation's unnamed iCalendar alternative is part of
+            // the body; a named .ics is a file like any other.
+            !(part.is_content_type("text", "calendar") && part.attachment_name().is_none())
                 // Images the HTML shows inline (cid:) aren't files to list.
                 && !(part.is_inline() && part.content_id().is_some())
         })
@@ -208,8 +185,6 @@ pub fn parse_message(raw: &[u8]) -> Option<ParsedBody> {
         html,
         plain: (!plain.trim().is_empty()).then_some(plain),
         attachments,
-        invite,
-        invite_details,
         inline_images: inline.into_iter().map(|(_, image)| image).collect(),
     })
 }
@@ -220,149 +195,6 @@ pub fn part_bytes(raw: &[u8], part_id: &str) -> Option<Vec<u8>> {
     let id: mail_parser::PartId = part_id.parse().ok()?;
     let message = MessageParser::default().parse(raw)?;
     Some(message.part(id)?.decoded().into_owned())
-}
-
-/// An iCalendar object's event UID and METHOD (REQUEST or CANCEL; others
-/// don't ask anything of the user).
-pub fn parse_ics(text: &str) -> Option<(String, InviteMethod)> {
-    // Unfold: a line starting with a space or tab continues the last.
-    let unfolded = text
-        .replace("\r\n", "\n")
-        .replace("\n ", "")
-        .replace("\n\t", "");
-    let mut method = None;
-    let mut uid = None;
-    let mut in_event = false;
-    for line in unfolded.lines() {
-        let (name, value) = match line.split_once(':') {
-            Some((name, value)) => (name.split(';').next().unwrap_or(name), value.trim()),
-            None => continue,
-        };
-        match name.to_ascii_uppercase().as_str() {
-            "METHOD" => method = Some(value.to_ascii_uppercase()),
-            "BEGIN" if value.eq_ignore_ascii_case("VEVENT") => in_event = true,
-            "END" if value.eq_ignore_ascii_case("VEVENT") => in_event = false,
-            "UID" if in_event && uid.is_none() => uid = Some(value.to_string()),
-            _ => {}
-        }
-    }
-    let method = match method.as_deref() {
-        Some("CANCEL") => InviteMethod::Cancel,
-        Some("REQUEST") => InviteMethod::Request,
-        _ => return None,
-    };
-    Some((uid?, method))
-}
-
-/// An iCalendar line split into its name (upper case), parameters and
-/// value, after unfolding.
-fn ics_lines(text: &str) -> Vec<(String, String, String)> {
-    let unfolded = text
-        .replace("\r\n", "\n")
-        .replace("\n ", "")
-        .replace("\n\t", "");
-    unfolded
-        .lines()
-        .filter_map(|line| {
-            // The value starts after the first colon outside a quoted
-            // parameter.
-            let mut quoted = false;
-            let split = line.char_indices().find(|&(_, c)| {
-                if c == '"' {
-                    quoted = !quoted;
-                }
-                c == ':' && !quoted
-            })?;
-            let (head, value) = (&line[..split.0], &line[split.0 + 1..]);
-            let (name, params) = head.split_once(';').unwrap_or((head, ""));
-            Some((
-                name.to_ascii_uppercase(),
-                params.to_string(),
-                value.trim().to_string(),
-            ))
-        })
-        .collect()
-}
-
-/// TEXT values escape `\\`, `\;`, `\,` and newlines.
-fn ics_text(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    let mut chars = value.chars();
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            out.push(c);
-            continue;
-        }
-        match chars.next() {
-            Some('n' | 'N') => out.push('\n'),
-            Some(c) => out.push(c),
-            None => {}
-        }
-    }
-    out
-}
-
-/// A DTSTART or DTEND as a local wall time, and whether it's a date. UTC
-/// times (`…Z`) convert to `zone`; times with a TZID are taken as wall
-/// times, as elsewhere (6.4 item 8).
-fn ics_time(params: &str, value: &str, zone: &LocalZone) -> Option<(NaiveDateTime, bool)> {
-    let params = params.to_ascii_uppercase();
-    let date_param = params.contains("VALUE=DATE") && !params.contains("VALUE=DATE-TIME");
-    if date_param || value.len() == 8 {
-        let date = chrono::NaiveDate::parse_from_str(value, "%Y%m%d").ok()?;
-        return Some((date.and_hms_opt(0, 0, 0)?, true));
-    }
-    let (wall, utc) = match value.strip_suffix(['Z', 'z']) {
-        Some(v) => (v, true),
-        None => (value, false),
-    };
-    let t = NaiveDateTime::parse_from_str(wall, "%Y%m%dT%H%M%S").ok()?;
-    Some((if utc { (zone.to_local)(t.and_utc()) } else { t }, false))
-}
-
-/// The first VEVENT's title, times, place and organizer.
-pub fn parse_ics_details(text: &str, zone: &LocalZone) -> Option<InviteDetails> {
-    let mut details = InviteDetails::default();
-    let mut in_event = false;
-    let mut seen = false;
-    for (name, params, value) in ics_lines(text) {
-        match name.as_str() {
-            "BEGIN" if value.eq_ignore_ascii_case("VEVENT") && !seen => in_event = true,
-            "END" if value.eq_ignore_ascii_case("VEVENT") && in_event => {
-                in_event = false;
-                seen = true;
-            }
-            _ if !in_event => {}
-            "SUMMARY" => details.title = ics_text(&value),
-            "LOCATION" => details.location = ics_text(&value),
-            "DTSTART" => {
-                if let Some((t, all_day)) = ics_time(&params, &value, zone) {
-                    details.start = Some(t);
-                    details.all_day = all_day;
-                }
-            }
-            "DTEND" => details.end = ics_time(&params, &value, zone).map(|(t, _)| t),
-            "ORGANIZER" => {
-                let email = value
-                    .strip_prefix("mailto:")
-                    .or_else(|| value.strip_prefix("MAILTO:"))
-                    .unwrap_or(&value);
-                let name = params
-                    .split(';')
-                    .find_map(|p| {
-                        let (k, v) = p.split_once('=')?;
-                        k.eq_ignore_ascii_case("CN").then(|| v.trim_matches('"'))
-                    })
-                    .unwrap_or_default();
-                details.organizer = Contact {
-                    name: ics_text(name),
-                    email: email.to_string(),
-                };
-            }
-            _ => {}
-        }
-    }
-    seen.then_some(details)
 }
 
 // Build (W6).
@@ -665,67 +497,12 @@ mod tests {
     }
 
     #[test]
-    fn calendar_request_and_cancel() {
+    fn an_invitations_ics_is_an_attachment() {
         let body = parse(include_str!(
             "../../tests/fixtures/google/gmail/invite_request.eml"
         ));
-        assert_eq!(
-            body.invite,
-            Some(("abc123@example.com".into(), InviteMethod::Request))
-        );
-        // The .ics is the invite card, not a file.
-        assert!(body.attachments.is_empty());
-        let body = parse(include_str!(
-            "../../tests/fixtures/google/gmail/invite_cancel.eml"
-        ));
-        assert_eq!(
-            body.invite,
-            Some(("folded-uid-0042@example.com".into(), InviteMethod::Cancel))
-        );
-    }
-
-    #[test]
-    fn ics_details_for_the_read_only_card() {
-        let zone = LocalZone {
-            name: "America/Los_Angeles",
-            to_local: |t| t.naive_utc() - chrono::Duration::hours(7),
-            to_utc: |t| (t + chrono::Duration::hours(7)).and_utc(),
-        };
-        let ics = "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n\
-            DTSTART:20261028T170000Z\r\nDTEND:20261028T173000Z\r\n\
-            SUMMARY:Design review\\, round 2\r\nLOCATION:Room 4\r\n\
-            ORGANIZER;CN=\"Ada: Lovelace\":mailto:ada@example.com\r\n\
-            UID:r2@example.com\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nSUMMARY:Other\r\n\
-            END:VEVENT\r\nEND:VCALENDAR\r\n";
-        assert_eq!(
-            parse_ics(ics),
-            Some(("r2@example.com".into(), InviteMethod::Request))
-        );
-        let d = parse_ics_details(ics, &zone).unwrap();
-        assert_eq!(d.title, "Design review, round 2");
-        assert_eq!(d.location, "Room 4");
-        assert_eq!(
-            d.start.unwrap().to_string(),
-            "2026-10-28 10:00:00",
-            "UTC to the local wall time"
-        );
-        assert_eq!(d.end.unwrap().to_string(), "2026-10-28 10:30:00");
-        assert!(!d.all_day);
-        assert_eq!(d.organizer.name, "Ada: Lovelace");
-        assert_eq!(d.organizer.email, "ada@example.com");
-
-        let all_day = "BEGIN:VEVENT\nDTSTART;VALUE=DATE:20261102\nSUMMARY:Offsite\nEND:VEVENT";
-        let d = parse_ics_details(all_day, &zone).unwrap();
-        assert!(d.all_day);
-        assert_eq!(d.start.unwrap().to_string(), "2026-11-02 00:00:00");
-
-        let body = parse(include_str!(
-            "../../tests/fixtures/google/gmail/invite_request.eml"
-        ));
-        let d = body.invite_details.unwrap();
-        assert_eq!(d.title, "Planning");
-        // A TZID time is a wall time.
-        assert_eq!(d.start.unwrap().to_string(), "2026-11-02 10:00:00");
+        let names: Vec<_> = body.attachments.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["invite.ics"]);
     }
 
     // Build (W6).

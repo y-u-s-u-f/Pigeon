@@ -201,8 +201,6 @@ pub struct PigeonApp {
     pub html_cache: crate::html::HtmlCache,
     /// Remote images let load and fetched (W10, ATT-1).
     pub images: ui::html_view::LoadedImages,
-    /// Invitations' UIDs already looked up in Google Calendar (W10, CAL-20).
-    pub invite_lookups: HashSet<String>,
     /// The reading pane has keyboard focus (after `o`): arrows scroll it and
     /// escape returns to the list.
     pub reader_focused: bool,
@@ -242,8 +240,6 @@ pub struct PigeonApp {
     pub search_highlight: Option<usize>,
     /// Palette commands by last use, most recent first.
     recent_commands: Vec<&'static str>,
-    /// The When/Where lines an invite card summarizes, shown anyway.
-    pub invite_details_open: bool,
     /// The message whose whole text ⌘A selected, until a click clears it.
     pub select_all_text: Option<usize>,
     pub help_filter: Entity<InputState>,
@@ -363,7 +359,6 @@ impl PigeonApp {
             reader_scroll: ScrollHandle::new(),
             html_cache: Default::default(),
             images: Default::default(),
-            invite_lookups: Default::default(),
             reader_focused: false,
             focus_handle,
             palette: None,
@@ -386,7 +381,6 @@ impl PigeonApp {
             recent_searches: Vec::new(),
             search_highlight: None,
             recent_commands: Vec::new(),
-            invite_details_open: false,
             select_all_text: None,
             help_filter,
             reveal_pending: false,
@@ -620,7 +614,6 @@ impl PigeonApp {
         if self.selected != Some(ix) {
             self.expanded_messages.clear();
             self.focused_message = None;
-            self.invite_details_open = false;
             self.select_all_text = None;
             self.reader_scroll.set_offset(point(px(0.), px(0.)));
         }
@@ -1345,7 +1338,7 @@ impl PigeonApp {
             .filter(|c| {
                 !c.help_only
                     && (c.scope() == Scope::Global || c.scope() == scope)
-                    && self.command_available(c.when, cx)
+                    && self.command_available(c.when)
             })
             .collect::<Vec<_>>();
         // Most recently used first; the rest keep their order.
@@ -1787,11 +1780,6 @@ impl Render for PigeonApp {
             .on_action(cx.listener(Self::prev_message))
             .on_action(cx.listener(Self::go_to_mail))
             .on_action(cx.listener(Self::go_to_calendar))
-            .on_action(cx.listener(Self::accept_invite))
-            .on_action(cx.listener(Self::maybe_invite))
-            .on_action(cx.listener(Self::decline_invite))
-            .on_action(cx.listener(Self::open_invite_in_calendar))
-            .on_action(cx.listener(Self::remove_cancelled_event))
             .on_action(cx.listener(Self::zoom_in))
             .on_action(cx.listener(Self::zoom_out))
             .on_action(cx.listener(Self::reset_zoom))

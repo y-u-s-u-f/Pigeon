@@ -274,9 +274,6 @@ pub struct Message {
     pub body: Body,
     #[serde(default)]
     pub attachments: Vec<Attachment>,
-    /// A calendar invitation (or its cancellation) this message carries.
-    #[serde(default)]
-    pub invite: Option<Invite>,
     // Threading headers (DAT-4).
     #[serde(default)]
     pub message_id: String,
@@ -334,7 +331,6 @@ impl Message {
                 html: String::new(),
             },
             attachments: Vec::new(),
-            invite: None,
             message_id: String::new(),
             in_reply_to: String::new(),
             references: Vec::new(),
@@ -346,42 +342,6 @@ impl Message {
     pub fn html(&self) -> &str {
         self.body.html()
     }
-}
-
-/// An invitation email's link to its event in the calendar.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Invite {
-    /// `Event::id`, resolved from `ical_uid`.
-    pub event_id: String,
-    pub method: InviteMethod,
-    /// The `text/calendar` part's UID.
-    #[serde(default)]
-    pub ical_uid: String,
-    /// What the `text/calendar` part itself says, for a read-only card
-    /// when the event isn't in the calendar (CAL-20).
-    #[serde(default)]
-    pub details: Option<InviteDetails>,
-}
-
-/// An invitation's event as its iCalendar part describes it. Times are
-/// local wall times.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct InviteDetails {
-    pub title: String,
-    pub start: Option<chrono::NaiveDateTime>,
-    pub end: Option<chrono::NaiveDateTime>,
-    pub all_day: bool,
-    pub location: String,
-    pub organizer: Contact,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum InviteMethod {
-    /// Asks the user to come.
-    Request,
-    /// The organizer called it off.
-    Cancel,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

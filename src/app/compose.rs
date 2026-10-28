@@ -795,7 +795,7 @@ impl PigeonApp {
             UndoAction::DeleteEvent(removal) => {
                 self.calendar
                     .update(cx, |c, cx| c.restore(*removal, window, cx));
-                // Undone from an invite card: focus stays with the mail.
+                // Undone in Mail: focus stays with the mail.
                 if self.mode == Mode::Mail {
                     window.focus(&self.focus_handle, cx);
                 }

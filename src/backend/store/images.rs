@@ -70,31 +70,6 @@ impl Store {
         tx.commit()?;
         Ok(())
     }
-
-    /// The threads holding an invitation to `ical_uid`.
-    pub fn threads_with_invite(
-        &self,
-        account: &str,
-        ical_uid: &str,
-    ) -> anyhow::Result<Vec<String>> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT m.thread_id FROM bodies b
-             JOIN messages m ON m.account = b.account AND m.id = b.message_id
-             WHERE b.account = ?1 AND b.invite_uid = ?2",
-        )?;
-        let rows = stmt.query_map(params![account, ical_uid], |r| r.get(0))?;
-        Ok(rows.collect::<Result<_, _>>()?)
-    }
-
-    /// The stored events with this iCalendar UID.
-    pub fn events_with_uid(&self, account: &str, ical_uid: &str) -> anyhow::Result<Vec<String>> {
-        let conn = self.conn();
-        let mut stmt =
-            conn.prepare("SELECT id FROM events WHERE account = ?1 AND ical_uid = ?2")?;
-        let rows = stmt.query_map(params![account, ical_uid], |r| r.get(0))?;
-        Ok(rows.collect::<Result<_, _>>()?)
-    }
 }
 
 #[cfg(test)]

@@ -14,7 +14,7 @@ use crate::{
     actions::*,
     assets::Icon,
     backend::{MailOp, Older, OpId, ViewKey, categories::Category, gmail},
-    data::{Folder, InviteMethod, Thread},
+    data::{Folder, Thread},
     search::{GmailQuery, NextSuggestion, PrevSuggestion, ServerState},
     ui::command_palette::{Leading, PaletteCommand, PaletteItem},
 };
@@ -893,7 +893,7 @@ impl PigeonApp {
 
     /// Whether a command can do anything now; the palette offers only
     /// those.
-    pub(crate) fn command_available(&self, when: When, cx: &App) -> bool {
+    pub(crate) fn command_available(&self, when: When) -> bool {
         let thread = self.selected.map(|ix| &self.data.threads[ix]);
         let mail = self.mode == Mode::Mail;
         match when {
@@ -906,22 +906,6 @@ impl PigeonApp {
             When::Messages => mail && thread.is_some_and(|t| t.messages.len() > 1),
             When::Draft => mail && self.composer.is_some(),
             When::Undo => self.toast.as_ref().is_some_and(|t| t.undo.is_some()),
-            When::Invite | When::Cancelled => {
-                let method = if when == When::Invite {
-                    InviteMethod::Request
-                } else {
-                    InviteMethod::Cancel
-                };
-                mail && self.selected_invite().is_some_and(|invite| {
-                    invite.method == method
-                        && self
-                            .calendar
-                            .read(cx)
-                            .data
-                            .event_ix(&invite.event_id)
-                            .is_some()
-                })
-            }
             When::Searching => mail && self.search_open,
             When::Selection => mail && !self.checked.is_empty(),
             When::Inbox => mail && self.nav == Nav::Folder(Folder::Inbox),

@@ -97,11 +97,6 @@ actions!(
         SaveEvent,
         DiscardEventChanges,
         ToggleCalendarsMenu,
-        AcceptInvite,
-        MaybeInvite,
-        DeclineInvite,
-        OpenInviteInCalendar,
-        RemoveCancelledEvent,
         ZoomIn,
         ZoomOut,
         ResetZoom,
@@ -317,12 +312,6 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("a", ReplyAll, Some(MAIL)),
         KeyBinding::new("f", Forward, Some(MAIL)),
         KeyBinding::new("/", ToggleSearch, Some(MAIL)),
-        // Answering the invite in the selected conversation.
-        KeyBinding::new("shift-y", AcceptInvite, Some(MAIL)),
-        KeyBinding::new("shift-m", MaybeInvite, Some(MAIL)),
-        KeyBinding::new("shift-n", DeclineInvite, Some(MAIL)),
-        KeyBinding::new("shift-c", OpenInviteInCalendar, Some(MAIL)),
-        KeyBinding::new("shift-x", RemoveCancelledEvent, Some(MAIL)),
         // Search. Escape in the list clears a search too.
         KeyBinding::new("escape", CloseSearch, Some(LIST)),
         // Bound after, so it wins: escape clears a selection first.
@@ -603,7 +592,6 @@ pub enum Group {
     Navigation,
     Conversation,
     Selection,
-    Invite,
     Compose,
     GoTo,
     App,
@@ -620,7 +608,6 @@ impl Group {
             Group::Navigation => "Navigation",
             Group::Conversation => "Conversation",
             Group::Selection => "Selection",
-            Group::Invite => "Invitations",
             Group::Compose => "Compose",
             Group::GoTo => "Go to",
             Group::App => "Application",
@@ -682,10 +669,6 @@ pub enum When {
     Draft,
     /// The toast offers an undo.
     Undo,
-    /// The selected conversation has an invitation to answer.
-    Invite,
-    /// The selected conversation has a cancelled event to remove.
-    Cancelled,
     /// The search bar is open.
     Searching,
     /// Several conversations are selected.
@@ -755,11 +738,6 @@ pub const COMMANDS: &[Command] = commands! {
     Selection: "Extend Selection Down", ChevronDown, ExtendSelectionDown if Thread;
     Selection: "Extend Selection Up", ChevronUp, ExtendSelectionUp if Thread;
     Selection: "Clear Selection", X, ClearSelection if Selection;
-    Invite: "Answer Yes", Check, AcceptInvite if Invite;
-    Invite: "Answer Maybe", Help, MaybeInvite if Invite;
-    Invite: "Answer No", X, DeclineInvite if Invite;
-    Invite: "Open Invitation in Calendar", Calendar, OpenInviteInCalendar if Invite;
-    Invite: "Remove Cancelled Event from Calendar", Trash, RemoveCancelledEvent if Cancelled;
     Navigation: "Next Conversation", ChevronDown, SelectNextThread;
     Navigation: "Previous Conversation", ChevronUp, SelectPrevThread;
     Navigation: "Open Conversation", Mail, OpenThread;

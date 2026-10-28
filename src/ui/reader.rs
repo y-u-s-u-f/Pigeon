@@ -464,17 +464,6 @@ impl PigeonApp {
         }
 
         let body = self.html_cache.get(message.html());
-        // The invite card above says when, where and who; the lines saying
-        // it again in the body fold away.
-        let has_card = message.invite.as_ref().is_some_and(|invite| {
-            self.calendar
-                .read(cx)
-                .data
-                .event_ix(&invite.event_id)
-                .is_some()
-        });
-        let folds = has_card && body.blocks.iter().any(super::invite::is_invite_summary);
-        let show_all = !folds || self.invite_details_open;
         let images = self.message_images(message, &body, cx);
 
         let attachments = message
@@ -660,19 +649,12 @@ impl PigeonApp {
                     .id(("message-body", ix))
                     .mt(SPACE_LG)
                     .pl(px(46.))
-                    .children(
-                        message
-                            .invite
-                            .as_ref()
-                            .map(|invite| self.render_invite(invite, theme, cx)),
-                    )
                     .when_some(images.ask, |this, hidden| {
                         this.child(render_images_bar(ix, &message.id, hidden, theme, cx))
                     })
                     .child(match &message.body {
                         Body::Loaded { .. } => render_body(
                             &body,
-                            show_all,
                             selection,
                             html_view::ShowImages {
                                 loaded: &self.images,
@@ -683,39 +665,6 @@ impl PigeonApp {
                         .into_any_element(),
                         Body::Failed(reason) => render_body_failed(ix, reason, theme),
                         Body::NotLoaded | Body::Loading => render_body_loading(theme),
-                    })
-                    .when(folds, |this| {
-                        let open = self.invite_details_open;
-                        this.child(
-                            div()
-                                .id(("invite-details", ix))
-                                .mt(SPACE_SM)
-                                .flex()
-                                .items_center()
-                                .gap(SPACE_XS)
-                                .text_size(TEXT_SM)
-                                .text_color(theme.text_muted)
-                                .cursor_pointer()
-                                .hover(|s| s.text_color(theme.text))
-                                .child(icon(
-                                    if open {
-                                        Icon::ChevronDown
-                                    } else {
-                                        Icon::ChevronRight
-                                    },
-                                    px(13.),
-                                    theme.text_faint,
-                                ))
-                                .child(if open {
-                                    "Hide invitation details"
-                                } else {
-                                    "Show invitation details"
-                                })
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.invite_details_open = !this.invite_details_open;
-                                    cx.notify();
-                                })),
-                        )
                     }),
             )
             .when(!message.attachments.is_empty(), |this| {
@@ -943,10 +892,8 @@ impl PigeonApp {
 }
 
 /// The message's HTML, rendered natively. Parsed once per message and cached.
-/// Without `all`, the lines an invite card summarizes are left out.
 fn render_body(
     doc: &Document,
-    all: bool,
     selection: html_view::Selection,
     images: html_view::ShowImages,
     theme: &Theme,
@@ -955,12 +902,11 @@ fn render_body(
         .text_size(TEXT_MD)
         .line_height(relative(1.55))
         .text_color(theme.text)
-        .child(html_view::render_filtered(
+        .child(html_view::render_with(
             doc,
             theme,
             Some(selection),
             Some(images),
-            |block| all || !super::invite::is_invite_summary(block),
         ))
 }
 

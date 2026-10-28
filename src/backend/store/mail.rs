@@ -9,9 +9,7 @@ use rusqlite::{OptionalExtension as _, Transaction, params};
 use super::{Store, from_json, json};
 use crate::{
     backend::{MailOp, gmail},
-    data::{
-        Account, Body, DraftOrigin, Folder, Invite, InviteMethod, Label, Loaded, Message, Thread,
-    },
+    data::{Account, Body, DraftOrigin, Folder, Label, Loaded, Message, Thread},
 };
 
 impl Store {
@@ -144,13 +142,7 @@ impl Store {
             "SELECT m.thread_id, m.id, m.label_ids, m.\"from\", m.\"to\", m.cc, m.bcc, m.date,
                     m.internal_date, m.snippet, m.attachments, m.message_id, m.in_reply_to,
                     m.\"references\", m.reply_to, m.size_estimate,
-                    b.html, b.invite_method,
-                    COALESCE(NULLIF(b.invite_event_id, ''),
-                        (SELECT e.id FROM events e
-                         WHERE e.account = m.account AND e.ical_uid = b.invite_uid
-                         ORDER BY e.recurring_event_id IS NOT NULL
-                         LIMIT 1)),
-                    b.invite_uid, b.invite_details
+                    b.html
              FROM messages m
              LEFT JOIN bodies b ON b.account = m.account AND b.message_id = m.id
              WHERE m.account = ?1
@@ -164,29 +156,6 @@ impl Store {
             }
             let date: String = r.get(7)?;
             let html: Option<String> = r.get(16)?;
-            let method: Option<String> = r.get(17)?;
-            let invite = method.map(|method| Invite {
-                event_id: r
-                    .get::<_, Option<String>>(18)
-                    .ok()
-                    .flatten()
-                    .unwrap_or_default(),
-                method: if method == "cancel" {
-                    InviteMethod::Cancel
-                } else {
-                    InviteMethod::Request
-                },
-                ical_uid: r
-                    .get::<_, Option<String>>(19)
-                    .ok()
-                    .flatten()
-                    .unwrap_or_default(),
-                details: r
-                    .get::<_, Option<String>>(20)
-                    .ok()
-                    .flatten()
-                    .and_then(|j| serde_json::from_str(&j).ok()),
-            });
             let message = Message {
                 id: r.get(1)?,
                 label_ids: from_json(&r.get::<_, String>(2)?),
@@ -202,7 +171,6 @@ impl Store {
                     None => Body::NotLoaded,
                 },
                 attachments: from_json(&r.get::<_, String>(10)?),
-                invite,
                 message_id: r.get(11)?,
                 in_reply_to: r.get(12)?,
                 references: from_json(&r.get::<_, String>(13)?),
@@ -436,7 +404,6 @@ impl Store {
                 {
                     message.body = old.body;
                     message.attachments = old.attachments;
-                    message.invite = old.invite;
                 }
             }
             thread.loaded = loaded(thread);
@@ -473,13 +440,6 @@ impl Store {
             }
             message.body = Body::Loaded { html: parsed.html };
             message.attachments = parsed.attachments;
-            let details = parsed.invite_details;
-            message.invite = parsed.invite.map(|(ical_uid, method)| Invite {
-                event_id: String::new(),
-                method,
-                ical_uid,
-                details,
-            });
         }
         thread.loaded = loaded(&thread);
         thread.reindex();
@@ -760,36 +720,12 @@ fn write_thread(tx: &Transaction, account: &str, thread: &Thread) -> anyhow::Res
             ],
         )?;
         if let Body::Loaded { html } = &message.body {
-            let invite = message.invite.as_ref();
             tx.execute(
-                "INSERT INTO bodies (account, message_id, html, invite_uid, invite_method,
-                    invite_event_id, bytes)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                "INSERT INTO bodies (account, message_id, html, bytes)
+                 VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT (account, message_id) DO UPDATE SET
-                    html = excluded.html, invite_uid = excluded.invite_uid,
-                    invite_method = excluded.invite_method,
-                    invite_event_id = excluded.invite_event_id, bytes = excluded.bytes",
-                params![
-                    account,
-                    message.id,
-                    html,
-                    invite.map(|i| i.ical_uid.as_str()),
-                    invite.map(|i| match i.method {
-                        InviteMethod::Request => "request",
-                        InviteMethod::Cancel => "cancel",
-                    }),
-                    invite.map(|i| i.event_id.as_str()),
-                    html.len() as i64,
-                ],
-            )?;
-            // W10 (CAL-20).
-            tx.execute(
-                "UPDATE bodies SET invite_details = ?3 WHERE account = ?1 AND message_id = ?2",
-                params![
-                    account,
-                    message.id,
-                    invite.and_then(|i| i.details.as_ref()).map(json),
-                ],
+                    html = excluded.html, bytes = excluded.bytes",
+                params![account, message.id, html, html.len() as i64],
             )?;
         }
     }
@@ -873,10 +809,6 @@ mod tests {
                 assert_eq!(m.snippet, n.snippet);
                 assert_eq!(m.body, n.body);
                 assert_eq!(m.attachments, n.attachments);
-                assert_eq!(
-                    m.invite.as_ref().map(|i| (&i.event_id, i.method)),
-                    n.invite.as_ref().map(|i| (&i.event_id, i.method))
-                );
             }
         }
         let labels = store.load_labels(&account).unwrap();

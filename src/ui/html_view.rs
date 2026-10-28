@@ -24,7 +24,7 @@ const MONO: &str = "Menlo";
 const BLOCK_GAP: gpui::Pixels = SPACE_MD;
 
 pub fn render(doc: &Document, theme: &Theme) -> impl IntoElement {
-    render_filtered(doc, theme, None, None, |_| true)
+    render_with(doc, theme, None, None)
 }
 
 /// Remote images (ATT-1): the messages whose images the user let load, and
@@ -90,13 +90,12 @@ pub struct Selection {
     pub all: Option<OnClear>,
 }
 
-/// The document's top-level blocks that `keep` accepts.
-pub fn render_filtered(
+/// The document, with selectable text and images when given.
+pub fn render_with(
     doc: &Document,
     theme: &Theme,
     selection: Option<Selection>,
     images: Option<ShowImages>,
-    keep: impl Fn(&Block) -> bool,
 ) -> impl IntoElement {
     let mut renderer = Renderer {
         theme,
@@ -109,7 +108,6 @@ pub fn render_filtered(
     let blocks = doc
         .blocks
         .iter()
-        .filter(|b| keep(b))
         .enumerate()
         .map(|(ix, b)| renderer.block(b, ix == 0))
         .collect::<Vec<_>>();

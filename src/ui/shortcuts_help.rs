@@ -26,7 +26,6 @@ const MAIL_GROUPS: &[Group] = &[
     Group::Labels,
     Group::Selection,
     Group::Compose,
-    Group::Invite,
 ];
 const CALENDAR_GROUPS: &[Group] = &[
     Group::App,

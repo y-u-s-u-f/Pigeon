@@ -481,7 +481,7 @@ pub fn meta(id: SettingId) -> &'static SettingMeta {
 }
 
 /// The order of the shortcut groups on the page.
-const SHORTCUT_GROUPS: [Group; 11] = [
+const SHORTCUT_GROUPS: [Group; 10] = [
     Group::App,
     Group::Navigation,
     Group::GoTo,
@@ -489,7 +489,6 @@ const SHORTCUT_GROUPS: [Group; 11] = [
     Group::Labels,
     Group::Selection,
     Group::Compose,
-    Group::Invite,
     Group::CalendarNavigation,
     Group::CalendarView,
     Group::CalendarEvents,
@@ -504,7 +503,6 @@ pub fn group_label(group: Group) -> &'static str {
         Group::Conversation => "Mail · Conversation",
         Group::Selection => "Mail · Selection",
         Group::Compose => "Mail · Compose",
-        Group::Invite => "Mail · Invitations",
         Group::Labels => "Mail · Labels",
         Group::CalendarNavigation => "Calendar · Navigation",
         Group::CalendarView => "Calendar · View",

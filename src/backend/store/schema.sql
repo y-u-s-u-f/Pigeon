@@ -223,3 +223,12 @@ CREATE TABLE draft_tombstones (
 -- made with, so their token goes once and the next sync lists them again.
 ALTER TABLE contacts ADD COLUMN details TEXT;
 DELETE FROM sync_state WHERE key = 'people_sync_token';
+
+-- migration: 180
+-- The invite card above invitation emails went (CAL-20, 27 Oct 2026), and
+-- with it what bodies kept of their iCalendar part.
+DROP INDEX events_by_uid;
+ALTER TABLE bodies DROP COLUMN invite_uid;
+ALTER TABLE bodies DROP COLUMN invite_method;
+ALTER TABLE bodies DROP COLUMN invite_event_id;
+ALTER TABLE bodies DROP COLUMN invite_details;

@@ -2,8 +2,8 @@
 //! docked on the right. `CalendarView` owns the calendar's state and handles
 //! its actions; the files beside this one render it.
 //!
-//! What the mouse drags in the grid (`drag.rs`) and the invite card in the
-//! reader go through:
+//! What the mouse drags in the grid (`drag.rs`) and the event panel go
+//! through:
 //! - `create_event` makes an event over a time range and opens it.
 //! - `retime_occurrence` moves or resizes one occurrence (its whole series;
 //!   pass the series' `start` as the occurrence to set the series itself).
@@ -228,7 +228,7 @@ pub enum Leave {
     Select(Selection),
     /// A click on another event.
     Click(Selection),
-    /// The palette or an invite jumped to an event.
+    /// The palette jumped to an event.
     Reveal(String),
     Create {
         start: NaiveDateTime,

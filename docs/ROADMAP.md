@@ -30,14 +30,14 @@ To update: change the status cell in the area's table, then the counts below.
 | [Images and attachments](#510-images-and-attachments-att) | 0 | 1 | 6 | 7 |
 | [Links](#511-links-lnk) | 1 | 1 | 1 | 3 |
 | [Mail settings](#512-mail-settings-mst) | 8 | 1 | 1 | 10 |
-| [Calendar](#6-calendar-cal) | 12 | 3 | 27 | 42 |
+| [Calendar](#6-calendar-cal) | 13 | 2 | 27 | 42 |
 | [Sync and push](#71-sync-and-push-syn) | 2 | 0 | 5 | 7 |
 | [Notifications and background](#72-notifications-and-background-ntf) | 0 | 3 | 3 | 6 |
 | [Loading, error and offline states](#73-loading-error-and-offline-states-sta) | 0 | 0 | 5 | 5 |
 | [Storage and persistence](#81-storage-and-persistence-per) | 0 | 0 | 5 | 5 |
 | [Command palette](#82-command-palette-pal) | 0 | 0 | 3 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 3 | 3 | 7 |
-| **Overall** | **35** | **17** | **131** | **183** |
+| **Overall** | **36** | **16** | **131** | **183** |
 
 ## Contents
 
@@ -58,7 +58,7 @@ To update: change the status cell in the area's table, then the counts below.
 
 Principles are in [`AGENTS.md`](../AGENTS.md): blazing fast and light (no webviews, no heavy dependencies), keyboard-centric (every action has a shortcut and is in ⌘K), minimal and flat on translucent glass, YAGNI.
 
-**Current phase: linked to Google; demo mode on placeholder data.** Backend sprint 1 ([`BACKEND_SPRINT_1.md`](BACKEND_SPRINT_1.md)) linked sign-in, Gmail read and write, compose and drafts, Calendar read and write, contacts, search and paging, invites, remote images, offline queueing and status. Backend sprint 2, "Pigeon as a daily driver" ([`BACKEND_SPRINT_2.md`](BACKEND_SPRINT_2.md)), is complete: the app stays open with a menu bar panel, notifications and a Dock badge; attachments; Gmail categories; labels; aliases and signatures; repeat rules, reminders and Meet in the calendar. Everything a tester can drive passed real-account test rounds. `PIGEON_DEMO=1` runs on the placeholder data.
+**Current phase: linked to Google; demo mode on placeholder data.** Backend sprint 1 ([`BACKEND_SPRINT_1.md`](BACKEND_SPRINT_1.md)) linked sign-in, Gmail read and write, compose and drafts, Calendar read and write, contacts, search and paging, remote images, offline queueing and status. Backend sprint 2, "Pigeon as a daily driver" ([`BACKEND_SPRINT_2.md`](BACKEND_SPRINT_2.md)), is complete: the app stays open with a menu bar panel, notifications and a Dock badge; attachments; Gmail categories; labels; aliases and signatures; repeat rules, reminders and Meet in the calendar. Everything a tester can drive passed real-account test rounds. `PIGEON_DEMO=1` runs on the placeholder data.
 
 **What's left:** items still 🟡 wait on checks only the user can do (allowing notifications, the menu bar status item and global shortcuts, making Pigeon the default mail app, open at login, the sign-in flow, attaching a file), an account with a second verified address (MST-1, ACC-2), or a part not built yet. The user signs in again around Nov 2, unless the Google app is published first. **Candidate next work:** multiple accounts (ACC-4) and the items still ⚪.
 
@@ -128,7 +128,7 @@ The user's own plans, not driven by Google's APIs.
 
 - **Today:** `MailData::is_me()` and `me()` (`src/data.rs`) compare against `account.email` and `Account::aliases`, ignoring case (`Account::is_me()`). The aliases come from Gmail `settings.sendAs.list` at the start of each full sync, kept in `sync_state` (`gmail_aliases`) and loaded on launch (`src/backend/sync.rs`). Mail from an alias shows as "me" in the reader, replies and reply-all skip every alias, Sent and Drafts rows show "To:", and aliases are never suggested as recipients (`Store::contacts()`).
 - **Needs:** Nothing more for "me". A tester pass on an account with a second send-as address.
-- **Notes (sprint 2 W3):** `is_me` also checks every `sendAs` address (`Account::send_as`). The calendar uses all of them too: `Event::my_status(&Account)` (the event colours, the RSVP row, the invite card), answering an invite (`set_rsvp`), "You" in the guest list and the invite card's organizer. Replies go from the alias the mail was sent to (MST-1).
+- **Notes (sprint 2 W3):** `is_me` also checks every `sendAs` address (`Account::send_as`). The calendar uses all of them too: `Event::my_status(&Account)` (the event colours, the RSVP row), answering an invite (`set_rsvp`) and "You" in the guest list. Replies go from the alias the mail was sent to (MST-1).
 
 #### ACC-3 Add, sign in to and remove accounts
 
@@ -373,7 +373,7 @@ The user's own plans, not driven by Google's APIs.
 
 #### RDR-6 Fetch a message body on demand
 
-- **Today:** Built (W3). When a thread stays selected 150 ms, `Backend::fetch_body()` fetches every message without a body with `messages.get format=raw` in one HTTP batch (60 units each), parses it (`mime::parse_message()`) and stores html, attachments and invitation in `bodies` / `messages`, plus `search_text`. Messages show "Loading…" meanwhile; a failure shows "Couldn't load this message", the reason and Retry (palette "Retry Loading Message"). Bodies survive later metadata refetches. Demo mode has every body already.
+- **Today:** Built (W3). When a thread stays selected 150 ms, `Backend::fetch_body()` fetches every message without a body with `messages.get format=raw` in one HTTP batch (60 units each), parses it (`mime::parse_message()`) and stores html and attachments in `bodies` / `messages`, plus `search_text`. Messages show "Loading…" meanwhile; a failure shows "Couldn't load this message", the reason and Retry (palette "Retry Loading Message"). Bodies survive later metadata refetches. Demo mode has every body already.
 - **Needs:** A tester pass (T1a). Eviction at 300 MB (`bodies.last_opened`) isn't built. Offline wording ("isn't downloaded yet") comes with W11.
 - **Notes:** A Gmail draft opened in the composer before its body arrives starts empty; W6 (`drafts.get`) handles opening drafts.
 
@@ -753,7 +753,7 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 #### ATT-3 Attachment list in messages
 
-- **Today:** Chips under each body: type icon, name, size. `Message::attachments`, `render_message()`, `file_size()`, `Attachment::kind()`, `attachment_icon()`. With Google (W3) they come from the raw message once the body loads (`mime::parse_message()`): RFC 2231/2047 names, decoded size, MIME type, `part_id` = the parser's part id. `.ics` parts and inline `cid:` images aren't listed.
+- **Today:** Chips under each body: type icon, name, size. `Message::attachments`, `render_message()`, `file_size()`, `Attachment::kind()`, `attachment_icon()`. With Google (W3) they come from the raw message once the body loads (`mime::parse_message()`): RFC 2231/2047 names, decoded size, MIME type, `part_id` = the parser's part id. Inline `cid:` images and an invitation's unnamed `text/calendar` body part aren't listed; a named `.ics` file is, like any other.
 - **Needs:** A tester pass.
 - **Notes:** Gmail's `attachmentId` isn't in `format=raw`; ATT-4 takes the bytes from the raw message by `part_id` instead.
 
@@ -908,7 +908,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 | **Invites and RSVP** | | | |
 | CAL-13 | Guests and invitations | 🟢 Fully linked | `attendees`, `sendUpdates` |
 | CAL-14 | My RSVP | 🟡 Partially done | `attendees[].responseStatus` (`self`) |
-| CAL-20 | Invite emails linked to events | 🟡 Partially done | `events.list` with `iCalUID`; iMIP parts in Gmail |
+| CAL-20 | Invite emails linked to events | ⚪ Not done | `events.list` with `iCalUID`; iMIP parts in Gmail |
 | CAL-32 | Optional guests, RSVP notes, extra guests and rooms | ⚪ Not done | `attendees[].optional`, `comment`, `additionalGuests`, `resource` |
 | **Event types** | | | |
 | CAL-35 | Focus time | ⚪ Not done | `eventType=focusTime`, `focusTimeProperties` |
@@ -990,7 +990,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 - **Today:** `c` or the header "+" creates one at the next half hour (today or the selected day), opens it, focuses the title. Dragging or double-clicking the grid also creates (CAL-21). Goes to the default calendar (see Default calendar below), else the primary one when shown, else the first shown calendar the user can write to; its default reminder (CAL-15), busy, user as organizer. `new_event()`, `create_event()`. A new event with nothing filled in (no title, place, notes, link, guests or repeat; `Event::has_content()`) is dropped when its panel closes, without a question or a toast.
 - **Today (Save and Discard):** While a new event is open, the panel's footer says "Not saved yet" with **Discard** (Esc) and **Save** (⌘S, "Save Event" in ⌘K); the header X reads "Discard new event", and the "Delete event" row is hidden. Save without a title focuses the title and toasts "Add a title to save the event". Discard, X, Escape and ⇧⌘D drop the event; nothing reaches the backend (`discard_new_event()`).
-- **Today (leaving an unsaved event):** Anything that would move the panel off a new event with something filled in first asks **"Save this event?"** with **Save** (↵ or ⌘S), **Discard** (⇧⌘D) and **Cancel** (Esc; stays on the new event), as a card over the grid like "Send invitations to guests?": clicking or dragging another event, arrow keys or `j`/`k` with the panel following, jumping to an event from ⌘K or an invite, making a new event (`c`, the grid, quick add), and stepping a day to one with no events. After Save or Discard it carries on with what the user was doing (`Leave`, `ask_to_leave()`, `answer_leave()`). Dragging the new event itself doesn't ask. Save on an untitled one with other fields filled in focuses the title and toasts "Add a title to save the event". If Save raises "Send invitations to guests?", that is answered first and the click isn't repeated. Switching to Mail doesn't move the panel (the unsaved event stays open in the calendar), so it doesn't ask.
+- **Today (leaving an unsaved event):** Anything that would move the panel off a new event with something filled in first asks **"Save this event?"** with **Save** (↵ or ⌘S), **Discard** (⇧⌘D) and **Cancel** (Esc; stays on the new event), as a card over the grid like "Send invitations to guests?": clicking or dragging another event, arrow keys or `j`/`k` with the panel following, jumping to an event from ⌘K, making a new event (`c`, the grid, quick add), and stepping a day to one with no events. After Save or Discard it carries on with what the user was doing (`Leave`, `ask_to_leave()`, `answer_leave()`). Dragging the new event itself doesn't ask. Save on an untitled one with other fields filled in focuses the title and toasts "Add a title to save the event". If Save raises "Send invitations to guests?", that is answered first and the click isn't repeated. Switching to Mail doesn't move the panel (the unsaved event stays open in the calendar), so it doesn't ask.
 - **Today (Undo a discard):** Discarding a new event that had something filled in (button, X, Escape, ⇧⌘D or Discard in the question) shows a toast "Discarded “Title”" (or "Discarded new event") with Undo (⌘Z). Undo brings the event back, opens the panel on it with the title focused, still unsaved: nothing is inserted and no guest question is asked until Save (`CalendarEvent::Discarded`, `UndoAction::DiscardEvent`, `restore_discarded()`). It's its own undo, apart from "Deleted …" (`UndoAction::DeleteEvent`, `Removal`), so each toast restores only its own thing; from Mail it switches to the calendar first. If another unsaved new event is open then, Undo asks about that one first. Cancel on "Send invitations to guests?" after Save reopens the event, still unsaved. A new event never asks "Apply this change to" (no series exists yet).
 - **Today (writes, W7):** `events.insert` once the new event has a title and is saved (Save, or Save in the "Save this event?" question; `CalendarView::unsent`, held back in `send_edit()` while `new_event` is open); an untitled one never reaches Google. With guests it asks "Send invitations to guests?" first (CAL-13); a Meet request goes with the insert (CAL-34). Quick add (CAL-39) waits for Save the same way.
 - **Needs:** A tester pass on the real account (T2c). A staged new event lives only in memory until saved; quitting with it open loses it.
@@ -1038,7 +1038,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 - **Today:** Shows and edits a link with a Join button (`cx.open_url()`). `video_link` in JSON. From Google (W4): `conferenceData.entryPoints` (the `video` one) or else `hangoutLink` fills `Event::conference_uri` and `video_link`, so Join works.
 - **Today (writes, W7):** A link from `conferenceData`/`hangoutLink` is read-only in the panel and never written. A link typed in Pigeon is saved into the location when that's empty, else at the top of the description (6.4 item 9; `place()`); after the next sync it shows there, not in the video field.
 - **Today (W5):** `calendar::policy::video_link()` also finds a Meet, Zoom, Teams or Webex URL in the location or description (for the menu bar and quick join, W1; `next_joinable()`). Creating Meet links: CAL-34.
-- **Today (join in the panel):** The panel's Join button uses `policy::video_link()` too, so an event whose only link is in its location or notes (a Zoom URL pasted into the description, say) gets Join beside the empty video field, and "Add Google Meet" is hidden since the event already has a call. The invite card (CAL-20) uses it as well.
+- **Today (join in the panel):** The panel's Join button uses `policy::video_link()` too, so an event whose only link is in its location or notes (a Zoom URL pasted into the description, say) gets Join beside the empty video field, and "Add Google Meet" is hidden since the event already has a call.
 - **Needs:** A tester pass (T2c). Phone and PIN entry points aren't shown; the panel's video field itself still shows only `video_link`.
 
 #### CAL-21 Drag to create, move and resize
@@ -1121,16 +1121,15 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-14 My RSVP
 
-- **Today:** For others' events the panel shows "Going? Yes / Maybe / No", as does the invite card (CAL-20). Unanswered invites are outlined; declined ones struck through. `set_rsvp()`, `Event::my_status()`, `Look` (`week_view.rs`).
-- **Today (writes, W7):** The last answer goes after 1.5 s (or when the panel leaves the event) as an `events.patch` of `attendees` where only the user's own entry (`self`) changes `responseStatus`, with `sendUpdates=all` so the organizer is told. One write serves the panel and the card.
+- **Today:** For others' events the panel shows "Going? Yes / Maybe / No". Unanswered invites are outlined; declined ones struck through. `set_rsvp()`, `Event::my_status()`, `Look` (`week_view.rs`).
+- **Today (writes, W7):** The last answer goes after 1.5 s (or when the panel leaves the event) as an `events.patch` of `attendees` where only the user's own entry (`self`) changes `responseStatus`, with `sendUpdates=all` so the organizer is told.
 - **Needs:** A tester pass with a real invitation (T3b item 3).
 - **Notes:** Answering for one occurrence of a series isn't supported (CAL-6).
 
 #### CAL-20 Invite emails linked to events
 
-- **Today:** An invitation mail shows a card above its body: title, time, repeat rule, location, video link with Join, organizer and head count, in the calendar's colour, plus a mini timeline of the user's other events that day naming busy overlaps ("Conflicts with …"). Yes / Maybe / No (`shift-y`, `shift-m`, `shift-n`) answer it; "Open in Calendar" (`shift-c`). In the palette and `?` sheet. `Message::invite` (`Invite { event_id, method, ical_uid, details }`) in `src/data.rs`; `src/ui/invite.rs` reads `CalendarView::data` and answers via `set_rsvp()`, so card and grid stay in step. With Google (W10): the `text/calendar` part's UID and METHOD (W3) resolve to the stored event by `ical_uid` (`load_threads`); one not stored is looked up once per UID with `events.list iCalUID=` on the primary calendar (`calendar::fetch_by_ical_uid()`, `Backend::find_invite_event()`), stored, and the thread reloads with its card. Answers go through `CalOp::Rsvp` (only the user's attendee, `sendUpdates=all`). A cancellation shows CANCELLED with "Remove from calendar" (`shift-x`), which deletes only the user's copy with `sendUpdates=none` and no decline (`Backend::remove_cancelled_event()`, `calendar::remove_own_copy()`). When the event can't be found, a read-only card shows what the iCalendar part says: title, time (UTC converted to local; TZID times as wall times), location, organizer (`mime::parse_ics_details()`, kept in `bodies.invite_details`, migration 090).
-- **Needs:** For non-Google invites, `events.import` a private copy (iMIP `REQUEST`, `CANCEL`, `REPLY`). A tester pass on a real invitation (T3b).
-- **Notes:** The card shows the next occurrence from today. Conflicts count only the user's own busy, non-declined events, not shared calendars. Cancellations aren't looked up (Google lists no cancelled events), and "Remove from calendar" has no Undo. A just-sent invitation can take a few seconds to reach the primary calendar; a lookup that finds nothing isn't retried until relaunch, but the next calendar sync and reopening the thread find it.
+- **Today:** Nothing. The invite card above invitation emails (title, time, conflicts timeline, Yes / Maybe / No, Open in Calendar, Remove from calendar for cancellations, and their `shift-y` / `shift-m` / `shift-n` / `shift-c` / `shift-x` shortcuts) was removed on 27 Oct 2026, with `Message::invite`, the iMIP UID/METHOD parsing, the `iCalUID` lookup and the `bodies.invite_*` columns (dropped in migration 180). Invitations are answered from the calendar (CAL-14); a named `.ics` shows as an ordinary attachment.
+- **Needs:** A rethought card. It would need the `text/calendar` part's UID and METHOD (and its details, for an event not in the calendar) parsed and stored with the body, resolution to the stored event by `iCalUID` (an index on `events (account, ical_uid)`), a lookup for unstored ones with `events.list iCalUID=` on the primary calendar, RSVP through `set_rsvp()` / `CalOp::Rsvp`, removing a cancelled event's own copy with `sendUpdates=none`, and for non-Google invites `events.import` (iMIP `REQUEST`, `CANCEL`, `REPLY`).
 
 #### CAL-32 Optional guests, RSVP notes, extra guests and rooms
 
@@ -1172,7 +1171,6 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-27 Free/busy and finding a time
 
-- **Today:** The invite card's conflict check uses only the user's own loaded events.
 - **Needs:** `freebusy.query` (`timeMin`, `timeMax`, `items` of calendar IDs or guest emails) to show guests' busy blocks in the panel or grid and suggest a free slot; include shared calendars in conflict checks.
 
 ### Settings
@@ -1406,7 +1404,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### DAT-3 Message model: missing fields
 
-- **Today:** `Message` (`src/data.rs`) has `id`, `label_ids`, from/to/cc/bcc, `date` (shown) and `internal_date` (the sort key), snippet, `body: Body` (`NotLoaded | Loading | Loaded { html } | Failed`; `Message::html()` is empty until loaded), attachments (now with `attachment_id`, `part_id`), invite (now with `ical_uid`), `message_id`, `in_reply_to`, `references`, `reply_to`, `size_estimate`. `Thread` adds `label_ids`, `history_id`, `loaded` (`Metadata | Full`). `Account` adds `aliases`; `is_me()` checks them (ACC-2). `Event` and `Calendar` gained Google's fields (see CAL-12, CAL-22); `Recurrence` became `Rule` (CAL-5).
+- **Today:** `Message` (`src/data.rs`) has `id`, `label_ids`, from/to/cc/bcc, `date` (shown) and `internal_date` (the sort key), snippet, `body: Body` (`NotLoaded | Loading | Loaded { html } | Failed`; `Message::html()` is empty until loaded), attachments (now with `attachment_id`, `part_id`), `message_id`, `in_reply_to`, `references`, `reply_to`, `size_estimate`. `Thread` adds `label_ids`, `history_id`, `loaded` (`Metadata | Full`). `Account` adds `aliases`; `is_me()` checks them (ACC-2). `Event` and `Calendar` gained Google's fields (see CAL-12, CAL-22); `Recurrence` became `Rule` (CAL-5).
 - **Needs:** Filling them from Gmail (W3); the plain-text body and the part tree (ATT-2, ATT-4).
 
 #### DAT-4 Threading headers
@@ -1436,7 +1434,7 @@ Real features that don't depend on the backend, listed so the tables aren't read
 - Keyboard shortcuts sheet (`?`, `src/ui/shortcuts_help.rs`), built from the live keymap, scoped like the palette.
 - Calendar views, navigation and keyboard selection (CAL-4).
 - Light and dark following the system (`Theme::sync()` in `src/theme.rs`) or the Appearance setting.
-- Time format (Settings → General): System (default; macOS's Date & Time setting, read with `NSDateFormatter` template `j` in `native::system_uses_24_hour()`, again when the locale changes), 12-hour or 24-hour (`Saved::time_format`, `shell::set_time_format()`). Every time in mail and calendar (list, reader, forwarded header, menu bar panel, contact card, last sync, calendar views, panel, invites, reminders) goes through `src/calendar/time.rs`.
+- Time format (Settings → General): System (default; macOS's Date & Time setting, read with `NSDateFormatter` template `j` in `native::system_uses_24_hour()`, again when the locale changes), 12-hour or 24-hour (`Saved::time_format`, `shell::set_time_format()`). Every time in mail and calendar (list, reader, forwarded header, menu bar panel, contact card, last sync, calendar views, panel, reminders) goes through `src/calendar/time.rs`.
 - The settings page (⌘,, `src/ui/settings.rs`) with search and keyboard control, apart from saving values (PER-3).
 - Keyboard focus between list, reader, composer and search; selectable message text.
 - Window title bar and drag area (`window_drag_area()` in `src/ui/mod.rs`); Quit (`cmd-q`).
