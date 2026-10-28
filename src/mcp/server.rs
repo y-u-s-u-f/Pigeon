@@ -2,6 +2,10 @@
 //! answered with `application/json` (no SSE stream; GET is 405), and the
 //! JSON-RPC on top of it. Runs on its own threads; tool calls go to the
 //! main thread through `Host`.
+//!
+//! Dual-era: a request carrying `io.modelcontextprotocol/protocolVersion` in
+//! its `_meta` (or a non-legacy `MCP-Protocol-Version` header) is served
+//! statelessly as 2026-07-28; `initialize` opens a legacy session.
 
 use std::{
     collections::VecDeque,
@@ -19,8 +23,26 @@ use serde_json::{Value, json};
 
 use super::{McpPrefs, tools};
 
-/// Newest first; the first is ours when a client asks for one we don't know.
-pub const PROTOCOL_VERSIONS: [&str; 3] = ["2025-11-25", "2025-06-18", "2025-03-26"];
+/// Every version we speak, newest first, for `server/discover` and
+/// `UnsupportedProtocolVersionError`.
+pub const PROTOCOL_VERSIONS: [&str; 4] = ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"];
+/// Per-request `_meta`, no handshake.
+const MODERN_VERSIONS: [&str; 1] = ["2026-07-28"];
+/// Negotiated by `initialize`. Newest first; the first is offered when a
+/// client asks for one we don't know.
+const LEGACY_VERSIONS: [&str; 3] = ["2025-11-25", "2025-06-18", "2025-03-26"];
+const META_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+const META_CLIENT: &str = "io.modelcontextprotocol/clientInfo";
+const META_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
+const META_SERVER: &str = "io.modelcontextprotocol/serverInfo";
+const HEADER_MISMATCH: i64 = -32020;
+const UNSUPPORTED_VERSION: i64 = -32022;
+/// `tools/list` and `server/discover` only change with a new build.
+const LIST_TTL_MS: u64 = 60 * 60 * 1000;
+const INSTRUCTIONS: &str = "Pigeon is the user's Gmail and Google Calendar client. \
+    Conversation ids come from search_mail; event ids from list_events. \
+    Times are the user's local wall-clock time (ISO 8601, no offset). \
+    Each tool needs its switch in Pigeon's Settings › MCP.";
 pub const PATH: &str = "/mcp";
 const MAX_HEAD: usize = 16 * 1024;
 const MAX_BODY: usize = 1024 * 1024;
@@ -203,20 +225,20 @@ pub fn handle(request: &Request, shared: &Mutex<Shared>, host: &dyn Host) -> Res
         return response;
     }
     let session = request.header("mcp-session-id").map(str::to_string);
-    if let Some(id) = &session {
-        let known = shared
+    let known_session = |id: &str| {
+        shared
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .client(Some(id))
-            .is_some();
-        if !known {
-            return Response::refused(404, "Session not found; initialize again");
-        }
-    }
+            .is_some()
+    };
     match request.method.as_str() {
         "POST" => {}
         "DELETE" => {
             if let Some(id) = &session {
+                if !known_session(id) {
+                    return Response::refused(404, "Session not found; initialize again");
+                }
                 shared
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -240,16 +262,29 @@ pub fn handle(request: &Request, shared: &Mutex<Shared>, host: &dyn Host) -> Res
             &error(Value::Null, -32600, "Send one JSON-RPC message"),
         );
     }
-    // The header follows `initialize`, which negotiates in its body: a
-    // client may send its newest version there and be offered ours. The
-    // code is -32600, not 2026-07-28's -32022, so a client probing with a
-    // stateless request falls back to `initialize`.
     let method = message.get("method").and_then(Value::as_str);
-    if method != Some("initialize")
-        && let Some(version) = request.header("mcp-protocol-version")
-        && !PROTOCOL_VERSIONS.contains(&version)
+    if method.is_some() && message.get("id").is_some_and(Value::is_null) {
+        // A null id is not a notification; only a missing one is.
+        return Response::json(
+            400,
+            &error(Value::Null, -32600, "Invalid Request: id must not be null"),
+        );
+    }
+    let params = message.get("params").cloned().unwrap_or(json!({}));
+    let header_version = request.header("mcp-protocol-version");
+    let modern = method != Some("initialize")
+        && (meta(&params, META_VERSION).is_some()
+            || method == Some("server/discover")
+            || header_version.is_some_and(|v| !LEGACY_VERSIONS.contains(&v)));
+    if modern {
+        return serve_modern(request, &message, &params, shared, host);
+    }
+    // Legacy: the header is absent (2025-03-26) or a legacy version, and
+    // `initialize` negotiates in its body whatever the header says.
+    if let Some(id) = &session
+        && !known_session(id)
     {
-        return Response::refused(400, "Unsupported MCP-Protocol-Version");
+        return Response::refused(404, "Session not found; initialize again");
     }
     let Some(method) = method else {
         // A response to a request of ours; we send none.
@@ -259,13 +294,21 @@ pub fn handle(request: &Request, shared: &Mutex<Shared>, host: &dyn Host) -> Res
         // notifications/initialized, cancelled and the like.
         return Response::empty(202);
     };
-    let params = message.get("params").cloned().unwrap_or(json!({}));
     match method {
         "initialize" => initialize(id, &params, shared),
         "ping" => Response::json(200, &result(id, json!({}))),
         "tools/list" => Response::json(200, &result(id, json!({"tools": tools::list()}))),
         "tools/call" => {
-            let response = call_tool(id, &params, session.as_deref(), shared, host);
+            let client = shared
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .client(session.as_deref())
+                .unwrap_or("Unknown agent")
+                .to_string();
+            let response = match call_tool(&params, client, shared, host) {
+                Ok(value) => Response::json(200, &result(id, value)),
+                Err((code, message)) => Response::json(200, &error(id, code, &message)),
+            };
             host.changed();
             response
         }
@@ -273,20 +316,155 @@ pub fn handle(request: &Request, shared: &Mutex<Shared>, host: &dyn Host) -> Res
     }
 }
 
-fn initialize(id: Value, params: &Value, shared: &Mutex<Shared>) -> Response {
-    let asked = params.get("protocolVersion").and_then(Value::as_str);
-    let version = asked
-        .filter(|v| PROTOCOL_VERSIONS.contains(v))
-        .unwrap_or(PROTOCOL_VERSIONS[0]);
-    let client = params
-        .pointer("/clientInfo/name")
+/// A reserved `io.modelcontextprotocol/*` key of the request's `_meta`.
+fn meta<'a>(params: &'a Value, key: &str) -> Option<&'a Value> {
+    params.get("_meta")?.get(key)
+}
+
+/// A client's self-reported name, safe for the activity log.
+fn client_name(info: Option<&Value>) -> String {
+    info.and_then(|i| i.get("name"))
         .and_then(Value::as_str)
         .filter(|n| !n.trim().is_empty())
         .unwrap_or("Unknown agent")
         .chars()
         .filter(|c| !c.is_control())
         .take(60)
-        .collect::<String>();
+        .collect()
+}
+
+/// `Mcp-Name` and `Mcp-Param-*` values may come as `=?base64?…?=`.
+fn header_value(value: &str) -> Option<String> {
+    use base64::Engine as _;
+    match value
+        .strip_prefix("=?base64?")
+        .and_then(|v| v.strip_suffix("?="))
+    {
+        Some(encoded) => base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok()),
+        None => Some(value.to_string()),
+    }
+}
+
+/// A 2026-07-28 request: stateless, its version, client and capabilities in
+/// `_meta`, mirrored into headers that must match the body.
+fn serve_modern(
+    request: &Request,
+    message: &Value,
+    params: &Value,
+    shared: &Mutex<Shared>,
+    host: &dyn Host,
+) -> Response {
+    let Some(method) = message.get("method").and_then(Value::as_str) else {
+        return Response::empty(202);
+    };
+    let Some(id) = message.get("id").cloned().filter(|id| !id.is_null()) else {
+        // 2026-07-28 defines no client notifications over HTTP.
+        return Response::empty(202);
+    };
+    let bad = |code: i64, message: &str| Response::json(400, &error(id.clone(), code, message));
+    let header = request.header("mcp-protocol-version");
+    let body = meta(params, META_VERSION).map(|v| v.as_str());
+    if let (Some(header), Some(body)) = (header, body)
+        && Some(header) != body
+    {
+        return bad(
+            HEADER_MISMATCH,
+            "Header mismatch: MCP-Protocol-Version doesn't match _meta",
+        );
+    }
+    if let Some(requested) = body.flatten().or(header)
+        && !MODERN_VERSIONS.contains(&requested)
+    {
+        let message = if LEGACY_VERSIONS.contains(&requested) {
+            "Unsupported protocol version; 2025-11-25 and earlier start with initialize"
+        } else {
+            "Unsupported protocol version"
+        };
+        return Response::json(
+            400,
+            &json!({"jsonrpc": "2.0", "id": id, "error": {
+                "code": UNSUPPORTED_VERSION,
+                "message": message,
+                "data": {"supported": PROTOCOL_VERSIONS, "requested": requested},
+            }}),
+        );
+    }
+    let Some(Some(version)) = body else {
+        return bad(-32602, &format!("Missing _meta “{META_VERSION}”"));
+    };
+    if header.is_none() {
+        return bad(HEADER_MISMATCH, "Missing MCP-Protocol-Version header");
+    }
+    if !meta(params, META_CAPABILITIES).is_some_and(Value::is_object) {
+        return bad(-32602, &format!("Missing _meta “{META_CAPABILITIES}”"));
+    }
+    if request.header("mcp-method") != Some(method) {
+        return bad(
+            HEADER_MISMATCH,
+            "Header mismatch: Mcp-Method missing or doesn't match method",
+        );
+    }
+    if method == "tools/call" {
+        let name = params.get("name").and_then(Value::as_str);
+        let header = request.header("mcp-name").and_then(header_value);
+        if header.is_none() || header.as_deref() != name {
+            return bad(
+                HEADER_MISMATCH,
+                "Header mismatch: Mcp-Name missing or doesn't match params.name",
+            );
+        }
+    }
+    let complete = |mut value: Value| {
+        value["resultType"] = json!("complete");
+        value["_meta"] = json!({META_SERVER: server_info()});
+        Response::json(200, &result(id.clone(), value))
+    };
+    match method {
+        "server/discover" => complete(json!({
+            "supportedVersions": PROTOCOL_VERSIONS,
+            "capabilities": {"tools": {"listChanged": false}},
+            "instructions": INSTRUCTIONS,
+            "ttlMs": LIST_TTL_MS,
+            "cacheScope": "public",
+        })),
+        "tools/list" => complete(json!({
+            "tools": tools::list(),
+            "ttlMs": LIST_TTL_MS,
+            "cacheScope": "public",
+        })),
+        "tools/call" => {
+            let client = client_name(meta(params, META_CLIENT));
+            let response = match call_tool(params, client, shared, host) {
+                Ok(value) => complete(value),
+                Err((code, message)) => Response::json(200, &error(id.clone(), code, &message)),
+            };
+            host.changed();
+            response
+        }
+        _ => Response::json(
+            404,
+            &error(
+                id.clone(),
+                -32601,
+                &format!("Method not found in {version}"),
+            ),
+        ),
+    }
+}
+
+fn server_info() -> Value {
+    json!({"name": "Pigeon", "version": env!("CARGO_PKG_VERSION")})
+}
+
+fn initialize(id: Value, params: &Value, shared: &Mutex<Shared>) -> Response {
+    let asked = params.get("protocolVersion").and_then(Value::as_str);
+    let version = asked
+        .filter(|v| LEGACY_VERSIONS.contains(v))
+        .unwrap_or(LEGACY_VERSIONS[0]);
+    let client = client_name(params.get("clientInfo"));
     let session = crate::backend::auth::random_token(24);
     {
         let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -302,11 +480,8 @@ fn initialize(id: Value, params: &Value, shared: &Mutex<Shared>) -> Response {
             json!({
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": false}},
-                "serverInfo": {"name": "Pigeon", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": "Pigeon is the user's Gmail and Google Calendar client. \
-                    Conversation ids come from search_mail; event ids from list_events. \
-                    Times are the user's local wall-clock time (ISO 8601, no offset). \
-                    Each tool needs its switch in Pigeon's Settings › MCP.",
+                "serverInfo": server_info(),
+                "instructions": INSTRUCTIONS,
             }),
         ),
     );
@@ -314,24 +489,21 @@ fn initialize(id: Value, params: &Value, shared: &Mutex<Shared>) -> Response {
     response
 }
 
+/// The `tools/call` result, or a JSON-RPC error code and message.
 fn call_tool(
-    id: Value,
     params: &Value,
-    session: Option<&str>,
+    client: String,
     shared: &Mutex<Shared>,
     host: &dyn Host,
-) -> Response {
+) -> Result<Value, (i64, String)> {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let Some(tool) = tools::find(name) else {
-        return Response::json(200, &error(id, -32602, &format!("Unknown tool: {name}")));
+        return Err((-32602, format!("Unknown tool: {name}")));
     };
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
-    let (allowed, client) = {
+    let allowed = {
         let s = shared.lock().unwrap_or_else(|e| e.into_inner());
-        (
-            s.prefs.enabled && s.prefs.allows(tool.capability),
-            s.client(session).unwrap_or("Unknown agent").to_string(),
-        )
+        s.prefs.enabled && s.prefs.allows(tool.capability)
     };
     let outcome = if !allowed {
         Err(format!(
@@ -357,13 +529,7 @@ fn call_tool(
         Ok(value) => (value.to_string(), false),
         Err(message) => (message, true),
     };
-    Response::json(
-        200,
-        &result(
-            id,
-            json!({"content": [{"type": "text", "text": text}], "isError": is_error}),
-        ),
-    )
+    Ok(json!({"content": [{"type": "text", "text": text}], "isError": is_error}))
 }
 
 // The socket.
@@ -673,7 +839,8 @@ mod tests {
             &shared,
             &Echo,
         ));
-        assert_eq!(v["result"]["protocolVersion"], PROTOCOL_VERSIONS[0]);
+        assert_eq!(v["result"]["protocolVersion"], LEGACY_VERSIONS[0]);
+        assert!(v["result"].get("resultType").is_none());
         // The session names the client in the activity log.
         let mut request = rpc("tools/call", json!({"name": "list_labels"}));
         request.headers.push(("Mcp-Session-Id".into(), session));
@@ -831,7 +998,7 @@ mod tests {
             .push(("MCP-Protocol-Version".into(), "2024-01-01".into()));
         let response = handle(&request, &shared, &Echo);
         assert_eq!(response.status, 400);
-        assert_eq!(body(&response)["error"]["code"], -32600);
+        assert_eq!(body(&response)["error"]["code"], UNSUPPORTED_VERSION);
         // `initialize` negotiates in its body, whatever the header says.
         let mut request = rpc("initialize", json!({"protocolVersion": "2026-07-28"}));
         request
@@ -841,7 +1008,287 @@ mod tests {
         assert_eq!(response.status, 200);
         assert_eq!(
             body(&response)["result"]["protocolVersion"],
-            PROTOCOL_VERSIONS[0]
+            LEGACY_VERSIONS[0]
+        );
+    }
+
+    /// A 2026-07-28 request with its `_meta` and mirrored headers.
+    fn modern(method: &str, mut params: Value) -> Request {
+        params["_meta"] = json!({
+            META_VERSION: "2026-07-28",
+            META_CLIENT: {"name": "Codex", "version": "1.0"},
+            META_CAPABILITIES: {},
+        });
+        let name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let mut request = rpc(method, params);
+        request.headers.extend([
+            ("MCP-Protocol-Version".into(), "2026-07-28".into()),
+            ("Mcp-Method".into(), method.into()),
+        ]);
+        if let Some(name) = name {
+            request.headers.push(("Mcp-Name".into(), name));
+        }
+        request
+    }
+
+    fn set_header(request: &mut Request, name: &str, value: &str) {
+        request
+            .headers
+            .retain(|(n, _)| !n.eq_ignore_ascii_case(name));
+        request.headers.push((name.into(), value.into()));
+    }
+
+    #[test]
+    fn server_discover_lists_versions_and_capabilities() {
+        let shared = shared(on());
+        let response = handle(&modern("server/discover", json!({})), &shared, &Echo);
+        assert_eq!(response.status, 200);
+        assert!(header(&response, "mcp-session-id").is_none());
+        let r = &body(&response)["result"];
+        assert_eq!(r["resultType"], "complete");
+        assert_eq!(r["supportedVersions"], json!(PROTOCOL_VERSIONS));
+        assert_eq!(r["supportedVersions"][0], "2026-07-28");
+        assert!(r["capabilities"]["tools"].is_object());
+        assert_eq!(r["_meta"][META_SERVER]["name"], "Pigeon");
+        assert!(r["instructions"].as_str().unwrap().contains("Pigeon"));
+        assert!(r["ttlMs"].as_u64().is_some());
+        assert_eq!(r["cacheScope"], "public");
+        // Without any `_meta`, it's a malformed modern request.
+        let response = handle(&rpc("server/discover", json!({})), &shared, &Echo);
+        assert_eq!(response.status, 400);
+        assert_eq!(body(&response)["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn modern_tools_list_and_call_without_a_session() {
+        let shared = shared(on());
+        let response = handle(&modern("tools/list", json!({})), &shared, &Echo);
+        assert_eq!(response.status, 200);
+        let r = &body(&response)["result"];
+        assert_eq!(r["resultType"], "complete");
+        assert_eq!(r["tools"].as_array().unwrap().len(), tools::TOOLS.len());
+        assert!(r["ttlMs"].as_u64().is_some());
+        assert_eq!(r["cacheScope"], "public");
+        assert_eq!(r["_meta"][META_SERVER]["name"], "Pigeon");
+
+        // A stale legacy session id is ignored, not a 404.
+        let mut request = modern(
+            "tools/call",
+            json!({"name": "search_mail", "arguments": {"query": "x"}}),
+        );
+        request
+            .headers
+            .push(("Mcp-Session-Id".into(), "gone".into()));
+        let response = handle(&request, &shared, &Echo);
+        assert_eq!(response.status, 200);
+        assert!(header(&response, "mcp-session-id").is_none());
+        let r = &body(&response)["result"];
+        assert_eq!(r["resultType"], "complete");
+        assert_eq!(r["isError"], false);
+        assert!(
+            r["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("search_mail")
+        );
+        // The client's name comes from this request's `_meta`.
+        let s = shared.lock().unwrap();
+        assert_eq!(s.activity[0].client, "Codex");
+        assert_eq!(s.activity[0].tool, "search_mail");
+        drop(s);
+
+        // Switched off: still a tool error, now with resultType.
+        let r = body(&handle(
+            &modern("tools/call", json!({"name": "send_mail", "arguments": {}})),
+            &shared,
+            &Echo,
+        ));
+        assert_eq!(r["result"]["resultType"], "complete");
+        assert_eq!(r["result"]["isError"], true);
+
+        // A base64-encoded Mcp-Name is decoded before comparing.
+        let mut request = modern("tools/call", json!({"name": "list_labels"}));
+        set_header(&mut request, "Mcp-Name", "=?base64?bGlzdF9sYWJlbHM=?=");
+        assert_eq!(handle(&request, &shared, &Echo).status, 200);
+
+        // `ping` is gone in 2026-07-28: 404 with -32601.
+        let mut request = modern("ping", json!({}));
+        set_header(&mut request, "Mcp-Method", "ping");
+        let response = handle(&request, &shared, &Echo);
+        assert_eq!(response.status, 404);
+        assert_eq!(body(&response)["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn unsupported_versions_list_the_supported_ones() {
+        let shared = shared(on());
+        let mut request = modern("tools/list", json!({}));
+        let mut params = json!({});
+        params["_meta"] = json!({META_VERSION: "1900-01-01", META_CAPABILITIES: {}});
+        request.body = json!({"jsonrpc": "2.0", "id": 9, "method": "tools/list", "params": params})
+            .to_string()
+            .into_bytes();
+        set_header(&mut request, "MCP-Protocol-Version", "1900-01-01");
+        let response = handle(&request, &shared, &Echo);
+        assert_eq!(response.status, 400);
+        let v = body(&response);
+        assert_eq!(v["id"], 9);
+        assert_eq!(v["error"]["code"], UNSUPPORTED_VERSION);
+        assert_eq!(v["error"]["data"]["supported"], json!(PROTOCOL_VERSIONS));
+        assert_eq!(v["error"]["data"]["requested"], "1900-01-01");
+    }
+
+    #[test]
+    fn modern_requests_naming_a_legacy_version_point_to_initialize() {
+        let shared = shared(on());
+        let mut request = modern("tools/list", json!({}));
+        let mut params = json!({});
+        params["_meta"] = json!({META_VERSION: "2025-06-18", META_CAPABILITIES: {}});
+        request.body = json!({"jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": params})
+            .to_string()
+            .into_bytes();
+        set_header(&mut request, "MCP-Protocol-Version", "2025-06-18");
+        let response = handle(&request, &shared, &Echo);
+        assert_eq!(response.status, 400);
+        let v = body(&response);
+        assert_eq!(v["id"], 4);
+        assert_eq!(v["error"]["code"], UNSUPPORTED_VERSION);
+        let supported = v["error"]["data"]["supported"].as_array().unwrap();
+        assert!(supported.contains(&json!("2025-06-18")));
+        assert_eq!(v["error"]["data"]["requested"], "2025-06-18");
+        assert!(
+            v["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("initialize")
+        );
+    }
+
+    #[test]
+    fn a_null_id_is_an_invalid_request_not_a_notification() {
+        let shared = shared(on());
+        let legacy = post(json!({"jsonrpc": "2.0", "id": null, "method": "tools/list"}));
+        let mut modern_null = modern("tools/list", json!({}));
+        let mut v: Value = serde_json::from_slice(&modern_null.body).unwrap();
+        v["id"] = Value::Null;
+        modern_null.body = v.to_string().into_bytes();
+        for request in [legacy, modern_null] {
+            let response = handle(&request, &shared, &Echo);
+            assert_eq!(response.status, 400);
+            let v = body(&response);
+            assert_eq!(v["id"], Value::Null);
+            assert_eq!(v["error"]["code"], -32600);
+        }
+        // A missing id is still a notification.
+        let note = post(json!({"jsonrpc": "2.0", "method": "notifications/cancelled"}));
+        assert_eq!(handle(&note, &shared, &Echo).status, 202);
+    }
+
+    #[test]
+    fn headers_must_match_the_body() {
+        let shared = shared(on());
+        let call = || modern("tools/call", json!({"name": "list_labels"}));
+        let mismatch = |request: Request| {
+            let response = handle(&request, &shared, &Echo);
+            assert_eq!(response.status, 400);
+            let v = body(&response);
+            assert_eq!(v["error"]["code"], HEADER_MISMATCH, "{v}");
+            assert_eq!(v["id"], 1);
+        };
+        let mut request = call();
+        set_header(&mut request, "MCP-Protocol-Version", "2025-11-25");
+        mismatch(request);
+        let mut request = call();
+        request
+            .headers
+            .retain(|(n, _)| !n.eq_ignore_ascii_case("mcp-protocol-version"));
+        mismatch(request);
+        let mut request = call();
+        set_header(&mut request, "Mcp-Method", "tools/list");
+        mismatch(request);
+        let mut request = call();
+        request.headers.retain(|(n, _)| n != "Mcp-Method");
+        mismatch(request);
+        let mut request = call();
+        set_header(&mut request, "Mcp-Name", "send_mail");
+        mismatch(request);
+        let mut request = call();
+        request.headers.retain(|(n, _)| n != "Mcp-Name");
+        mismatch(request);
+        // Nothing ran.
+        assert!(shared.lock().unwrap().activity.is_empty());
+
+        // Missing clientCapabilities is a malformed request: -32602.
+        let mut request = call();
+        let mut v: Value = serde_json::from_slice(&request.body).unwrap();
+        v["params"]["_meta"]
+            .as_object_mut()
+            .unwrap()
+            .remove(META_CAPABILITIES);
+        request.body = v.to_string().into_bytes();
+        let response = handle(&request, &shared, &Echo);
+        assert_eq!(response.status, 400);
+        assert_eq!(body(&response)["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn legacy_initialize_flow_still_works() {
+        let shared = shared(on());
+        let mut request = rpc(
+            "initialize",
+            json!({"protocolVersion": "2025-11-25", "clientInfo": {"name": "Cursor"}}),
+        );
+        set_header(&mut request, "MCP-Protocol-Version", "2025-11-25");
+        let response = handle(&request, &shared, &Echo);
+        assert_eq!(response.status, 200);
+        assert_eq!(body(&response)["result"]["protocolVersion"], "2025-11-25");
+        let session = header(&response, "mcp-session-id").unwrap().to_string();
+        let legacy = |method: &str, params: Value| {
+            let mut request = rpc(method, params);
+            request.headers.extend([
+                ("MCP-Protocol-Version".into(), "2025-11-25".into()),
+                ("Mcp-Session-Id".into(), session.clone()),
+            ]);
+            request
+        };
+        let note = {
+            let mut r = legacy("x", json!({}));
+            r.body = json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
+                .to_string()
+                .into_bytes();
+            r
+        };
+        assert_eq!(handle(&note, &shared, &Echo).status, 202);
+        let v = body(&handle(&legacy("ping", json!({})), &shared, &Echo));
+        assert_eq!(v["result"], json!({}));
+        let v = body(&handle(&legacy("tools/list", json!({})), &shared, &Echo));
+        assert!(v["result"].get("resultType").is_none());
+        assert!(v["result"].get("ttlMs").is_none());
+        assert_eq!(
+            v["result"]["tools"].as_array().unwrap().len(),
+            tools::TOOLS.len()
+        );
+        let v = body(&handle(
+            &legacy("tools/call", json!({"name": "list_labels"})),
+            &shared,
+            &Echo,
+        ));
+        assert_eq!(v["result"]["isError"], false);
+        assert!(v["result"].get("resultType").is_none());
+        assert_eq!(shared.lock().unwrap().activity[0].client, "Cursor");
+        // No header at all is 2025-03-26.
+        let v = body(&handle(&rpc("tools/list", json!({})), &shared, &Echo));
+        assert!(v["result"]["tools"].is_array());
+        // DELETE ends the session; it's unknown after.
+        let mut delete = legacy("ping", json!({}));
+        delete.method = "DELETE".into();
+        assert_eq!(handle(&delete, &shared, &Echo).status, 200);
+        assert_eq!(
+            handle(&legacy("ping", json!({})), &shared, &Echo).status,
+            404
         );
     }
 
