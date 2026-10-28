@@ -37,6 +37,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Storage and persistence](#81-storage-and-persistence-per) | 0 | 0 | 5 | 5 |
 | [Command palette](#82-command-palette-pal) | 0 | 0 | 3 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 3 | 3 | 7 |
+| [Accessibility](#85-accessibility-a11y) | 0 | 0 | 0 | 0 |
 | **Overall** | **36** | **16** | **131** | **183** |
 
 ## Contents
@@ -48,7 +49,7 @@ To update: change the status cell in the area's table, then the counts below.
 5. Mail: [FOL](#51-folders-and-labels-fol) · [LST](#52-thread-list-lst) · [RDR](#53-reading-pane-rdr) · [ACT](#54-message-and-thread-actions-act) · [CMP](#55-compose-and-sending-cmp) · [DRF](#56-drafts-drf) · [UND](#57-undo-und) · [SRC](#58-search-src) · [CON](#59-contacts-con) · [ATT](#510-images-and-attachments-att) · [LNK](#511-links-lnk) · [MST](#512-mail-settings-mst)
 6. [Calendar (CAL)](#6-calendar-cal)
 7. Sync and states: [SYN](#71-sync-and-push-syn) · [NTF](#72-notifications-and-background-ntf) · [STA](#73-loading-error-and-offline-states-sta)
-8. App-wide: [PER](#81-storage-and-persistence-per) · [PAL](#82-command-palette-pal) · [DAT](#83-data-model-dat) · [No backend need](#84-features-with-no-backend-need)
+8. App-wide: [PER](#81-storage-and-persistence-per) · [PAL](#82-command-palette-pal) · [DAT](#83-data-model-dat) · [No backend need](#84-features-with-no-backend-need) · [A11Y](#85-accessibility-a11y)
 9. [Adjacent Google APIs (later)](#9-adjacent-google-apis-optional-later)
 10. [Not planned or out of scope](#10-not-planned-or-out-of-scope)
 
@@ -1438,6 +1439,13 @@ Real features that don't depend on the backend, listed so the tables aren't read
 - The settings page (⌘,, `src/ui/settings.rs`) with search and keyboard control, apart from saving values (PER-3).
 - Keyboard focus between list, reader, composer and search; selectable message text.
 - Window title bar and drag area (`window_drag_area()` in `src/ui/mod.rs`); Quit (`cmd-q`).
+
+### 8.5 Accessibility (A11Y)
+
+VoiceOver, keyboard access, contrast and the system display options (Increase Contrast, Reduce Transparency, Reduce Motion). No backend need.
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
 
 ---
 
