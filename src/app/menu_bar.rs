@@ -322,7 +322,7 @@ pub fn set_prefs(prefs: MenuBarPrefs, cx: &mut App) {
         return;
     }
     saved.menu_bar = prefs;
-    settings::remember(saved, cx);
+    settings::remember(&saved, cx);
     shell::save_app_settings(cx);
     apply(prefs, cx);
 }

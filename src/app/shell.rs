@@ -170,7 +170,7 @@ pub fn open_urls(urls: Vec<String>) {
 /// `show(Show::Main)`.
 pub fn init(backend: Entity<Backend>, cx: &mut App) {
     let saved = Saved::from_map(backend.read(cx).load_settings());
-    settings::remember(saved, cx);
+    settings::remember(&saved, cx);
     apply_time_format(saved.time_format);
     backend.update(cx, |b, _| b.set_notifications(saved.notifications));
     cx.set_global(Shell {
@@ -263,7 +263,7 @@ fn apply_time_format(format: TimeFormat) {
 pub fn set_time_format(format: TimeFormat, cx: &mut App) {
     let mut saved = settings::current(cx);
     saved.time_format = format;
-    settings::remember(saved, cx);
+    settings::remember(&saved, cx);
     apply_time_format(format);
     backend_of(cx).update(cx, |b, cx| b.save_settings(saved.to_map(), cx));
     cx.refresh_windows();
@@ -379,7 +379,7 @@ pub fn install_menu_bar(cx: &mut App) {
 pub fn set_notifications(on: bool, cx: &mut App) {
     let mut saved = settings::current(cx);
     saved.notifications = on;
-    settings::remember(saved, cx);
+    settings::remember(&saved, cx);
     logging::info(&format!(
         "notify: new mail notifications {}",
         if on { "on" } else { "off" }
@@ -394,7 +394,7 @@ pub fn set_notifications(on: bool, cx: &mut App) {
 pub fn set_signatures(on: bool, cx: &mut App) {
     let mut saved = settings::current(cx);
     saved.signatures = on;
-    settings::remember(saved, cx);
+    settings::remember(&saved, cx);
     backend_of(cx).update(cx, |b, cx| b.save_settings(saved.to_map(), cx));
     cx.refresh_windows();
 }

@@ -128,6 +128,27 @@ impl Calendar {
     pub fn allows_meet(&self) -> bool {
         self.conference_types.iter().any(|t| t == "hangoutsMeet")
     }
+
+    /// Events can be added to it.
+    pub fn writable(&self) -> bool {
+        matches!(self.access_role, AccessRole::Owner | AccessRole::Writer)
+    }
+}
+
+/// The calendar a new event goes to: the user's default, when it is still
+/// there and writable, even if hidden. Otherwise the primary calendar when
+/// shown, else the first shown one the user can write to, else any they can
+/// write to. Before the first sync there may be none.
+pub fn new_event_calendar<'a>(
+    calendars: &'a [Calendar],
+    default: Option<&str>,
+) -> Option<&'a Calendar> {
+    default
+        .and_then(|id| calendars.iter().find(|c| c.id == id && c.writable()))
+        .or_else(|| calendars.iter().find(|c| c.primary && c.visible))
+        .or_else(|| calendars.iter().find(|c| c.writable() && c.visible))
+        .or_else(|| calendars.iter().find(|c| c.writable()))
+        .or(calendars.first())
 }
 
 /// What the user may do with a calendar's events (Google's `accessRole`).
@@ -479,6 +500,46 @@ mod tests {
             default_reminders: Vec::new(),
             conference_types: Vec::new(),
         }
+    }
+
+    #[test]
+    fn new_events_go_to_the_default_calendar_when_it_can_take_them() {
+        let mut primary = listed("me", true);
+        primary.primary = true;
+        let mut team = listed("team", false);
+        team.access_role = AccessRole::Writer;
+        let mut holidays = listed("holidays", true);
+        holidays.access_role = AccessRole::Reader;
+        let calendars = [primary, team, holidays];
+        let pick = |default| new_event_calendar(&calendars, default).map(|c| c.id.as_str());
+
+        // Automatic: the primary calendar.
+        assert_eq!(pick(None), Some("me"));
+        // A chosen one wins, even hidden.
+        assert_eq!(pick(Some("team")), Some("team"));
+        // Gone, read-only, or not loaded yet: automatic again.
+        assert_eq!(pick(Some("deleted")), Some("me"));
+        assert_eq!(pick(Some("holidays")), Some("me"));
+        assert_eq!(new_event_calendar(&[], Some("team")).map(|c| &c.id), None);
+    }
+
+    #[test]
+    fn automatic_falls_back_to_shown_then_any_writable_calendar() {
+        let mut team = listed("team", true);
+        team.access_role = AccessRole::Writer;
+        let mut hidden = listed("hidden", false);
+        hidden.primary = true;
+        let read_only = || {
+            let mut ro = listed("ro", true);
+            ro.access_role = AccessRole::Reader;
+            ro
+        };
+        let calendars = [read_only(), hidden, team];
+        assert_eq!(new_event_calendar(&calendars, None).unwrap().id, "team");
+        let mut hidden = listed("hidden", false);
+        hidden.primary = true;
+        let calendars = [read_only(), hidden];
+        assert_eq!(new_event_calendar(&calendars, None).unwrap().id, "hidden");
     }
 
     /// Toggling a calendar on, off, on while the first commits: the store

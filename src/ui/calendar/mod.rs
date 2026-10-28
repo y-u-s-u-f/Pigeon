@@ -291,9 +291,12 @@ pub enum CalendarEvent {
 }
 
 /// Calendar settings changed in Pigeon; `None` follows Google (CAL-41).
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct CalendarPrefs {
     pub event_minutes: Option<u32>,
+    /// The id of the calendar new events go to; `None` picks one
+    /// (`calendar::new_event_calendar`).
+    pub default_calendar: Option<String>,
 }
 
 /// "Add Google Meet" for the open event (CAL-34).
@@ -1206,27 +1209,24 @@ impl CalendarView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> String {
-        // The primary calendar when shown, else the first shown one the
-        // user can write to. Before the first sync there may be none.
-        let calendars = &self.data.calendars;
-        let writable = |c: &&crate::calendar::Calendar| {
-            matches!(
-                c.access_role,
-                crate::calendar::AccessRole::Owner | crate::calendar::AccessRole::Writer
-            )
-        };
-        let calendar = calendars
-            .iter()
-            .find(|c| c.primary && c.visible)
-            .or_else(|| calendars.iter().filter(writable).find(|c| c.visible))
-            .or_else(|| calendars.iter().find(writable))
-            .or(calendars.first());
+        // The default calendar (Settings), else the primary one. Before the
+        // first sync there may be none.
+        let calendar = crate::calendar::new_event_calendar(
+            &self.data.calendars,
+            self.prefs.default_calendar.as_deref(),
+        );
         // The calendar's default reminders until the user picks one, as in
         // Google Calendar.
         let reminder_minutes = calendar.and_then(|c| c.default_reminder);
         // Google's "Automatically add Google Meet" (CAL-34).
         let auto_meet = self.google.auto_add_meet && calendar.is_some_and(|c| c.allows_meet());
+        let hidden = calendar.is_some_and(|c| !c.visible);
         let calendar = calendar.map(|c| c.id.clone()).unwrap_or_default();
+        // A new event on a hidden calendar would vanish from the grid: show
+        // the calendar, as jumping to one of its events does.
+        if hidden && let Some(ix) = self.data.calendar_ix(&calendar) {
+            self.toggle_calendar(ix, cx);
+        }
         let (start, end) = if all_day {
             let first = start.date();
             let last = (end - Duration::minutes(1)).date().max(first);
@@ -1902,6 +1902,7 @@ impl CalendarView {
         }
         self.prefs = CalendarPrefs {
             event_minutes: saved.event_minutes,
+            default_calendar: saved.default_calendar.clone(),
         };
         self.apply_display();
     }
@@ -1919,6 +1920,11 @@ impl CalendarView {
             .event_minutes
             .or(self.google.default_event_minutes)
             .unwrap_or(60)
+    }
+
+    /// The calendars new events can go to.
+    pub fn writable_calendars(&self) -> impl Iterator<Item = &crate::calendar::Calendar> {
+        self.data.calendars.iter().filter(|c| c.writable())
     }
 
     /// This Mac's zone, and Google's when it differs.

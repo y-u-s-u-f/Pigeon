@@ -383,7 +383,7 @@ impl PigeonApp {
             settings: Settings::default(),
             settings_page,
             system_reduce_motion: false,
-            saved,
+            saved: saved.clone(),
             server_counts: Default::default(),
             server_search: Default::default(),
             original: None,
@@ -469,6 +469,7 @@ impl PigeonApp {
             calendar_date: Some(calendar.anchor),
             time_format: crate::settings::current(cx).time_format,
             event_minutes: calendar.prefs.event_minutes,
+            default_calendar: calendar.prefs.default_calendar.clone(),
             menu_bar: crate::settings::current(cx).menu_bar,
             signatures: crate::settings::current(cx).signatures,
         }
@@ -478,10 +479,10 @@ impl PigeonApp {
     fn save_settings(&mut self, cx: &mut Context<Self>) {
         let now = self.current_settings(cx);
         if now != self.saved {
+            let map = now.to_map();
+            crate::settings::remember(&now, cx);
             self.saved = now;
-            crate::settings::remember(now, cx);
-            self.backend
-                .update(cx, |b, cx| b.save_settings(now.to_map(), cx));
+            self.backend.update(cx, |b, cx| b.save_settings(map, cx));
         }
     }
 

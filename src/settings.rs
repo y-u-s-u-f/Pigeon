@@ -88,7 +88,7 @@ pub enum RemoteImages {
 /// Every setting the app keeps across launches, wherever it lives while
 /// running. Saved to the store's `settings` table one key per field, so a
 /// key added later just takes its default.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Saved {
     pub appearance: Appearance,
@@ -114,6 +114,8 @@ pub struct Saved {
     pub time_format: TimeFormat,
     /// A new event's length in minutes; `None` follows Google Calendar.
     pub event_minutes: Option<u32>,
+    /// The id of the calendar new events go to; `None` is automatic.
+    pub default_calendar: Option<String>,
     /// W7b: the menu bar item, its panel and quick join (NTF-4, NTF-5).
     pub menu_bar: MenuBarPrefs,
     /// W3 (MST-2): new drafts carry the From address's Gmail signature.
@@ -213,6 +215,7 @@ impl Default for Saved {
             calendar_date: None,
             time_format: TimeFormat::System,
             event_minutes: None,
+            default_calendar: None,
             menu_bar: MenuBarPrefs::default(),
             signatures: true,
         }
@@ -254,7 +257,7 @@ impl Saved {
         serde_json::from_value(saved).unwrap_or_default()
     }
 
-    pub fn to_map(self) -> serde_json::Map<String, serde_json::Value> {
+    pub fn to_map(&self) -> serde_json::Map<String, serde_json::Value> {
         match serde_json::to_value(self) {
             Ok(serde_json::Value::Object(map)) => map,
             _ => serde_json::Map::new(),
@@ -265,7 +268,7 @@ impl Saved {
 /// Sprint 2 W1 (NTF-3): the settings belong to the app, not the window, so
 /// a window opened after the last one closed starts from them. The window
 /// hands every change here (`remember`) as it saves it.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct AppSettings(pub Saved);
 
 impl gpui::Global for AppSettings {}
@@ -273,12 +276,12 @@ impl gpui::Global for AppSettings {}
 /// The settings as last saved, wherever they were changed.
 pub fn current(cx: &gpui::App) -> Saved {
     cx.try_global::<AppSettings>()
-        .map(|s| s.0)
+        .map(|s| s.0.clone())
         .unwrap_or_default()
 }
 
-pub fn remember(saved: Saved, cx: &mut gpui::App) {
-    cx.set_global(AppSettings(saved));
+pub fn remember(saved: &Saved, cx: &mut gpui::App) {
+    cx.set_global(AppSettings(saved.clone()));
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -360,6 +363,7 @@ pub enum SettingId {
     RemoteImages,
     TimeFormat,
     EventLength,
+    DefaultCalendar,
     TimeZone,
     Account,
     Access,
@@ -429,6 +433,8 @@ pub const SETTINGS: &[SettingMeta] = settings! {
         ["iso", "week of year"];
     Calendar: EventLength, "Default event length", "How long a new event is. Follows Google Calendar until changed here.",
         ["duration", "new event", "minutes", "meeting length"];
+    Calendar: DefaultCalendar, "Default calendar", "Where new events go. Automatic uses your primary calendar. A calendar you can't add events to isn't listed.",
+        ["new event", "which calendar", "primary", "add events", "create", "default"];
     Calendar: TimeZone, "Time zone", "Times show in this Mac's time zone.",
         ["timezone", "zone", "utc", "gmt", "travel"];
     Accounts: Account, "Account", "Who this mail and calendar are for.",
@@ -665,6 +671,7 @@ mod tests {
             calendar_date: chrono::NaiveDate::from_ymd_opt(2026, 11, 3),
             time_format: TimeFormat::TwentyFour,
             event_minutes: Some(30),
+            default_calendar: Some("team@group.calendar.google.com".into()),
             ..Saved::default()
         };
         assert_eq!(Saved::from_map(saved.to_map()), saved);
@@ -673,6 +680,10 @@ mod tests {
         map.insert("gone".into(), true.into());
         map.insert("week_numbers".into(), "yes".into());
         assert_eq!(Saved::from_map(map), saved);
+        // Saved before the setting: automatic.
+        let mut map = saved.to_map();
+        map.remove("default_calendar");
+        assert_eq!(Saved::from_map(map).default_calendar, None);
         assert_eq!(Saved::from_map(Default::default()), Saved::default());
     }
 

@@ -12,11 +12,11 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, FontWeight,
-    HighlightStyle, InteractiveElement, IntoElement, KeyBinding, ParentElement, Pixels,
-    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled, StyledText, Subscription,
-    Task, Window, WindowAppearance, actions,
+    HighlightStyle, Hsla, InteractiveElement, IntoElement, KeyBinding, MouseButton, ParentElement,
+    Pixels, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled, StyledText,
+    Subscription, Task, Window, WindowAppearance, actions, anchored,
     component::input::{Input, InputEvent, InputState},
-    div, point,
+    deferred, div, point,
     prelude::FluentBuilder as _,
     px,
 };
@@ -92,6 +92,8 @@ pub struct SettingsPage {
     scroll: ScrollHandle,
     /// Sign Out was pressed once: the row asks to confirm.
     confirm_sign_out: bool,
+    /// The default calendar's list is open.
+    calendar_menu: bool,
     _flash: Option<Task<()>>,
 }
 
@@ -111,6 +113,7 @@ impl SettingsPage {
             search,
             scroll: ScrollHandle::new(),
             confirm_sign_out: false,
+            calendar_menu: false,
             _flash: None,
         };
         (page, events)
@@ -121,6 +124,8 @@ impl SettingsPage {
 enum Control {
     Switch(bool),
     Choice(usize, &'static [&'static str]),
+    /// A list: Automatic, then the calendars that take new events.
+    Calendars(usize, Vec<(String, Option<Hsla>)>),
     Stepper {
         value: String,
         can_down: bool,
@@ -335,6 +340,7 @@ impl PigeonApp {
         }
         page.row = None;
         page.confirm_sign_out = false;
+        page.calendar_menu = false;
         cx.notify();
     }
 
@@ -350,6 +356,7 @@ impl PigeonApp {
         };
         self.settings_page.keyboard = true;
         self.settings_page.confirm_sign_out = false;
+        self.settings_page.calendar_menu = false;
         if !self.settings_query(cx).is_empty() {
             let len = self.settings_results(window, cx).len();
             self.settings_page.result = step(self.settings_page.result, len);
@@ -418,6 +425,7 @@ impl PigeonApp {
         let change = match self.control(id, window, cx) {
             Control::Switch(on) => Change::Switch(!on),
             Control::Choice(ix, options) => Change::Choice((ix + 1) % options.len()),
+            Control::Calendars(ix, options) => Change::Choice((ix + 1) % options.len()),
             Control::Stepper { .. } => Change::Reset,
             Control::Button { .. } => return self.press_setting(id, window, cx),
             Control::Account(_) | Control::Keys(_) | Control::Info(_) => return,
@@ -467,7 +475,12 @@ impl PigeonApp {
         let change = match self.control(id, window, cx) {
             Control::Switch(_) => Change::Switch(up),
             Control::Choice(ix, options) if up => Change::Choice((ix + 1).min(options.len() - 1)),
-            Control::Choice(ix, _) => Change::Choice(ix.saturating_sub(1)),
+            Control::Calendars(ix, options) if up => {
+                Change::Choice((ix + 1).min(options.len() - 1))
+            }
+            Control::Choice(ix, _) | Control::Calendars(ix, _) => {
+                Change::Choice(ix.saturating_sub(1))
+            }
             Control::Stepper { .. } => Change::Step(if up { 1 } else { -1 }),
             Control::Account(_) | Control::Keys(_) | Control::Info(_) | Control::Button { .. } => {
                 return;
@@ -477,7 +490,9 @@ impl PigeonApp {
     }
 
     fn settings_close(&mut self, _: &Close, window: &mut Window, cx: &mut Context<Self>) {
-        if std::mem::take(&mut self.settings_page.confirm_sign_out) {
+        if std::mem::take(&mut self.settings_page.calendar_menu)
+            || std::mem::take(&mut self.settings_page.confirm_sign_out)
+        {
             cx.notify();
         } else if !self.settings_query(cx).is_empty() {
             self.clear_settings_search(window, cx);
@@ -546,6 +561,18 @@ impl PigeonApp {
                     .min_by_key(|&i| EVENT_MINUTES[i].abs_diff(minutes))
                     .unwrap_or(3);
                 Control::Choice(ix, EVENT_LENGTHS)
+            }
+            SettingId::DefaultCalendar => {
+                let writable: Vec<_> = calendar.writable_calendars().collect();
+                let selected = calendar
+                    .prefs
+                    .default_calendar
+                    .as_deref()
+                    .and_then(|id| writable.iter().position(|c| c.id == id))
+                    .map_or(0, |ix| ix + 1);
+                let mut options = vec![("Automatic".to_string(), None)];
+                options.extend(writable.iter().map(|c| (c.name.clone(), Some(c.color))));
+                Control::Calendars(selected, options)
             }
             SettingId::TimeZone => Control::Info(calendar.time_zone_note()),
             SettingId::Account => Control::Account(self.data.me()),
@@ -660,7 +687,7 @@ impl PigeonApp {
                 self.saved.menu_bar = settings::current(cx).menu_bar;
                 self.saved.signatures = settings::current(cx).signatures;
                 self.saved.time_format = settings::current(cx).time_format;
-                settings::remember(self.saved, cx);
+                settings::remember(&self.saved, cx);
                 let map = self.saved.to_map();
                 self.backend.update(cx, |b, cx| b.save_settings(map, cx));
             }
@@ -686,6 +713,16 @@ impl PigeonApp {
                 c.apply_display();
                 cx.notify();
             }),
+            SettingId::DefaultCalendar => {
+                self.settings_page.calendar_menu = false;
+                self.calendar.update(cx, |c, cx| {
+                    c.prefs.default_calendar = choice
+                        .checked_sub(1)
+                        .and_then(|ix| c.writable_calendars().nth(ix))
+                        .map(|c| c.id.clone());
+                    cx.notify();
+                });
+            }
             SettingId::TimeZone
             | SettingId::Account
             | SettingId::Access
@@ -1187,6 +1224,12 @@ impl PigeonApp {
                     .into_any_element(),
                 )
             }
+            Some(Control::Calendars(selected, options)) => {
+                let Entry::Setting(id) = entry else {
+                    unreachable!()
+                };
+                Some(self.calendar_dropdown(ix, id, label, selected, options, &theme, window, cx))
+            }
             Some(Control::Stepper {
                 value,
                 can_down,
@@ -1400,6 +1443,140 @@ impl PigeonApp {
                 }
                 this.settings_page.keyboard = false;
                 cx.notify();
+            }))
+            .into_any_element()
+    }
+}
+
+impl PigeonApp {
+    /// The default calendar: a button showing the choice, and under it,
+    /// while open, the list.
+    #[allow(clippy::too_many_arguments)]
+    fn calendar_dropdown(
+        &self,
+        ix: usize,
+        id: SettingId,
+        label: &'static str,
+        selected: usize,
+        options: Vec<(String, Option<Hsla>)>,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = self.settings_page.calendar_menu;
+        let width = px(220.);
+        let swatch = |color: Option<Hsla>| {
+            div()
+                .flex_none()
+                .size(px(10.))
+                .rounded_full()
+                .when_some(color, |d, color| d.bg(color))
+        };
+        let current = options[selected].clone();
+        let menu = open.then(|| {
+            let rows = options.iter().enumerate().map(|(option, (name, color))| {
+                div()
+                    .id(("settings-calendar", ix * 64 + option))
+                    .role(gpui::Role::MenuItem)
+                    .aria_label(name.clone())
+                    .h(px(30.))
+                    .px(SPACE_MD)
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_SM)
+                    .rounded(RADIUS_MD)
+                    .text_size(TEXT_BASE)
+                    .text_color(theme.text)
+                    .cursor_pointer()
+                    .when(option == selected, |d| d.bg(theme.selected_bg))
+                    .hover(|s| s.bg(theme.hover_bg))
+                    .child(swatch(*color))
+                    .child(div().flex_1().min_w_0().truncate().child(name.clone()))
+                    .when(option == selected, |d| {
+                        d.child(icon(Icon::Check, px(14.), theme.accent))
+                    })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.change_setting(id, Change::Choice(option), window, cx);
+                    }))
+            });
+            div()
+                .id("settings-calendar-list")
+                .role(gpui::Role::Menu)
+                .aria_label(label)
+                .occlude()
+                .mt(SPACE_XS)
+                .w(width)
+                .max_h(px(280.))
+                .overflow_y_scroll()
+                .p(SPACE_XS)
+                .flex()
+                .flex_col()
+                .rounded(RADIUS_MD)
+                .bg(theme.overlay_bg)
+                .border_1()
+                .border_color(theme.overlay_border)
+                .shadow(super::popover_shadow(theme))
+                .children(rows)
+        });
+        let size = window.viewport_size();
+        div()
+            .child(
+                div()
+                    .id(("settings-calendar-button", ix))
+                    .role(gpui::Role::ComboBox)
+                    .aria_label(format!("{label}: {}", current.0))
+                    .aria_expanded(open)
+                    .w(width)
+                    .h(px(28.))
+                    .px(SPACE_MD)
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_SM)
+                    .rounded(RADIUS_MD)
+                    .bg(theme.control_track)
+                    .text_size(TEXT_SM)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.selected_bg))
+                    .child(swatch(current.1))
+                    .child(div().flex_1().min_w_0().truncate().child(current.0))
+                    .child(icon(Icon::ChevronDown, px(13.), theme.text_faint))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.settings_page.calendar_menu = !this.settings_page.calendar_menu;
+                        cx.notify();
+                    })),
+            )
+            .when(open, |d| {
+                d.child(
+                    deferred(
+                        anchored().position(point(px(0.), px(0.))).child(
+                            div()
+                                .id("settings-calendar-backdrop")
+                                .occlude()
+                                .w(size.width)
+                                .h(size.height)
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.settings_page.calendar_menu = false;
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }),
+                                ),
+                        ),
+                    )
+                    .with_priority(1),
+                )
+            })
+            .children(menu.map(|m| {
+                div().w_full().h(px(0.)).child(
+                    deferred(anchored().snap_to_window_with_margin(px(8.)).child(m))
+                        .with_priority(2),
+                )
             }))
             .into_any_element()
     }
