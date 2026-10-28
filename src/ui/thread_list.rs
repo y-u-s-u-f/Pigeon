@@ -1336,14 +1336,19 @@ impl PigeonApp {
         });
 
         // The date, and in its place on hover the quick actions (ME-004:
-        // the row's hover group swaps them; nothing is re-rendered).
+        // the row's hover group swaps them; nothing is re-rendered). Both
+        // sit in one grid cell and swap visibility, never `display`: GPUI
+        // hit-tests between prepaint and paint, so a hover style that
+        // changes `display` can paint children it never prepainted.
         let meta = div()
             .id(("row-meta", thread_ix))
-            .flex_none()
+            .col_start(1)
+            .row_start(1)
             .flex()
+            .justify_end()
             .items_center()
             .gap(SPACE_SM)
-            .group_hover(ROW_GROUP, |s| s.hidden())
+            .group_hover(ROW_GROUP, |s| s.invisible())
             .when(queued, |this| {
                 // MA-069.
                 this.child(
@@ -1391,7 +1396,9 @@ impl PigeonApp {
             );
         let trailing = div()
             .flex_none()
-            .flex()
+            .grid()
+            .grid_cols(1)
+            .grid_rows(1)
             .items_center()
             .child(meta)
             .child(self.render_row_actions(thread_ix, theme, cx));
@@ -1415,7 +1422,7 @@ impl PigeonApp {
                         .size(UNREAD_DOT)
                         .rounded_full()
                         .bg(theme.accent)
-                        .group_hover(ROW_GROUP, |s| s.hidden()),
+                        .group_hover(ROW_GROUP, |s| s.invisible()),
                 )
             });
         let check = div()
@@ -1430,7 +1437,7 @@ impl PigeonApp {
             .child(
                 checkbox(thread_ix, checked, &subject, theme)
                     .when(!pinned_checkbox, |this| {
-                        this.hidden().group_hover(ROW_GROUP, |s| s.flex())
+                        this.invisible().group_hover(ROW_GROUP, |s| s.visible())
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
@@ -1738,10 +1745,13 @@ impl PigeonApp {
         };
         div()
             .id(("row-actions", thread_ix))
-            .flex_none()
+            .col_start(1)
+            .row_start(1)
+            .flex()
+            .justify_end()
             .my(-SPACE_XS)
-            .hidden()
-            .group_hover(ROW_GROUP, |s| s.flex())
+            .invisible()
+            .group_hover(ROW_GROUP, |s| s.visible())
             .items_center()
             .gap(SPACE_2XS)
             .when_some(thread.folder.archive_title(), |this, title| {
