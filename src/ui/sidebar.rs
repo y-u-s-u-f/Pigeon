@@ -3,8 +3,8 @@
 use std::collections::{HashMap, HashSet};
 
 use gpui::{
-    AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, Window, component::tooltip::Tooltip, div,
+    AnyElement, AppContext as _, Context, FontWeight, InteractiveElement, IntoElement,
+    ParentElement, StatefulInteractiveElement, Styled, Window, component::tooltip::Tooltip, div,
     prelude::FluentBuilder as _, px,
 };
 
@@ -56,19 +56,23 @@ pub struct LabelRow {
     pub name: String,
     pub children: usize,
     pub folded: bool,
+    /// Index into the labels.
+    pub parent: Option<usize>,
+    /// Its place in the whole tree, which orders it among its siblings.
+    pub pos: usize,
 }
 
-/// The labels the sidebar lists, as a tree, and how many it leaves out
-/// for their visibility. A label shows when it's set to, or while unread
-/// for "show if unread", or while open, or with `show_hidden`; children
-/// show under a parent that shows and isn't folded.
+/// The labels the sidebar lists, as a tree, and apart those it leaves out
+/// for their visibility (flat, under their full names). A label shows
+/// when it's set to, or while unread for "show if unread", or while open;
+/// children show under a parent that shows and isn't folded.
 pub fn label_rows(
     labels: &[Label],
+    order: &[String],
     folded: &HashSet<String>,
-    show_hidden: bool,
     unread: impl Fn(usize) -> usize,
     open: Option<usize>,
-) -> (Vec<LabelRow>, usize) {
+) -> (Vec<LabelRow>, Vec<LabelRow>) {
     #[derive(Clone, Copy, PartialEq)]
     enum Out {
         Shown,
@@ -76,12 +80,11 @@ pub fn label_rows(
         Hidden,
     }
     let mut state: HashMap<usize, Out> = HashMap::new();
-    let (mut rows, mut hidden) = (Vec::new(), 0);
-    for node in label_tree(labels) {
+    let (mut rows, mut hidden) = (Vec::new(), Vec::new());
+    for (pos, node) in label_tree(labels, order).into_iter().enumerate() {
         let label = &labels[node.ix];
         let parent = node.parent.map(|p| state[&p]);
-        let visible = show_hidden
-            || open == Some(node.ix)
+        let visible = open == Some(node.ix)
             || match label.list_visibility {
                 ListVisibility::Show => true,
                 ListVisibility::ShowIfUnread => unread(node.ix) > 0,
@@ -103,15 +106,59 @@ pub fn label_rows(
                     name: node.name,
                     children: node.children,
                     folded: is_folded,
+                    parent: node.parent,
+                    pos,
                 });
                 continue;
             }
-            Out::Hidden => hidden += 1,
+            Out::Hidden => hidden.push(LabelRow {
+                ix: node.ix,
+                depth: 1,
+                name: label.name.clone(),
+                children: 0,
+                folded: false,
+                parent: None,
+                pos,
+            }),
             Out::Folded => {}
         }
         state.insert(node.ix, out);
     }
     (rows, hidden)
+}
+
+/// A label being dragged to a new place among its siblings.
+#[derive(Clone)]
+struct DraggedLabel {
+    id: String,
+    name: String,
+    color: gpui::Hsla,
+    parent: Option<usize>,
+    pos: usize,
+}
+
+/// What follows the pointer while a label is dragged.
+struct DragGhost(DraggedLabel);
+
+impl gpui::Render for DragGhost {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::of(cx);
+        div()
+            .h(HIT_TARGET)
+            .px(SPACE_MD)
+            .flex()
+            .items_center()
+            .gap(SPACE_SM)
+            .rounded(RADIUS_MD)
+            .border_1()
+            .border_color(theme.overlay_border)
+            .bg(theme.overlay_bg)
+            .shadow_md()
+            .text_size(TEXT_BASE)
+            .text_color(theme.text)
+            .child(div().size(px(8.)).rounded_full().bg(self.0.color))
+            .child(self.0.name.clone())
+    }
 }
 
 const FOLDERS: [(Nav, &str, Icon); 7] = [
@@ -258,35 +305,25 @@ impl PigeonApp {
                 }
             }
         }
-        let open = match self.nav {
-            Nav::Label(ix) => Some(ix).filter(|&ix| {
-                self.labels_ui.hidden_while_open.as_deref()
-                    != self.data.labels.get(ix).map(|l| l.id.as_str())
-            }),
-            _ => None,
-        };
-        let (rows, hidden) = label_rows(
-            &self.data.labels,
-            &self.labels_ui.folded,
-            self.labels_ui.show_hidden,
-            |ix| self.view_unread(Nav::Label(ix)),
-            open,
-        );
+        let (rows, hidden) = self.sidebar_labels();
+        let show_hidden = self.labels_ui.show_hidden && !hidden.is_empty();
         let mut labels: Vec<AnyElement> = rows
             .into_iter()
-            .map(|row| self.label_item(row, &theme, cx))
+            .map(|row| self.label_item(row, true, &theme, cx))
             .collect();
-        if hidden > 0 || self.labels_ui.show_hidden {
-            let text = if self.labels_ui.show_hidden {
+        if !hidden.is_empty() {
+            let text = if show_hidden {
                 "Leave out hidden labels".to_string()
             } else {
-                format!("{hidden} hidden")
+                format!("{} hidden", hidden.len())
             };
             labels.push(
                 focusable_control(div().id("hidden-labels"), &theme)
                     .role(gpui::Role::Button)
                     .aria_label(text.clone())
+                    .aria_expanded(show_hidden)
                     .h(px(26.))
+                    .flex_none()
                     .px(SPACE_MD)
                     .flex()
                     .items_center()
@@ -296,7 +333,7 @@ impl PigeonApp {
                     .text_color(theme.text_faint)
                     .hover(|s| s.bg(theme.hover_bg))
                     .child(icon(
-                        if self.labels_ui.show_hidden {
+                        if show_hidden {
                             Icon::ChevronUp
                         } else {
                             Icon::ChevronDown
@@ -315,6 +352,13 @@ impl PigeonApp {
                     })
                     .into_any_element(),
             );
+            if show_hidden {
+                labels.extend(
+                    hidden
+                        .into_iter()
+                        .map(|row| self.label_item(row, false, &theme, cx)),
+                );
+            }
         }
 
         div()
@@ -407,6 +451,7 @@ impl PigeonApp {
                             .pt(SPACE_LG)
                             .pb(SPACE_XS)
                             .pl(SPACE_MD)
+                            .flex_none()
                             .flex()
                             .items_center()
                             .justify_between()
@@ -429,10 +474,45 @@ impl PigeonApp {
             )
     }
 
+    /// The labels the sidebar lists, and those under "N hidden".
+    pub(crate) fn sidebar_labels(&self) -> (Vec<LabelRow>, Vec<LabelRow>) {
+        let open = match self.nav {
+            Nav::Label(ix) => Some(ix).filter(|&ix| {
+                self.labels_ui.hidden_while_open.as_deref()
+                    != self.data.labels.get(ix).map(|l| l.id.as_str())
+            }),
+            _ => None,
+        };
+        label_rows(
+            &self.data.labels,
+            &self.labels_ui.order,
+            &self.labels_ui.folded,
+            |ix| self.view_unread(Nav::Label(ix)),
+            open,
+        )
+    }
+
     /// W4b: a label row, nested and foldable, with its context menu.
-    fn label_item(&self, row: LabelRow, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    /// `movable` rows drag onto their siblings to rearrange them.
+    fn label_item(
+        &self,
+        row: LabelRow,
+        movable: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let label = &self.data.labels[row.ix];
         let ix = row.ix;
+        let dragged = DraggedLabel {
+            id: label.id.clone(),
+            name: label.name.clone(),
+            color: label.color,
+            parent: row.parent,
+            pos: row.pos,
+        };
+        let (target_id, parent, pos) = (label.id.clone(), row.parent, row.pos);
+        let target = target_id.clone();
+        let accent = theme.accent;
         let item = self.nav_item(
             Nav::Label(ix),
             row.name.clone().into(),
@@ -474,6 +554,26 @@ impl PigeonApp {
                     })),
             )
         })
+        .when(movable, |this| {
+            this.on_drag(dragged, |dragged, _, _, cx| {
+                cx.new(|_| DragGhost(dragged.clone()))
+            })
+            .drag_over::<DraggedLabel>(move |style, dragged, _, _| {
+                if dragged.parent != parent || dragged.id == target_id {
+                    return style;
+                }
+                // Dropped on a sibling it takes that place: below it when
+                // it comes from above, else above.
+                if dragged.pos < pos {
+                    style.border_b_2().border_color(accent)
+                } else {
+                    style.border_t_2().border_color(accent)
+                }
+            })
+            .on_drop(cx.listener(move |this, dragged: &DraggedLabel, _, cx| {
+                this.drop_label(&dragged.id, &target, cx)
+            }))
+        })
         .on_mouse_down(
             gpui::MouseButton::Right,
             cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
@@ -506,6 +606,7 @@ impl PigeonApp {
             .aria_label(name.clone())
             .aria_selected(active)
             .h(px(30.))
+            .flex_none()
             .pl(SPACE_MD + SPACE_LG * depth as f32)
             .pr(SPACE_MD)
             .flex()
@@ -671,7 +772,7 @@ mod tests {
             rows.iter().map(|r| (r.depth, r.name.clone())).collect()
         };
         let none = HashSet::new();
-        let (rows, hidden) = label_rows(&l, &none, false, |_| 0, None);
+        let (rows, hidden) = label_rows(&l, &[], &none, |_| 0, None);
         assert_eq!(
             names(&rows),
             [
@@ -680,23 +781,31 @@ mod tests {
                 (2, "Acme".into())
             ]
         );
-        // Quiet (read), Secret and its child.
-        assert_eq!(hidden, 3);
+        // Quiet (read), Secret and its child: apart, by full name.
+        assert_eq!(
+            names(&hidden),
+            [
+                (1, "Quiet".into()),
+                (1, "Secret".into()),
+                (1, "Secret/Inner".into())
+            ]
+        );
         // Unread shows "show if unread"; open shows a hidden one.
-        let (rows, hidden) = label_rows(&l, &none, false, |ix| (ix == 3) as usize, Some(4));
+        let (rows, hidden) = label_rows(&l, &[], &none, |ix| (ix == 3) as usize, Some(4));
         let shown: Vec<usize> = rows.iter().map(|r| r.ix).collect();
         assert_eq!(shown, [3, 4, 5, 0, 1, 2]);
-        assert_eq!(hidden, 0);
+        assert!(hidden.is_empty());
         // Folding Work keeps it, without its children; not counted hidden.
         let folded: HashSet<String> = ["L0".to_string()].into();
-        let (rows, hidden) = label_rows(&l, &folded, false, |_| 0, None);
+        let (rows, hidden) = label_rows(&l, &[], &folded, |_| 0, None);
         assert_eq!(names(&rows), [(0, "Work".into())]);
         assert!(rows[0].folded);
         assert_eq!(rows[0].children, 1);
-        assert_eq!(hidden, 3);
-        // Everything, with show hidden.
-        let (rows, hidden) = label_rows(&l, &none, true, |_| 0, None);
-        assert_eq!(rows.len(), 6);
-        assert_eq!(hidden, 0);
+        assert_eq!(hidden.len(), 3);
+        // The user's order: Secret before Work.
+        let order = ["L4".to_string(), "L0".to_string()];
+        let (rows, _) = label_rows(&l, &order, &none, |_| 0, Some(4));
+        let shown: Vec<usize> = rows.iter().map(|r| r.ix).collect();
+        assert_eq!(shown, [4, 5, 0, 1, 2]);
     }
 }

@@ -18,7 +18,7 @@ To update: change the status cell in the area's table, then the counts below.
 | --- | --- | --- | --- | --- |
 | [Planned features](#3-planned-features-pln) | 3 | 0 | 0 | 3 |
 | [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 2 | 3 | 3 | 8 |
-| [Folders and labels](#51-folders-and-labels-fol) | 1 | 0 | 11 | 12 |
+| [Folders and labels](#51-folders-and-labels-fol) | 1 | 1 | 11 | 13 |
 | [Thread list](#52-thread-list-lst) | 0 | 0 | 9 | 9 |
 | [Reading pane](#53-reading-pane-rdr) | 0 | 0 | 8 | 8 |
 | [Message actions](#54-message-and-thread-actions-act) | 0 | 0 | 7 | 7 |
@@ -37,7 +37,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Storage and persistence](#81-storage-and-persistence-per) | 0 | 0 | 5 | 5 |
 | [Command palette](#82-command-palette-pal) | 0 | 0 | 3 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 3 | 3 | 7 |
-| **Overall** | **35** | **15** | **131** | **181** |
+| **Overall** | **35** | **16** | **131** | **182** |
 
 ## Contents
 
@@ -184,6 +184,7 @@ The user's own plans, not driven by Google's APIs.
 | FOL-10 | Label visibility | 🟢 Fully linked | Label `labelListVisibility`, `messageListVisibility` |
 | FOL-11 | Inbox categories | 🟢 Fully linked | Category labels (`CATEGORY_*`): the Inbox shows Primary; Social, Promotions, Updates, Forums under it |
 | FOL-12 | Important marker | 🟢 Fully linked | `IMPORTANT` label |
+| FOL-13 | Rearrange labels | 🟡 Partially done | None: Gmail has no label order |
 
 #### FOL-1 System folders and go-to shortcuts
 
@@ -235,12 +236,12 @@ The user's own plans, not driven by Google's APIs.
 
 #### FOL-9 Nested labels
 
-- **Today (sprint 2 W4b):** Labels nest by name (`Work/Clients` under `Work`, when `Work` exists; otherwise the whole name shows at the top), sorted by name at each level (`labels::label_tree`). The sidebar indents children and folds a parent with its chevron, the context menu, or ⌘K "Fold / Unfold Sublabels" (`L F`). The `l` picker lists the tree indented; a folded parent's children show once you type. Folded labels are kept with the settings (`collapsed_labels`), demo mode too.
+- **Today (sprint 2 W4b):** Labels nest by name (`Work/Clients` under `Work`, when `Work` exists; otherwise the whole name shows at the top), sorted by name at each level unless the user rearranged them (FOL-13; `labels::label_tree`). The sidebar indents children and folds a parent with its chevron, the context menu, or ⌘K "Fold / Unfold Sublabels" (`L F`). The `l` picker lists the tree indented; a folded parent's children show once you type. Folded labels are kept with the settings (`collapsed_labels`), demo mode too.
 - **Needs:** Done; passed on the real account (sprint 2 T2a).
 
 #### FOL-10 Label visibility
 
-- **Today (sprint 2 W4b):** The sidebar follows `labelListVisibility`: "show if unread" labels show while they have unread mail, hidden ones (and their children) don't, except the open one (unless it was just hidden while open, e.g. from its right-click menu: then it goes at once); a "N hidden" row (`L H`) lists them too. Rows show label dots only for labels whose `messageListVisibility` is "show"; the reader shows all. Change both from a label's right-click menu ("In Label List", "In Conversation List") or ⌘K "Label Visibility…" (`L V`), through `labels.patch`. Stored in the `labels` table (schema block 150); hidden labels are now loaded too, so the label picker and `label:` search see them.
+- **Today (sprint 2 W4b):** The sidebar follows `labelListVisibility`: "show if unread" labels show while they have unread mail, hidden ones (and their children) don't, except the open one (unless it was just hidden while open, e.g. from its right-click menu: then it goes at once); a "N hidden" row (`L H`) lists them too, as their own group right under it (flat, by full name) and leaves the visible labels where they are. Rows show label dots only for labels whose `messageListVisibility` is "show"; the reader shows all. Change both from a label's right-click menu ("In Label List", "In Conversation List") or ⌘K "Label Visibility…" (`L V`), through `labels.patch`. Stored in the `labels` table (schema block 150); hidden labels are now loaded too, so the label picker and `label:` search see them.
 - **Needs:** Done; passed on the real account (sprint 2 T2a, after fix-5).
 
 #### FOL-11 Inbox categories
@@ -254,6 +255,12 @@ The user's own plans, not driven by Google's APIs.
 
 - **Today (sprint 2 W4b):** `Thread::important` comes from the `IMPORTANT` label. Rows show an amber marker; the reader's toolbar has a toggle. "Mark as Important / Not Important" in ⌘K, the thread menu and `=` (or `+`, as in Gmail) adds or takes off `IMPORTANT` with `threads.modify` through the outbox, at once like a star. `is:important` searches Gmail (SRC-9).
 - **Needs:** Done; passed on the real account (sprint 2 T2a).
+
+#### FOL-13 Rearrange labels
+
+- **Today:** Drag a label in the sidebar onto a sibling (same parent) and it takes that place; a line under or over the target shows where (under when it comes from above, else over). Keyboard: ⌘K "Move Label Up" / "Move Label Down", `L ↑` / `L ↓` and the label's right-click menu move the open label one place among the siblings the sidebar shows (hidden ones are skipped). The arrangement is a list of label ids in memory (`LabelsUi::order`, `labels::label_tree(labels, order)`, `labels::drop_on()`, `labels::nudge()`); labels it doesn't list (new ones) follow their siblings by name; the `l` picker and "which label?" lists follow it too. Labels under "N hidden" are listed flat and can't be dragged. The sidebar scrolls as a whole under the account (rows no longer shrink).
+- **Needs:** Persistence: the order is lost at quit. Gmail has no label order or API for it (the web app sorts by name), so keep it in the local store (a settings row like `collapsed_labels`, per account) and drop ids of deleted labels. IMAP: same, local only.
+- **Notes:** Nesting follows the names (FOL-9), so a label can't be dragged under another parent without renaming it.
 
 ### 5.2 Thread list (LST)
 

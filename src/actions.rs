@@ -163,6 +163,8 @@ actions!(
         ChangeLabelVisibility,
         ToggleLabelFolded,
         ToggleHiddenLabels,
+        MoveLabelUp,
+        MoveLabelDown,
         // W3: compose and identity.
         ChangeFrom,
         ToggleSignature,
@@ -524,6 +526,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("shift-l v", ChangeLabelVisibility, Some(MAIL)),
         KeyBinding::new("shift-l f", ToggleLabelFolded, Some(MAIL)),
         KeyBinding::new("shift-l h", ToggleHiddenLabels, Some(MAIL)),
+        KeyBinding::new("shift-l up", MoveLabelUp, Some(MAIL)),
+        KeyBinding::new("shift-l down", MoveLabelDown, Some(MAIL)),
         // W3: From and the signature.
         KeyBinding::new("cmd-shift-f", ChangeFrom, Some(COMPOSER)),
         KeyBinding::new("cmd-shift-e", ToggleSignature, Some(COMPOSER)),
@@ -686,6 +690,8 @@ pub enum When {
     Inbox,
     /// W4b: the user has labels.
     Labels,
+    /// A label's view is open.
+    LabelOpen,
     // W3.
     /// A draft is open and there's more than one address to send from.
     FromChoice,
@@ -837,6 +843,8 @@ pub const COMMANDS: &[Command] = commands! {
     Labels: "Label Visibility…", Tag, ChangeLabelVisibility if Labels;
     Labels: "Fold / Unfold Sublabels", ChevronRight, ToggleLabelFolded if Labels;
     Labels: "Show / Hide Hidden Labels", Tag, ToggleHiddenLabels if Labels;
+    Labels: "Move Label Up", ChevronUp, MoveLabelUp if LabelOpen;
+    Labels: "Move Label Down", ChevronDown, MoveLabelDown if LabelOpen;
     // W3: compose and identity.
     Compose: "Change From…", User, ChangeFrom if FromChoice;
     Compose: "Add / Remove Signature", SquarePen, ToggleSignature if Draft;

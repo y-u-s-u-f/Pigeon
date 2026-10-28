@@ -31,6 +31,9 @@ pub struct LabelsUi {
     /// The open label, by id, once hidden from the sidebar while open: it
     /// goes at once instead of staying for being open (`label_rows`).
     pub hidden_while_open: Option<String>,
+    /// The user's arrangement of the labels, by id (`labels::label_tree`);
+    /// kept in memory.
+    pub order: Vec<String>,
     /// What the name being typed is for.
     prompt: Option<Prompt>,
 }
@@ -112,6 +115,8 @@ impl PigeonApp {
                 this.labels_ui.show_hidden = !this.labels_ui.show_hidden;
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &MoveLabelUp, _, cx| this.nudge_label(true, cx)))
+            .on_action(cx.listener(|this, _: &MoveLabelDown, _, cx| this.nudge_label(false, cx)))
             .on_action(
                 cx.listener(|this, action: &SetLabelListVisibility, window, cx| {
                     if let Some(ix) = this.current_label() {
@@ -137,6 +142,39 @@ impl PigeonApp {
         }
     }
 
+    /// Move the open label one place up or down among the siblings the
+    /// sidebar shows.
+    fn nudge_label(&mut self, up: bool, cx: &mut Context<Self>) {
+        let Some(ix) = self.current_label() else {
+            return;
+        };
+        let (shown, _) = self.sidebar_labels();
+        let listed: HashSet<&str> = shown
+            .iter()
+            .map(|row| self.data.labels[row.ix].id.as_str())
+            .collect();
+        let order = labels::nudge(
+            &self.data.labels,
+            &self.labels_ui.order,
+            &self.data.labels[ix].id,
+            up,
+            |id| listed.contains(id),
+        );
+        if let Some(order) = order {
+            self.labels_ui.order = order;
+            cx.notify();
+        }
+    }
+
+    /// Dropped: the label `id` takes the place of its sibling `target`.
+    pub(crate) fn drop_label(&mut self, id: &str, target: &str, cx: &mut Context<Self>) {
+        let order = labels::drop_on(&self.data.labels, &self.labels_ui.order, id, target);
+        if let Some(order) = order {
+            self.labels_ui.order = order;
+            cx.notify();
+        }
+    }
+
     /// On the open label, else on one picked from a list.
     fn label_task(&mut self, task: LabelTask, window: &mut Window, cx: &mut Context<Self>) {
         let current = self
@@ -146,7 +184,7 @@ impl PigeonApp {
             return self.run_label_task(ix, task, window, cx);
         }
         let labels = &self.data.labels;
-        let items: Vec<PaletteItem> = labels::label_tree(labels)
+        let items: Vec<PaletteItem> = labels::label_tree(labels, &self.labels_ui.order)
             .into_iter()
             .filter(|n| task != LabelTask::Fold || n.children > 0)
             .map(|n| PaletteItem {
@@ -542,6 +580,9 @@ impl PigeonApp {
             );
         }
         menu.separator()
+            .menu("Move Up", Box::new(MoveLabelUp))
+            .menu("Move Down", Box::new(MoveLabelDown))
+            .separator()
             .menu("New Label…", Box::new(NewLabel))
             .menu("Delete Label…", Box::new(DeleteLabel))
             .show(position, window, cx);
@@ -550,7 +591,7 @@ impl PigeonApp {
     /// `l`: the labels as a tree, folded ones' children found by typing.
     pub(super) fn label_picker_items(&self, targets: &[usize]) -> Vec<PaletteItem> {
         let labels = &self.data.labels;
-        let tree = labels::label_tree(labels);
+        let tree = labels::label_tree(labels, &self.labels_ui.order);
         let folded_away = |mut parent: Option<usize>| {
             while let Some(p) = parent {
                 if self.labels_ui.folded.contains(&labels[p].id) {

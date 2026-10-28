@@ -113,11 +113,14 @@ fn parent_of(labels: &[Label], ix: usize) -> Option<usize> {
         .map(|(p, _)| p)
 }
 
-pub fn label_tree(labels: &[Label]) -> Vec<LabelNode> {
+/// The labels as a tree. Siblings go by their place in `order` (label ids,
+/// the user's own arrangement), those not in it after, by name.
+pub fn label_tree(labels: &[Label], order: &[String]) -> Vec<LabelNode> {
     let parents: Vec<Option<usize>> = (0..labels.len()).map(|ix| parent_of(labels, ix)).collect();
     let mut out = Vec::with_capacity(labels.len());
     fn walk(
         labels: &[Label],
+        order: &[String],
         parents: &[Option<usize>],
         parent: Option<usize>,
         depth: usize,
@@ -126,7 +129,10 @@ pub fn label_tree(labels: &[Label]) -> Vec<LabelNode> {
         let mut kids: Vec<usize> = (0..labels.len())
             .filter(|&ix| parents[ix] == parent)
             .collect();
-        kids.sort_by_key(|&ix| labels[ix].name.to_lowercase());
+        kids.sort_by_key(|&ix| {
+            let place = order.iter().position(|id| *id == labels[ix].id);
+            (place.unwrap_or(usize::MAX), labels[ix].name.to_lowercase())
+        });
         for ix in kids {
             let name = match parent {
                 Some(p) => labels[ix].name[labels[p].name.len() + 1..].to_string(),
@@ -140,12 +146,71 @@ pub fn label_tree(labels: &[Label]) -> Vec<LabelNode> {
                 parent,
                 children: 0,
             });
-            walk(labels, parents, Some(ix), depth + 1, out);
+            walk(labels, order, parents, Some(ix), depth + 1, out);
             out[at].children = parents.iter().filter(|p| **p == Some(ix)).count();
         }
     }
-    walk(labels, &parents, None, 0, &mut out);
+    walk(labels, order, &parents, None, 0, &mut out);
     out
+}
+
+/// The new `order` after moving label `id` to the place `pick` chooses
+/// among its siblings (ids in order, and its own place); `None` when
+/// it doesn't move.
+fn moved(
+    labels: &[Label],
+    order: &[String],
+    id: &str,
+    pick: impl FnOnce(&[&str], usize) -> Option<usize>,
+) -> Option<Vec<String>> {
+    let tree = label_tree(labels, order);
+    let parent = tree.iter().find(|n| labels[n.ix].id == id)?.parent;
+    let mut siblings: Vec<&str> = tree
+        .iter()
+        .filter(|n| n.parent == parent)
+        .map(|n| labels[n.ix].id.as_str())
+        .collect();
+    let from = siblings.iter().position(|s| *s == id)?;
+    let to = pick(&siblings, from).filter(|&to| to != from)?;
+    let label = siblings.remove(from);
+    siblings.insert(to, label);
+    let mut next = siblings.into_iter();
+    Some(
+        tree.iter()
+            .map(|n| match n.parent == parent {
+                true => next.next().unwrap_or_default(),
+                false => labels[n.ix].id.as_str(),
+            })
+            .map(String::from)
+            .collect(),
+    )
+}
+
+/// Drop label `id` on its sibling `target`: it takes that place.
+pub fn drop_on(labels: &[Label], order: &[String], id: &str, target: &str) -> Option<Vec<String>> {
+    moved(labels, order, id, |siblings, _| {
+        siblings.iter().position(|s| *s == target)
+    })
+}
+
+/// Move label `id` one place up or down among the siblings `listed`
+/// accepts (those the sidebar shows).
+pub fn nudge(
+    labels: &[Label],
+    order: &[String],
+    id: &str,
+    up: bool,
+    listed: impl Fn(&str) -> bool,
+) -> Option<Vec<String>> {
+    moved(labels, order, id, |siblings, from| {
+        let mut at = from;
+        loop {
+            at = if up { at.checked_sub(1)? } else { at + 1 };
+            if listed(siblings.get(at)?) {
+                return Some(at);
+            }
+        }
+    })
 }
 
 /// Every label named under this one (`Work/…`), at any depth.
@@ -572,7 +637,7 @@ mod tests {
             "Orphan/Kid",
             "Work-Old",
         ]);
-        let tree = label_tree(&l);
+        let tree = label_tree(&l, &[]);
         let rows: Vec<(usize, &str, usize)> = tree
             .iter()
             .map(|n| (n.depth, n.name.as_str(), n.children))
@@ -592,6 +657,37 @@ mod tests {
         let mut kids = descendants(&l, 2);
         kids.sort();
         assert_eq!(kids, [0, 3]);
+    }
+
+    #[test]
+    fn siblings_can_be_rearranged() {
+        // Label_0..: A, B, B/x, B/y, C
+        let l = labels(&["A", "B", "B/x", "B/y", "C"]);
+        let names = |order: &[String]| -> Vec<String> {
+            label_tree(&l, order)
+                .iter()
+                .map(|n| l[n.ix].name.clone())
+                .collect()
+        };
+        // C dropped on A takes its place.
+        let order = drop_on(&l, &[], "Label_4", "Label_0").unwrap();
+        assert_eq!(names(&order), ["C", "A", "B", "B/x", "B/y"]);
+        // A dropped on C goes after it; B's children stay with B.
+        let order = drop_on(&l, &[], "Label_0", "Label_4").unwrap();
+        assert_eq!(names(&order), ["B", "B/x", "B/y", "C", "A"]);
+        // Another parent's label, itself: nothing.
+        assert!(drop_on(&l, &[], "Label_2", "Label_0").is_none());
+        assert!(drop_on(&l, &[], "Label_0", "Label_0").is_none());
+        // Up and down by one, within siblings; the ends stay put.
+        let order = nudge(&l, &[], "Label_3", true, |_| true).unwrap();
+        assert_eq!(names(&order), ["A", "B", "B/y", "B/x", "C"]);
+        assert!(nudge(&l, &order, "Label_3", true, |_| true).is_none());
+        assert!(nudge(&l, &order, "Label_2", false, |_| true).is_none());
+        // Hidden siblings are skipped over; none left to jump to: nothing.
+        let order = nudge(&l, &[], "Label_0", false, |id| id != "Label_1").unwrap();
+        assert_eq!(names(&order), ["B", "B/x", "B/y", "C", "A"]);
+        assert!(nudge(&l, &[], "Label_4", false, |_| true).is_none());
+        assert!(nudge(&l, &[], "Label_0", false, |id| id == "Label_0").is_none());
     }
 
     #[test]
