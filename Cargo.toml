@@ -43,7 +43,10 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "std",
     "NSArray",
+    "NSDateFormatter",
+    "NSFormatter",
     "NSGeometry",
+    "NSLocale",
     "NSDictionary",
     "NSDistributedNotificationCenter",
     "NSNotification",

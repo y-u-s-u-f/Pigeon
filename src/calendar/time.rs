@@ -8,8 +8,9 @@ use chrono::{
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 /// The first day of the week shown, as days from Monday (Google's
-/// `weekStart`, CAL-41), and whether times show on a 24-hour clock. Set
-/// by the calendar from the settings; read by the formatting here.
+/// `weekStart`, CAL-41), set by the calendar; and whether times show on a
+/// 24-hour clock, app-wide (Settings › General › Time format, set by
+/// `app::shell`). Read by the formatting here, which mail uses too.
 static FIRST_WEEKDAY: AtomicU8 = AtomicU8::new(0);
 static CLOCK_24H: AtomicBool = AtomicBool::new(false);
 
@@ -110,11 +111,37 @@ pub fn next_half_hour(now: NaiveDateTime) -> NaiveDateTime {
 
 /// "9:30 AM", or "09:30" on a 24-hour clock.
 pub fn time_label(time: NaiveTime) -> String {
-    if is_24_hour() {
+    time_label_on(time, is_24_hour())
+}
+
+fn time_label_on(time: NaiveTime, h24: bool) -> String {
+    if h24 {
         time.format("%H:%M").to_string()
     } else {
         time.format("%-I:%M %p").to_string()
     }
+}
+
+/// "9:30", or "09:30" on a 24-hour clock: the week view's now line.
+pub fn clock_label(time: NaiveTime) -> String {
+    clock_label_on(time, is_24_hour())
+}
+
+fn clock_label_on(time: NaiveTime, h24: bool) -> String {
+    time.format(if h24 { "%H:%M" } else { "%-I:%M" })
+        .to_string()
+}
+
+/// "9am", "9:30pm", or "09:30" on a 24-hour clock: month view pills.
+pub fn pill_time_label(time: NaiveTime) -> String {
+    pill_time_label_on(time, is_24_hour())
+}
+
+fn pill_time_label_on(time: NaiveTime, h24: bool) -> String {
+    if h24 {
+        return time_label_on(time, true);
+    }
+    format!("{}{}", short_time(time), meridiem(time).to_lowercase())
 }
 
 /// "9", "9:30": the hour and, when not on the hour, the minutes.
@@ -133,8 +160,16 @@ fn meridiem(time: NaiveTime) -> &'static str {
 /// "9 – 10:30 AM", or "11 AM – 1 PM" across noon; "09:00 – 10:30" on a
 /// 24-hour clock.
 pub fn time_range_label(start: NaiveTime, end: NaiveTime) -> String {
-    if is_24_hour() {
-        return format!("{} – {}", time_label(start), time_label(end));
+    time_range_label_on(start, end, is_24_hour())
+}
+
+fn time_range_label_on(start: NaiveTime, end: NaiveTime, h24: bool) -> String {
+    if h24 {
+        return format!(
+            "{} – {}",
+            time_label_on(start, true),
+            time_label_on(end, true)
+        );
     }
     if meridiem(start) == meridiem(end) {
         format!(
@@ -156,10 +191,29 @@ pub fn time_range_label(start: NaiveTime, end: NaiveTime) -> String {
 
 /// "9 AM", "9:30 AM"; "09:30" on a 24-hour clock.
 pub fn compact_time_label(time: NaiveTime) -> String {
-    if is_24_hour() {
-        return time_label(time);
+    compact_time_label_on(time, is_24_hour())
+}
+
+fn compact_time_label_on(time: NaiveTime, h24: bool) -> String {
+    if h24 {
+        return time_label_on(time, true);
     }
     format!("{} {}", short_time(time), meridiem(time))
+}
+
+/// "Sun, Oct 25, 9:12 AM", with the year when it isn't `today`'s; "Sun,
+/// Oct 25, 09:12" on a 24-hour clock. A message's date in the reader.
+pub fn date_time_label(date: NaiveDate, time: NaiveTime, today: NaiveDate) -> String {
+    date_time_label_on(date, time, today, is_24_hour())
+}
+
+fn date_time_label_on(date: NaiveDate, time: NaiveTime, today: NaiveDate, h24: bool) -> String {
+    let day = if date.year() == today.year() {
+        date.format("%a, %b %-d").to_string()
+    } else {
+        date.format("%a, %b %-d %Y").to_string()
+    };
+    format!("{day}, {}", time_label_on(time, h24))
 }
 
 /// "Mon, Oct 26", with the year when it isn't `today`'s.
@@ -431,6 +485,35 @@ mod tests {
         assert_eq!(
             date_label(d(2027, 1, 4), d(2026, 10, 1)),
             "Mon, Jan 4, 2027"
+        );
+    }
+
+    #[test]
+    fn labels_on_either_clock() {
+        // The global stays at its 12-hour default; other tests rely on it.
+        let (h12, h24) = (false, true);
+        assert_eq!(time_label_on(t(13, 5), h12), "1:05 PM");
+        assert_eq!(time_label_on(t(13, 5), h24), "13:05");
+        assert_eq!(time_label_on(t(0, 0), h24), "00:00");
+        assert_eq!(compact_time_label_on(t(9, 0), h12), "9 AM");
+        assert_eq!(compact_time_label_on(t(9, 0), h24), "09:00");
+        assert_eq!(
+            time_range_label_on(t(11, 0), t(13, 30), h24),
+            "11:00 – 13:30"
+        );
+        assert_eq!(pill_time_label_on(t(21, 30), h12), "9:30pm");
+        assert_eq!(pill_time_label_on(t(9, 0), h12), "9am");
+        assert_eq!(pill_time_label_on(t(21, 30), h24), "21:30");
+        assert_eq!(clock_label_on(t(14, 2), h12), "2:02");
+        assert_eq!(clock_label_on(t(14, 2), h24), "14:02");
+        let today = d(2026, 10, 27);
+        assert_eq!(
+            date_time_label_on(d(2026, 10, 25), t(9, 12), today, h12),
+            "Sun, Oct 25, 9:12 AM"
+        );
+        assert_eq!(
+            date_time_label_on(d(2025, 10, 25), t(21, 12), today, h24),
+            "Sat, Oct 25 2025, 21:12"
         );
     }
 

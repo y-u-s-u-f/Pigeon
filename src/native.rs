@@ -18,7 +18,8 @@ use objc2_app_kit::{
     NSWorkspaceDidWakeNotification,
 };
 use objc2_foundation::{
-    NSDistributedNotificationCenter, NSError, NSNotification, NSNotificationSuspensionBehavior,
+    NSCurrentLocaleDidChangeNotification, NSDateFormatter, NSDistributedNotificationCenter,
+    NSError, NSLocale, NSNotification, NSNotificationCenter, NSNotificationSuspensionBehavior,
     NSString,
 };
 
@@ -29,6 +30,8 @@ pub enum Signal {
     Wake,
     /// Pigeon was opened again on the same data folder (PER-5).
     ShowRequested,
+    /// The user's region or clock settings changed.
+    LocaleChanged,
 }
 
 /// The distributed notification a second Pigeon posts, with the data
@@ -67,6 +70,11 @@ define_class!(
         #[unsafe(method(showRequested:))]
         fn show_requested(&self, _notification: &NSNotification) {
             signal(Signal::ShowRequested);
+        }
+
+        #[unsafe(method(localeChanged:))]
+        fn locale_changed(&self, _notification: &NSNotification) {
+            signal(Signal::LocaleChanged);
         }
     }
 );
@@ -108,8 +116,35 @@ pub fn listen(data_dir: &str, handler: impl Fn(Signal) + 'static) {
                 Some(&NSString::from_str(data_dir)),
                 NSNotificationSuspensionBehavior::DeliverImmediately,
             );
+        NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
+            &observer,
+            sel!(localeChanged:),
+            Some(NSCurrentLocaleDidChangeNotification),
+            None,
+        );
     }
     OBSERVER.with(|o| *o.borrow_mut() = Some(observer));
+}
+
+/// Whether macOS shows times on a 24-hour clock: System Settings ›
+/// General › Date & Time, which the region decides until the user does.
+pub fn system_uses_24_hour() -> bool {
+    let locale = NSLocale::autoupdatingCurrentLocale();
+    NSDateFormatter::dateFormatFromTemplate_options_locale(
+        &NSString::from_str("j"),
+        0,
+        Some(&locale),
+    )
+    .is_some_and(|format| uses_24_hour_pattern(&format.to_string()))
+}
+
+/// A date format pattern's hour: `H` and `k` are 24-hour. Quoted text
+/// ("'h'") is literal.
+fn uses_24_hour_pattern(pattern: &str) -> bool {
+    pattern
+        .split('\'')
+        .step_by(2)
+        .any(|unquoted| unquoted.contains(['H', 'k']))
 }
 
 /// From a second Pigeon: ask the one running on `data_dir` to show its
@@ -298,5 +333,18 @@ pub fn make_default_mail_app() -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("macOS said no (error {status})."))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::uses_24_hour_pattern;
+
+    #[test]
+    fn reads_the_hour_cycle_from_a_pattern() {
+        assert!(!uses_24_hour_pattern("h a"));
+        assert!(uses_24_hour_pattern("HH"));
+        assert!(uses_24_hour_pattern("k"));
+        assert!(!uses_24_hour_pattern("'H'h a"));
     }
 }

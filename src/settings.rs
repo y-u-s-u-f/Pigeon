@@ -45,6 +45,36 @@ pub enum Appearance {
     Dark,
 }
 
+/// The clock times show on, in mail and calendar alike. `System` follows
+/// macOS (System Settings › General › Date & Time).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TimeFormat {
+    #[default]
+    #[serde(rename = "system")]
+    System,
+    #[serde(rename = "12h")]
+    Twelve,
+    #[serde(rename = "24h")]
+    TwentyFour,
+}
+
+impl TimeFormat {
+    pub const ALL: [TimeFormat; 3] = [
+        TimeFormat::System,
+        TimeFormat::Twelve,
+        TimeFormat::TwentyFour,
+    ];
+
+    /// With the system's choice for `System`.
+    pub fn is_24_hour(self, system: impl FnOnce() -> bool) -> bool {
+        match self {
+            TimeFormat::System => system(),
+            TimeFormat::Twelve => false,
+            TimeFormat::TwentyFour => true,
+        }
+    }
+}
+
 /// Whether messages load their remote images (ATT-1).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -80,8 +110,8 @@ pub struct Saved {
     // W5.
     /// The day the calendar showed last, where it opens again (CAL-23).
     pub calendar_date: Option<chrono::NaiveDate>,
-    /// 24-hour times; `None` follows Google Calendar (CAL-41).
-    pub time_24h: Option<bool>,
+    /// 12- or 24-hour times, app-wide. Replaces `time_24h` (`from_map`).
+    pub time_format: TimeFormat,
     /// A new event's length in minutes; `None` follows Google Calendar.
     pub event_minutes: Option<u32>,
     /// W7b: the menu bar item, its panel and quick join (NTF-4, NTF-5).
@@ -181,7 +211,7 @@ impl Default for Saved {
             remote_images: RemoteImages::Ask,
             notifications: true,
             calendar_date: None,
-            time_24h: None,
+            time_format: TimeFormat::System,
             event_minutes: None,
             menu_bar: MenuBarPrefs::default(),
             signatures: true,
@@ -191,7 +221,21 @@ impl Default for Saved {
 
 impl Saved {
     /// From the store's rows; unknown or broken keys take their defaults.
-    pub fn from_map(map: serde_json::Map<String, serde_json::Value>) -> Self {
+    pub fn from_map(mut map: serde_json::Map<String, serde_json::Value>) -> Self {
+        // Before `time_format`: a calendar switch, `None` following Google.
+        if let Some(old) = map.remove("time_24h")
+            && !map.contains_key("time_format")
+        {
+            let format = match old.as_bool() {
+                Some(true) => TimeFormat::TwentyFour,
+                Some(false) => TimeFormat::Twelve,
+                None => TimeFormat::System,
+            };
+            map.insert(
+                "time_format".into(),
+                serde_json::to_value(format).expect("serializes"),
+            );
+        }
         let mut saved = serde_json::to_value(Saved::default()).expect("settings serialize");
         if let Some(fields) = saved.as_object_mut() {
             for (key, value) in map {
@@ -383,8 +427,6 @@ pub const SETTINGS: &[SettingMeta] = settings! {
         ["day", "week", "month", "default", "layout"];
     Calendar: WeekNumbers, "Week numbers", "Show the week of the year beside each week.",
         ["iso", "week of year"];
-    Calendar: TimeFormat, "24-hour time", "Show 13:00 rather than 1 PM. Follows Google Calendar until changed here.",
-        ["clock", "12-hour", "am", "pm", "military", "format"];
     Calendar: EventLength, "Default event length", "How long a new event is. Follows Google Calendar until changed here.",
         ["duration", "new event", "minutes", "meeting length"];
     Calendar: TimeZone, "Time zone", "Times show in this Mac's time zone.",
@@ -403,6 +445,8 @@ pub const SETTINGS: &[SettingMeta] = settings! {
         ["alerts", "banners", "notify", "new mail"];
     Notifications: TestNotification, "Send test notification", "Shows one now. The first time, macOS asks whether Pigeon may notify you.",
         ["try", "permission", "allow", "test"];
+    General: TimeFormat, "Time format", "1 PM or 13:00, in mail and calendar. System follows macOS's Date & Time settings.",
+        ["24-hour", "24 hour", "12-hour", "12 hour", "clock", "am", "pm", "military", "time"];
     General: OpenAtLogin, "Open at login", "Start Pigeon when you log in to this Mac.",
         ["startup", "launch", "login item", "start", "boot"];
     General: LoginItemStatus, "Login item", "What macOS says about Pigeon's login item.",
@@ -619,7 +663,7 @@ mod tests {
             remote_images: RemoteImages::Never,
             notifications: false,
             calendar_date: chrono::NaiveDate::from_ymd_opt(2026, 11, 3),
-            time_24h: Some(true),
+            time_format: TimeFormat::TwentyFour,
             event_minutes: Some(30),
             ..Saved::default()
         };
@@ -637,6 +681,34 @@ mod tests {
         let mut map = Saved::default().to_map();
         map.remove("notifications");
         assert!(Saved::from_map(map).notifications);
+    }
+
+    #[test]
+    fn the_old_24_hour_switch_becomes_the_time_format() {
+        let old = |value: serde_json::Value| {
+            let mut map = Saved::default().to_map();
+            map.remove("time_format");
+            map.insert("time_24h".into(), value);
+            Saved::from_map(map).time_format
+        };
+        assert_eq!(old(true.into()), TimeFormat::TwentyFour);
+        assert_eq!(old(false.into()), TimeFormat::Twelve);
+        assert_eq!(old(serde_json::Value::Null), TimeFormat::System);
+        // Once saved, the new key wins over a stale old one.
+        let mut map = Saved::default().to_map();
+        map.insert("time_format".into(), "12h".into());
+        map.insert("time_24h".into(), true.into());
+        assert_eq!(Saved::from_map(map).time_format, TimeFormat::Twelve);
+        assert!(TimeFormat::System.is_24_hour(|| true));
+        assert!(!TimeFormat::Twelve.is_24_hour(|| true));
+        assert!(TimeFormat::TwentyFour.is_24_hour(|| false));
+    }
+
+    #[test]
+    fn time_format_is_found_by_its_names() {
+        assert_eq!(settings_found("24-hour"), vec![SettingId::TimeFormat]);
+        assert_eq!(settings_found("time format"), vec![SettingId::TimeFormat]);
+        assert!(settings_found("12 hour").contains(&SettingId::TimeFormat));
     }
 
     #[test]

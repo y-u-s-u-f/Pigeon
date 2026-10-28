@@ -31,7 +31,6 @@ pub use recurrence::{Occurrence, Rule, occurrences};
 pub struct GoogleSettings {
     /// 0 Sunday, 1 Monday, 6 Saturday, as Google writes it.
     pub week_start: Option<u8>,
-    pub format_24h: Option<bool>,
     pub default_event_minutes: Option<u32>,
     /// Add Google Meet to new events.
     pub auto_add_meet: bool,
@@ -48,7 +47,6 @@ impl GoogleSettings {
         for (id, value) in items {
             match id.as_str() {
                 "weekStart" => out.week_start = value.parse().ok().filter(|d| *d <= 6),
-                "format24HourTime" => out.format_24h = value.parse().ok(),
                 "defaultEventLength" => {
                     out.default_event_minutes = value.parse().ok().filter(|m| *m > 0)
                 }

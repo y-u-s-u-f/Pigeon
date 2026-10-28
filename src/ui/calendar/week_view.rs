@@ -370,14 +370,7 @@ impl CalendarView {
                 .text_size(TEXT_XS)
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.cal_selected_text)
-                .child(
-                    if time::is_24_hour() {
-                        now.format("%H:%M")
-                    } else {
-                        now.format("%-I:%M")
-                    }
-                    .to_string(),
-                )
+                .child(time::clock_label(now.time()))
         });
 
         let grid = div()

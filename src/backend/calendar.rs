@@ -3933,7 +3933,6 @@ mod tests {
             settings,
             GoogleSettings {
                 week_start: Some(0),
-                format_24h: Some(true),
                 default_event_minutes: Some(30),
                 auto_add_meet: true,
                 remind_responded_only: true,

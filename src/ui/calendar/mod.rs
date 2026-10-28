@@ -293,7 +293,6 @@ pub enum CalendarEvent {
 /// Calendar settings changed in Pigeon; `None` follows Google (CAL-41).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CalendarPrefs {
-    pub time_24h: Option<bool>,
     pub event_minutes: Option<u32>,
 }
 
@@ -1902,24 +1901,16 @@ impl CalendarView {
             self.anchor = date;
         }
         self.prefs = CalendarPrefs {
-            time_24h: saved.time_24h,
             event_minutes: saved.event_minutes,
         };
         self.apply_display();
     }
 
-    /// The week's first day and the clock follow the settings.
+    /// The week's first day and a new event's length follow the settings.
+    /// The clock is app-wide (`shell::set_time_format`).
     pub fn apply_display(&mut self) {
         time::set_first_weekday(self.google.first_weekday());
-        time::set_24_hour(self.uses_24_hour());
         quick_add::set_default_minutes(self.event_minutes());
-    }
-
-    pub fn uses_24_hour(&self) -> bool {
-        self.prefs
-            .time_24h
-            .or(self.google.format_24h)
-            .unwrap_or(false)
     }
 
     /// A new event's length.

@@ -159,7 +159,7 @@ fn scope_name(scope: &str) -> &str {
     }
 }
 
-/// "3 min ago · 14:02", or why there's none (Settings › Accounts).
+/// "3 min ago · Oct 27, 2:02 PM", or why there's none (Settings › Accounts).
 pub fn last_sync(backend: &Backend, now_ms: i64) -> String {
     match backend.source() {
         Source::Demo => return "Demo data is always up to date".into(),
@@ -171,9 +171,12 @@ pub fn last_sync(backend: &Backend, now_ms: i64) -> String {
     };
     let when = chrono::DateTime::from_timestamp_millis(at)
         .map(|t| {
-            t.with_timezone(&chrono::Local)
-                .format("%b %-d, %H:%M")
-                .to_string()
+            let t = t.with_timezone(&chrono::Local);
+            format!(
+                "{}, {}",
+                t.format("%b %-d"),
+                crate::calendar::time::time_label(t.time())
+            )
         })
         .unwrap_or_default();
     let status = match backend.status() {

@@ -21,7 +21,7 @@ use crate::{
     backend::{self, Backend, BackendEvent},
     logging, native,
     notify::{self, NoticeTarget},
-    settings::{self, Saved},
+    settings::{self, Saved, TimeFormat},
     theme::Theme,
 };
 
@@ -171,6 +171,7 @@ pub fn open_urls(urls: Vec<String>) {
 pub fn init(backend: Entity<Backend>, cx: &mut App) {
     let saved = Saved::from_map(backend.read(cx).load_settings());
     settings::remember(saved, cx);
+    apply_time_format(saved.time_format);
     backend.update(cx, |b, _| b.set_notifications(saved.notifications));
     cx.set_global(Shell {
         backend: backend.clone(),
@@ -246,7 +247,26 @@ fn on_signal(signal: native::Signal, cx: &mut App) {
             logging::info("instance: opened again; showing the window");
             show(Show::Main, cx);
         }
+        native::Signal::LocaleChanged => {
+            apply_time_format(settings::current(cx).time_format);
+            cx.refresh_windows();
+        }
     }
+}
+
+/// Times show on the clock `format` asks for, `System` reading macOS's now.
+fn apply_time_format(format: TimeFormat) {
+    crate::calendar::time::set_24_hour(format.is_24_hour(native::system_uses_24_hour));
+}
+
+/// Settings › General › Time format, for mail and calendar alike.
+pub fn set_time_format(format: TimeFormat, cx: &mut App) {
+    let mut saved = settings::current(cx);
+    saved.time_format = format;
+    settings::remember(saved, cx);
+    apply_time_format(format);
+    backend_of(cx).update(cx, |b, cx| b.save_settings(saved.to_map(), cx));
+    cx.refresh_windows();
 }
 
 fn open_mailto(urls: Vec<String>, cx: &mut App) {

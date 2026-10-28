@@ -467,7 +467,7 @@ impl PigeonApp {
             remote_images: self.saved.remote_images,
             notifications: crate::settings::current(cx).notifications,
             calendar_date: Some(calendar.anchor),
-            time_24h: calendar.prefs.time_24h,
+            time_format: crate::settings::current(cx).time_format,
             event_minutes: calendar.prefs.event_minutes,
             menu_bar: crate::settings::current(cx).menu_bar,
             signatures: crate::settings::current(cx).signatures,

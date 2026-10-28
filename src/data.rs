@@ -832,13 +832,14 @@ fn strip_word_prefix<'a>(text: &'a str, prefix: &str) -> &'a str {
     }
 }
 
-/// "9:12 AM" today, "Yesterday", "Tue" this week, "Oct 3" this year, else "Oct 3, 2025".
+/// "9:12 AM" (or "09:12") today, "Yesterday", "Tue" this week, "Oct 3" this
+/// year, else "Oct 3, 2025".
 pub fn list_date(date: &DateTime<FixedOffset>) -> String {
     let date = date.with_timezone(&Local);
     let now = Local::now();
     let days = (now.date_naive() - date.date_naive()).num_days();
     match days {
-        0 => date.format("%-I:%M %p").to_string(),
+        0 => crate::calendar::time::time_label(date.time()),
         1 => "Yesterday".into(),
         2..=6 => date.format("%a").to_string(),
         _ if date.year() == now.year() => date.format("%b %-d").to_string(),
@@ -849,11 +850,11 @@ pub fn list_date(date: &DateTime<FixedOffset>) -> String {
 /// "Sun, Oct 25, 9:12 AM", with the year only when it isn't this year.
 pub fn full_date(date: &DateTime<FixedOffset>) -> String {
     let date = date.with_timezone(&Local);
-    if date.year() == Local::now().year() {
-        date.format("%a, %b %-d, %-I:%M %p").to_string()
-    } else {
-        date.format("%a, %b %-d %Y, %-I:%M %p").to_string()
-    }
+    crate::calendar::time::date_time_label(
+        date.date_naive(),
+        date.time(),
+        Local::now().date_naive(),
+    )
 }
 
 pub fn file_size(bytes: u64) -> String {

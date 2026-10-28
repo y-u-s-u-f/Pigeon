@@ -355,7 +355,7 @@ The user's own plans, not driven by Google's APIs.
 
 #### RDR-4 Message header
 
-- **Today:** Sender name, email, "to … · cc …", full local date via `full_date()`. Bcc not shown. `render_message()`. With Google the headers come from `format=metadata` (From, To, Cc, Bcc, Reply-To, Subject, Date, Message-ID, In-Reply-To, References), parsed by `mail-parser` (W3); `message_id`/`in_reply_to`/`references` are stored without angle brackets.
+- **Today:** Sender name, email, "to … · cc …", full local date via `full_date()`, on the app's 12- or 24-hour clock (§8.4). Bcc not shown. `render_message()`. With Google the headers come from `format=metadata` (From, To, Cc, Bcc, Reply-To, Subject, Date, Message-ID, In-Reply-To, References), parsed by `mail-parser` (W3); `message_id`/`in_reply_to`/`references` are stored without angle brackets.
 - **Needs:** A tester pass (T1a).
 - **Notes:** Long recipient lists are shown in full.
 
@@ -1166,8 +1166,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-41 Calendar settings from Google
 
-- **Today (W5):** `settings.list` is read at most every 6 hours during sync (`GoogleSettings`, kept in sync state; errors only logged): `weekStart` sets the week's first day, `format24HourTime` the clock, `defaultEventLength` a new event's length, `autoAddHangouts` Meet on new events (CAL-34), `remindOnRespondedEventsOnly` the reminders (CAL-33), `timezone` the zone notice (CAL-12). Settings → Calendar has "24-hour time" and "Default event length", which follow Google until changed in Pigeon (`Saved::time_24h`, `event_minutes`).
-- **Needs:** Done; passed on the real account (sprint 2 T1c). Not used: `settings.watch`; `hideWeekends`, `showDeclinedEvents`, `hideInvitations`, `locale`, `dateFieldOrder`, `useKeyboardShortcuts` aren't used.
+- **Today (W5):** `settings.list` is read at most every 6 hours during sync (`GoogleSettings`, kept in sync state; errors only logged): `weekStart` sets the week's first day, `defaultEventLength` a new event's length, `autoAddHangouts` Meet on new events (CAL-34), `remindOnRespondedEventsOnly` the reminders (CAL-33), `timezone` the zone notice (CAL-12). Settings → Calendar has "Default event length", which follows Google until changed in Pigeon (`Saved::event_minutes`). The clock no longer follows Google's `format24HourTime` (no longer read): it's the app-wide Settings → General → Time format (System / 12-hour / 24-hour, see [§8.4](#84-features-with-no-backend-need)); an old saved `time_24h` migrates to it.
+- **Needs:** Done; passed on the real account (sprint 2 T1c). Not used: `settings.watch`; `format24HourTime`, `hideWeekends`, `showDeclinedEvents`, `hideInvitations`, `locale`, `dateFieldOrder`, `useKeyboardShortcuts` aren't used.
 
 ---
 
@@ -1423,6 +1423,7 @@ Real features that don't depend on the backend, listed so the tables aren't read
 - Keyboard shortcuts sheet (`?`, `src/ui/shortcuts_help.rs`), built from the live keymap, scoped like the palette.
 - Calendar views, navigation and keyboard selection (CAL-4).
 - Light and dark following the system (`Theme::sync()` in `src/theme.rs`) or the Appearance setting.
+- Time format (Settings → General): System (default; macOS's Date & Time setting, read with `NSDateFormatter` template `j` in `native::system_uses_24_hour()`, again when the locale changes), 12-hour or 24-hour (`Saved::time_format`, `shell::set_time_format()`). Every time in mail and calendar (list, reader, forwarded header, menu bar panel, contact card, last sync, calendar views, panel, invites, reminders) goes through `src/calendar/time.rs`.
 - The settings page (⌘,, `src/ui/settings.rs`) with search and keyboard control, apart from saving values (PER-3).
 - Keyboard focus between list, reader, composer and search; selectable message text.
 - Window title bar and drag area (`window_drag_area()` in `src/ui/mod.rs`); Quit (`cmd-q`).

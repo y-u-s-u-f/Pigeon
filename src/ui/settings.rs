@@ -30,7 +30,9 @@ use crate::{
     backend::Source,
     data::Contact,
     native::{self, LoginItem},
-    settings::{self, Appearance, Entry, HotKey, Match, RemoteImages, Section, SettingId},
+    settings::{
+        self, Appearance, Entry, HotKey, Match, RemoteImages, Section, SettingId, TimeFormat,
+    },
     theme::Theme,
     ui::{calendar::ViewKind, shortcuts_help::live_bindings},
 };
@@ -63,6 +65,8 @@ const APPEARANCES: &[&str] = &["System", "Light", "Dark"];
 const SCOPES: &[&str] = &["Current view", "All mail"];
 const VIEWS: &[&str] = &["Day", "Week", "Month"];
 const IMAGES: &[&str] = &["Ask", "Always", "Never"];
+// As `TimeFormat::ALL`.
+const TIME_FORMATS: &[&str] = &["System", "12-hour", "24-hour"];
 // W5 (CAL-41).
 const EVENT_LENGTHS: &[&str] = &["15 min", "30 min", "45 min", "1 hr", "1.5 hrs", "2 hrs"];
 const EVENT_MINUTES: [u32; 6] = [15, 30, 45, 60, 90, 120];
@@ -531,7 +535,11 @@ impl PigeonApp {
                 },
                 IMAGES,
             ),
-            SettingId::TimeFormat => Control::Switch(calendar.uses_24_hour()),
+            SettingId::TimeFormat => {
+                let format = settings::current(cx).time_format;
+                let ix = TimeFormat::ALL.iter().position(|f| *f == format);
+                Control::Choice(ix.unwrap_or(0), TIME_FORMATS)
+            }
             SettingId::EventLength => {
                 let minutes = calendar.event_minutes();
                 let ix = (0..EVENT_MINUTES.len())
@@ -651,6 +659,7 @@ impl PigeonApp {
                 self.saved.notifications = settings::current(cx).notifications;
                 self.saved.menu_bar = settings::current(cx).menu_bar;
                 self.saved.signatures = settings::current(cx).signatures;
+                self.saved.time_format = settings::current(cx).time_format;
                 settings::remember(self.saved, cx);
                 let map = self.saved.to_map();
                 self.backend.update(cx, |b, cx| b.save_settings(map, cx));
@@ -671,11 +680,7 @@ impl PigeonApp {
                 }
                 menu_bar::set_prefs(prefs, cx);
             }
-            SettingId::TimeFormat => self.calendar.update(cx, |c, cx| {
-                c.prefs.time_24h = Some(on);
-                c.apply_display();
-                cx.notify();
-            }),
+            SettingId::TimeFormat => shell::set_time_format(TimeFormat::ALL[choice], cx),
             SettingId::EventLength => self.calendar.update(cx, |c, cx| {
                 c.prefs.event_minutes = Some(EVENT_MINUTES[choice]);
                 c.apply_display();

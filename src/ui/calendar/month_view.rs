@@ -2,7 +2,7 @@
 //! across them and timed events as pills; a day that overflows says how many
 //! more it has.
 
-use chrono::{Datelike, Duration, NaiveDate, NaiveTime, Timelike};
+use chrono::{Datelike, Duration, NaiveDate};
 use gpui::{
     AnyElement, Context, FontWeight, InteractiveElement, IntoElement, MouseButton, ParentElement,
     StatefulInteractiveElement as _, Styled, Window, div, prelude::FluentBuilder as _, px,
@@ -36,19 +36,6 @@ struct Item {
     end: usize,
     lane: usize,
     bar: bool,
-}
-
-/// "9am", "9:30pm".
-fn pill_time(time: NaiveTime) -> String {
-    if time::is_24_hour() {
-        return time.format("%H:%M").to_string();
-    }
-    let meridiem = if time.hour() < 12 { "am" } else { "pm" };
-    if time.minute() == 0 {
-        format!("{}{meridiem}", time.format("%-I"))
-    } else {
-        format!("{}{meridiem}", time.format("%-I:%M"))
-    }
 }
 
 impl CalendarView {
@@ -416,7 +403,7 @@ impl CalendarView {
                     div()
                         .flex_none()
                         .text_color(muted)
-                        .child(pill_time(occurrence.start.time())),
+                        .child(time::pill_time_label(occurrence.start.time())),
                 )
                 .child(
                     div()
