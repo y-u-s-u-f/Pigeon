@@ -416,9 +416,8 @@ impl CalendarView {
                 }
             }
         });
-        let date_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Go to date: nov 12, next fri, tomorrow")
-        });
+        let date_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Try nov 12, next fri"));
         let date_events = cx.subscribe_in(&date_input, window, Self::on_date_input_event);
         // Google's settings are read with the calendars (CAL-41).
         let backend_events = cx.subscribe(&backend, |this, _, event: &BackendEvent, cx| {

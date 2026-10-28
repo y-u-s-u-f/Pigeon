@@ -266,7 +266,7 @@ impl CalendarView {
                         .role(gpui::Role::Dialog)
                         .aria_label("Go to date")
                         .mt(px(40.))
-                        .w(px(260.))
+                        .w(HIT_TARGET * 7. + SPACE_MD * 2. + px(2.))
                         .p(SPACE_MD)
                         .flex()
                         .flex_col()
