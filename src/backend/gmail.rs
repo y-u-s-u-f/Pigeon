@@ -113,7 +113,6 @@ pub mod cost {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Profile {
-    pub email_address: String,
     #[serde(deserialize_with = "number")]
     pub history_id: u64,
 }
@@ -149,8 +148,6 @@ pub struct GLabel {
 pub struct LabelColor {
     #[serde(default)]
     pub background_color: Option<String>,
-    #[serde(default)]
-    pub text_color: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -204,8 +201,6 @@ pub struct GMessage {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Payload {
-    #[serde(default)]
-    pub mime_type: String,
     #[serde(default)]
     pub headers: Vec<Header>,
 }

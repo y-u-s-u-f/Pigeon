@@ -47,7 +47,7 @@ const READER_MAX: Pixels = px(760.);
 /// A reader narrower than this drops the body's indent.
 const NARROW: Pixels = px(520.);
 /// The longest file name an attachment chip shows.
-const CHIP_NAME_MAX: Pixels = px(260.);
+const CHIP_NAME_MAX: gpui::Rems = type_size(260.);
 /// The bulk actions' column.
 const BULK_MAX: Pixels = px(440.);
 
@@ -75,9 +75,47 @@ pub struct ReaderUi {
     /// for the menus they open (MB-016).
     pub(crate) more_anchor: Rc<Cell<Option<Bounds<Pixels>>>>,
     pub(crate) attachment_anchor: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Bodies on their way, by message id: since when (MA-066). A body
+    /// whose placeholder showed fades in over it.
+    pub(crate) body_waits: HashMap<String, BodyWait>,
 }
 
 impl gpui::Global for ReaderUi {}
+
+#[derive(Clone, Copy)]
+pub(crate) enum BodyWait {
+    Loading(std::time::Instant),
+    /// Loaded after its placeholder showed, so it faded in over it.
+    Revealed,
+}
+/// When the reader's placeholder says what it's waiting for (MA-066).
+const BODY_SLOW: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Whether a loaded body should fade in: its placeholder showed. Notes a
+/// body still loading.
+fn body_reveal(id: &str, loaded: bool, cx: &mut App) -> bool {
+    use std::time::Instant;
+    let waits = &mut cx.default_global::<ReaderUi>().body_waits;
+    match (waits.get(id).copied(), loaded) {
+        (None, false) => {
+            waits.insert(id.to_string(), BodyWait::Loading(Instant::now()));
+            false
+        }
+        (_, false) => false,
+        (None, true) => false,
+        (Some(BodyWait::Loading(at)), true) => {
+            if at.elapsed() > super::motion::LOADING_DELAY {
+                waits.insert(id.to_string(), BodyWait::Revealed);
+                true
+            } else {
+                waits.remove(id);
+                false
+            }
+        }
+        // Kept wrapped, so the body isn't remounted once the fade ends.
+        (Some(BodyWait::Revealed), true) => true,
+    }
+}
 
 /// Quick Look one attachment of the selected conversation, by message and
 /// attachment index (MB-044): Space on its chip, and its menu.
@@ -237,7 +275,11 @@ impl PigeonApp {
                             .child(composer),
                     )),
                 None if !self.checked.is_empty() => this
-                    .child(window_drag_area(div().id("reader-toolbar")).h(HEADER_HEIGHT))
+                    .child(
+                        window_drag_area(div().id("reader-toolbar"))
+                            .h(super::HEADER_MIN)
+                            .min_h(HEADER_HEIGHT),
+                    )
                     .child(self.render_bulk_summary(&theme, window)),
                 None if original.is_some() => {
                     this.child(render_original(original.expect("checked"), &theme))
@@ -305,7 +347,8 @@ impl PigeonApp {
     ) -> impl IntoElement {
         let title = composer.read(cx).title();
         window_drag_area(div().id("compose-toolbar"))
-            .h(HEADER_HEIGHT)
+            .h(super::HEADER_MIN)
+            .min_h(HEADER_HEIGHT)
             .flex_none()
             .flex()
             .items_center()
@@ -356,7 +399,8 @@ impl PigeonApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let header = window_drag_area(div().id("reader-toolbar"))
-            .h(HEADER_HEIGHT)
+            .h(super::HEADER_MIN)
+            .min_h(HEADER_HEIGHT)
             .flex_none()
             .flex()
             .items_center()
@@ -663,12 +707,13 @@ impl PigeonApp {
                             .items_center()
                             .gap(SPACE_SM)
                             .children(chips)
-                            .child(div().text_size(TEXT_SM).text_color(theme.text_faint).child(
-                                match thread.messages.len() {
-                                    1 => "1 message".to_string(),
-                                    n => format!("{n} messages"),
-                                },
-                            )),
+                            // The count only where there's more than one (ME-026).
+                            .children((thread.messages.len() > 1).then(|| {
+                                div()
+                                    .text_size(TEXT_SM)
+                                    .text_color(theme.text_faint)
+                                    .child(format!("{} messages", thread.messages.len()))
+                            })),
                     )
                     .children(messages)
                     .children(composer),
@@ -898,6 +943,15 @@ impl PigeonApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let to_line = self.render_recipients(ix, message, theme, cx);
+        let reveal = match &message.body {
+            Body::Failed(_) => {
+                cx.default_global::<ReaderUi>()
+                    .body_waits
+                    .remove(&message.id);
+                false
+            }
+            body => body_reveal(&message.id, matches!(body, Body::Loaded { .. }), cx),
+        };
         let body = match &message.body {
             Body::Loaded { .. } => self.parsed(message, cx),
             _ => None,
@@ -1124,17 +1178,28 @@ impl PigeonApp {
                         this.child(render_images_bar(ix, &message.id, hidden, theme, cx))
                     })
                     .child(match (&message.body, body) {
-                        (Body::Loaded { .. }, Some(body)) => render_body(
-                            &body,
-                            selection,
-                            html_view::ShowImages {
-                                loaded: &self.images,
-                                remote: images.show,
-                            },
-                            fold,
-                            theme,
-                        )
-                        .into_any_element(),
+                        (Body::Loaded { .. }, Some(body)) => {
+                            let el = render_body(
+                                &body,
+                                selection,
+                                html_view::ShowImages {
+                                    loaded: &self.images,
+                                    remote: images.show,
+                                },
+                                fold,
+                                theme,
+                            );
+                            if reveal {
+                                super::motion::enter(
+                                    ElementId::Name(format!("body-in-{}", message.id).into()),
+                                    super::motion::Rise::None,
+                                    div().child(el),
+                                )
+                                .into_any_element()
+                            } else {
+                                el.into_any_element()
+                            }
+                        }
                         (Body::Failed(reason), _) => render_body_failed(ix, reason, theme),
                         _ => render_body_loading(theme),
                     }),
@@ -1936,7 +2001,8 @@ fn source_lines(text: &str) -> Vec<SharedString> {
 
 fn render_original(original: &Original, theme: &Theme) -> AnyElement {
     let toolbar = window_drag_area(div().id("original-toolbar"))
-        .h(HEADER_HEIGHT)
+        .h(super::HEADER_MIN)
+        .min_h(HEADER_HEIGHT)
         .flex_none()
         .flex()
         .items_center()
@@ -2070,27 +2136,38 @@ fn render_body_loading(theme: &Theme) -> AnyElement {
     // flashes it; it pulses at 30 frames a second.
     super::motion::after_loading_delay(
         "message-loading-in",
-        div().child(
-            div()
-                .id("message-loading")
-                .role(gpui::Role::Status)
-                .aria_label("Loading message")
-                .flex()
-                .flex_col()
-                .gap(SPACE_SM)
-                .child(bar(0.9))
-                .child(bar(0.75))
-                .child(bar(0.82))
-                .child(bar(0.4))
-                .with_animation(
-                    "message-loading",
-                    Animation::new(std::time::Duration::from_millis(1200))
-                        .repeat()
-                        .with_max_fps(30.)
-                        .with_easing(gpui::pulsating_between(0.5, 1.)),
-                    |this, delta| this.opacity(delta),
-                ),
-        ),
+        div()
+            .child(
+                div()
+                    .id("message-loading")
+                    .role(gpui::Role::Status)
+                    .aria_label("Loading message")
+                    .flex()
+                    .flex_col()
+                    .gap(SPACE_SM)
+                    .child(bar(0.9))
+                    .child(bar(0.75))
+                    .child(bar(0.82))
+                    .child(bar(0.4))
+                    .with_animation(
+                        "message-loading",
+                        Animation::new(std::time::Duration::from_millis(1200))
+                            .repeat()
+                            .with_max_fps(30.)
+                            .with_easing(gpui::pulsating_between(0.5, 1.)),
+                        |this, delta| this.opacity(delta),
+                    ),
+            )
+            // A slow one says what it's waiting for.
+            .child(super::motion::after_delay(
+                "message-downloading",
+                BODY_SLOW,
+                div()
+                    .mt(SPACE_MD)
+                    .text_size(TEXT_SM)
+                    .text_color(theme.text_faint)
+                    .child("Downloading message…"),
+            )),
     )
     .into_any_element()
 }

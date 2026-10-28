@@ -30,7 +30,7 @@ use crate::{
 actions!(onboarding, [Confirm, TryDemo]);
 
 /// The wide buttons, and the error above them.
-const BUTTON_WIDTH: Pixels = px(260.);
+const BUTTON_WIDTH: gpui::Rems = type_size(260.);
 const ERROR_WIDTH: Pixels = px(360.);
 /// The app icon, as macOS shows it in Finder's large icons (MB-008).
 const APP_ICON: Pixels = px(64.);
@@ -131,12 +131,20 @@ impl PigeonApp {
                             .text_center()
                             .text_size(TEXT_SM)
                             .text_color(theme.text_danger)
-                            .child(message),
+                            // Selectable, to copy into a report (MB-035).
+                            .child(
+                                super::selectable::Selectable::plain(
+                                    "sign-in-error-text",
+                                    message,
+                                    theme.text_selection,
+                                )
+                                .silent(),
+                            ),
                     )
                 }))
                 .child(button(
                     "sign-in",
-                    "Sign In with Google",
+                    "Sign In with Google…",
                     keycap_on_accent("↩", &theme),
                     true,
                     &theme,
@@ -257,28 +265,7 @@ fn menu_bar_check(on: bool, theme: &Theme) -> impl IntoElement {
         .text_color(theme.text)
         .hover(|s| s.bg(theme.hover_bg))
         .active(|s| s.bg(theme.selected_bg))
-        .child(
-            div()
-                .flex_none()
-                .size(ICON_LG)
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(RADIUS_SM / 2.)
-                .map(|d| {
-                    if on {
-                        d.bg(theme.switch_on).child(icon(
-                            Icon::Check,
-                            ICON_SM,
-                            theme.on_fill(theme.switch_on),
-                        ))
-                    } else {
-                        d.bg(theme.control_track)
-                            .border_1()
-                            .border_color(theme.border)
-                    }
-                }),
-        )
+        .child(super::controls::check_box(on, theme))
         .child(label)
         .on_click(|_, _, cx| {
             let mut prefs = settings::get(cx).menu_bar;

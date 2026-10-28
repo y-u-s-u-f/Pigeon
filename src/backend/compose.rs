@@ -28,14 +28,6 @@ use super::{
 };
 use crate::data::{Account, Body, DraftOrigin, Folder, Thread};
 
-/// Whether `commit_compose` takes the op.
-pub fn handles(op: &MailOp) -> bool {
-    matches!(
-        op,
-        MailOp::SaveDraft { .. } | MailOp::DeleteDraft { .. } | MailOp::Send { .. }
-    )
-}
-
 /// Commit a draft or send op to Gmail: whether it went, and what changed
 /// for the app to reload, failed or not.
 pub fn commit_compose(

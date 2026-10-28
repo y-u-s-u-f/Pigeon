@@ -17,7 +17,6 @@ use crate::data::{Attachment, Contact, Message};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ParsedBody {
     pub html: String,
-    pub plain: Option<String>,
     pub attachments: Vec<Attachment>,
     /// Images the HTML shows by `cid:` (ATT-2), under the address `html`
     /// now uses for them.
@@ -134,7 +133,6 @@ pub fn parse(raw: &[u8]) -> Option<mail_parser::Message<'static>> {
 /// `parse_message` of a message parsed already.
 pub fn parsed_body(message: &mail_parser::Message) -> ParsedBody {
     let html: String = message.html_bodies().collect::<Vec<_>>().join("\n");
-    let plain: String = message.text_bodies().collect::<Vec<_>>().join("\n");
 
     let attachments = message
         .attachments()
@@ -172,7 +170,6 @@ pub fn parsed_body(message: &mail_parser::Message) -> ParsedBody {
     let html = rewrite_cids(&html, &inline);
     ParsedBody {
         html,
-        plain: (!plain.trim().is_empty()).then_some(plain),
         attachments,
         inline_images: inline.into_iter().map(|(_, image)| image).collect(),
     }
@@ -464,7 +461,6 @@ mod tests {
     #[test]
     fn latin1_body_is_decoded() {
         let body = parse(include_str!("../../tests/fixtures/google/gmail/latin1.eml"));
-        assert!(body.plain.as_deref().unwrap().contains("Café à côté"));
         assert!(body.html.contains("Café à côté"));
         assert!(body.attachments.is_empty());
     }
@@ -475,7 +471,6 @@ mod tests {
         let body = parse(raw);
         assert!(body.html.contains("<b>bold</b>"), "{}", body.html);
         assert!(!body.html.contains("*bold*"));
-        assert!(body.plain.as_deref().unwrap().contains("*bold*"));
         let message = MessageParser::default().parse(raw.as_bytes()).unwrap();
         assert_eq!(message.subject(), Some("Grüße aus München ☕"));
     }

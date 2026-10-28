@@ -1691,14 +1691,15 @@ impl Composer {
         });
 
         let suggestions = (focused && !field.suggestions.is_empty()).then(|| {
+            let book = self.book.borrow();
             let rows = field
                 .suggestions
                 .iter()
                 .enumerate()
                 .map(|(row, &contact_ix)| {
-                    let contact = self.book.borrow().contact(contact_ix).clone();
                     let highlighted = row == field.highlighted;
-                    controls::person_row(("suggestion", row), &contact, highlighted, theme)
+                    let contact = book.contact(contact_ix);
+                    controls::person_row(("suggestion", row), contact, highlighted, theme)
                         .when(highlighted, |d| d.aria_active_descendant())
                         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -2280,10 +2281,11 @@ impl Composer {
     /// W3 (MST-2): Gmail's signature for the From address, under the body.
     /// Read-only: it's edited in Gmail's settings.
     fn render_signature(&mut self, theme: &Theme) -> Option<gpui::AnyElement> {
-        let html = self.signature_html()?.to_string();
+        let html = self.signature_html()?;
         let doc = match &self.signature_doc {
-            Some((seen, doc)) if *seen == html => doc.clone(),
+            Some((seen, doc)) if seen == html => doc.clone(),
             _ => {
+                let html = html.to_string();
                 let doc = Rc::new(html::parse(&html));
                 self.signature_doc = Some((html, doc.clone()));
                 doc
@@ -2746,10 +2748,10 @@ impl Render for Composer {
 const LABEL_WIDTH: Rems = rems(3.5);
 /// Out of focus, a field with more chips shows this many and "+N more".
 const COLLAPSED_CHIPS: usize = 5;
-const SUGGESTIONS_WIDTH: Pixels = px(320.);
-const FROM_MENU_WIDTH: Pixels = px(360.);
-const RECIPIENT_INPUT_MIN: Pixels = px(140.);
-const ATTACHMENT_NAME_MAX: Pixels = px(220.);
+const SUGGESTIONS_WIDTH: gpui::Rems = type_size(320.);
+const FROM_MENU_WIDTH: gpui::Rems = type_size(360.);
+const RECIPIENT_INPUT_MIN: gpui::Rems = type_size(140.);
+const ATTACHMENT_NAME_MAX: gpui::Rems = type_size(220.);
 /// The editor's own inset, which the body cancels so its text lines up
 /// with the inputs above it.
 const EDITOR_INSET_LEFT: Pixels = px(12.);
@@ -2781,16 +2783,11 @@ fn field_error(error: SharedString, theme: &Theme) -> impl IntoElement {
 }
 
 fn field_error_line(error: SharedString, theme: &Theme) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id("field-error")
-        .role(gpui::Role::Label)
-        .aria_value(error.clone())
-        .a11y_synthetic_children(|builder| {
-            builder
-                .parent_node()
-                .set_live(gpui::accesskit::Live::Assertive)
-        })
-        .child(controls::error_line(error, theme))
+    controls::error_line("field-error", error, theme).a11y_synthetic_children(|builder| {
+        builder
+            .parent_node()
+            .set_live(gpui::accesskit::Live::Assertive)
+    })
 }
 
 fn recipient_ix(field: Field) -> usize {

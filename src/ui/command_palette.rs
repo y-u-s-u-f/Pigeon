@@ -6,8 +6,8 @@ use std::{collections::HashMap, sync::OnceLock};
 use gpui::{
     Action, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
     HighlightStyle, Hsla, InteractiveElement, IntoElement, KeyBinding, MouseButton, ParentElement,
-    Pixels, Render, ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled,
-    StyledText, Subscription, UniformListScrollHandle, Window, actions,
+    Render, ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled, StyledText,
+    Subscription, UniformListScrollHandle, Window, actions,
     component::{
         input::{Input, InputEvent, InputState},
         scroll::ScrollableElement as _,
@@ -21,7 +21,7 @@ use nucleo_matcher::{
     pattern::{AtomKind, CaseMatching, Normalization, Pattern},
 };
 
-use super::{binding_caps, controls::sheet_surface, icon, keycap, keys_caps};
+use super::{binding_caps, binding_text, controls::sheet_surface, icon, keycap, keys_caps};
 use crate::ui::style::*;
 use crate::{
     actions::{COMMANDS, PALETTE},
@@ -41,9 +41,7 @@ const VISIBLE_ROWS: usize = 8;
 /// Thread results are capped so a broad query stays readable.
 const MAX_THREADS: usize = 30;
 /// The widest a title gets before its subtitle.
-const TITLE_MAX: Pixels = px(380.);
-/// A leading color dot.
-const DOT: Pixels = px(8.);
+const TITLE_MAX: gpui::Rems = type_size(380.);
 
 #[derive(Clone, Copy)]
 pub enum PaletteCommand {
@@ -65,9 +63,14 @@ pub enum PaletteCommand {
 
 pub enum Leading {
     Icon(Icon),
-    Dot(Hsla),
-    /// W4b: a label's dot, indented by its depth in the tree (FOL-9).
+    /// A label's or calendar's dot, indented by its depth in the tree (FOL-9).
     Nested(Hsla, usize),
+}
+
+impl Leading {
+    pub fn dot(color: Hsla) -> Self {
+        Leading::Nested(color, 0)
+    }
 }
 
 pub struct PaletteItem {
@@ -307,11 +310,12 @@ impl CommandPalette {
                     format!("New event: {}", event.title)
                 };
                 let today = chrono::Local::now().date_naive();
-                (
-                    text.to_string(),
-                    title.into(),
-                    event.when_label(today).into(),
-                )
+                // The place it read, so a wrong guess shows before Enter.
+                let when = match &event.location {
+                    Some(place) => format!("{} · {place}", event.when_label(today)),
+                    None => event.when_label(today),
+                };
+                (text.to_string(), title.into(), when.into())
             });
         if let Some((verb, hint)) = &self.prompt {
             let text = query.trim();
@@ -508,7 +512,7 @@ impl CommandPalette {
 
     fn render_row(&self, ix: usize, theme: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
         let (entry, indices) = match &self.rows[ix] {
-            Row::Quick => return self.render_quick_row(ix, theme, cx).into_any_element(),
+            Row::Quick => return self.render_quick_row(ix, theme, cx),
             Row::Header(section) => {
                 return div()
                     .id(ix)
@@ -549,83 +553,25 @@ impl CommandPalette {
             None => item.title.clone(),
         };
 
-        div()
-            .id(ix)
-            .role(gpui::Role::ListBoxOption)
-            .aria_label(label)
-            .aria_selected(selected)
-            .when(selected, |this| this.aria_active_descendant())
-            .h(ROW_PALETTE)
-            .px(SPACE_SM)
-            .child(
-                div()
-                    .size_full()
-                    .px(SPACE_MD)
-                    .flex()
-                    .items_center()
-                    .gap(SPACE_MD)
-                    .rounded(RADIUS_MD)
-                    .when(selected, |this| this.bg(theme.selected_bg))
-                    .child(match item.leading {
-                        Leading::Icon(glyph) => icon(
-                            glyph,
-                            ICON_LG,
-                            if selected {
-                                theme.icon_active
-                            } else {
-                                theme.icon
-                            },
-                        )
-                        .into_any_element(),
-                        Leading::Dot(color) => div()
-                            .size(ICON_LG)
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(div().size(DOT).rounded_full().bg(color))
-                            .into_any_element(),
-                        Leading::Nested(color, depth) => div()
-                            .ml(SPACE_LG * depth as f32)
-                            .size(ICON_LG)
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(div().size(DOT).rounded_full().bg(color))
-                            .into_any_element(),
-                    })
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .items_baseline()
-                            .gap(SPACE_SM)
-                            .overflow_hidden()
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .max_w(TITLE_MAX)
-                                    .truncate()
-                                    .text_size(TEXT_BASE)
-                                    .text_color(theme.text)
-                                    .child(highlighted(&item.title, title_hl, highlight)),
-                            )
-                            .children(item.subtitle.as_ref().map(|subtitle| {
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(TEXT_SM)
-                                    .text_color(theme.text_faint)
-                                    .child(highlighted(subtitle, subtitle_hl, highlight))
-                            })),
-                    )
-                    .children(item.binding.as_ref().map(|b| binding_caps(b, theme))),
-            )
-            .on_mouse_move(cx.listener(move |this, _, _, cx| this.select(ix, cx)))
-            .on_click(cx.listener(move |this, _, _, cx| this.run(ix, cx)))
-            .into_any_element()
+        let leading = match item.leading {
+            Leading::Icon(glyph) => leading_icon(glyph, selected, theme).into_any_element(),
+            Leading::Nested(color, depth) => super::dot_marker(color)
+                .ml(SPACE_LG * depth as f32)
+                .into_any_element(),
+        };
+        palette_row(
+            ix,
+            selected,
+            label,
+            leading,
+            highlighted(&item.title, title_hl, highlight),
+            item.subtitle
+                .as_ref()
+                .map(|subtitle| highlighted(subtitle, subtitle_hl, highlight)),
+            item.binding.as_ref(),
+            theme,
+            cx,
+        )
     }
 
     /// "New event: Lunch with Sam", "Fri, Oct 30 · 1 – 2 PM" (CAL-39).
@@ -634,69 +580,102 @@ impl CommandPalette {
         ix: usize,
         theme: &Theme,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> gpui::AnyElement {
         let (title, when) = self
             .quick
             .as_ref()
             .map(|(_, title, when)| (title.clone(), when.clone()))
             .unwrap_or_default();
         let selected = ix == self.selected;
-        div()
-            .id(ix)
-            .role(gpui::Role::ListBoxOption)
-            .aria_label(SharedString::from(format!("{title}, {when}")))
-            .aria_selected(selected)
-            .when(selected, |this| this.aria_active_descendant())
-            .h(ROW_PALETTE)
-            .px(SPACE_SM)
-            .child(
-                div()
-                    .size_full()
-                    .px(SPACE_MD)
-                    .flex()
-                    .items_center()
-                    .gap(SPACE_MD)
-                    .rounded(RADIUS_MD)
-                    .when(selected, |this| this.bg(theme.selected_bg))
-                    .child(icon(
-                        Icon::Plus,
-                        ICON_LG,
-                        if selected {
-                            theme.icon_active
-                        } else {
-                            theme.icon
-                        },
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .items_baseline()
-                            .gap(SPACE_SM)
-                            .overflow_hidden()
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .max_w(TITLE_MAX)
-                                    .truncate()
-                                    .text_size(TEXT_BASE)
-                                    .text_color(theme.text)
-                                    .child(title),
-                            )
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(TEXT_SM)
-                                    .text_color(theme.text_faint)
-                                    .child(when),
-                            ),
-                    ),
-            )
-            .on_mouse_move(cx.listener(move |this, _, _, cx| this.select(ix, cx)))
-            .on_click(cx.listener(move |this, _, _, cx| this.run(ix, cx)))
+        palette_row(
+            ix,
+            selected,
+            format!("{title}, {when}").into(),
+            leading_icon(Icon::Plus, selected, theme).into_any_element(),
+            title,
+            Some(when),
+            None,
+            theme,
+            cx,
+        )
     }
+}
+
+fn leading_icon(glyph: Icon, selected: bool, theme: &Theme) -> gpui::Svg {
+    icon(
+        glyph,
+        ICON_LG,
+        if selected {
+            theme.icon_active
+        } else {
+            theme.icon
+        },
+    )
+}
+
+/// One option row: leading icon or dot, title, dimmed subtitle, shortcut.
+#[allow(clippy::too_many_arguments)]
+fn palette_row(
+    ix: usize,
+    selected: bool,
+    label: SharedString,
+    leading: gpui::AnyElement,
+    title: impl IntoElement,
+    subtitle: Option<impl IntoElement>,
+    binding: Option<&KeyBinding>,
+    theme: &Theme,
+    cx: &mut Context<CommandPalette>,
+) -> gpui::AnyElement {
+    div()
+        .id(ix)
+        .role(gpui::Role::ListBoxOption)
+        .aria_label(label)
+        .when_some(binding, |this, b| this.aria_keyshortcuts(binding_text(b)))
+        .aria_selected(selected)
+        .when(selected, |this| this.aria_active_descendant())
+        .h(ROW_PALETTE)
+        .px(SPACE_SM)
+        .child(
+            div()
+                .size_full()
+                .px(SPACE_MD)
+                .flex()
+                .items_center()
+                .gap(SPACE_MD)
+                .rounded(RADIUS_MD)
+                .when(selected, |this| this.bg(theme.selected_bg))
+                .child(leading)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .items_baseline()
+                        .gap(SPACE_SM)
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .min_w_0()
+                                .max_w(TITLE_MAX)
+                                .truncate()
+                                .text_size(TEXT_BASE)
+                                .text_color(theme.text)
+                                .child(title),
+                        )
+                        .children(subtitle.map(|subtitle| {
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(TEXT_SM)
+                                .text_color(theme.text_faint)
+                                .child(subtitle)
+                        })),
+                )
+                .children(binding.map(|b| binding_caps(b, theme))),
+        )
+        .on_mouse_move(cx.listener(move |this, _, _, cx| this.select(ix, cx)))
+        .on_click(cx.listener(move |this, _, _, cx| this.run(ix, cx)))
+        .into_any_element()
 }
 
 /// `text` with the chars at `indices` (sorted) styled as matches.
@@ -771,13 +750,8 @@ impl Render for CommandPalette {
             .iter()
             .filter(|r| matches!(r, Row::Entry { .. }))
             .count();
-        let count = (query && self.prompt.is_none()).then(|| {
-            format!(
-                "{} result{}",
-                super::status::thousands(count),
-                if count == 1 { "" } else { "s" }
-            )
-        });
+        let count = (query && self.prompt.is_none())
+            .then(|| super::status::plural(count, "result", "results"));
 
         let hint = |label: SharedString, caps: gpui::Div| {
             div()

@@ -9,7 +9,6 @@
 //!   through `Transport`, so tests swap in `FakeTransport`.
 
 use std::{
-    collections::VecDeque,
     path::PathBuf,
     sync::{
         Arc, Condvar, Mutex,
@@ -127,6 +126,7 @@ impl Request {
     }
 
     /// The query's pairs, undecoded.
+    #[cfg(test)]
     pub fn query(&self) -> Vec<(&str, &str)> {
         self.url
             .split_once('?')
@@ -382,17 +382,9 @@ impl UreqTransport {
         }
     }
 
-    /// Fails the next write once while a drill's file is in `dir`, as
-    /// `PIGEON_DEV=1` does with the data folder.
-    pub fn with_drills(dir: PathBuf) -> Self {
-        Self {
-            drills: Some(dir),
-            ..Self::new()
-        }
-    }
-
     /// Fails every request while `file` exists, as `PIGEON_DEV=1` does with
     /// the data folder's `simulate-offline`.
+    #[cfg(test)]
     pub fn with_offline_switch(file: PathBuf) -> Self {
         Self {
             offline_switch: Some(file),
@@ -600,6 +592,7 @@ impl Limiter {
     }
 
     /// Units left now, for tests.
+    #[cfg(test)]
     pub fn tokens(&self, now: Instant) -> f64 {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let elapsed = now.saturating_duration_since(state.1).as_secs_f64();
@@ -814,19 +807,22 @@ impl Clock for FakeClock {
 /// Answers requests from a script: each route matches a method, a path and
 /// some query pairs, and replies with its responses in turn, the last one
 /// again once the others are used. Records every request.
+#[cfg(test)]
 #[derive(Default)]
 pub struct FakeTransport {
     routes: Mutex<Vec<Route>>,
     log: Mutex<Vec<Request>>,
 }
 
+#[cfg(test)]
 struct Route {
     method: &'static str,
     path: String,
     query: Vec<(String, String)>,
-    responses: VecDeque<(u16, String)>,
+    responses: std::collections::VecDeque<(u16, String)>,
 }
 
+#[cfg(test)]
 impl FakeTransport {
     pub fn new() -> Self {
         Self::default()
@@ -862,6 +858,7 @@ impl FakeTransport {
     }
 }
 
+#[cfg(test)]
 impl Transport for FakeTransport {
     fn send(&self, request: &Request) -> Result<Response, TransportError> {
         self.log.lock().unwrap().push(request.clone());
@@ -929,6 +926,7 @@ pub fn batch_body(parts: &[(u16, &str)]) -> String {
     out
 }
 
+#[cfg(test)]
 impl FakeTransport {
     /// Answers each call of a batch (as `encode_batch` writes them) by its
     /// route, as Google's batch answer.
@@ -984,9 +982,6 @@ impl FakeTransport {
 }
 
 // Google's HTTP batch: https://developers.google.com/gmail/api/guides/batch
-
-/// Most calls Google takes in one batch is 100; it advises 50.
-pub const BATCH_LIMIT: usize = 50;
 
 /// One request carrying `requests` to `endpoint` (Gmail's is
 /// `https://gmail.googleapis.com/batch/gmail/v1`). Parts are numbered from

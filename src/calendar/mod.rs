@@ -565,7 +565,7 @@ impl CalendarData {
     pub fn color_of(&self, event: &Event) -> Hsla {
         self.calendar(&event.calendar)
             .map(|c| c.color)
-            .unwrap_or(gpui::hsla(0.6, 0.1, 0.5, 1.))
+            .unwrap_or(crate::theme::FALLBACK_COLOR)
     }
 
     pub fn is_visible(&self, event: &Event) -> bool {

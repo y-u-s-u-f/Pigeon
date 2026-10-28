@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 
 use gpui::{
-    AppContext as _, Context, Div, Focusable as _, Pixels, Point, SharedString, Stateful, Window,
+    AppContext as _, Context, Div, Pixels, Point, SharedString, Stateful, Window,
     component::native_menu::NativeMenu, prelude::*,
 };
 
@@ -201,7 +201,7 @@ impl PigeonApp {
                 command: PaletteCommand::Label(LabelCommand::Pick(n.ix, task)),
                 title: labels[n.ix].name.clone().into(),
                 subtitle: None,
-                leading: Leading::Dot(labels[n.ix].color),
+                leading: Leading::dot(labels[n.ix].color),
                 binding: None,
                 search_only: false,
             })
@@ -240,7 +240,7 @@ impl PigeonApp {
                         command: PaletteCommand::Label(LabelCommand::Color(ix, c)),
                         title: pair.name.into(),
                         subtitle: (current == Some(c)).then(|| "Current".into()),
-                        leading: Leading::Dot(pair.color()),
+                        leading: Leading::dot(pair.color()),
                         binding: None,
                         search_only: false,
                     })
@@ -362,10 +362,7 @@ impl PigeonApp {
                 cx,
             )
         });
-        let events = cx.subscribe_in(&palette, window, Self::on_palette_event);
-        window.focus(&palette.focus_handle(cx), cx);
-        self.palette = Some((palette, events));
-        cx.notify();
+        self.set_palette(palette, window, cx);
     }
 
     /// Enter in the name prompt.
@@ -528,13 +525,7 @@ impl PigeonApp {
         for &ix in &targets {
             self.data.threads[ix].important = important;
         }
-        let label = vec![gmail::IMPORTANT.to_string()];
-        let (add, remove) = if important {
-            (label, Vec::new())
-        } else {
-            (Vec::new(), label)
-        };
-        self.queue_labels(&targets, add.clone(), remove.clone(), cx);
+        let (add, remove) = self.queue_label(&targets, gmail::IMPORTANT.to_string(), important, cx);
         let (title, message) = if important {
             ("Mark as Important", "Marked as important")
         } else {

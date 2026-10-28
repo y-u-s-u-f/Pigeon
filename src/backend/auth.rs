@@ -58,6 +58,7 @@ const REFRESH_EARLY: Duration = Duration::from_secs(60);
 pub struct Secret(String);
 
 impl Secret {
+    #[cfg(test)]
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
@@ -250,9 +251,11 @@ impl TokenStore for Keychain {
 }
 
 /// Tests' Keychain.
+#[cfg(test)]
 #[derive(Default)]
 pub struct MemoryTokens(Mutex<HashMap<String, Secret>>);
 
+#[cfg(test)]
 impl TokenStore for MemoryTokens {
     fn get(&self, email: &str) -> anyhow::Result<Option<Secret>> {
         Ok(self.0.lock().unwrap().get(email).cloned())
@@ -270,6 +273,7 @@ impl TokenStore for MemoryTokens {
 }
 
 /// The stored account and its refresh token, when both are there.
+#[cfg(test)]
 pub fn signed_in(dir: &Path, tokens: &dyn TokenStore) -> Option<(AccountRecord, Secret)> {
     let account = load_accounts(dir).into_iter().next()?;
     match tokens.get(&account.email) {

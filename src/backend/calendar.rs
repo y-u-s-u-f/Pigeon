@@ -68,6 +68,7 @@ pub struct CalendarChanges {
 }
 
 impl CalendarChanges {
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         !self.calendars && self.changed.is_empty() && self.removed.is_empty()
     }
@@ -246,7 +247,7 @@ pub fn calendar_from_entry(
                 .map(String::as_str)
         })
         .and_then(crate::data::from_hex)
-        .unwrap_or(gpui::hsla(0.6, 0.1, 0.5, 1.));
+        .unwrap_or(crate::theme::FALLBACK_COLOR);
     Calendar {
         id: entry.id.clone(),
         name: entry
@@ -1419,6 +1420,7 @@ pub struct Committed {
 
 impl Committed {
     /// As the outbox reports ops: `Err` with the toast's text.
+    #[cfg(test)]
     pub fn result(&self) -> anyhow::Result<()> {
         match &self.error {
             Some(e) => Err(anyhow!("{e}")),

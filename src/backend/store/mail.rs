@@ -55,7 +55,7 @@ impl Store {
             let color = r
                 .get::<_, Option<String>>(2)?
                 .and_then(|hex| crate::data::from_hex(&hex))
-                .unwrap_or(gpui::hsla(0.6, 0.1, 0.5, 1.));
+                .unwrap_or(crate::theme::FALLBACK_COLOR);
             Ok(Label {
                 list_visibility: crate::data::ListVisibility::from_gmail(
                     r.get::<_, Option<String>>(3)?.as_deref(),
@@ -120,6 +120,7 @@ impl Store {
     }
 
     /// Every stored thread, in the order stored (callers sort).
+    #[cfg(test)]
     pub fn load_all_threads(&self, account: &str) -> anyhow::Result<Vec<Thread>> {
         load_threads_in(&self.conn(), account, Which::All, true)
     }
@@ -205,26 +206,6 @@ impl Store {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         modify_in(&tx, account, ids, add, remove, &me)?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// A thread's id changed (a local id the server replaced).
-    pub fn replace_thread_id(&self, account: &str, old: &str, new: &str) -> anyhow::Result<()> {
-        let mut conn = self.conn();
-        let tx = conn.transaction()?;
-        tx.execute(
-            "UPDATE threads SET id = ?3 WHERE account = ?1 AND id = ?2",
-            params![account, old, new],
-        )?;
-        tx.execute(
-            "UPDATE messages SET thread_id = ?3 WHERE account = ?1 AND thread_id = ?2",
-            params![account, old, new],
-        )?;
-        tx.execute(
-            "UPDATE drafts SET thread_id = ?3 WHERE account = ?1 AND thread_id = ?2",
-            params![account, old, new],
-        )?;
         tx.commit()?;
         Ok(())
     }
@@ -413,6 +394,7 @@ impl Store {
 
     /// The newest revision written of the draft, or left by it when it was
     /// sent or discarded; 0 for one never saved with a revision.
+    #[cfg(test)]
     pub fn draft_revision(&self, account: &str, local_id: &str) -> anyhow::Result<u64> {
         draft_revision(&self.conn(), account, local_id)
     }

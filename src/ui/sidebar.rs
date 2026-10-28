@@ -4,11 +4,10 @@ use std::collections::{HashMap, HashSet};
 
 use gpui::{
     Action, AnyElement, AppContext as _, Context, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, Pixels, StatefulInteractiveElement, Styled, Window,
+    ParentElement, StatefulInteractiveElement, Styled, Window,
     component::{native_menu::NativeMenu, scroll::ScrollableElement as _},
     div,
     prelude::FluentBuilder as _,
-    px,
 };
 
 use super::{
@@ -35,9 +34,6 @@ use crate::{
     theme::Theme,
     ui::thread_list::DraggedThreads,
 };
-
-/// A label's color dot.
-const DOT: Pixels = px(8.);
 
 /// W4b: the Inbox's other categories, as views under it (FOL-11).
 const CATEGORIES: [(Category, Icon); 4] = [
@@ -295,7 +291,7 @@ impl gpui::Render for DragGhost {
             .shadow_md()
             .text_size(TEXT_BASE)
             .text_color(theme.text)
-            .child(div().size(DOT).rounded_full().bg(self.0.color))
+            .child(div().size(super::DOT).rounded_full().bg(self.0.color))
             .child(self.0.name.clone())
     }
 }
@@ -504,10 +500,11 @@ impl PigeonApp {
             .map(|row| self.label_item(row, true, counts, &theme, cx))
             .collect();
         if !hidden.is_empty() {
+            let count = super::status::plural(hidden.len(), "label", "labels");
             let text = if show_hidden {
-                "Leave out hidden labels".to_string()
+                format!("Hide {count}")
             } else {
-                format!("{} hidden", hidden.len())
+                format!("{count} hidden")
             };
             labels.push(
                 focusable_control(div().id("hidden-labels"), &theme)
@@ -564,7 +561,8 @@ impl PigeonApp {
             .border_color(theme.border)
             .child(
                 window_drag_area(div().id("sidebar-header"))
-                    .h(HEADER_HEIGHT)
+                    .h(super::HEADER_MIN)
+                    .min_h(HEADER_HEIGHT)
                     .flex_none()
                     .flex()
                     .items_center()
@@ -632,7 +630,7 @@ impl PigeonApp {
                     } else {
                         super::status::status_line(
                             self.backend.read(cx).status(),
-                            chrono::Utc::now().timestamp_millis(),
+                            super::status::now_ms(),
                             &theme,
                         )
                     })
@@ -863,14 +861,7 @@ impl PigeonApp {
                     },
                 )
                 .into_any_element(),
-                Marker::Dot(color) => div()
-                    .size(ICON_LG)
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(div().size(DOT).rounded_full().bg(color))
-                    .into_any_element(),
+                Marker::Dot(color) => super::dot_marker(color).into_any_element(),
             })
             .child(div().flex_1().truncate().child(name))
             .when_some(nav_action(nav), |this, action| {

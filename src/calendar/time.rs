@@ -225,6 +225,11 @@ fn date_time_label_on(date: NaiveDate, time: NaiveTime, today: NaiveDate, h24: b
     format!("{day}, {}", time_label_on(time, h24))
 }
 
+/// "W43": the ISO week `date` falls in.
+pub fn week_label(date: NaiveDate) -> String {
+    format!("W{}", date.iso_week().week())
+}
+
 /// "Mon, Oct 26", with the year when it isn't `today`'s.
 pub fn date_label(date: NaiveDate, today: NaiveDate) -> String {
     if date.year() == today.year() {
@@ -393,7 +398,6 @@ pub fn reset_zone_name() {
 pub struct LocalZone {
     pub name: &'static str,
     pub to_local: fn(DateTime<Utc>) -> NaiveDateTime,
-    #[allow(dead_code)] // Calendar writes (W7).
     pub to_utc: fn(NaiveDateTime) -> DateTime<Utc>,
 }
 

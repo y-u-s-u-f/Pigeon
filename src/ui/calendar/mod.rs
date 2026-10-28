@@ -3342,7 +3342,7 @@ impl CalendarView {
         let day = selected.start.date().clamp(from, to - Duration::days(1));
         let (left, ix) = match self.view {
             ViewKind::Day => return false,
-            ViewKind::Week => (week_view::GUTTER, (day - from).num_days()),
+            ViewKind::Week => (week_view::gutter_width(window), (day - from).num_days()),
             ViewKind::Month => (0., (day - from).num_days() % 7),
         };
         let width = Self::content_width(window);
@@ -3615,14 +3615,14 @@ const PROMPT_WIDTH: Pixels = px(480.);
 
 /// The ↩ on a default button, in its text color.
 fn enter_cap(kind: ButtonKind, theme: &Theme) -> gpui::Div {
-    match kind {
-        ButtonKind::Primary => crate::ui::keycap_on_accent("↩", theme),
+    crate::ui::keys_caps_with("enter", theme, |cap| match kind {
+        ButtonKind::Primary => crate::ui::keycap_on_accent(cap, theme),
         ButtonKind::Destructive => div()
             .text_size(TEXT_XS)
             .text_color(theme.danger_text.alpha(0.8))
-            .child("↩"),
-        _ => crate::ui::keycap("↩", theme),
-    }
+            .child(cap),
+        _ => crate::ui::keycap(cap, theme),
+    })
 }
 
 impl CalendarView {
@@ -3691,7 +3691,10 @@ impl CalendarView {
             0.
         };
         self.grid_width = Self::content_width(window) - panel;
-        let room = self.grid_width - week_view::GUTTER - agenda::DAY_COLUMN_MAX - agenda::SIDE_MIN;
+        let room = self.grid_width
+            - week_view::gutter_width(window)
+            - agenda::DAY_COLUMN_MAX
+            - agenda::SIDE_MIN;
         let margin = if self.day_side {
             -SIDE_HYSTERESIS
         } else {
@@ -3864,6 +3867,7 @@ impl Render for CalendarView {
         // out of it.
         let fresh = self.grid_key.as_ref() != Some(&key) || window.is_a11y_active();
         self.grid_key = Some(key);
+        let header_height = crate::ui::header_height(window);
         let reserve = if self.panel_reserves(window) {
             event_panel::PANEL_WIDTH
         } else {
@@ -3945,7 +3949,7 @@ impl Render for CalendarView {
             .child(
                 div()
                     .absolute()
-                    .top(crate::ui::HEADER_HEIGHT)
+                    .top(header_height)
                     .left_0()
                     .bottom_0()
                     .right(px(reserve))
@@ -3959,7 +3963,7 @@ impl Render for CalendarView {
             .child(
                 div()
                     .absolute()
-                    .top(crate::ui::HEADER_HEIGHT)
+                    .top(header_height)
                     .left_0()
                     .bottom_0()
                     .right(px(reserve))

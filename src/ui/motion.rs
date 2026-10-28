@@ -140,9 +140,18 @@ pub fn after_loading_delay<E: IntoElement + Styled + 'static>(
     id: impl Into<ElementId>,
     el: E,
 ) -> Appear<E> {
+    after_delay(id, LOADING_DELAY, el)
+}
+
+/// `after_loading_delay` with its own wait: a second, slower hint.
+pub fn after_delay<E: IntoElement + Styled + 'static>(
+    id: impl Into<ElementId>,
+    delay: Duration,
+    el: E,
+) -> Appear<E> {
     Appear {
         id: id.into(),
-        play: Play::AfterLoadingDelay,
+        play: Play::AfterDelay(delay),
         element: Some(el),
     }
 }
@@ -319,7 +328,7 @@ pub fn fade(
 #[derive(Clone, Copy)]
 enum Play {
     Enter(Rise),
-    AfterLoadingDelay,
+    AfterDelay(Duration),
 }
 
 /// What `enter` and `after_loading_delay` return: `el`, drawn at its
@@ -390,9 +399,9 @@ impl<E: IntoElement + Styled + 'static> Element for Appear<E> {
                     }
                     (card_motion(el, state.spring.position, rise), done)
                 }
-                Play::AfterLoadingDelay => {
+                Play::AfterDelay(delay) => {
                     let shown = now.saturating_duration_since(state.mounted);
-                    let p = (shown.saturating_sub(LOADING_DELAY).as_secs_f32()
+                    let p = (shown.saturating_sub(delay).as_secs_f32()
                         / LOADING_FADE.as_secs_f32())
                     .min(1.);
                     (el.opacity(p), p >= 1.)

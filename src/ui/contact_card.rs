@@ -434,10 +434,7 @@ impl Render for ContactCardView {
                             .gap(SPACE_SM)
                             .text_size(TEXT_BASE)
                             .text_color(theme.text_faint)
-                            .child(label(
-                                "contact-no-threads",
-                                "No conversations in this Mac’s cache.",
-                            ))
+                            .child(label("contact-no-threads", "No recent conversations"))
                             .child(
                                 div()
                                     .flex()

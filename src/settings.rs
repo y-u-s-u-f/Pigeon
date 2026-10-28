@@ -309,9 +309,8 @@ impl Default for Saved {
             compact_list: false,
             text_scale: 1.,
             sidebar_open: true,
-            // `app::SIDEBAR_DEFAULT` and `LIST_DEFAULT`.
-            sidebar_width: 236.,
-            list_width: 400.,
+            sidebar_width: f32::from(crate::app::SIDEBAR_DEFAULT),
+            list_width: f32::from(crate::app::LIST_DEFAULT),
             archived_expanded: false,
             calendar_view: CalendarViewSetting::Week,
             week_numbers: false,
@@ -553,7 +552,7 @@ pub const SETTINGS: &[SettingMeta] = settings! {
         ["archive", "collapse", "section"];
     Mail: AutoAdvance, "Auto-advance", "After Archive, Delete or Move, open the next conversation. Off clears the selection.",
         ["next", "advance", "after"];
-    Mail: SearchScope, "Search scope", "Where a new search looks, unless it says in:.",
+    Mail: SearchScope, "Search scope", "Where a new search looks. A search with in: overrides it.",
         ["find", "default", "all mail", "everywhere", "current view"];
     Mail: RemoteImages, "Load remote images", "Ask shows a Load Images bar on messages with images from the web.",
         ["pictures", "images", "privacy", "tracking", "pixels", "remote content"];
@@ -607,7 +606,7 @@ pub const SETTINGS: &[SettingMeta] = settings! {
         ["conflict", "taken", "registered", "status", "hotkey"];
     Mail: Signatures, "Signatures", "New messages get the From address's signature from Gmail's settings, where it's edited. Also ⌘⇧E in a draft.",
         ["signature", "sign off", "footer", "gmail", "alias"];
-    General: DefaultMailApp, "Default mail app", "Open mailto: links from other apps in Pigeon.",
+    General: DefaultMailApp, "Default mail app", "Open email links from other apps in Pigeon.",
         ["mailto", "default", "email app", "mail client", "links", "handler"];
     Shortcuts: ShortcutPreset, "Shortcut preset", "Gmail's or Apple Mail's ⌘ shortcuts. Single-key shortcuts are the same in both.",
         ["apple mail", "gmail", "preset", "keymap", "command", "bindings"];

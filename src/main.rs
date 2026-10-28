@@ -112,7 +112,7 @@ fn menus(state: &MenuState) -> Vec<Menu> {
     let account = if state.signed_in {
         MenuItem::action("Sign Out", SignOut)
     } else {
-        MenuItem::action("Sign In with Google", SignIn)
+        MenuItem::action("Sign In with Google…", SignIn)
     };
     let view = |kind| state.calendar && state.calendar_view == kind;
     vec![

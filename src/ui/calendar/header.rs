@@ -90,7 +90,7 @@ impl CalendarView {
         // The week's number, when they're on (ME-094); the Month view has
         // them down its side.
         if self.show_week_numbers && self.view != ViewKind::Month {
-            let week = format!("W{}", self.visible_range().0.iso_week().week());
+            let week = crate::calendar::time::week_label(self.visible_range().0);
             rest = if rest.is_empty() {
                 week
             } else {
@@ -153,7 +153,8 @@ impl CalendarView {
             });
 
         window_drag_area(div().id("calendar-header"))
-            .h(HEADER_HEIGHT)
+            .h(crate::ui::HEADER_MIN)
+            .min_h(HEADER_HEIGHT)
             .flex_none()
             .flex()
             .items_center()
@@ -187,7 +188,11 @@ impl CalendarView {
                 icon_button(
                     "prev-period",
                     Icon::ChevronLeft,
-                    "Previous",
+                    match self.view {
+                        ViewKind::Day => "Previous day",
+                        ViewKind::Week => "Previous week",
+                        ViewKind::Month => "Previous month",
+                    },
                     Box::new(PrevPeriod),
                     &theme,
                 )
@@ -198,7 +203,11 @@ impl CalendarView {
                 icon_button(
                     "next-period",
                     Icon::ChevronRight,
-                    "Next",
+                    match self.view {
+                        ViewKind::Day => "Next day",
+                        ViewKind::Week => "Next week",
+                        ViewKind::Month => "Next month",
+                    },
                     Box::new(NextPeriod),
                     &theme,
                 )
@@ -488,7 +497,11 @@ impl CalendarView {
         });
 
         let label: SharedString = if hidden > 0 {
-            format!("{hidden} hidden").into()
+            format!(
+                "{} hidden",
+                crate::ui::status::plural(hidden, "calendar", "calendars")
+            )
+            .into()
         } else {
             "Calendars".into()
         };
@@ -550,7 +563,7 @@ pub(crate) fn full_date(date: NaiveDate) -> String {
     }
 }
 
-const CALENDARS_MENU_WIDTH: Pixels = px(260.);
+const CALENDARS_MENU_WIDTH: gpui::Rems = type_size(260.);
 /// A calendar's color dot on the Calendars button.
 const CALENDAR_DOT: Pixels = px(10.);
 const CALENDARS_MENU_HEIGHT: Pixels = px(440.);

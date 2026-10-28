@@ -128,11 +128,13 @@ impl CategoryCounts {
     }
 
     /// Past the cap: show "500+".
+    #[cfg(test)]
     pub fn capped(&self, category: Category) -> bool {
         self.capped[category.ix()]
     }
 
     /// For a badge: "12", "500+", or none at zero.
+    #[cfg(test)]
     pub fn text(&self, category: Category) -> Option<String> {
         match self.unread(category) {
             0 => None,

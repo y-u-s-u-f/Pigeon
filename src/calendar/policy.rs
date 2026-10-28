@@ -165,13 +165,18 @@ fn join_rank(o: &Occurrence, now: NaiveDateTime) -> (u8, Duration, usize) {
 
 /// The event's video link: Google's conference (CAL-17), the one typed in
 /// Pigeon, or a Meet, Zoom, Teams or Webex link in its location or notes.
+/// A typed link that isn't one (MB-036) is left out.
 pub fn video_link(event: &Event) -> Option<&str> {
-    [event.conference_uri.as_str(), event.video_link.as_str()]
-        .into_iter()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
+    Some(event.conference_uri.trim())
+        .filter(|l| !l.is_empty())
+        .or_else(|| Some(event.video_link.trim()).filter(|l| is_link(l)))
         .or_else(|| find_video_link(&event.location))
         .or_else(|| find_video_link(&event.description))
+}
+
+/// Whether `text` is a single web link, as `link_ranges` finds them.
+pub fn is_link(text: &str) -> bool {
+    matches!(link_ranges(text).as_slice(), [only] if *only == (0..text.len()))
 }
 
 /// The web links in `text`, by byte range (ME-097): `http(s)://` up to
@@ -299,8 +304,13 @@ mod tests {
         );
         e.description = "<a href=\"https://acme.webex.com/meet/sam\">Webex</a>".into();
         assert_eq!(video_link(&e), Some("https://acme.webex.com/meet/sam"));
+        e.video_link = "not a link".into();
+        assert_eq!(video_link(&e), Some("https://acme.webex.com/meet/sam"));
         e.video_link = "https://example.com/call".into();
         assert_eq!(video_link(&e), Some("https://example.com/call"));
+        assert!(is_link("https://example.com/call"));
+        assert!(!is_link("example.com/call"));
+        assert!(!is_link("https://a.com and more"));
         e.conference_uri = "https://meet.google.com/abc-defg-hij".into();
         assert_eq!(video_link(&e), Some("https://meet.google.com/abc-defg-hij"));
         // A bare Zoom link in the notes, with a query and a fragment.

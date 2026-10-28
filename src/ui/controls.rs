@@ -6,10 +6,10 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, Div, ElementId, FontWeight,
-    Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render,
-    SharedString, Stateful, StatefulInteractiveElement as _, Styled, Toggled, Window, anchored,
-    base::spring, canvas, deferred, div, prelude::FluentBuilder as _, px, relative,
+    App, AppContext as _, Bounds, ClickEvent, Context, Div, ElementId, FontWeight, Hsla,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString,
+    Stateful, StatefulInteractiveElement as _, Styled, Toggled, Window, anchored, base::spring,
+    canvas, deferred, div, prelude::FluentBuilder as _, px, relative,
 };
 
 use super::motion::{SPRING_CONTROL, SPRING_POP, fade};
@@ -40,7 +40,8 @@ pub enum ButtonKind {
     Quiet,
 }
 
-/// A text button at `HIT_TARGET` height.
+/// A text button, `CONTROL_MD` tall (grows with text) and never under
+/// `HIT_TARGET`.
 pub fn push_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -52,7 +53,8 @@ pub fn push_button(
         .role(gpui::Role::Button)
         .aria_label(label.clone())
         .flex_none()
-        .h(HIT_TARGET)
+        .h(CONTROL_MD)
+        .min_h(HIT_TARGET)
         .px(SPACE_MD)
         .flex()
         .items_center()
@@ -479,6 +481,30 @@ pub fn toggle_chip(
         .child(label)
 }
 
+/// A checkbox's box; callers make the row around it the control.
+pub fn check_box(on: bool, theme: &Theme) -> Div {
+    div()
+        .flex_none()
+        .size(ICON_LG)
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(RADIUS_SM / 2.)
+        .map(|d| {
+            if on {
+                d.bg(theme.switch_on).child(icon(
+                    Icon::Check,
+                    ICON_SM,
+                    theme.on_fill(theme.switch_on),
+                ))
+            } else {
+                d.bg(theme.control_track)
+                    .border_1()
+                    .border_color(theme.border)
+            }
+        })
+}
+
 /// The leading check column of a menu row, empty when not chosen, so
 /// every pop-up puts the check in the same place.
 pub fn menu_check(chosen: bool, theme: &Theme) -> Div {
@@ -546,7 +572,7 @@ pub fn sheet_surface(theme: &Theme) -> Div {
 pub fn dropdown(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
-    width: Pixels,
+    width: gpui::Rems,
     theme: &Theme,
 ) -> Stateful<Div> {
     popover_surface(theme)
@@ -635,15 +661,26 @@ pub fn person_row(
         )
 }
 
-/// An inline error under a field.
-pub fn error_line(text: impl Into<SharedString>, theme: &Theme) -> AnyElement {
+/// An inline error under a field: read by VoiceOver and selectable, to
+/// copy into a search or a report (MB-035).
+pub fn error_line(
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+    theme: &Theme,
+) -> Stateful<Div> {
+    let id = id.into();
+    let text = text.into();
     div()
+        .id(id.clone())
+        .role(gpui::Role::Label)
+        .aria_value(text.clone())
         .flex()
         .items_center()
         .gap(SPACE_XS)
         .text_size(TEXT_SM)
         .text_color(theme.text_danger)
         .child(icon(Icon::OctagonAlert, ICON_SM, theme.text_danger))
-        .child(text.into())
-        .into_any_element()
+        .child(
+            super::selectable::Selectable::plain((id, "text"), text, theme.text_selection).silent(),
+        )
 }

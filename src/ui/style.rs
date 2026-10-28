@@ -16,7 +16,9 @@ use crate::theme::Theme;
 /// The rem size at a text scale of 1.
 pub const BASE_REM: f32 = 16.;
 
-const fn type_size(px: f32) -> Rems {
+/// A size given in points at a text scale of 1, in rems, so it grows with
+/// the text: the width or height of anything holding text (MA-021).
+pub const fn type_size(px: f32) -> Rems {
     rems(px / BASE_REM)
 }
 
@@ -108,7 +110,7 @@ pub const HIT_TARGET: Pixels = px(28.);
 
 /// Text scale steps for ⌘= and ⌘-.
 pub const TEXT_SCALE_STEP: f32 = 0.1;
-pub const TEXT_SCALE_RANGE: (f32, f32) = (0.8, 1.6);
+pub const TEXT_SCALE_RANGE: (f32, f32) = (0.9, 2.0);
 
 /// The keyboard focus ring: 2px of accent inside the element's edge, so it
 /// never shifts the layout or gets clipped by a scroll view.
@@ -134,5 +136,8 @@ pub fn focusable_control(el: Stateful<Div>, theme: &Theme) -> Stateful<Div> {
 
 /// Digits of equal width, so counts and dates line up and don't jiggle.
 pub fn tabular_figures() -> gpui::FontFeatures {
-    gpui::FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]))
+    static TNUM: std::sync::LazyLock<gpui::FontFeatures> = std::sync::LazyLock::new(|| {
+        gpui::FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]))
+    });
+    TNUM.clone()
 }

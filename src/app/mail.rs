@@ -354,14 +354,7 @@ impl PigeonApp {
     /// ⌘A in the list (MA-078): pick every conversation loaded, keeping
     /// the anchor.
     pub(crate) fn select_all_threads(&mut self, cx: &mut Context<Self>) {
-        let rows: Vec<usize> = self
-            .rows
-            .iter()
-            .filter_map(|row| match row {
-                Row::Thread(ix) => Some(*ix),
-                _ => None,
-            })
-            .collect();
+        let rows: Vec<usize> = self.rows.iter().filter_map(Row::thread).collect();
         let Some(&first) = rows.first() else {
             return;
         };
@@ -377,10 +370,7 @@ impl PigeonApp {
         // Saving a draft can reorder the threads: back by id.
         self.checked = ids.into_iter().collect();
         if self.selected_row().is_none() {
-            self.selected = self.rows.iter().find_map(|row| match row {
-                Row::Thread(ix) => Some(*ix),
-                _ => None,
-            });
+            self.selected = self.rows.iter().find_map(Row::thread);
         }
         self.reader_focused = false;
         cx.notify();
@@ -591,11 +581,6 @@ impl PigeonApp {
         self.stash_composer(cx);
         let selected = self.selected.map(|ix| self.data.threads[ix].id.clone());
         let selected_goes = selected.as_ref().is_some_and(|id| ids.contains(id));
-
-        let thread_at = |row: &Row| match row {
-            Row::Thread(ix) => Some(*ix),
-            _ => None,
-        };
         let moved_rows: Vec<usize> = ids
             .iter()
             .filter_map(|id| self.data.thread_ix(id))
@@ -605,14 +590,14 @@ impl PigeonApp {
         let next = moved_rows.iter().max().and_then(|&last| {
             self.rows[last + 1..]
                 .iter()
-                .filter_map(thread_at)
+                .filter_map(Row::thread)
                 .find(stays)
                 .or_else(|| {
                     let first = *moved_rows.iter().min().expect("non-empty");
                     self.rows[..first]
                         .iter()
                         .rev()
-                        .filter_map(thread_at)
+                        .filter_map(Row::thread)
                         .find(stays)
                 })
                 .map(|ix| self.data.threads[ix].id.clone())
@@ -711,6 +696,24 @@ impl PigeonApp {
                 })
                 .collect()
         })
+    }
+
+    /// Put one label on the targets (`on`) or take it off; the add and
+    /// remove lists, for the undo stack.
+    pub(super) fn queue_label(
+        &mut self,
+        targets: &[usize],
+        label: String,
+        on: bool,
+        cx: &mut Context<Self>,
+    ) -> (Vec<String>, Vec<String>) {
+        let (add, remove) = if on {
+            (vec![label], Vec::new())
+        } else {
+            (Vec::new(), vec![label])
+        };
+        self.queue_labels(targets, add.clone(), remove.clone(), cx);
+        (add, remove)
     }
 
     /// Add and remove labels on threads (by index), at once.
@@ -826,13 +829,7 @@ impl PigeonApp {
         if star {
             self.just_starred = (changed.clone(), Some(std::time::Instant::now()));
         }
-        let label = vec![gmail::STARRED.to_string()];
-        let (add, remove) = if star {
-            (label, Vec::new())
-        } else {
-            (Vec::new(), label)
-        };
-        self.queue_labels(&targets, add.clone(), remove.clone(), cx);
+        let (add, remove) = self.queue_label(&targets, gmail::STARRED.to_string(), star, cx);
         let (title, done) = if star {
             ("Star", "Starred")
         } else {
@@ -851,13 +848,7 @@ impl PigeonApp {
         for &ix in &targets {
             self.data.threads[ix].unread = unread;
         }
-        let label = vec![gmail::UNREAD.to_string()];
-        let (add, remove) = if unread {
-            (label, Vec::new())
-        } else {
-            (Vec::new(), label)
-        };
-        self.queue_labels(&targets, add.clone(), remove.clone(), cx);
+        let (add, remove) = self.queue_label(&targets, gmail::UNREAD.to_string(), unread, cx);
         let (title, how) = if unread {
             ("Mark as Unread", "unread")
         } else {
@@ -917,12 +908,7 @@ impl PigeonApp {
                 labels.push(id.clone());
             }
         }
-        let (add, take) = if remove {
-            (Vec::new(), vec![id])
-        } else {
-            (vec![id], Vec::new())
-        };
-        self.queue_labels(&targets, add.clone(), take.clone(), cx);
+        let (add, take) = self.queue_label(&targets, id, !remove, cx);
         if matches!(self.nav, Nav::Label(_)) {
             self.refresh_rows(true);
         }
@@ -951,6 +937,13 @@ impl PigeonApp {
         if targets.is_empty() {
             return;
         }
+        let before = targets
+            .iter()
+            .map(|&ix| {
+                let thread = &self.data.threads[ix];
+                (thread.id.clone(), current_category(thread))
+            })
+            .collect();
         let mut change = (Vec::new(), Vec::new());
         for &ix in &targets {
             change = self.data.threads[ix].set_category(category);
@@ -963,8 +956,34 @@ impl PigeonApp {
             1 => format!("Moved to {}", category.name()),
             n => format!("Moved {n} conversations to {}", category.name()),
         };
-        self.show_toast(ToastKind::Done, message, None, cx);
+        self.show_undoable(
+            message,
+            "Move to Category",
+            UndoAction::Category { moves: before },
+            cx,
+        );
         cx.notify();
+    }
+
+    /// Put each thread (by id) back in its category; returns where they
+    /// were, for the other side of the undo stack.
+    pub(super) fn undo_category(
+        &mut self,
+        moves: Vec<(String, Category)>,
+        cx: &mut Context<Self>,
+    ) -> UndoAction {
+        let mut before = Vec::new();
+        for (id, category) in moves {
+            let Some(ix) = self.data.thread_ix(&id) else {
+                continue;
+            };
+            before.push((id, current_category(&self.data.threads[ix])));
+            let (add, remove) = self.data.threads[ix].set_category(category);
+            self.queue_labels(&[ix], add, remove, cx);
+        }
+        self.refresh_rows(true);
+        self.refresh_server_counts(cx);
+        UndoAction::Category { moves: before }
     }
 
     /// `Move to Category…`: the palette, listing the categories.
@@ -1717,6 +1736,15 @@ fn category_icon(category: Category) -> Icon {
 
 /// Whether moving `thread` to `category` changes it: it's in the Inbox
 /// and not in that category alone.
+/// The Inbox category a thread shows under; Primary when none.
+fn current_category(thread: &Thread) -> Category {
+    use crate::backend::categories::in_category;
+    Category::ALL
+        .into_iter()
+        .find(|&c| in_category(thread, c))
+        .unwrap_or(Category::Primary)
+}
+
 fn leaves_for(thread: &Thread, category: Category) -> bool {
     use crate::backend::categories::in_category;
     thread.folder == Folder::Inbox

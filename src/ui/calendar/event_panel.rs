@@ -66,16 +66,16 @@ const SLOT_MINUTES: i64 = super::drag::SNAP_MINUTES;
 const REMINDER_PRESETS: [u32; 10] = [0, 5, 10, 15, 30, 60, 120, 1440, 2880, 10080];
 
 /// The start and end time fields.
-const TIME_WIDTH: Pixels = px(92.);
+const TIME_WIDTH: gpui::Rems = type_size(92.);
 /// The repeat editor's number fields.
-const NUMBER_WIDTH: Pixels = px(48.);
+const NUMBER_WIDTH: gpui::Rems = type_size(48.);
 /// The Calendar and reminder menus, and the wider Repeat menu.
-const MENU_WIDTH: Pixels = px(220.);
-const REPEAT_MENU_WIDTH: Pixels = px(260.);
+const MENU_WIDTH: gpui::Rems = type_size(220.);
+const REPEAT_MENU_WIDTH: gpui::Rems = type_size(260.);
 /// The repeat's end date field.
-const UNTIL_WIDTH: Pixels = px(160.);
+const UNTIL_WIDTH: gpui::Rems = type_size(160.);
 /// The guest suggestions under the Guests field.
-const SUGGESTIONS_WIDTH: Pixels = px(300.);
+const SUGGESTIONS_WIDTH: gpui::Rems = type_size(300.);
 /// Rows the time picker shows at once.
 const TIME_PICKER_ROWS: f32 = 8.;
 
@@ -404,6 +404,9 @@ pub struct EventPanel {
     timed: Option<(NaiveTime, Duration)>,
     /// Typed guests that aren't addresses (MB-024).
     guest_error: Option<String>,
+    /// The typed video link isn't a link; shown once the field loses focus
+    /// (MB-036).
+    video_error: bool,
     body_scroll: ScrollHandle,
     /// The row of the open calendar or reminder menu that up, down and
     /// enter work on.
@@ -502,6 +505,7 @@ impl EventPanel {
             repeat_draft: None,
             timed: None,
             guest_error: None,
+            video_error: false,
             body_scroll: ScrollHandle::new(),
             menu_highlight: 0,
             picker: None,
@@ -1011,6 +1015,9 @@ impl CalendarView {
                     }
                     Field::Video => {
                         let video = value(&panel.video).trim().to_string();
+                        if let Some(panel) = &mut self.panel {
+                            panel.video_error = false;
+                        }
                         self.edit_event(cx, |e| e.video_link = video);
                     }
                     Field::Notes => {
@@ -1061,6 +1068,10 @@ impl CalendarView {
                 if let Some(panel) = &mut self.panel {
                     if panel.picker == Some(field) {
                         panel.picker = None;
+                    }
+                    if field == Field::Video {
+                        let link = panel.video.read(cx).value().trim().to_string();
+                        panel.video_error = !link.is_empty() && !policy::is_link(&link);
                     }
                     if field == Field::Guests {
                         panel.suggestions.clear();
@@ -2143,7 +2154,8 @@ impl CalendarView {
         let has_link = !event.html_link.trim().is_empty();
 
         let header = window_drag_area(div().id("event-panel-header"))
-            .h(HEADER_HEIGHT)
+            .h(crate::ui::HEADER_MIN)
+            .min_h(HEADER_HEIGHT)
             .flex_none()
             .flex()
             .items_center()
@@ -2483,6 +2495,15 @@ impl CalendarView {
         )
         .first()
         .map(|binding| crate::ui::binding_caps(binding, theme));
+        let save_keys = crate::ui::shortcuts_help::live_bindings(
+            &SaveEvent,
+            crate::actions::Scope::Calendar,
+            window,
+        )
+        .first()
+        .map(|binding| {
+            crate::ui::binding_caps_with(binding, theme, |cap| keycap_on_accent(cap, theme))
+        });
         let (label, note) = if is_new {
             ("Save", "Not saved yet")
         } else {
@@ -2521,7 +2542,7 @@ impl CalendarView {
             })
             .child(
                 panel_button("event-save", label, true, theme)
-                    .child(keycap_on_accent("⌘S", theme))
+                    .children(save_keys)
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(SaveEvent), cx)),
             )
             .into_any_element()
@@ -2813,9 +2834,10 @@ impl CalendarView {
             )
             .into_any_element();
         }
-        let field = |f: Field, width: Option<Pixels>, window: &Window, cx: &mut Context<Self>| {
-            self.render_date_time_field(panel, event, f, width, theme, window, cx)
-        };
+        let field =
+            |f: Field, width: Option<gpui::Rems>, window: &Window, cx: &mut Context<Self>| {
+                self.render_date_time_field(panel, event, f, width, theme, window, cx)
+            };
         let dash = || {
             div()
                 .flex_none()
@@ -2835,7 +2857,8 @@ impl CalendarView {
                 .text_color(theme.text_faint)
                 .child(text)
         };
-        let row = || div().flex().items_start().gap(SPACE_XS);
+        // Wraps when large text makes the fields wider than the panel.
+        let row = || div().flex().flex_wrap().items_start().gap(SPACE_XS);
         let rows = if event.all_day {
             row()
                 .child(field(Field::StartDate, None, window, cx))
@@ -2900,7 +2923,7 @@ impl CalendarView {
         .text_color(theme.text)
         .hover(|s| s.bg(theme.hover_bg))
         .active(|s| s.bg(theme.selected_bg))
-        .child(check_box(all_day, theme))
+        .child(controls::check_box(all_day, theme))
         .child("All day")
         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(cx.listener(|this, _, window, cx| this.toggle_all_day(window, cx)));
@@ -2926,7 +2949,7 @@ impl CalendarView {
         panel: &EventPanel,
         event: &Event,
         field: Field,
-        width: Option<Pixels>,
+        width: Option<gpui::Rems>,
         theme: &Theme,
         window: &Window,
         cx: &mut Context<Self>,
@@ -3106,7 +3129,7 @@ impl CalendarView {
         popover_surface(theme)
             .occlude()
             .mt(SPACE_XS)
-            .w(px(if field == Field::EndTime { 200. } else { 140. }))
+            .w(type_size(if field == Field::EndTime { 200. } else { 140. }))
             .overflow_hidden()
             .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
                 window.prevent_default()
@@ -3242,42 +3265,56 @@ impl CalendarView {
                     theme,
                     div()
                         .flex()
-                        .items_center()
-                        .gap(SPACE_SM)
-                        .child({
-                            let focused = panel.is_focused(Field::Video, window, cx);
-                            let input = panel.video.clone();
-                            field_box(focused, false, theme)
-                                .flex_1()
-                                .min_w_0()
-                                .text_size(TEXT_BASE)
-                                .map(|d| {
-                                    if focused || link.is_empty() {
-                                        d.child(field_input(&panel.video, video_readonly))
-                                    } else {
-                                        // A long link ends in an ellipsis
-                                        // until it's edited.
-                                        d.child(
-                                            div()
-                                                .id("video-link")
-                                                .role(gpui::Role::TextInput)
-                                                .aria_label(format!("Video call link: {link}"))
-                                                .flex_1()
-                                                .min_w_0()
-                                                .truncate()
-                                                .cursor_text()
-                                                .child(link.clone())
-                                                .on_click(move |_, window, cx| {
-                                                    input.update(cx, |input, cx| {
-                                                        input.focus(window, cx)
-                                                    })
-                                                }),
-                                        )
-                                    }
+                        .flex_col()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(SPACE_SM)
+                                .child({
+                                    let focused = panel.is_focused(Field::Video, window, cx);
+                                    let input = panel.video.clone();
+                                    field_box(focused, panel.video_error, theme)
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_size(TEXT_BASE)
+                                        .map(|d| {
+                                            if focused || link.is_empty() {
+                                                d.child(field_input(&panel.video, video_readonly))
+                                            } else {
+                                                // A long link ends in an ellipsis
+                                                // until it's edited.
+                                                d.child(
+                                                    div()
+                                                        .id("video-link")
+                                                        .role(gpui::Role::TextInput)
+                                                        .aria_label(format!(
+                                                            "Video call link: {link}"
+                                                        ))
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .truncate()
+                                                        .cursor_text()
+                                                        .child(link.clone())
+                                                        .on_click(move |_, window, cx| {
+                                                            input.update(cx, |input, cx| {
+                                                                input.focus(window, cx)
+                                                            })
+                                                        }),
+                                                )
+                                            }
+                                        })
                                 })
-                        })
-                        .children(join.map(|join| join_button(join, theme)))
-                        .when_some(meet, |d, state| d.child(meet_button(state, theme, cx))),
+                                .children(join.map(|join| join_button(join, theme)))
+                                .when_some(meet, |d, state| d.child(meet_button(state, theme, cx))),
+                        )
+                        .when(panel.video_error, |d| {
+                            d.child(div().px(SPACE_SM).pt(SPACE_2XS).child(error_line(
+                                "video-error",
+                                "Not a link",
+                                theme,
+                            )))
+                        }),
                 )
                 .pt(px(0.)),
             )
@@ -3584,7 +3621,11 @@ impl CalendarView {
                                     .child(field_input(&panel.guests, false)),
                             )
                             .children(panel.guest_error.clone().map(|e| {
-                                div().px(SPACE_SM).pt(SPACE_2XS).child(error_line(e, theme))
+                                div().px(SPACE_SM).pt(SPACE_2XS).child(error_line(
+                                    "guest-error",
+                                    e,
+                                    theme,
+                                ))
                             }))
                             .children(suggestions),
                     )
@@ -4384,30 +4425,6 @@ fn control(
     el.key_context(PANEL_CONTROL)
         .when_some(focus, |d, focus| d.track_focus(&focus))
         .focus_visible(move |s| s.shadow(ring))
-}
-
-/// The box of a checkbox.
-fn check_box(on: bool, theme: &Theme) -> gpui::Div {
-    div()
-        .flex_none()
-        .size(ICON_LG)
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(RADIUS_SM / 2.)
-        .map(|d| {
-            if on {
-                d.bg(theme.switch_on).child(icon(
-                    Icon::Check,
-                    ICON_SM,
-                    theme.on_fill(theme.switch_on),
-                ))
-            } else {
-                d.bg(theme.control_track)
-                    .border_1()
-                    .border_color(theme.border)
-            }
-        })
 }
 
 /// "Add Google Meet", "Adding…", or "Retry" after Google said no (CAL-34).

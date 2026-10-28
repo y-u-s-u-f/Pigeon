@@ -787,6 +787,8 @@ impl CalendarView {
         );
         let lift = self.lift;
         let compact = height < 34.;
+        // It holds text, so it grows with it (MA-021).
+        let label_height = LABEL_HEIGHT * f32::from(window.rem_size()) / BASE_REM;
         let text = theme.on_fill(theme.event_selected_fill(color));
         // Made or resized: how long it is too (ME-085).
         let time = if ghost.sized {
@@ -801,18 +803,18 @@ impl CalendarView {
         // The times, floating above the block (below it at the top of the
         // day), so the snap reads at a glance; not while it glides home.
         let label = (self.returning.is_none() && (date == start.date() || top == 0)).then(|| {
-            let above = top_px >= LABEL_HEIGHT + 4.;
+            let above = top_px >= label_height + 4.;
             div()
                 .absolute()
                 .left(SPACE_2XS)
                 .map(|d| {
                     if above {
-                        d.top(px(top_px - LABEL_HEIGHT - 4.))
+                        d.top(px(top_px - label_height - 4.))
                     } else {
                         d.top(px(top_px + height + 4.))
                     }
                 })
-                .h(px(LABEL_HEIGHT))
+                .h(px(label_height))
                 .px(SPACE_SM)
                 .flex()
                 .items_center()

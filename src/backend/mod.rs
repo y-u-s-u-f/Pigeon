@@ -12,10 +12,6 @@
 //! Demo mode (`Source::Demo`) is the same backend on an in-memory store
 //! seeded from the placeholder data; ops commit by applying to that store.
 
-// Sprint 1 lands every seam first (W1); the Google workstreams use what
-// demo mode doesn't yet.
-#![allow(dead_code)]
-
 pub mod attachments;
 pub mod auth;
 pub mod calendar;

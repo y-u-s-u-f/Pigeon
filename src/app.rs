@@ -54,13 +54,13 @@ use crate::{
 /// Wide enough to hold the traffic lights above its icons.
 pub const RAIL_WIDTH: Pixels = px(80.);
 const SIDEBAR_WIDTH: (Pixels, Pixels) = (px(180.), px(360.));
-const SIDEBAR_DEFAULT: Pixels = px(236.);
+pub(crate) const SIDEBAR_DEFAULT: Pixels = px(236.);
 /// How many recent commands head the palette (ME-062).
 const RECENT_SHOWN: usize = 5;
 /// How far past its minimum the sidebar's divider is dragged to hide it.
 const SIDEBAR_COLLAPSE: Pixels = px(60.);
 const LIST_WIDTH: (Pixels, Pixels) = (px(300.), px(640.));
-const LIST_DEFAULT: Pixels = px(400.);
+pub(crate) const LIST_DEFAULT: Pixels = px(400.);
 /// How narrow the list gets when the user keeps the sidebar open in a narrow
 /// window.
 const LIST_SQUEEZED: Pixels = px(220.);
@@ -129,6 +129,16 @@ pub enum Row {
     /// A conversation that just left the view, collapsing (MD-017): its
     /// key in `PigeonApp::leaving_rows`. Never selected, picked or counted.
     Leaving(u64),
+}
+
+impl Row {
+    /// The thread's index, for a thread row.
+    pub fn thread(&self) -> Option<usize> {
+        match self {
+            Row::Thread(ix) => Some(*ix),
+            _ => None,
+        }
+    }
 }
 
 /// A conversation's row collapsing after it left the view (MD-017).
@@ -1075,24 +1085,17 @@ impl PigeonApp {
 
     /// The thread row after `row`, or before it when there is none after.
     fn neighbor_thread(&self, row: usize, forward: bool) -> Option<usize> {
-        let thread_at = |r: &Row| match r {
-            Row::Thread(ix) => Some(*ix),
-            _ => None,
-        };
         if forward {
-            self.rows[row + 1..].iter().find_map(thread_at)
+            self.rows[row + 1..].iter().find_map(Row::thread)
         } else {
-            self.rows[..row].iter().rev().find_map(thread_at)
+            self.rows[..row].iter().rev().find_map(Row::thread)
         }
     }
 
     fn select_adjacent(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         let next = match self.selected_row() {
             Some(row) => self.neighbor_thread(row, forward),
-            None => self.rows.iter().find_map(|r| match r {
-                Row::Thread(ix) => Some(*ix),
-                _ => None,
-            }),
+            None => self.rows.iter().find_map(Row::thread),
         };
         match next {
             // Moving through a selection leaves the threads unread.
@@ -1112,14 +1115,10 @@ impl PigeonApp {
 
     /// Home / End: the first or last conversation in the list.
     fn select_edge(&mut self, last: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let thread_at = |r: &Row| match r {
-            Row::Thread(ix) => Some(*ix),
-            _ => None,
-        };
         let edge = if last {
-            self.rows.iter().rev().find_map(thread_at)
+            self.rows.iter().rev().find_map(Row::thread)
         } else {
-            self.rows.iter().find_map(thread_at)
+            self.rows.iter().find_map(Row::thread)
         };
         if let Some(ix) = edge {
             self.move_selection_to(ix, window, cx);
@@ -1991,10 +1990,7 @@ impl PigeonApp {
                 cx,
             )
         });
-        let events = cx.subscribe_in(&palette, window, Self::on_palette_event);
-        window.focus(&palette.focus_handle(cx), cx);
-        self.palette = Some((palette, events));
-        cx.notify();
+        self.set_palette(palette, window, cx);
     }
 
     /// Every palette row, and how many of the first are recent commands.
@@ -2052,7 +2048,7 @@ impl PigeonApp {
                     )
                     .into(),
                     subtitle: None,
-                    leading: Leading::Dot(c.color),
+                    leading: Leading::dot(c.color),
                     binding: None,
                     search_only: false,
                 });
@@ -2068,7 +2064,7 @@ impl PigeonApp {
                 command: PaletteCommand::Nav(Nav::Label(ix)),
                 title: format!("Go to Label: {}", label.name).into(),
                 subtitle: None,
-                leading: Leading::Dot(label.color),
+                leading: Leading::dot(label.color),
                 binding: None,
                 search_only: false,
             });
@@ -2111,7 +2107,7 @@ impl PigeonApp {
                     Some(r) => r.label().into(),
                     None => crate::calendar::time::date_label(event.start.date(), today).into(),
                 }),
-                leading: Leading::Dot(calendar.data.color_of(event)),
+                leading: Leading::dot(calendar.data.color_of(event)),
                 binding: None,
                 search_only,
             })
@@ -2206,6 +2202,18 @@ impl PigeonApp {
                 .calendar
                 .update(cx, |c, cx| c.reveal_event(ix, window, cx)),
         }
+    }
+
+    pub(super) fn set_palette(
+        &mut self,
+        palette: Entity<CommandPalette>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let events = cx.subscribe_in(&palette, window, Self::on_palette_event);
+        window.focus(&palette.focus_handle(cx), cx);
+        self.palette = Some((palette, events));
+        cx.notify();
     }
 
     /// Most recent first, saved, at most `RECENT_COMMANDS` (ME-062).

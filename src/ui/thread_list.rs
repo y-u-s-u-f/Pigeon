@@ -20,7 +20,7 @@ use super::{
     controls::{ButtonKind, popover_surface, push_button},
     icon, icon_button, icon_button_small, is_secondary, label,
     motion::{self, SPRING_PANE, fade},
-    status::thousands,
+    status::{plural, thousands},
     tooltip, window_drag_area,
 };
 use crate::ui::style::*;
@@ -32,7 +32,7 @@ use crate::{
     },
     app::{Density, Nav, PigeonApp, Row, SearchSuggestion},
     assets::Icon,
-    data::{Folder, list_date},
+    data::{Folder, list_date_on},
     search::ServerState,
     theme::Theme,
 };
@@ -100,6 +100,9 @@ struct RowContext {
     queued: HashSet<String>,
     /// Differentiate Without Color: label dots carry a letter (MA-024).
     no_color: bool,
+    /// Read once per render, not per row (MC-043).
+    theme: Theme,
+    now: chrono::DateTime<chrono::Local>,
 }
 
 impl PigeonApp {
@@ -191,7 +194,8 @@ impl PigeonApp {
         };
 
         let header = window_drag_area(div().id("list-header"))
-            .h(HEADER_HEIGHT)
+            .h(super::HEADER_MIN)
+            .min_h(HEADER_HEIGHT)
             .flex_none()
             .flex()
             .items_center()
@@ -280,7 +284,7 @@ impl PigeonApp {
         let needs_gmail = searching
             && self.search_query.gmail_only()
             && (!self.server_search.available || self.server_search.state == ServerState::Offline);
-        let row_cx = Rc::new(self.row_context());
+        let row_cx = Rc::new(self.row_context(cx));
         let view = cx.entity();
         let list_view = |row_cx: Rc<RowContext>| {
             div()
@@ -301,11 +305,8 @@ impl PigeonApp {
         let body = if empty && needs_gmail {
             centered(empty_view(
                 Icon::Search,
-                "This search needs a connection to Gmail",
-                Some(muted_hint(
-                    "Gmail answers searches with after:, OR, negation and the like",
-                    &theme,
-                )),
+                "Can't search Gmail offline",
+                Some(muted_hint("after:, OR and -word need a connection", &theme)),
                 &theme,
             ))
         } else if empty && searching && asking_gmail {
@@ -448,10 +449,12 @@ impl PigeonApp {
 
     /// The row data that isn't per thread: queued sends, the system's
     /// Differentiate Without Color.
-    fn row_context(&self) -> RowContext {
+    fn row_context(&self, cx: &gpui::App) -> RowContext {
         RowContext {
             queued: self.queued_sends.clone(),
             no_color: crate::native::differentiate_without_color(),
+            theme: Theme::of(cx).clone(),
+            now: chrono::Local::now(),
         }
     }
 
@@ -726,6 +729,7 @@ impl PigeonApp {
                 this.child(
                     push_button("search-retry", "Retry", ButtonKind::Plain, theme)
                         .h(CONTROL_SM)
+                        .min_h(CONTROL_SM)
                         .on_click(cx.listener(|this, _, _, cx| this.retry_search(cx))),
                 )
             })
@@ -807,19 +811,11 @@ impl PigeonApp {
                 window.dispatch_action(Box::new(CloseSearch), cx);
             }
         }));
-        let field = div()
+        let field = super::search_field(Some(focused), theme)
             .key_context(SEARCH)
             .h(CONTROL_LG)
             .pl(SPACE_MD)
             .pr(SPACE_2XS)
-            .flex()
-            .items_center()
-            .gap(SPACE_SM)
-            .rounded(RADIUS_MD)
-            .bg(theme.search_bg)
-            .border_1()
-            .border_color(if focused { theme.accent } else { theme.border })
-            .text_size(TEXT_BASE)
             .overflow_hidden()
             .child(icon(Icon::Search, ICON_MD, theme.text_muted))
             .child(scope)
@@ -867,7 +863,7 @@ impl PigeonApp {
         for (ix, suggestion) in suggestions.into_iter().enumerate() {
             let kind = std::mem::discriminant(&suggestion);
             let title = match suggestion {
-                SearchSuggestion::Operator(..) => Some("Narrow it down"),
+                SearchSuggestion::Operator(..) => Some("Operators"),
                 SearchSuggestion::Recent(_) => Some("Recent"),
                 SearchSuggestion::Contact { .. } => Some("People"),
                 SearchSuggestion::ClearRecent => None,
@@ -1003,7 +999,7 @@ impl PigeonApp {
                 .aria_label("Search suggestions")
                 .occlude()
                 .absolute()
-                .top(HEADER_HEIGHT - SPACE_XS)
+                .top(super::header_height(window) - SPACE_XS)
                 .left(ROW_MARGIN)
                 .right(ROW_MARGIN)
                 .max_h(SUGGESTIONS_MAX)
@@ -1024,10 +1020,10 @@ impl PigeonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let theme = Theme::of(cx).clone();
+        let theme = &row_cx.theme;
         match self.rows[ix] {
             Row::Thread(thread_ix) => {
-                let row = self.render_thread_row(thread_ix, row_cx, &theme, window, cx);
+                let row = self.render_thread_row(thread_ix, row_cx, theme, window, cx);
                 let id = &self.data.threads[thread_ix].id;
                 // MD-017: Undo brings it back growing into place.
                 if let Some(glide) = self.growing_rows.get(id) {
@@ -1051,9 +1047,9 @@ impl PigeonApp {
                 }
                 row
             }
-            Row::ArchivedHeader { count } => self.render_archived_header(count, &theme, cx),
-            Row::LoadOlder => self.render_load_older(&theme, cx),
-            Row::Leaving(key) => self.render_leaving_row(key, row_cx, &theme, window, cx),
+            Row::ArchivedHeader { count } => self.render_archived_header(count, theme, cx),
+            Row::LoadOlder => self.render_load_older(theme, cx),
+            Row::Leaving(key) => self.render_leaving_row(key, row_cx, theme, window, cx),
         }
     }
 
@@ -1242,7 +1238,7 @@ impl PigeonApp {
         let count = thread.messages.len();
         let subject: SharedString = thread.subject_or_placeholder().to_string().into();
         let no_subject = !thread.has_subject();
-        let date = list_date(&last.date);
+        let date = list_date_on(&last.date, row_cx.now);
 
         let (primary, secondary) = if unread {
             (theme.text, theme.text_muted)
@@ -1395,7 +1391,7 @@ impl PigeonApp {
             .items_center()
             .justify_center()
             .child(
-                checkbox(thread_ix, checked, theme)
+                checkbox(thread_ix, checked, &subject, theme)
                     .when(!pinned_checkbox, |this| {
                         this.hidden().group_hover(ROW_GROUP, |s| s.flex())
                     })
@@ -1847,7 +1843,7 @@ fn subject_and_snippet(
     dim: gpui::Hsla,
     faint: gpui::Hsla,
 ) -> StyledText {
-    let text = format!("{subject}  {snippet}");
+    let text = format!("{subject} — {snippet}");
     let snippet_range = subject.len()..text.len();
     let mut highlights = Vec::new();
     if placeholder {
@@ -1894,7 +1890,12 @@ fn check_box(state: gpui::Toggled, theme: &Theme) -> gpui::Div {
 }
 
 /// A row's checkbox for picking it with others.
-fn checkbox(thread_ix: usize, checked: bool, theme: &Theme) -> gpui::Stateful<gpui::Div> {
+fn checkbox(
+    thread_ix: usize,
+    checked: bool,
+    subject: &str,
+    theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
     let state = if checked {
         gpui::Toggled::True
     } else {
@@ -1903,7 +1904,7 @@ fn checkbox(thread_ix: usize, checked: bool, theme: &Theme) -> gpui::Stateful<gp
     div()
         .id(("row-check", thread_ix))
         .role(gpui::Role::CheckBox)
-        .aria_label("Select")
+        .aria_label(format!("Select {subject}"))
         .aria_toggled(state)
         .size(HIT_TARGET)
         .flex_none()
@@ -1977,11 +1978,7 @@ fn result_count(count: usize, estimate: Option<usize>, more: bool) -> String {
     match estimate.filter(|&n| n > count) {
         Some(n) if more => format!("About {} results", thousands(n)),
         _ if more => format!("{}+ results", thousands(count)),
-        _ => format!(
-            "{} result{}",
-            thousands(count),
-            if count == 1 { "" } else { "s" }
-        ),
+        _ => plural(count, "result", "results"),
     }
 }
 

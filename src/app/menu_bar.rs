@@ -172,9 +172,7 @@ fn schedule(f: impl FnOnce() + 'static) {
 
 /// From a scheduled task: an update.
 fn with_app(f: impl FnOnce(&mut App)) {
-    if let Some(cx) = STATE.with_borrow(|s| s.as_ref().map(|s| s.cx.clone())) {
-        cx.update(f);
-    }
+    with_app_value(f);
 }
 
 /// From a scheduled task: a value read from the app.

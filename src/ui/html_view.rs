@@ -376,11 +376,7 @@ impl<'a> Renderer<'a> {
                 };
                 div()
                     .flex()
-                    .map(|d| match align {
-                        Align::Left => d,
-                        Align::Center => d.justify_center(),
-                        Align::Right => d.justify_end(),
-                    })
+                    .map(|d| justified(d, *align))
                     .child(picture)
                     .into_any_element()
             }
@@ -402,11 +398,7 @@ impl<'a> Renderer<'a> {
                 self.next_id += 1;
                 div()
                     .flex()
-                    .map(|d| match align {
-                        Align::Left => d,
-                        Align::Center => d.justify_center(),
-                        Align::Right => d.justify_end(),
-                    })
+                    .map(|d| justified(d, *align))
                     .child(
                         div()
                             .id(("html-button", id))
@@ -703,6 +695,15 @@ impl<'a> Renderer<'a> {
             }),
             fade_out: None,
         }
+    }
+}
+
+/// A flex row's children placed by `align`.
+fn justified(div: Div, align: Align) -> Div {
+    match align {
+        Align::Left => div,
+        Align::Center => div.justify_center(),
+        Align::Right => div.justify_end(),
     }
 }
 

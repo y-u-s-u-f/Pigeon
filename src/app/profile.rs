@@ -211,14 +211,7 @@ async fn run(main: AnyWindowHandle, app: &WeakEntity<PigeonApp>, cx: &mut AsyncA
     set_scenario(Some("open conversations"));
     for n in 0..12 {
         step(cx, main, app, move |this, window, cx| {
-            let threads: Vec<usize> = this
-                .rows
-                .iter()
-                .filter_map(|r| match r {
-                    Row::Thread(ix) => Some(*ix),
-                    _ => None,
-                })
-                .collect();
+            let threads: Vec<usize> = this.rows.iter().filter_map(Row::thread).collect();
             if let Some(&ix) = threads.get(n % threads.len().max(1)) {
                 this.select_thread(ix, window, cx);
             }

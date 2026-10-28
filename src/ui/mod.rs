@@ -23,8 +23,8 @@ pub mod thread_list;
 use gpui::{
     AbsoluteLength, Action, AnyElement, App, AppContext as _, AsKeystroke as _, Context, Div,
     ElementId, FontWeight, Hsla, InteractiveElement, IntoElement, KeyBinding, Keystroke,
-    MouseButton, MouseDownEvent, ObjectFit, ParentElement, Pixels, Render, SharedString, Stateful,
-    StatefulInteractiveElement, Styled, StyledImage as _, Svg, Window, accesskit::Live,
+    MouseButton, MouseDownEvent, ObjectFit, ParentElement, Pixels, Rems, Render, SharedString,
+    Stateful, StatefulInteractiveElement, Styled, StyledImage as _, Svg, Window, accesskit::Live,
     component::tooltip::Tooltip, div, img, prelude::FluentBuilder as _, px, rems, svg,
 };
 
@@ -37,8 +37,19 @@ use crate::{
     theme::Theme,
 };
 
+/// A label's or calendar's color dot.
+pub const DOT: Pixels = px(8.);
+
 /// Height of the top bar of every pane; the traffic lights sit in it.
 pub const HEADER_HEIGHT: Pixels = px(52.);
+/// What the bar's controls need: past it, as text grows, the bar grows
+/// (MA-021). Bars take `.h(HEADER_MIN).min_h(HEADER_HEIGHT)`.
+pub const HEADER_MIN: Rems = type_size(44.);
+
+/// The top bar's height at the window's text scale, for what sits under it.
+pub fn header_height(window: &Window) -> Pixels {
+    HEADER_HEIGHT.max(HEADER_MIN.to_pixels(window.rem_size()))
+}
 
 /// `size` at a text scale of 1, in pixels.
 fn nominal_px(size: AbsoluteLength) -> f32 {
@@ -124,8 +135,10 @@ pub fn icon_button_with(
     theme: &Theme,
 ) -> Stateful<Div> {
     let tooltip_action = action.boxed_clone();
+    let shortcut = shortcut_text(action.as_ref());
     style::focusable_control(div().id(id), theme)
         .aria_label(tooltip)
+        .when_some(shortcut, |this, keys| this.aria_keyshortcuts(keys))
         .role(gpui::Role::Button)
         .size(HIT_TARGET)
         .flex_none()
@@ -276,9 +289,22 @@ pub fn attachment_icon(attachment: &Attachment, theme: &Theme) -> Svg {
         FileKind::Archive => (Icon::FileArchive, theme.star),
         FileKind::Document => (Icon::FileText, theme.accent),
         FileKind::Spreadsheet => (Icon::FileSpreadsheet, theme.success),
+        FileKind::Video => (Icon::Video, theme.avatar_palette[1]),
+        FileKind::Calendar => (Icon::Calendar, theme.accent),
         FileKind::Other => (Icon::File, theme.icon),
     };
     icon(glyph, ICON_LG, color)
+}
+
+/// A color dot centered in an icon-sized box: labels and calendars in lists.
+pub fn dot_marker(color: Hsla) -> Div {
+    div()
+        .size(ICON_LG)
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(div().size(DOT).rounded_full().bg(color))
 }
 
 pub fn label_chip(label: &Label, theme: &Theme) -> Div {
@@ -495,6 +521,14 @@ pub fn keycap_on_accent(label: impl Into<SharedString>, theme: &Theme) -> Div {
 
 /// Keystrokes as keycaps; sequences like `g i` read "G then I".
 fn keystrokes_caps<'a>(keystrokes: impl IntoIterator<Item = &'a Keystroke>, theme: &Theme) -> Div {
+    keystrokes_caps_with(keystrokes, theme, |cap| keycap(cap, theme))
+}
+
+fn keystrokes_caps_with<'a>(
+    keystrokes: impl IntoIterator<Item = &'a Keystroke>,
+    theme: &Theme,
+    cap: impl Fn(SharedString) -> Div,
+) -> Div {
     let mut row = div().flex_none().flex().items_center().gap(SPACE_XS);
     for (ix, keystroke) in keystrokes.into_iter().enumerate() {
         if ix > 0 {
@@ -506,13 +540,42 @@ fn keystrokes_caps<'a>(keystrokes: impl IntoIterator<Item = &'a Keystroke>, them
                     .child("then"),
             );
         }
-        row = row.children(
-            keystroke_caps(keystroke)
-                .into_iter()
-                .map(|cap| keycap(cap, theme)),
-        );
+        row = row.children(keystroke_caps(keystroke).into_iter().map(&cap));
     }
     row
+}
+
+/// A binding as VoiceOver reads it: "⇧⌘D", "G then I" (MA-048).
+pub fn binding_text(binding: &KeyBinding) -> SharedString {
+    binding
+        .keystrokes()
+        .iter()
+        .map(|k| keystroke_caps(k.as_keystroke()).concat())
+        .collect::<Vec<_>>()
+        .join(" then ")
+        .into()
+}
+
+thread_local! {
+    /// Each action's first binding as text, for `aria_keyshortcuts` on
+    /// buttons that dispatch it. Rebuilt by `index_shortcuts`.
+    static SHORTCUTS: std::cell::RefCell<std::collections::HashMap<&'static str, SharedString>> =
+        Default::default();
+}
+
+/// Re-reads the keymap into `SHORTCUTS`; called whenever it changes.
+pub fn index_shortcuts(cx: &App) {
+    let mut map = std::collections::HashMap::new();
+    for binding in cx.key_bindings().borrow().bindings() {
+        map.entry(binding.action().name())
+            .or_insert_with(|| binding_text(binding));
+    }
+    SHORTCUTS.with(|s| *s.borrow_mut() = map);
+}
+
+/// The shortcut `action` is bound to, as `binding_text` writes it.
+pub fn shortcut_text(action: &dyn Action) -> Option<SharedString> {
+    SHORTCUTS.with(|s| s.borrow().get(action.name()).cloned())
 }
 
 /// A binding as keycaps.
@@ -520,14 +583,80 @@ pub fn binding_caps(binding: &KeyBinding, theme: &Theme) -> Div {
     keystrokes_caps(binding.keystrokes().iter().map(|k| k.as_keystroke()), theme)
 }
 
+/// A binding with each cap drawn by `cap`: `keycap_on_accent` on a filled
+/// button, say.
+pub fn binding_caps_with(
+    binding: &KeyBinding,
+    theme: &Theme,
+    cap: impl Fn(SharedString) -> Div,
+) -> Div {
+    keystrokes_caps_with(
+        binding.keystrokes().iter().map(|k| k.as_keystroke()),
+        theme,
+        cap,
+    )
+}
+
+/// The rounded well around a search input; callers set height, padding and
+/// children. `focused` draws the border (accent while focused); `None`
+/// leaves it borderless.
+pub fn search_field(focused: Option<bool>, theme: &Theme) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(SPACE_SM)
+        .rounded(RADIUS_MD)
+        .bg(theme.search_bg)
+        .text_size(TEXT_BASE)
+        .when_some(focused, |this, focused| {
+            this.border_1()
+                .border_color(if focused { theme.accent } else { theme.border })
+        })
+}
+
+/// A list section's caption: small, semibold, muted. Callers set padding.
+pub fn section_caption(title: impl Into<SharedString>, theme: &Theme) -> Div {
+    div()
+        .text_size(TEXT_SM)
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme.text_muted)
+        .child(title.into())
+}
+
+/// Each binding's keycaps, joined with a faint "or".
+pub fn bindings_caps<'a>(
+    bindings: impl IntoIterator<Item = &'a KeyBinding>,
+    theme: &Theme,
+) -> Vec<AnyElement> {
+    let mut out = Vec::new();
+    for (ix, binding) in bindings.into_iter().enumerate() {
+        if ix > 0 {
+            out.push(
+                div()
+                    .text_size(TEXT_XS)
+                    .text_color(theme.text_faint)
+                    .child("or")
+                    .into_any_element(),
+            );
+        }
+        out.push(binding_caps(binding, theme).into_any_element());
+    }
+    out
+}
+
 /// Keystrokes written as in the keymap (`"cmd-shift-d"`, `"g i"`) as
 /// keycaps, so fixed hints read the same as live bindings.
 pub fn keys_caps(keys: &str, theme: &Theme) -> Div {
+    keys_caps_with(keys, theme, |cap| keycap(cap, theme))
+}
+
+/// `keys_caps` with each cap drawn by `cap`.
+pub fn keys_caps_with(keys: &str, theme: &Theme, cap: impl Fn(SharedString) -> Div) -> Div {
     let keystrokes: Vec<Keystroke> = keys
         .split_whitespace()
         .filter_map(|k| Keystroke::parse(k).ok())
         .collect();
-    keystrokes_caps(&keystrokes, theme)
+    keystrokes_caps_with(&keystrokes, theme, cap)
 }
 
 /// The shadow under popovers and dropdowns: a tight one that lifts the

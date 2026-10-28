@@ -507,6 +507,22 @@ impl Theme {
         }
     }
 
+    /// An event's second line (time, "until", the clipped chevrons) in
+    /// `text`, its title's color. Full strength with Increase Contrast.
+    pub fn event_secondary(&self, text: Hsla) -> Hsla {
+        text.alpha(if self.high_contrast { 1. } else { 0.78 })
+    }
+
+    /// The light fill of an event not yet answered or declined (ME-041).
+    pub fn event_answer_fill(&self, fill: Hsla) -> Hsla {
+        fill.alpha(if self.high_contrast { 0.5 } else { 0.25 })
+    }
+
+    /// A free event's fill or dot, lighter than a busy one's (ME-051).
+    pub fn event_free(&self, color: Hsla) -> Hsla {
+        color.alpha(color.a * if self.high_contrast { 0.8 } else { 0.55 })
+    }
+
     /// The stripe on an event's leading edge, and its dot.
     pub fn event_accent(&self, color: Hsla, past: bool) -> Hsla {
         let accent = if self.is_dark {
@@ -591,6 +607,10 @@ impl Theme {
         });
     }
 }
+
+/// The gray a label or calendar gets when its own color is missing or
+/// can't be read (ME-061).
+pub const FALLBACK_COLOR: Hsla = hsla(0.6, 0.1, 0.5, 1.);
 
 /// White, or near-black where white is under 4.5:1 and black reads better,
 /// on an opaque `fill`.

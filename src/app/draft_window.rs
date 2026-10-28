@@ -167,7 +167,8 @@ impl Render for DraftHost {
                 // Like the reading pane's draft toolbar, past the traffic
                 // lights.
                 ui::window_drag_area(div().id("draft-window-toolbar"))
-                    .h(HEADER_HEIGHT)
+                    .h(crate::ui::HEADER_MIN)
+                    .min_h(HEADER_HEIGHT)
                     .flex_none()
                     .flex()
                     .items_center()

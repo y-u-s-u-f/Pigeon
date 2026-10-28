@@ -60,7 +60,7 @@ impl Store {
                 color: r
                     .get::<_, Option<String>>(2)?
                     .and_then(|hex| crate::data::from_hex(&hex))
-                    .unwrap_or(gpui::hsla(0.6, 0.1, 0.5, 1.)),
+                    .unwrap_or(crate::theme::FALLBACK_COLOR),
                 visible: r.get(3)?,
                 access_role: AccessRole::from_key(&r.get::<_, String>(4)?),
                 primary: r.get(5)?,
@@ -141,17 +141,6 @@ impl Store {
         )?;
         let rows = stmt.query_map(params![account, super::json(&ids)], |r| r.get(0))?;
         Ok(rows.collect::<Result<_, _>>()?)
-    }
-
-    pub fn delete_events(&self, account: &str, ids: &[String]) -> anyhow::Result<()> {
-        let mut conn = self.conn();
-        let tx = conn.transaction()?;
-        for id in ids {
-            tx.prepare_cached("DELETE FROM events WHERE account = ?1 AND id = ?2")?
-                .execute(params![account, id])?;
-        }
-        tx.commit()?;
-        Ok(())
     }
 
     // Google sync (W4): calendars by their list entry, events per calendar

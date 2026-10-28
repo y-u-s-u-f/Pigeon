@@ -308,6 +308,7 @@ pub fn bind_keys(cx: &mut App, preset: KeymapPreset) {
     cx.bind_keys(base);
     cx.bind_keys(preset_bindings(preset));
     cx.bind_keys(shared_bindings());
+    crate::ui::index_shortcuts(cx);
 }
 
 /// The ⌘ shortcuts that differ between the presets. Bound before the rest,
@@ -1090,7 +1091,7 @@ pub const COMMANDS: &[Command] = commands! {
     App: "Keyboard Shortcuts", Keyboard, ToggleShortcutsHelp;
     App: "Settings…", Settings, OpenSettings;
     App: "Sync Now", RefreshCw, SyncNow if SignedIn;
-    App: "Sign In with Google", LogIn, SignIn if CanSignIn;
+    App: "Sign In with Google…", LogIn, SignIn if CanSignIn;
     App: "Sign Out", LogOut, SignOut if CanSignOut;
     App: "Use Demo Data", Layers, UseDemoData if SignedOut;
     App: "Quit Pigeon", LogOut, Quit;

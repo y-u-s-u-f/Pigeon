@@ -70,10 +70,10 @@ pub const PANEL_START_HEIGHT: Pixels = px(420.);
 /// Rows of "Later today" and of recent mail, at most.
 const MAX_EVENTS: usize = 6;
 const MAX_MAIL: usize = 4;
-const TIME_COLUMN: Pixels = px(56.);
+const TIME_COLUMN: gpui::Rems = type_size(56.);
 const COLOR_BAR: Pixels = px(3.);
 const UNREAD_DOT: Pixels = px(6.);
-const GEAR_MENU_WIDTH: Pixels = px(200.);
+const GEAR_MENU_WIDTH: gpui::Rems = type_size(200.);
 
 /// What ↑/↓ move through.
 #[derive(Clone, Debug, PartialEq)]
@@ -474,7 +474,7 @@ impl Render for MenuBarPanel {
         let agenda = today::agenda(&today.calendar, now);
         let items = Self::items(&agenda, &today.mail);
         let sync = today.backend().read(cx).status().clone();
-        let status = status::label(&sync, chrono::Utc::now().timestamp_millis());
+        let status = status::label(&sync, status::now_ms());
         let header = now.format("%A, %b %-d").to_string();
         let mail = &today.mail;
         let data = &today.calendar;
@@ -503,9 +503,7 @@ impl Render for MenuBarPanel {
             middle.push(section_header(
                 "later-today",
                 "Later today",
-                (count > 0).then(|| {
-                    format!("{count} event{}", if count == 1 { "" } else { "s" }).into_any_element()
-                }),
+                (count > 0).then(|| status::plural(count, "event", "events").into_any_element()),
                 &theme,
             ));
         }
@@ -1199,7 +1197,7 @@ fn section_header(
     right: Option<AnyElement>,
     theme: &Theme,
 ) -> AnyElement {
-    div()
+    super::section_caption(title, theme)
         .id(id)
         .role(gpui::Role::Heading)
         .aria_label(title)
@@ -1209,10 +1207,6 @@ fn section_header(
         .px(SPACE_LG)
         .pt(SPACE_MD)
         .pb(SPACE_XS)
-        .text_size(TEXT_SM)
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(theme.text_muted)
-        .child(title)
         .when_some(right, |el, right| {
             el.child(div().font_weight(FontWeight::NORMAL).child(right))
         })

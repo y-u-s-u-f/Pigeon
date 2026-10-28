@@ -69,7 +69,7 @@ impl CalendarView {
             .flex()
             .child(
                 div()
-                    .w(px(super::week_view::GUTTER + DAY_COLUMN_MAX))
+                    .w(px(super::week_view::gutter_width(window) + DAY_COLUMN_MAX))
                     .flex_none()
                     .h_full()
                     .child(grid),

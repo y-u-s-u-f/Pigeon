@@ -23,6 +23,7 @@ use super::{
 use crate::data::{Label, ListVisibility};
 
 /// Every colour Gmail takes for a label's text and background.
+#[cfg(test)]
 pub const GMAIL_PALETTE: [&str; 102] = [
     "#000000", "#434343", "#666666", "#999999", "#cccccc", "#efefef", "#f3f3f3", "#ffffff",
     "#fb4c2f", "#ffad47", "#fad165", "#16a766", "#43d692", "#4a86e8", "#a479e2", "#f691b3",
@@ -74,6 +75,7 @@ impl ColorPair {
     }
 
     /// Both colours are ones Gmail takes.
+    #[cfg(test)]
     pub fn is_valid(self) -> bool {
         GMAIL_PALETTE.contains(&self.background) && GMAIL_PALETTE.contains(&self.text)
     }

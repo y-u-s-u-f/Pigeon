@@ -52,11 +52,11 @@ pub fn render_with_status(
     let item = |id: &'static str,
                 glyph: Icon,
                 item_mode: Option<Mode>,
-                tooltip: SharedString,
+                label: SharedString,
+                tooltip: &'static str,
                 action: Box<dyn Action>| {
         let active = mode == item_mode;
         let tooltip_action = action.boxed_clone();
-        let label = tooltip.clone();
         focusable_control(div().id(id), theme)
             .role(gpui::Role::Tab)
             .aria_label(label)
@@ -70,7 +70,7 @@ pub fn render_with_status(
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
             .tooltip(move |window, cx| {
-                super::tooltip(tooltip.clone())
+                super::tooltip(tooltip)
                     .action(tooltip_action.as_ref(), None)
                     .build(window, cx)
             })
@@ -119,6 +119,7 @@ pub fn render_with_status(
                 0 => "Mail".into(),
                 n => format!("Mail, {} unread", super::status::thousands(n)).into(),
             },
+            "Show mail",
             Box::new(GoToMail),
         )
         .children(dot),
@@ -128,6 +129,7 @@ pub fn render_with_status(
         Icon::Calendar,
         Some(Mode::Calendar),
         "Calendar".into(),
+        "Show calendar",
         Box::new(GoToCalendar),
     ))
     .child(div().flex_1())
@@ -137,6 +139,7 @@ pub fn render_with_status(
         Icon::Settings,
         None,
         "Settings".into(),
+        "Settings",
         Box::new(OpenSettings),
     )))
 }

@@ -2,16 +2,16 @@
 //! shows the bindings that are actually live. Typing filters it.
 
 use gpui::{
-    AnyElement, AsKeystroke as _, Context, FontWeight, Global, InteractiveElement, IntoElement,
-    KeyBinding, KeymapVersion, MouseButton, ParentElement, Pixels, StatefulInteractiveElement as _,
-    Styled, Window,
+    AnyElement, AsKeystroke as _, Context, Focusable as _, FontWeight, Global, InteractiveElement,
+    IntoElement, KeyBinding, KeymapVersion, MouseButton, ParentElement, Pixels,
+    StatefulInteractiveElement as _, Styled, Window,
     component::{input::Input, scroll::ScrollableElement as _},
     div, linear_color_stop, linear_gradient,
     prelude::FluentBuilder as _,
     px,
 };
 
-use super::{binding_caps, controls::sheet_surface, icon, keys_caps, label};
+use super::{controls::sheet_surface, icon, keys_caps, label};
 use crate::ui::style::*;
 use crate::{
     actions::{COMMANDS, Command, Group, HELP, Scope, lookup_contexts},
@@ -46,7 +46,7 @@ const WIDE: Pixels = px(1040.);
 const NARROW: Pixels = px(780.);
 /// A fixed height: the sheet keeps its size while filtering.
 const HEIGHT: Pixels = px(640.);
-const FILTER_WIDTH: Pixels = px(220.);
+const FILTER_WIDTH: gpui::Rems = type_size(220.);
 
 /// MC-040: every command's live bindings in one scope, looked up once per
 /// keymap (a preset switch rebuilds it) instead of on every frame.
@@ -202,25 +202,22 @@ impl PigeonApp {
                             .child("Keyboard Shortcuts"),
                     )
                     .child(
-                        div()
-                            .w(FILTER_WIDTH)
-                            .h(CONTROL_MD)
-                            .px(SPACE_SM)
-                            .flex()
-                            .items_center()
-                            .gap(SPACE_SM)
-                            .rounded(RADIUS_MD)
-                            .bg(theme.search_bg)
-                            .text_size(TEXT_BASE)
-                            .child(icon(Icon::Search, ICON_SM, theme.text_faint))
-                            .child(
-                                div().flex_1().min_w_0().child(
-                                    Input::new(&self.help_filter)
-                                        .appearance(false)
-                                        .cleanable(true)
-                                        .px(px(0.)),
-                                ),
+                        super::search_field(
+                            Some(self.help_filter.focus_handle(cx).is_focused(window)),
+                            &theme,
+                        )
+                        .w(FILTER_WIDTH)
+                        .h(CONTROL_MD)
+                        .px(SPACE_SM)
+                        .child(icon(Icon::Search, ICON_SM, theme.text_faint))
+                        .child(
+                            div().flex_1().min_w_0().child(
+                                Input::new(&self.help_filter)
+                                    .appearance(false)
+                                    .cleanable(true)
+                                    .px(px(0.)),
                             ),
+                        ),
                     )
                     .child(div().flex_1())
                     .child(
@@ -322,17 +319,7 @@ fn render_group(group: Group, rows: &[HelpRow], theme: &Theme) -> AnyElement {
                     .text_color(theme.text_muted)
                     .child(label(("help-row", ix), command.name)),
             )
-            .children(bindings.iter().enumerate().flat_map(|(ix, binding)| {
-                let or = (ix > 0).then(|| {
-                    div()
-                        .text_size(TEXT_XS)
-                        .text_color(theme.text_faint)
-                        .child("or")
-                        .into_any_element()
-                });
-                or.into_iter()
-                    .chain([binding_caps(binding, theme).into_any_element()])
-            }))
+            .children(super::bindings_caps(bindings.iter(), theme))
     });
 
     div()

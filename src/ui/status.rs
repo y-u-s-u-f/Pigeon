@@ -55,6 +55,15 @@ pub fn ago(at_ms: i64, now_ms: i64) -> String {
     }
 }
 
+pub(crate) fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+/// "1 result", "1,234 results".
+pub(crate) fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{} {}", thousands(n), if n == 1 { one } else { many })
+}
+
 pub(crate) fn thousands(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::new();

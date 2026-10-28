@@ -184,7 +184,7 @@ pub fn notify(notice: Notice, cx: &mut App) {
 }
 
 pub fn dismiss(tag: &str, cx: &mut App) {
-    dismiss_full(&full_tag(tag), cx);
+    dismiss_tag(&full_tag(tag), cx);
 }
 
 /// The `@` options and buttons a notice of `kind` carries.
@@ -270,7 +270,8 @@ fn post(notice: Notice, threads: Vec<String>, cx: &mut App) {
     });
 }
 
-fn dismiss_full(tag: &str, cx: &mut App) {
+/// Take back a notice by its full tag, as `showing_for` gives it.
+pub fn dismiss_tag(tag: &str, cx: &mut App) {
     cx.default_global::<Posted>().0.remove(tag);
     logging::info(&format!("notify: dismissed tag={tag}"));
     cx.dismiss_system_notification(tag);
@@ -327,7 +328,7 @@ fn respond(response: SystemNotificationResponse, cx: &mut App) {
                     menu_bar::mark_thread_read(&backend, id, cx);
                 }
             }
-            dismiss_full(&tag, cx);
+            dismiss_tag(&tag, cx);
         }
         Some(SNOOZE) => today::snooze(base_tag(&tag), cx),
         _ if base_tag(&tag) == SIGN_IN_TAG => {
@@ -442,11 +443,6 @@ pub fn showing_for(changed: &[String], cx: &App) -> Vec<(String, Vec<String>)> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// Take back a notice by its full tag, as `showing_for` gives it.
-pub fn dismiss_tag(full_tag: &str, cx: &mut App) {
-    dismiss_full(full_tag, cx);
 }
 
 fn test_notice() -> Notice {

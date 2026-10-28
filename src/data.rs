@@ -306,7 +306,6 @@ pub struct Message {
 }
 
 /// A message's body: fetched on demand (RDR-6).
-#[allow(dead_code)] // Loading and Failed come with W3.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Body {
     NotLoaded,
@@ -395,6 +394,8 @@ pub enum FileKind {
     Archive,
     Document,
     Spreadsheet,
+    Video,
+    Calendar,
     Other,
 }
 
@@ -416,6 +417,12 @@ impl Attachment {
             || matches!(ext.as_str(), "xlsx" | "xls" | "csv" | "numbers")
         {
             FileKind::Spreadsheet
+        } else if mime.starts_with("video/")
+            || matches!(ext.as_str(), "mp4" | "mov" | "m4v" | "avi" | "mkv" | "webm")
+        {
+            FileKind::Video
+        } else if mime == "text/calendar" || mime == "application/ics" || ext == "ics" {
+            FileKind::Calendar
         } else if mime.contains("word")
             || mime.contains("document")
             || mime.starts_with("text/")
@@ -972,8 +979,12 @@ fn strip_word_prefix<'a>(text: &'a str, prefix: &str) -> &'a str {
 /// year, else "Oct 3, 2025"; "3 Oct" and "3 Oct 2025" where the region
 /// puts the day first (MA-043).
 pub fn list_date(date: &DateTime<FixedOffset>) -> String {
+    list_date_on(date, Local::now())
+}
+
+/// `list_date` against a `now` read once for many rows (MC-043).
+pub fn list_date_on(date: &DateTime<FixedOffset>, now: DateTime<Local>) -> String {
     let date = date.with_timezone(&Local);
-    let now = Local::now();
     let days = (now.date_naive() - date.date_naive()).num_days();
     let day_first = day_first();
     match days {
@@ -1338,6 +1349,8 @@ mod tests {
             .kind(),
             FileKind::Document
         );
+        assert_eq!(a("clip.mov", "video/quicktime").kind(), FileKind::Video);
+        assert_eq!(a("invite.ics", "text/calendar").kind(), FileKind::Calendar);
         assert_eq!(
             a("x.bin", "application/octet-stream").kind(),
             FileKind::Other

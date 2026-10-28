@@ -10,7 +10,7 @@ use gpui::{Context, Entity, SharedString, Window};
 use super::{Mode, PigeonApp, ToastAction, ToastKind};
 use crate::{
     actions::Undo,
-    backend::{OpId, UNDO_WINDOW, gmail},
+    backend::{OpId, UNDO_WINDOW, categories::Category, gmail},
     data::{Folder, Thread},
     ui::{
         calendar::{Discarded, Removal},
@@ -56,6 +56,8 @@ pub enum UndoAction {
         add: Vec<String>,
         remove: Vec<String>,
     },
+    /// Threads moved to a Gmail category: (thread id, category before).
+    Category { moves: Vec<(String, Category)> },
     /// A calendar event moved or resized.
     Retime(Retime),
 }
@@ -304,7 +306,10 @@ impl PigeonApp {
     /// a toast instead (MA-071).
     fn undoes_hidden_mail(&self, action: &UndoAction) -> bool {
         self.mode != Mode::Mail
-            && matches!(action, UndoAction::Move { .. } | UndoAction::Labels { .. })
+            && matches!(
+                action,
+                UndoAction::Move { .. } | UndoAction::Labels { .. } | UndoAction::Category { .. }
+            )
     }
 
     /// Put `action` into effect, and return what puts it back, for the
@@ -351,6 +356,7 @@ impl PigeonApp {
                 add,
                 remove,
             } => Some(self.undo_labels(threads, add, remove, cx)),
+            UndoAction::Category { moves } => Some(self.undo_category(moves, cx)),
             UndoAction::Retime(retime) => {
                 let Retime {
                     event_id,

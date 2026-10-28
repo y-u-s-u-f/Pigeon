@@ -27,7 +27,7 @@ use gpui::{
 };
 
 use super::{
-    HEADER_HEIGHT, account_avatar, binding_caps,
+    HEADER_HEIGHT, account_avatar,
     controls::{self, ButtonKind, dropdown, menu_check, menu_row, popup, push_button},
     empty_state, icon, icon_button_small, keys_caps,
     motion::{self, Rise, SPRING_PANE},
@@ -72,9 +72,9 @@ pub const SETTINGS_SEARCH: &str = "SettingsSearch";
 /// How long a setting jumped to from the search stays fully lit before it
 /// fades to the cursor's color (MD-026).
 const FLASH_HOLD: Duration = Duration::from_millis(900);
-const SECTIONS_WIDTH: Pixels = px(220.);
+const SECTIONS_WIDTH: gpui::Rems = type_size(220.);
 const CONTENT_MAX: Pixels = px(680.);
-const MENU_WIDTH: Pixels = px(220.);
+const MENU_WIDTH: gpui::Rems = type_size(220.);
 const MENU_MAX_HEIGHT: Pixels = px(280.);
 /// A setting's row, and a shortcut's, at least.
 const ROW_MIN: Rems = rems(56. / BASE_REM);
@@ -716,9 +716,10 @@ impl PigeonApp {
             SettingId::TimeZone => Control::Info(calendar.time_zone_note()),
             SettingId::Account => Control::Account(self.data.me()),
             SettingId::Access => Control::Info(super::status::scopes(self.backend.read(cx))),
-            SettingId::LastSync => {
-                Control::Info(super::status::last_sync(self.backend.read(cx), now_ms()))
-            }
+            SettingId::LastSync => Control::Info(super::status::last_sync(
+                self.backend.read(cx),
+                super::status::now_ms(),
+            )),
             SettingId::SyncNow => Control::Button {
                 label: "Sync Now",
                 danger: false,
@@ -779,7 +780,7 @@ impl PigeonApp {
             SettingId::Signatures => Control::Switch(settings::get(cx).signatures),
             SettingId::DefaultMailApp => match shell::mail_handler() {
                 native::MailHandler::Unavailable(why) => Control::Info(why.into()),
-                native::MailHandler::Pigeon => Control::Info("Pigeon opens mailto: links.".into()),
+                native::MailHandler::Pigeon => Control::Info("Pigeon opens email links.".into()),
                 native::MailHandler::Other(_) => Control::Button {
                     label: "Make Default",
                     danger: false,
@@ -1073,7 +1074,8 @@ impl PigeonApp {
                     .bg(theme.reader_bg)
                     .child(
                         window_drag_area(div().id("settings-header"))
-                            .h(HEADER_HEIGHT)
+                            .h(super::HEADER_MIN)
+                            .min_h(HEADER_HEIGHT)
                             .flex_none()
                             .px(SPACE_2XL)
                             .flex()
@@ -1174,9 +1176,9 @@ impl PigeonApp {
                 .role(gpui::Role::Tab)
                 .aria_label(if searching {
                     format!(
-                        "{}, {count} result{}",
+                        "{}, {}",
                         section.title(),
-                        if count == 1 { "" } else { "s" }
+                        super::status::plural(count, "result", "results")
                     )
                 } else {
                     section.title().to_string()
@@ -1246,7 +1248,8 @@ impl PigeonApp {
             .border_color(theme.border)
             .child(
                 window_drag_area(div().id("settings-sections-header"))
-                    .h(HEADER_HEIGHT)
+                    .h(super::HEADER_MIN)
+                    .min_h(HEADER_HEIGHT)
                     .flex_none()
                     .px(SPACE_LG)
                     .flex()
@@ -1287,21 +1290,13 @@ impl PigeonApp {
             .search
             .focus_handle(cx)
             .is_focused(window);
-        div()
+        super::search_field(Some(focused), theme)
             .key_context(SETTINGS_SEARCH)
             .mx(SPACE_MD)
             .mb(SPACE_SM)
             .h(CONTROL_LG)
             .pl(SPACE_SM)
             .pr(if searching { SPACE_2XS } else { SPACE_SM })
-            .flex()
-            .items_center()
-            .gap(SPACE_SM)
-            .rounded(RADIUS_MD)
-            .bg(theme.search_bg)
-            .border_1()
-            .border_color(if focused { theme.accent } else { theme.border })
-            .text_size(TEXT_BASE)
             .child(icon(Icon::Search, ICON_MD, theme.text_faint))
             .child(
                 div().flex_1().min_w_0().child(
@@ -1425,9 +1420,21 @@ impl PigeonApp {
                         .into_any_element(),
                 ),
             ),
+            // Selectable, to copy a status into a report (MB-035).
             Some(Control::Info(text)) if !in_results => (
                 div().child(label).into_any_element(),
-                Some(div().child(text.clone()).into_any_element()),
+                Some(
+                    div()
+                        .child(
+                            super::selectable::Selectable::plain(
+                                ("settings-info", ix),
+                                text.clone(),
+                                theme.text_selection,
+                            )
+                            .silent(),
+                        )
+                        .into_any_element(),
+                ),
             ),
             _ if permission.is_some() => (
                 div().child(label).into_any_element(),
@@ -1438,7 +1445,14 @@ impl PigeonApp {
                 Some(
                     div()
                         .text_color(theme.text_danger)
-                        .children(error.clone())
+                        .children(error.clone().map(|error| {
+                            super::selectable::Selectable::plain(
+                                ("settings-error", ix),
+                                error,
+                                theme.text_selection,
+                            )
+                            .silent()
+                        }))
                         .into_any_element(),
                 ),
             ),
@@ -1558,17 +1572,7 @@ impl PigeonApp {
                     .flex()
                     .items_center()
                     .gap(SPACE_XS)
-                    .children(bindings.iter().enumerate().flat_map(|(ix, binding)| {
-                        let or = (ix > 0).then(|| {
-                            div()
-                                .text_size(TEXT_XS)
-                                .text_color(theme.text_faint)
-                                .child("or")
-                                .into_any_element()
-                        });
-                        or.into_iter()
-                            .chain([binding_caps(binding, &theme).into_any_element()])
-                    }))
+                    .children(super::bindings_caps(bindings.iter(), &theme))
                     .into_any_element(),
             ),
             Some(Control::Info(_)) => None,
@@ -1893,19 +1897,11 @@ fn menu_options(names: &[&str]) -> Vec<(String, Option<Hsla>)> {
     names.iter().map(|name| (name.to_string(), None)).collect()
 }
 
-fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
-}
-
 fn group_header(title: &'static str, theme: &Theme) -> AnyElement {
-    div()
+    super::section_caption(title, theme)
         .pt(SPACE_LG)
         .pb(SPACE_XS)
         .px(SPACE_MD)
-        .text_size(TEXT_SM)
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(theme.text_muted)
-        .child(title)
         .into_any_element()
 }
 

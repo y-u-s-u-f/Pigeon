@@ -284,7 +284,6 @@ impl Rule {
     }
 
     /// The RRULE line for Google ("RRULE:FREQ=WEEKLY;BYDAY=MO,WE").
-    #[allow(dead_code)] // Calendar writes (W7).
     pub fn to_rrule(&self, all_day: bool, zone: &LocalZone) -> String {
         let mut parts = vec![format!("FREQ={}", self.freq.rrule())];
         if self.interval > 1 {

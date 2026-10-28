@@ -30,8 +30,14 @@ use crate::{
     },
 };
 
-/// Width of the hour labels on the left.
-pub const GUTTER: f32 = 58.;
+/// Width of the hour labels on the left at a text scale of 1.
+const GUTTER: f32 = 58.;
+
+/// The hour labels' width at the window's text scale: they hold text, so
+/// they grow with it (MA-021).
+pub fn gutter_width(window: &Window) -> f32 {
+    GUTTER * f32::from(window.rem_size()) / BASE_REM
+}
 const LANE_HEIGHT: f32 = 24.;
 /// The gap under and after an all-day bar in its lane.
 const LANE_GAP: f32 = 3.;
@@ -40,11 +46,11 @@ pub const STRIPE_WIDTH: gpui::Pixels = px(3.);
 /// The grab area at a timed event's bottom edge.
 const RESIZE_HANDLE: gpui::Pixels = px(6.);
 /// The day number's circle in the column headers.
-const DAY_NUMBER: gpui::Pixels = px(32.);
-const DAY_HEADER_HEIGHT: gpui::Pixels = px(62.);
+const DAY_NUMBER: gpui::Rems = type_size(32.);
+const DAY_HEADER_HEIGHT: gpui::Rems = type_size(62.);
 /// The dot at the start of the now line, and the time label on it.
 const NOW_DOT: gpui::Pixels = px(10.);
-const NOW_LABEL: gpui::Pixels = px(16.);
+const NOW_LABEL: gpui::Rems = type_size(16.);
 /// The all-day lanes shown before the rest fold into "+N" (ME-040).
 const MAX_LANES: usize = 3;
 /// Events shorter than this are laid out as if they were this long, since
@@ -55,8 +61,6 @@ const MIN_COLUMN: f32 = 60.;
 /// The strip kept free on the right of each day, to drag-create beside a
 /// full-width event (ME-053): a tenth of the day, within these bounds.
 const FREE_STRIP: (f32, f32) = (8., 16.);
-/// How much of its fill a free event shows (ME-051).
-pub const FREE_ALPHA: f32 = 0.55;
 /// How long before its start a meeting offers Join on its block.
 const JOIN_LEAD_MINUTES: i64 = 10;
 /// The size of text in blocks, in rems, and its line height: block layout
@@ -95,14 +99,14 @@ impl Look {
     /// A bar or a pill as answered: pending outlined over a light fill,
     /// declined faded (ME-041). The title strikes through separately, and
     /// a maybe's stripes are `stripes`.
-    pub fn bar<E: Styled>(self, el: E, fill: Hsla, accent: Hsla) -> E {
+    pub fn bar<E: Styled>(self, el: E, fill: Hsla, accent: Hsla, theme: &Theme) -> E {
         match self {
             Look::Normal => el.bg(fill),
             Look::Pending | Look::Tentative => el
-                .bg(fill.alpha(0.25))
+                .bg(theme.event_answer_fill(fill))
                 .border_1()
                 .border_color(accent.alpha(0.7)),
-            Look::Declined => el.bg(fill.alpha(0.25)).opacity(0.6),
+            Look::Declined => el.bg(theme.event_answer_fill(fill)).opacity(0.6),
         }
     }
 
@@ -155,12 +159,17 @@ impl CalendarView {
         let theme = Theme::of(cx).clone();
         let today = now.date();
         let metrics = TextMetrics::of(window);
+        // All-day lanes hold text, so they grow with it (MA-021).
+        let scale = f32::from(window.rem_size()) / BASE_REM;
+        let lane_height = LANE_HEIGHT * scale;
+        let gutter_px = GUTTER * scale;
+        let now_label_height = NOW_LABEL.to_pixels(window.rem_size());
         let n = days.len();
         // How wide a day is, to lay events out and fit their text.
         let day_width = if self.day_side_shown() {
             DAY_COLUMN_MAX
         } else {
-            (self.grid_area_width() - GUTTER) / n as f32
+            (self.grid_area_width() - gutter_px) / n as f32
         } - 1.;
         let first = days[0];
         let first_day = time::midnight(first);
@@ -208,7 +217,16 @@ impl CalendarView {
             .zip(&lanes)
             .filter(|&(_, &lane)| lane < shown_lanes)
             .map(|((o, &(start, end)), &lane)| {
-                self.render_bar(**o, (start, end), n, first_day, lane, now, &theme, cx)
+                self.render_bar(
+                    **o,
+                    (start, end),
+                    n,
+                    first_day,
+                    (lane, lane_height),
+                    now,
+                    &theme,
+                    cx,
+                )
             })
             .collect::<Vec<_>>();
         let more = hidden
@@ -218,10 +236,10 @@ impl CalendarView {
             .map(|(day, &count)| {
                 div()
                     .absolute()
-                    .top(px(f32::from(SPACE_XS) + shown_lanes as f32 * LANE_HEIGHT))
+                    .top(px(f32::from(SPACE_XS) + shown_lanes as f32 * lane_height))
                     .left(relative(day as f32 / n as f32))
                     .w(relative(1. / n as f32))
-                    .h(px(LANE_HEIGHT - LANE_GAP))
+                    .h(px(lane_height - LANE_GAP))
                     .px(SPACE_2XS)
                     .child(
                         div()
@@ -247,7 +265,7 @@ impl CalendarView {
             })
             .collect::<Vec<_>>();
 
-        let gutter = || div().w(px(GUTTER)).flex_none();
+        let gutter = || div().w(px(gutter_px)).flex_none();
         let single = n == 1;
 
         let day_headers = days.iter().map(|&date| {
@@ -323,7 +341,7 @@ impl CalendarView {
                 .text_size(TEXT_XS)
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text_faint)
-                .child(format!("W{}", first.iso_week().week()))
+                .child(crate::calendar::time::week_label(first))
         });
         // The Day view's title already names the day.
         let header = (!single).then(|| {
@@ -394,7 +412,7 @@ impl CalendarView {
                 div()
                     .flex_1()
                     .relative()
-                    .h(px(rows as f32 * LANE_HEIGHT
+                    .h(px(rows as f32 * lane_height
                         + if rows > 0 {
                             f32::from(SPACE_SM)
                         } else {
@@ -414,13 +432,13 @@ impl CalendarView {
         let hour_labels = (1..24).filter_map(|hour| {
             // Make room for the current time's label.
             let minutes = hour * 60;
-            if today_visible && (minutes - now_minutes).abs() < 14 {
+            if today_visible && ((minutes - now_minutes).abs() as f32) < 14. * scale {
                 return None;
             }
             Some(
                 div()
                     .absolute()
-                    .top(px(hour as f32 * HOUR_HEIGHT - 7.))
+                    .top(px(hour as f32 * HOUR_HEIGHT - 7. * scale))
                     .right(SPACE_SM)
                     .text_size(TEXT_XS)
                     .text_color(theme.text_faint)
@@ -584,7 +602,7 @@ impl CalendarView {
             div()
                 .absolute()
                 .right(SPACE_XS)
-                .top(px(now_top) - NOW_LABEL / 2.)
+                .top(px(now_top) - now_label_height / 2.)
                 .h(NOW_LABEL)
                 .px(SPACE_XS)
                 .flex()
@@ -700,16 +718,16 @@ impl CalendarView {
         let (fill, text, muted) = if selected {
             let fill = theme.event_selected_fill(color);
             let text = theme.on_fill(fill);
-            (fill, text, text.alpha(0.82))
+            (fill, text, theme.event_secondary(text))
         } else {
             let text = theme.event_text(color, past);
             let fill = match look {
                 // Free time: a lighter fill (ME-051).
-                Look::Normal if !event.busy => theme.event_fill(color, past).alpha(FREE_ALPHA),
+                Look::Normal if !event.busy => theme.event_free(theme.event_fill(color, past)),
                 Look::Normal => theme.event_fill(color, past),
-                _ => theme.event_fill(color, true).alpha(0.25),
+                _ => theme.event_answer_fill(theme.event_fill(color, true)),
             };
-            (fill, text, text.alpha(0.75))
+            (fill, text, theme.event_secondary(text))
         };
         let fill = if overlapped {
             theme.overlay_bg.alpha(1.).blend(fill)
@@ -981,7 +999,7 @@ impl CalendarView {
         (start, end): (i64, i64),
         days: usize,
         first_day: NaiveDateTime,
-        lane: usize,
+        (lane, lane_height): (usize, f32),
         now: NaiveDateTime,
         theme: &Theme,
         cx: &mut Context<Self>,
@@ -1006,10 +1024,10 @@ impl CalendarView {
 
         div()
             .absolute()
-            .top(px(f32::from(SPACE_XS) + lane as f32 * LANE_HEIGHT))
+            .top(px(f32::from(SPACE_XS) + lane as f32 * lane_height))
             .left(relative(start as f32 / days as f32))
             .w(relative((end - start) as f32 / days as f32))
-            .h(px(LANE_HEIGHT - LANE_GAP))
+            .h(px(lane_height - LANE_GAP))
             .pl(if clipped_left { px(0.) } else { SPACE_2XS })
             .pr(if clipped_right { px(0.) } else { px(LANE_GAP) })
             .child(
@@ -1032,7 +1050,7 @@ impl CalendarView {
                         if selected {
                             d.bg(fill)
                         } else {
-                            look.bar(d, fill, accent)
+                            look.bar(d, fill, accent, theme)
                                 .hover(move |s| s.bg(hover))
                                 .children(look.stripes(accent))
                         }
@@ -1041,14 +1059,19 @@ impl CalendarView {
                     .text_size(TEXT_SM)
                     // It goes on before the days shown (ME-090).
                     .when(clipped_left, |d| {
-                        d.child(icon(Icon::ChevronLeft, ICON_SM, text.alpha(0.75)))
+                        d.child(icon(
+                            Icon::ChevronLeft,
+                            ICON_SM,
+                            theme.event_secondary(text),
+                        ))
                     })
                     .when(single_view || !clipped_left, |d| {
-                        d.children(
-                            time.map(|time| {
-                                div().flex_none().text_color(text.alpha(0.75)).child(time)
-                            }),
-                        )
+                        d.children(time.map(|time| {
+                            div()
+                                .flex_none()
+                                .text_color(theme.event_secondary(text))
+                                .child(time)
+                        }))
                     })
                     .child(
                         div()
@@ -1060,14 +1083,19 @@ impl CalendarView {
                             .when(look == Look::Declined, |d| d.line_through())
                             .child(event.display_title().to_string()),
                     )
-                    .children(
-                        until.map(|until| {
-                            div().flex_none().text_color(text.alpha(0.75)).child(until)
-                        }),
-                    )
+                    .children(until.map(|until| {
+                        div()
+                            .flex_none()
+                            .text_color(theme.event_secondary(text))
+                            .child(until)
+                    }))
                     // And after them.
                     .when(clipped_right, |d| {
-                        d.child(icon(Icon::ChevronRight, ICON_SM, text.alpha(0.75)))
+                        d.child(icon(
+                            Icon::ChevronRight,
+                            ICON_SM,
+                            theme.event_secondary(text),
+                        ))
                     })
                     .on_mouse_down(
                         MouseButton::Right,

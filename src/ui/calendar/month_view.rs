@@ -20,7 +20,6 @@ use crate::{
     },
     theme::Theme,
     ui::{
-        HEADER_HEIGHT,
         controls::{bar_colors, popover_surface},
         icon, is_secondary,
         motion::{Rise, enter},
@@ -37,7 +36,13 @@ const WEEK_NUMBER: f32 = 36.;
 const EVENT_DOT: gpui::Pixels = px(7.);
 /// How much an event on a day around the month shows.
 const OUTSIDE_OPACITY: f32 = 0.55;
-const DAY_LIST_WIDTH: gpui::Pixels = px(260.);
+const DAY_LIST_WIDTH: gpui::Rems = type_size(260.);
+
+/// The layout sizes above are at a text scale of 1: in rems, so lanes and
+/// day numbers grow with the text (MA-021).
+fn scaled(v: f32) -> gpui::Rems {
+    type_size(v)
+}
 
 /// An event's place in one week row.
 struct Item {
@@ -60,18 +65,22 @@ impl CalendarView {
         let theme = Theme::of(cx).clone();
         let (grid_start, weeks) = month_grid(self.anchor);
         let month = self.anchor.month();
-        let height = window.viewport_size().height - HEADER_HEIGHT - px(WEEKDAY_ROW);
+        let scale = f32::from(window.rem_size()) / BASE_REM;
+        let height = window.viewport_size().height
+            - crate::ui::header_height(window)
+            - px(WEEKDAY_ROW * scale);
         let row_height = f32::from(height) / weeks as f32;
-        let slots = (((row_height - DAY_NUMBER - 4.) / SLOT).floor() as usize).max(1);
+        let slots =
+            (((row_height - (DAY_NUMBER + 4.) * scale) / (SLOT * scale)).floor() as usize).max(1);
 
         let weekday_row = div()
-            .h(px(WEEKDAY_ROW))
+            .h(scaled(WEEKDAY_ROW))
             .flex_none()
             .flex()
             .border_b_1()
             .border_color(theme.cal_line)
             .when(self.show_week_numbers, |d| {
-                d.child(div().w(px(WEEK_NUMBER)).flex_none())
+                d.child(div().w(scaled(WEEK_NUMBER)).flex_none())
             })
             .children((0..7).map(|i| {
                 let date = grid_start + Duration::days(i);
@@ -239,14 +248,16 @@ impl CalendarView {
                     }),
                 )
                 .child(
-                    // A HIT_TARGET box around the number (MA-041).
+                    // A hit-target box around the number (MA-041), growing
+                    // with the text.
                     div()
                         .id(("month-day", date.num_days_from_ce() as usize))
                         .role(gpui::Role::Button)
                         .aria_label(format!("Open {}", super::header::full_date(date)))
                         .group("month-day")
                         .min_w(HIT_TARGET)
-                        .h(HIT_TARGET)
+                        .h(CONTROL_MD)
+                        .min_h(HIT_TARGET)
                         .mt(-SPACE_XS)
                         .flex()
                         .flex_none()
@@ -296,10 +307,10 @@ impl CalendarView {
             let list = open.then(|| self.render_day_list(date, occurrences, theme, cx));
             div()
                 .absolute()
-                .top(px(DAY_NUMBER + shown[d] as f32 * SLOT))
+                .top(scaled(DAY_NUMBER + shown[d] as f32 * SLOT))
                 .left(relative(d as f32 / 7.))
                 .w(relative(1. / 7.))
-                .h(px(SLOT - 2.))
+                .h(scaled(SLOT - 2.))
                 .px(SPACE_XS)
                 .child(
                     div()
@@ -347,7 +358,7 @@ impl CalendarView {
             .when(self.show_week_numbers, |d| {
                 d.child(
                     div()
-                        .w(px(WEEK_NUMBER))
+                        .w(scaled(WEEK_NUMBER))
                         .flex_none()
                         .pt(SPACE_SM)
                         .flex()
@@ -357,7 +368,7 @@ impl CalendarView {
                         .text_size(TEXT_XS)
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text_faint)
-                        .child(format!("W{}", start.iso_week().week())),
+                        .child(crate::calendar::time::week_label(start)),
                 )
             })
             .child(days)
@@ -426,7 +437,7 @@ impl CalendarView {
                     if selected {
                         d.bg(fill)
                     } else {
-                        look.bar(d, fill, accent)
+                        look.bar(d, fill, accent, theme)
                             .hover(move |s| s.bg(hover))
                             .relative()
                             .children(look.stripes(accent))
@@ -434,7 +445,11 @@ impl CalendarView {
                 })
                 // It goes on past the week's edge (ME-090).
                 .when(clipped_left, |d| {
-                    d.child(icon(Icon::ChevronLeft, ICON_SM, text.alpha(0.75)))
+                    d.child(icon(
+                        Icon::ChevronLeft,
+                        ICON_SM,
+                        theme.event_secondary(text),
+                    ))
                 })
                 .child(
                     div()
@@ -446,16 +461,23 @@ impl CalendarView {
                         .when(look == Look::Declined, |d| d.line_through())
                         .child(event.display_title().to_string()),
                 )
-                .children(
-                    until.map(|until| div().flex_none().text_color(text.alpha(0.75)).child(until)),
-                )
+                .children(until.map(|until| {
+                    div()
+                        .flex_none()
+                        .text_color(theme.event_secondary(text))
+                        .child(until)
+                }))
                 .when(clipped_right, |d| {
-                    d.child(icon(Icon::ChevronRight, ICON_SM, text.alpha(0.75)))
+                    d.child(icon(
+                        Icon::ChevronRight,
+                        ICON_SM,
+                        theme.event_secondary(text),
+                    ))
                 })
         } else {
             let (title, muted) = if selected {
                 let text = theme.on_fill(theme.event_selected_fill(color));
-                (text, text.alpha(0.8))
+                (text, theme.event_secondary(text))
             } else if past {
                 (theme.text_muted, theme.text_muted)
             } else {
@@ -473,7 +495,7 @@ impl CalendarView {
                             _ if selected => d.bg(theme.on_fill(theme.event_selected_fill(color))),
                             Look::Normal if event.busy => d.bg(accent),
                             // Free: a lighter dot (ME-051).
-                            Look::Normal => d.bg(accent.alpha(super::week_view::FREE_ALPHA)),
+                            Look::Normal => d.bg(theme.event_free(accent)),
                             _ => d.border_1().border_color(accent),
                         }),
                 )
@@ -497,10 +519,10 @@ impl CalendarView {
 
         div()
             .absolute()
-            .top(px(DAY_NUMBER + item.lane as f32 * SLOT))
+            .top(scaled(DAY_NUMBER + item.lane as f32 * SLOT))
             .left(relative(start as f32 / 7.))
             .w(relative((end - start) as f32 / 7.))
-            .h(px(SLOT - 2.))
+            .h(scaled(SLOT - 2.))
             .pl(if clipped_left { px(0.) } else { SPACE_XS })
             .pr(if clipped_right { px(0.) } else { SPACE_XS })
             .when(outside && !selected, |d| d.opacity(OUTSIDE_OPACITY))
