@@ -206,8 +206,15 @@ impl PigeonApp {
     }
 
     fn on_calendars_changed(&mut self, cx: &mut Context<Self>) {
-        let calendars = self.backend.read(cx).load_calendar().calendars;
+        let backend = self.backend.read(cx);
+        let mut calendars = backend.load_calendar().calendars;
+        let pending = backend.queued_selections();
         self.calendar.update(cx, |calendar, cx| {
+            crate::calendar::keep_pending_visibility(
+                &mut calendars,
+                &calendar.data.calendars,
+                &pending,
+            );
             calendar.data.calendars = calendars;
             cx.notify();
         });

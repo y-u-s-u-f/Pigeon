@@ -688,15 +688,25 @@ fn sync_calendar_list(
             }
         }
     }
+    // A show/hide still to go isn't on Google yet: its list says the old
+    // state, which would bring the old one back.
+    let queued = store.queued_selections(account)?;
+    let stored = if queued.is_empty() {
+        Vec::new()
+    } else {
+        store.load_calendars(account)?
+    };
     for entry in &entries {
         if entry.deleted {
             touched.extend(store.delete_calendar(account, &entry.id)?);
         } else {
-            store.put_google_calendar(
-                account,
-                &calendar_from_entry(entry, palette),
-                entry.hidden,
-            )?;
+            let mut calendar = calendar_from_entry(entry, palette);
+            if queued.contains(&entry.id)
+                && let Some(kept) = stored.iter().find(|c| c.id == entry.id)
+            {
+                calendar.visible = kept.visible;
+            }
+            store.put_google_calendar(account, &calendar, entry.hidden)?;
         }
     }
     changes.calendars |= full || !entries.is_empty();
@@ -2449,6 +2459,55 @@ mod tests {
             .into_iter()
             .map(|o| (events[o.event].title.clone(), o.start))
             .collect()
+    }
+
+    /// A calendar list sync while a show/hide waits to go: Google still
+    /// lists the old state, and the store keeps the user's.
+    #[test]
+    fn a_list_sync_keeps_a_queued_show_hide() {
+        let store = Store::open_in_memory().unwrap();
+        let fake = FakeTransport::new().on(
+            "GET",
+            "/calendar/v3/users/me/calendarList",
+            &[],
+            &[(200, LIST)],
+        );
+        let list = |store: &Store| {
+            sync_calendar_list(
+                &fake,
+                store,
+                ME,
+                &HashMap::new(),
+                &mut CalendarChanges::default(),
+                &mut BTreeSet::new(),
+            )
+            .unwrap();
+            store.load_calendars(ME).unwrap()[0].visible
+        };
+        let hide = |selected| crate::backend::CalOp::SetSelected {
+            calendar: "primary@example.com".into(),
+            selected,
+        };
+        assert!(list(&store));
+
+        // Hidden here (the row waits in the outbox); Google still says shown.
+        store.apply_cal_op(ME, ME, &hide(false)).unwrap();
+        let op = crate::backend::Op::Calendar(hide(false));
+        let row = store
+            .outbox_insert(
+                ME,
+                op.kind(),
+                &op.resource(),
+                &serde_json::to_string(&op).unwrap(),
+                0,
+                0,
+            )
+            .unwrap();
+        assert!(!list(&store), "the queued change wins over the list");
+
+        // Committed: the list is Google's again.
+        store.outbox_delete(row).unwrap();
+        assert!(list(&store));
     }
 
     #[test]

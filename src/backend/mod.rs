@@ -903,6 +903,11 @@ impl Backend {
         self.outbox.queued_events()
     }
 
+    /// Calendars with a show/hide still queued (`Outbox::queued_selections`).
+    pub fn queued_selections(&self) -> std::collections::HashSet<String> {
+        self.outbox.queued_selections()
+    }
+
     pub fn load_events(&self, ids: &[String]) -> Vec<Event> {
         self.store
             .load_events(self.email(), ids)

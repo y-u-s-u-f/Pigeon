@@ -406,6 +406,22 @@ fn or_empty<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
 }
 
+/// A calendar list read from the store, with the show/hide the user made
+/// that hasn't committed yet kept as made: the store still holds the state
+/// before it (or before the last one that did commit), which would flip the
+/// checkbox back until the next commit catches up.
+pub fn keep_pending_visibility(
+    fresh: &mut [Calendar],
+    current: &[Calendar],
+    pending: &std::collections::HashSet<String>,
+) {
+    for calendar in fresh.iter_mut().filter(|c| pending.contains(&c.id)) {
+        if let Some(local) = current.iter().find(|c| c.id == calendar.id) {
+            calendar.visible = local.visible;
+        }
+    }
+}
+
 impl CalendarData {
     pub fn calendar(&self, id: &str) -> Option<&Calendar> {
         self.calendars.iter().find(|c| c.id == id)
@@ -450,6 +466,41 @@ mod tests {
         assert_eq!(standup.recurrence, Some(Rule::weekdays()));
         assert_eq!(standup.start.format("%H:%M").to_string(), "09:30");
         assert!(standup.description.is_empty());
+    }
+
+    fn listed(id: &str, visible: bool) -> Calendar {
+        Calendar {
+            id: id.into(),
+            name: id.into(),
+            color: gpui::hsla(0., 0., 0.5, 1.),
+            visible,
+            access_role: AccessRole::default(),
+            primary: false,
+            time_zone: None,
+            default_reminder: None,
+            default_reminders: Vec::new(),
+            conference_types: Vec::new(),
+        }
+    }
+
+    /// Toggling a calendar on, off, on while the first commits: the store
+    /// reloads in between with the first change, and the list stays as the
+    /// user left it.
+    #[test]
+    fn a_reload_keeps_calendars_whose_show_hide_is_still_queued() {
+        let current = [listed("a", true), listed("b", false), listed("c", true)];
+        // The store holds a's first change (hidden), b's old state, c's new one.
+        let mut fresh = vec![listed("a", false), listed("b", true), listed("c", false)];
+        let pending = std::collections::HashSet::from(["a".to_string(), "b".to_string()]);
+        keep_pending_visibility(&mut fresh, &current, &pending);
+        let shown: Vec<bool> = fresh.iter().map(|c| c.visible).collect();
+        // c has nothing queued: the store wins (a failed change rolls back).
+        assert_eq!(shown, [true, false, false]);
+
+        // Nothing queued: the store as it is.
+        let mut fresh = vec![listed("a", false)];
+        keep_pending_visibility(&mut fresh, &current, &Default::default());
+        assert!(!fresh[0].visible);
     }
 
     fn monday(n: u32) -> NaiveDateTime {

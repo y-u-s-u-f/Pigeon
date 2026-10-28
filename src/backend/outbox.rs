@@ -268,6 +268,14 @@ impl Outbox {
             .flat_map(|r| keys(&r.resource).map(String::from).collect::<Vec<_>>())
             .collect()
     }
+
+    /// The calendars with a show/hide still to go: the app's choice stands
+    /// over the store's until the last one commits.
+    pub fn queued_selections(&self) -> HashSet<String> {
+        self.store
+            .queued_selections(&self.account)
+            .unwrap_or_default()
+    }
 }
 
 // Committing to Google.

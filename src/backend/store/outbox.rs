@@ -1,5 +1,7 @@
 //! The outbox's rows (PER-2). `backend::outbox` decides what goes in.
 
+use std::collections::HashSet;
+
 use rusqlite::{OptionalExtension as _, params};
 
 use super::Store;
@@ -69,6 +71,17 @@ impl Store {
              ORDER BY id"
         ))?;
         Ok(stmt.query_map([account], row)?.collect::<Result<_, _>>()?)
+    }
+
+    /// The calendars with a show/hide still to go (`SetSelected`'s resource
+    /// is `calendar:<id>`).
+    pub fn queued_selections(&self, account: &str) -> anyhow::Result<HashSet<String>> {
+        Ok(self
+            .outbox_pending(account)?
+            .into_iter()
+            .filter(|r| r.kind == "calendar.set_selected")
+            .filter_map(|r| r.resource.strip_prefix("calendar:").map(String::from))
+            .collect())
     }
 
     pub fn outbox_update_payload(
