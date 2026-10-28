@@ -26,7 +26,10 @@ use crate::{
     instance, logging,
     native::menu_bar::{self as native, Anchor, HOT_KEY_TAKEN, Signal},
     settings::{self, MenuBarPrefs},
-    ui::menu_bar::{MenuBarPanel, PANEL_START_HEIGHT, PANEL_WIDTH},
+    ui::{
+        menu_bar::{MenuBarPanel, PANEL_START_HEIGHT, PANEL_WIDTH},
+        style::MOTION_FAST,
+    },
 };
 
 const PANEL_HOT_KEY: u32 = 1;
@@ -177,6 +180,12 @@ fn with_app(f: impl FnOnce(&mut App)) {
     }
 }
 
+/// From a scheduled task: a value read from the app.
+fn with_app_value<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
+    let cx = STATE.with_borrow(|s| s.as_ref().map(|s| s.cx.clone()))?;
+    Some(cx.update(f))
+}
+
 fn toggle(source: Source) {
     let closed_at = STATE.with_borrow(|s| s.as_ref().and_then(|s| s.closed_at));
     if native::panel_visible() {
@@ -215,7 +224,9 @@ fn show(source: Source, notice: Option<SharedString>) {
         Source::Item(anchor) => Some(anchor),
         _ => None,
     };
-    native::show_panel(anchor);
+    // A short fade and slide, unless Reduce Motion is on.
+    let animate = with_app_value(|cx| !cx.reduce_motion()).unwrap_or(false);
+    native::show_panel(anchor, animate.then_some(MOTION_FAST));
     logging::info(&format!(
         "menu-bar: {} → ordered front in {:.1} ms",
         source.label(),

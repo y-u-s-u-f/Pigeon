@@ -8,7 +8,7 @@ use gpui::{
     prelude::FluentBuilder as _, px,
 };
 
-use super::{HEADER_HEIGHT, avatar, icon, icon_button, window_drag_area};
+use super::{HEADER_HEIGHT, account_avatar, icon, icon_button, window_drag_area};
 use crate::ui::style::*;
 use crate::{
     actions::{NewLabel, ToggleHiddenLabels, ToggleSidebar},
@@ -403,7 +403,8 @@ impl PigeonApp {
                     .gap(SPACE_SM)
                     .rounded(RADIUS_MD)
                     .hover(|s| s.bg(theme.hover_bg))
-                    .child(avatar(
+                    .child(account_avatar(
+                        self.backend.read(cx).profile_photo(),
                         account.initials(),
                         theme.avatar_color(&account.email),
                         px(18.),

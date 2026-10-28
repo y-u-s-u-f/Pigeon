@@ -22,9 +22,12 @@ pub mod thread_list;
 use gpui::{
     Action, AnyElement, App, AppContext as _, AsKeystroke as _, Context, Div, ElementId,
     FontWeight, Hsla, InteractiveElement, IntoElement, KeyBinding, Keystroke, MouseButton,
-    ParentElement, Pixels, Render, SharedString, Stateful, StatefulInteractiveElement, Styled, Svg,
-    Window, component::tooltip::Tooltip, div, prelude::FluentBuilder as _, px, svg,
+    ObjectFit, ParentElement, Pixels, Render, SharedString, Stateful, StatefulInteractiveElement,
+    Styled, StyledImage as _, Svg, Window, component::tooltip::Tooltip, div, img,
+    prelude::FluentBuilder as _, px, svg,
 };
+
+use std::path::Path;
 
 use self::style::*;
 use crate::{
@@ -112,6 +115,38 @@ pub fn avatar(initials: impl Into<SharedString>, color: Hsla, size: Pixels, them
         .text_size(size * 0.4)
         .font_weight(FontWeight::SEMIBOLD)
         .child(initials.into())
+}
+
+/// The user's own avatar: their profile photo when there is one, in a
+/// circle; the initials while it loads, if it fails, and without a photo.
+pub fn account_avatar(
+    photo: Option<&Path>,
+    initials: impl Into<SharedString>,
+    color: Hsla,
+    size: Pixels,
+    theme: &Theme,
+) -> Div {
+    let initials: SharedString = initials.into();
+    let Some(photo) = photo else {
+        return avatar(initials, color, size, theme);
+    };
+    let shown = move || {
+        div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(initials.clone())
+            .into_any_element()
+    };
+    avatar("", color, size, theme).child(
+        img(photo.to_path_buf())
+            .size_full()
+            .rounded_full()
+            .object_fit(ObjectFit::Cover)
+            .with_loading(shown.clone())
+            .with_fallback(shown),
+    )
 }
 
 /// A file's icon, tinted by its type.

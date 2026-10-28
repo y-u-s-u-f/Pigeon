@@ -21,7 +21,9 @@ use gpui::{
     px,
 };
 
-use super::{HEADER_HEIGHT, avatar, binding_caps, empty_state, icon, keycap, window_drag_area};
+use super::{
+    HEADER_HEIGHT, account_avatar, binding_caps, empty_state, icon, keycap, window_drag_area,
+};
 use crate::ui::style::*;
 use crate::{
     actions::{COMMANDS, Scope, SignOut, SyncNow},
@@ -1150,7 +1152,8 @@ impl PigeonApp {
 
         let leading = match (&control, entry) {
             (Some(Control::Account(me)), _) => Some(
-                avatar(
+                account_avatar(
+                    self.backend.read(cx).profile_photo(),
                     me.initials(),
                     theme.avatar_color(&me.email),
                     px(32.),

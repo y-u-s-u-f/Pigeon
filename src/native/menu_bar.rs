@@ -3,24 +3,36 @@
 //! gpui has no per-window hide), click-away, and global hot keys through
 //! Carbon's `RegisterEventHotKey` (no Accessibility permission needed).
 //!
+//! The panel opens with a short fade and a few points of slide down from the
+//! menu bar (`NSAnimationContext`), and closes at once. It can become key
+//! (the keys in it work) but never the main window, so a Pigeon window that
+//! was main keeps its active look while the panel is up.
+//!
 //! Main thread only. Showing, hiding, focusing and resizing the panel make
 //! AppKit call back into gpui at once (`windowDidBecomeKey:`, a resize),
 //! which borrows the `App`: never call those from inside a gpui update.
 //! `app::menu_bar` runs them from a foreground task.
 
-use std::{cell::RefCell, collections::HashMap, ffi::c_void, ptr::NonNull};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    ffi::c_void,
+    ptr::NonNull,
+    time::{Duration, Instant},
+};
 
 use block2::RcBlock;
 use objc2::{
     MainThreadMarker, MainThreadOnly, define_class, msg_send,
     rc::Retained,
-    runtime::{AnyObject, Bool, NSObject},
+    runtime::{AnyClass, AnyObject, Bool, ClassBuilder, NSObject, Sel},
     sel,
 };
 use objc2_app_kit::{
-    NSApplication, NSBezierPath, NSCellImagePosition, NSColor, NSEvent, NSEventMask, NSFont,
-    NSFontWeightRegular, NSImage, NSScreen, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
-    NSView, NSWindow, NSWindowAnimationBehavior,
+    NSAnimatablePropertyContainer as _, NSAnimationContext, NSApplication, NSBezierPath,
+    NSCellImagePosition, NSColor, NSEvent, NSEventMask, NSFont, NSFontWeightRegular, NSImage,
+    NSScreen, NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSView, NSWindow,
+    NSWindowAnimationBehavior,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -48,6 +60,8 @@ const SCREEN_MARGIN: f64 = 8.;
 /// count it as visible (at 0 it's occluded and gpui doesn't draw), too
 /// little to see.
 const WARM_UP_ALPHA: f64 = 0.01;
+/// How far the panel slides down into place as it opens, in points.
+const OPEN_SLIDE: f64 = 6.;
 /// The new-mail dot, in points.
 const DOT: f64 = 5.;
 
@@ -55,6 +69,10 @@ struct State {
     item: Option<Retained<NSStatusItem>>,
     target: Retained<ClickTarget>,
     panel: Option<Retained<NSWindow>>,
+    /// Drawn at launch, not shown yet.
+    warming: bool,
+    /// Until when the panel is opening, and the frame it opens to.
+    opening: Option<(Instant, NSRect)>,
     glyph: Option<Retained<NSImage>>,
     glyph_dot: Option<Retained<NSImage>>,
     dot: bool,
@@ -131,6 +149,8 @@ pub fn listen(handler: impl Fn(Signal) + 'static) {
             item: None,
             target: ClickTarget::new(mtm),
             panel: None,
+            warming: false,
+            opening: None,
             glyph,
             glyph_dot,
             dot: false,
@@ -276,9 +296,37 @@ pub fn adopt_panel(window: &gpui::Window) -> bool {
     let Some(ns_window) = ns_window_of(window) else {
         return false;
     };
-    // gpui gives pop-ups the utility "zoom in"; the panel appears at once.
+    // gpui gives pop-ups the utility "zoom in"; the panel animates itself.
     ns_window.setAnimationBehavior(NSWindowAnimationBehavior::None);
+    never_main(&ns_window);
     with_state(|state| state.panel = Some(ns_window)).is_some()
+}
+
+extern "C" fn cannot_become_main(_: &AnyObject, _: Sel) -> Bool {
+    Bool::NO
+}
+
+/// gpui's panels can become the main window; this one can only be key, so
+/// the main window under it keeps its active look (traffic lights) while
+/// the panel takes the keys. A subclass of the panel's class, swapped in.
+fn never_main(window: &NSWindow) {
+    let object: &AnyObject = window;
+    let name = c"PigeonMenuBarPanel";
+    let class = AnyClass::get(name).or_else(|| {
+        let mut builder = ClassBuilder::new(name, object.class())?;
+        // SAFETY: the signature matches `-[NSWindow canBecomeMainWindow]`.
+        unsafe {
+            builder.add_method(
+                sel!(canBecomeMainWindow),
+                cannot_become_main as extern "C" fn(_, _) -> _,
+            );
+        }
+        Some(builder.register())
+    });
+    if let Some(class) = class {
+        // SAFETY: a subclass with no new ivars, overriding one method.
+        unsafe { AnyObject::set_class(object, class) };
+    }
 }
 
 fn panel() -> Option<Retained<NSWindow>> {
@@ -287,13 +335,14 @@ fn panel() -> Option<Retained<NSWindow>> {
 
 /// Showing, and not just being drawn at launch.
 pub fn panel_visible() -> bool {
-    panel().is_some_and(|p| p.isVisible() && p.alphaValue() > WARM_UP_ALPHA)
+    panel().is_some_and(|p| p.isVisible()) && with_state(|state| !state.warming) == Some(true)
 }
 
 /// Put the panel under the item clicked, or for a hot key under the item
 /// when it's on the screen with the pointer, else at the top of that
-/// screen, right of centre. Then show it and make it key.
-pub fn show_panel(anchor: Option<&Anchor>) {
+/// screen, right of centre. Then show it and make it key: fading in and
+/// sliding down over `animate`, or at once with `None`.
+pub fn show_panel(anchor: Option<&Anchor>, animate: Option<Duration>) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
@@ -301,16 +350,74 @@ pub fn show_panel(anchor: Option<&Anchor>) {
         return;
     };
     place(&panel, anchor, mtm);
-    panel.setAlphaValue(1.);
+    let rest = panel.frame();
+    let opening = animate.map(|duration| (Instant::now() + duration, rest));
+    with_state(|state| {
+        state.warming = false;
+        state.opening = opening;
+    });
     panel.setIgnoresMouseEvents(false);
-    panel.makeKeyAndOrderFront(None);
+    match animate {
+        Some(duration) => {
+            // Almost see-through and a little high when it's ordered
+            // front (gpui draws it then), so no frame of it shows at rest.
+            panel.setAlphaValue(WARM_UP_ALPHA);
+            let start = NSRect::new(
+                NSPoint::new(rest.origin.x, rest.origin.y + OPEN_SLIDE),
+                rest.size,
+            );
+            panel.setFrame_display(start, false);
+            panel.makeKeyAndOrderFront(None);
+            animate_to(&panel, rest, duration.as_secs_f64());
+        }
+        None => {
+            panel.setAlphaValue(1.);
+            panel.makeKeyAndOrderFront(None);
+        }
+    }
     panel.invalidateShadow();
     set_highlight(true);
 }
 
+/// Animate the panel's opacity and frame, with an ease-out.
+fn animate_to(panel: &NSWindow, frame: NSRect, seconds: f64) {
+    NSAnimationContext::beginGrouping();
+    let context = NSAnimationContext::currentContext();
+    context.setDuration(seconds);
+    if let Some(class) = AnyClass::get(c"CAMediaTimingFunction") {
+        let name = NSString::from_str("easeOut");
+        // SAFETY: `+functionWithName:` takes a name and returns the
+        // function (or nil); the context takes it as `timingFunction`.
+        unsafe {
+            let function: Option<Retained<AnyObject>> = msg_send![class, functionWithName: &*name];
+            if let Some(function) = function {
+                let _: () = msg_send![&*context, setTimingFunction: &*function];
+            }
+        }
+    }
+    let animator = panel.animator();
+    animator.setAlphaValue(1.);
+    animator.setFrame_display(frame, true);
+    NSAnimationContext::endGrouping();
+}
+
 pub fn hide_panel() {
     if let Some(panel) = panel().filter(|p| p.isVisible()) {
+        // An opening still under way ends where it was going, so the next
+        // open starts clean.
+        if let Some((_, rest)) = with_state(|state| state.opening.take()).flatten() {
+            animate_to(&panel, rest, 0.);
+        }
         panel.orderOut(None);
+        // The window under it gets the keys back.
+        if let Some(mtm) = MainThreadMarker::new() {
+            let app = NSApplication::sharedApplication(mtm);
+            if app.isActive()
+                && let Some(main) = app.mainWindow()
+            {
+                main.makeKeyWindow();
+            }
+        }
     }
     set_highlight(false);
 }
@@ -326,6 +433,7 @@ pub fn warm_up_panel() {
     };
     if let Some(panel) = panel() {
         place(&panel, None, mtm);
+        with_state(|state| state.warming = true);
         panel.setAlphaValue(WARM_UP_ALPHA);
         panel.setIgnoresMouseEvents(true);
         panel.makeKeyAndOrderFront(None);
@@ -333,9 +441,10 @@ pub fn warm_up_panel() {
 }
 
 pub fn finish_warm_up() {
-    if let Some(panel) = panel()
-        && panel.alphaValue() < 1.
-    {
+    if with_state(|state| std::mem::take(&mut state.warming)) != Some(true) {
+        return;
+    }
+    if let Some(panel) = panel() {
         panel.orderOut(None);
         panel.setAlphaValue(1.);
         panel.setIgnoresMouseEvents(false);
@@ -351,12 +460,29 @@ pub fn resize_panel(height: f64) {
     if (frame.size.height - height).abs() < 0.5 {
         return;
     }
-    let top = frame.origin.y + frame.size.height;
+    // Mid-open the frame is a little high: the top that counts is where
+    // it's going.
+    let opening =
+        with_state(|state| state.opening.filter(|(until, _)| Instant::now() < *until)).flatten();
+    let top = match opening {
+        Some((_, rest)) => rest.origin.y + rest.size.height,
+        None => frame.origin.y + frame.size.height,
+    };
     let frame = NSRect::new(
         NSPoint::new(frame.origin.x, top - height),
         NSSize::new(frame.size.width, height),
     );
-    panel.setFrame_display(frame, true);
+    if opening.is_some() {
+        // Replaces the slide under way: jumps the few points left.
+        animate_to(&panel, frame, 0.);
+        with_state(|state| {
+            if let Some((_, rest)) = &mut state.opening {
+                *rest = frame;
+            }
+        });
+    } else {
+        panel.setFrame_display(frame, true);
+    }
     panel.invalidateShadow();
 }
 

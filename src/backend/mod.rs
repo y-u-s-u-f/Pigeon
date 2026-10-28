@@ -31,11 +31,12 @@ pub mod mime;
 pub mod new_mail;
 pub mod outbox;
 pub mod people;
+pub mod photo;
 pub mod store;
 pub mod sync;
 
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -141,16 +142,24 @@ impl Google {
 }
 
 const PEOPLE_ME: &str =
-    "https://people.googleapis.com/v1/people/me?personFields=names,emailAddresses";
+    "https://people.googleapis.com/v1/people/me?personFields=names,emailAddresses,photos";
 
-/// The signed-in user's name and primary address.
-fn fetch_profile(transport: &dyn Transport) -> Result<auth::Claims, TransportError> {
+/// The signed-in user's name and primary address, and where their photo is.
+struct Profile {
+    claims: auth::Claims,
+    /// `photo::pick`'s answer.
+    photo: Option<String>,
+}
+
+fn fetch_profile(transport: &dyn Transport) -> Result<Profile, TransportError> {
     #[derive(Deserialize)]
     struct Person {
         #[serde(default)]
         names: Vec<Field>,
         #[serde(default, rename = "emailAddresses")]
         email_addresses: Vec<Field>,
+        #[serde(default)]
+        photos: Vec<photo::Photo>,
     }
     #[derive(Deserialize)]
     struct Field {
@@ -181,13 +190,16 @@ fn fetch_profile(transport: &dyn Transport) -> Result<auth::Claims, TransportErr
             .position(|f| f.metadata.primary)
             .or((!fields.is_empty()).then_some(0))
     };
-    Ok(auth::Claims {
-        name: primary(&person.names)
-            .and_then(|ix| person.names[ix].display_name.clone())
-            .unwrap_or_default(),
-        email: primary(&person.email_addresses)
-            .and_then(|ix| person.email_addresses[ix].value.clone())
-            .unwrap_or_default(),
+    Ok(Profile {
+        claims: auth::Claims {
+            name: primary(&person.names)
+                .and_then(|ix| person.names[ix].display_name.clone())
+                .unwrap_or_default(),
+            email: primary(&person.email_addresses)
+                .and_then(|ix| person.email_addresses[ix].value.clone())
+                .unwrap_or_default(),
+        },
+        photo: photo::pick(&person.photos),
     })
 }
 
@@ -600,6 +612,9 @@ pub struct Backend {
     sign_in_cancel: Option<Arc<AtomicBool>>,
     _sign_in: Option<Task<()>>,
     _profile: Option<Task<()>>,
+    /// The user's cached profile photo, once there is one.
+    profile_photo: Option<PathBuf>,
+    _photo: Option<Task<()>>,
     /// Mail sync and body fetches (W3, `sync`).
     sync: sync::SyncState,
     /// W11: offline, waiting and the queue, over sync's status (`health`).
@@ -797,10 +812,15 @@ impl Backend {
             sign_in_cancel: None,
             _sign_in: None,
             _profile: None,
+            profile_photo: None,
+            _photo: None,
             sync: Default::default(),
             older: Vec::new(),
             categories: Default::default(),
         };
+        if this.source == Source::Google {
+            this.profile_photo = photo::cached(&data_dir(), this.email());
+        }
         this.start_categories();
         // Whatever was left queued at the last quit goes now.
         this.schedule(cx);
@@ -837,6 +857,11 @@ impl Backend {
     /// Name, email and aliases (ACC-1, ACC-2).
     pub fn account(&self) -> Option<&Account> {
         self.account.as_ref()
+    }
+
+    /// The user's profile photo on disk, if Google has one for them.
+    pub fn profile_photo(&self) -> Option<&Path> {
+        self.profile_photo.as_deref()
     }
 
     fn email(&self) -> &str {
@@ -1367,8 +1392,9 @@ impl Backend {
                 .spawn(async move { fetch_profile(&*transport) })
                 .await;
             this.update(cx, |this, cx| match result {
-                Ok(claims) => {
-                    this.update_profile(claims);
+                Ok(profile) => {
+                    this.update_profile(profile.claims);
+                    this.refresh_photo(profile.photo, cx);
                     // Sync owns the status; the app picks the account's name up with the status.
                     cx.emit(BackendEvent::Status(this.status.clone()));
                 }
@@ -1376,6 +1402,41 @@ impl Backend {
                     eprintln!("Pigeon: couldn't read the profile: {e}");
                     this.note_error(&e, cx)
                 }
+            })
+            .ok();
+        }));
+    }
+
+    /// Keep the profile photo current: fetched when missing or a day old,
+    /// dropped when the user has none. Offline, the cached one stays.
+    fn refresh_photo(&mut self, url: Option<String>, cx: &mut Context<Self>) {
+        let dir = data_dir();
+        let path = photo::path(&dir, self.email());
+        let Some(url) = url else {
+            if self.profile_photo.take().is_some() {
+                photo::forget(&dir, self.email());
+                cx.emit(BackendEvent::AccountChanged);
+            }
+            return;
+        };
+        if self.profile_photo.is_some() && photo::is_fresh(&path, std::time::SystemTime::now()) {
+            return;
+        }
+        self._photo = Some(cx.spawn(async move |this, cx| {
+            let fetched = path.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    photo::download(&images::ImageTransport::default(), &url, &fetched)
+                })
+                .await;
+            this.update(cx, |this, cx| match result {
+                Ok(()) => {
+                    if this.profile_photo.replace(path).is_none() {
+                        cx.emit(BackendEvent::AccountChanged);
+                    }
+                }
+                Err(e) => eprintln!("Pigeon: couldn't fetch the profile photo: {e:#}"),
             })
             .ok();
         }));
@@ -1504,6 +1565,7 @@ impl Backend {
                 {
                     eprintln!("Pigeon: signing out: {e:#}");
                 }
+                photo::forget(&data_dir(), &email);
                 if let Err(e) = store.delete_account(&email) {
                     eprintln!("Pigeon: couldn't clear the cache: {e:#}");
                 }
