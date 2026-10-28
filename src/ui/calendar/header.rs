@@ -18,7 +18,9 @@ use crate::{
     ui::{
         HEADER_HEIGHT,
         controls::{ButtonKind, dropdown, popover_surface, push_button, segmented},
-        icon, icon_button, live_text, tooltip, window_drag_area,
+        icon, icon_button, live_text,
+        motion::{self, Rise},
+        tooltip, window_drag_area,
     },
 };
 
@@ -84,7 +86,21 @@ impl CalendarView {
 
     pub(crate) fn render_header(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
-        let (title, rest) = self.title();
+        let (title, mut rest) = self.title();
+        // The week's number, when they're on (ME-094); the Month view has
+        // them down its side.
+        if self.show_week_numbers && self.view != ViewKind::Month {
+            let week = format!("W{}", self.visible_range().0.iso_week().week());
+            rest = if rest.is_empty() {
+                week
+            } else {
+                format!("{rest} · {week}")
+            };
+        }
+        // Muted while today is in view, still there to bring it back into
+        // place (ME-093).
+        let (from, to) = self.visible_range();
+        let today_shown = (from..to).contains(&super::today());
 
         // The shared segmented control; ←/→ change it while it has focus
         // (`step_view`).
@@ -113,7 +129,12 @@ impl CalendarView {
         .track_focus(&self.view_switch_focus)
         .tooltip(|window, cx| tooltip("Day, week or month (D, W, M)").build(window, cx));
 
-        let today_button = push_button("today", "Today", ButtonKind::Plain, &theme)
+        let today_kind = if today_shown {
+            ButtonKind::Quiet
+        } else {
+            ButtonKind::Plain
+        };
+        let today_button = push_button("today", "Today", today_kind, &theme)
             .on_click(|_, window, cx| window.dispatch_action(Box::new(GoToToday), cx))
             .on_click(self.refocus_grid(cx))
             .tooltip(|window, cx| {
@@ -209,49 +230,52 @@ impl CalendarView {
                 })
             };
             deferred(
-                anchored().snap_to_window_with_margin(SPACE_SM).child(enter(
-                    "go-to-date",
-                    popover_surface(theme)
-                        .id("go-to-date")
-                        .occlude()
-                        .role(gpui::Role::Dialog)
-                        .aria_label("Go to date")
-                        .mt(SPACE_2XL + SPACE_SM)
-                        // Seven days, the padding and the 1px border.
-                        .w(HIT_TARGET * 7. + SPACE_MD * 2. + SPACE_2XS)
-                        .p(SPACE_MD)
-                        .flex()
-                        .flex_col()
-                        .gap(SPACE_SM)
-                        .child(
-                            div()
-                                .h(CONTROL_LG)
-                                .px(SPACE_SM)
-                                .flex()
-                                .items_center()
-                                .gap(SPACE_SM)
-                                .rounded(RADIUS_MD)
-                                .bg(theme.search_bg)
-                                .border_1()
-                                .border_color(theme.accent.alpha(0.55))
-                                .child(icon(Icon::Calendar, ICON_MD, theme.text_faint))
-                                .child(
-                                    div().flex_1().min_w_0().child(
-                                        Input::new(&self.date_input)
-                                            .appearance(false)
-                                            .px(px(0.))
-                                            .text_size(TEXT_BASE),
+                anchored()
+                    .snap_to_window_with_margin(SPACE_SM)
+                    .child(motion::enter(
+                        "go-to-date",
+                        Rise::Down,
+                        popover_surface(theme)
+                            .id("go-to-date")
+                            .occlude()
+                            .role(gpui::Role::Dialog)
+                            .aria_label("Go to date")
+                            .mt(SPACE_2XL + SPACE_SM)
+                            // Seven days, the padding and the 1px border.
+                            .w(HIT_TARGET * 7. + SPACE_MD * 2. + SPACE_2XS)
+                            .p(SPACE_MD)
+                            .flex()
+                            .flex_col()
+                            .gap(SPACE_SM)
+                            .child(
+                                div()
+                                    .h(CONTROL_LG)
+                                    .px(SPACE_SM)
+                                    .flex()
+                                    .items_center()
+                                    .gap(SPACE_SM)
+                                    .rounded(RADIUS_MD)
+                                    .bg(theme.search_bg)
+                                    .border_1()
+                                    .border_color(theme.accent.alpha(0.55))
+                                    .child(icon(Icon::Calendar, ICON_MD, theme.text_faint))
+                                    .child(
+                                        div().flex_1().min_w_0().child(
+                                            Input::new(&self.date_input)
+                                                .appearance(false)
+                                                .px(px(0.))
+                                                .text_size(TEXT_BASE),
+                                        ),
                                     ),
-                                ),
-                        )
-                        .children(hint.map(|(text, color)| {
-                            live_text("go-to-date-hint", text, gpui::accesskit::Live::Polite)
-                                .px(SPACE_SM)
-                                .text_size(TEXT_SM)
-                                .text_color(color)
-                        }))
-                        .child(self.render_mini_month("go-to-date-day", theme, cx)),
-                )),
+                            )
+                            .children(hint.map(|(text, color)| {
+                                live_text("go-to-date-hint", text, gpui::accesskit::Live::Polite)
+                                    .px(SPACE_SM)
+                                    .text_size(TEXT_SM)
+                                    .text_color(color)
+                            }))
+                            .child(self.render_mini_month("go-to-date-day", theme, cx)),
+                    )),
             )
             .with_priority(2)
         });
@@ -448,14 +472,16 @@ impl CalendarView {
                     anchored()
                         .anchor(Anchor::TopRight)
                         .snap_to_window_with_margin(SPACE_SM)
-                        .child(
+                        .child(motion::enter(
+                            "calendars-menu",
+                            Rise::Down,
                             dropdown("calendars-menu", "Calendars", CALENDARS_MENU_WIDTH, theme)
                                 .mt(SPACE_2XL)
                                 .max_h(CALENDARS_MENU_HEIGHT)
                                 .overflow_y_scroll()
                                 .children(section("My Calendars", mine))
                                 .children(section("Other Calendars", others)),
-                        ),
+                        )),
                 )
                 .with_priority(2),
             )

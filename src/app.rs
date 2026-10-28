@@ -8,6 +8,7 @@ mod draft_window;
 mod labels;
 mod mail;
 pub mod menu_bar;
+mod panes;
 mod profile;
 pub mod shell;
 pub(crate) mod toast;
@@ -21,10 +22,10 @@ pub use undo::{Retime, UndoAction};
 use std::collections::{HashMap, HashSet};
 
 use gpui::{
-    AppContext as _, Bounds, Context, DragMoveEvent, Entity, FocusHandle, Focusable as _,
-    InteractiveElement, IntoElement, KeyContext, ListAlignment, ListOffset, ListState, MouseButton,
-    ParentElement, Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
-    Styled, Subscription, Window,
+    AnyElement, AppContext as _, Bounds, Context, DragMoveEvent, Entity, FocusHandle,
+    Focusable as _, InteractiveElement, IntoElement, KeyContext, ListAlignment, ListOffset,
+    ListState, MouseButton, ParentElement, Pixels, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled, Subscription, Window,
     component::input::{self, InputEvent, InputState},
     div, point,
     prelude::FluentBuilder as _,
@@ -125,7 +126,38 @@ pub enum Row {
     /// W9: "Load older" at the end of a view, or more of Gmail's results
     /// at the end of a search (LST-7, SRC-7).
     LoadOlder,
+    /// A conversation that just left the view, collapsing (MD-017): its
+    /// key in `PigeonApp::leaving_rows`. Never selected, picked or counted.
+    Leaving(u64),
 }
+
+/// A conversation's row collapsing after it left the view (MD-017).
+pub(crate) struct LeavingRow {
+    /// Its key in `Row::Leaving`.
+    pub key: u64,
+    pub id: String,
+    /// Its height as last drawn.
+    pub height: Pixels,
+    /// How far it has gone, 0 to 1.
+    pub glide: ui::motion::Glide,
+}
+
+/// Why the rows are changing, for how the change moves (MD-017, MD-024).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum RowCause {
+    /// The user's action: rows that leave collapse, new ones just show.
+    #[default]
+    User,
+    /// A sync or Gmail's search answer: new rows also fade in.
+    Sync,
+    /// Undo or Redo: rows that come back grow into place.
+    Undo,
+    /// Rows the user revealed or hid (the Archived section): no motion.
+    Quiet,
+}
+
+/// At most this many rows animate leaving at once; more just go.
+const LEAVING_MAX: usize = 50;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ComposeKind {
@@ -146,11 +178,22 @@ pub struct PigeonApp {
     pub data: MailData,
     pub nav: Nav,
     pub rows: Vec<Row>,
+    /// Rows on their way out (MD-017).
+    pub(crate) leaving_rows: Vec<LeavingRow>,
+    next_leaving: u64,
+    /// Conversations Undo brought back, growing into place (MD-017).
+    pub(crate) growing_rows: HashMap<String, ui::motion::Glide>,
+    /// Conversations a sync or Gmail's search added, fading in (MD-024),
+    /// and when they came.
+    pub(crate) fresh_rows: (HashSet<String>, Option<std::time::Instant>),
+    row_cause: RowCause,
     /// Index into `MailData::threads`.
     pub selected: Option<usize>,
     /// Older messages of the selected thread the user expanded. The newest is
     /// always expanded.
     pub expanded_messages: HashSet<usize>,
+    /// The message last opened with a click, whose body fades in (MD-020).
+    pub(crate) clicked_open: Option<usize>,
     pub archived_expanded: bool,
     /// The user's choice; the sidebar also hides by itself while the window
     /// is too narrow for it (see `pane_layout`).
@@ -161,11 +204,31 @@ pub struct PigeonApp {
     pub list_width: Pixels,
     /// The divider being dragged, for its highlight.
     resizing: Option<PaneResize>,
+    /// The panes' widths as drawn this frame: `pane_layout`, but gliding
+    /// after a divider's double-click (MD-015).
+    pub(crate) shown: PaneLayout,
+    /// The divider whose pane glides back to its default width.
+    gliding: Option<PaneResize>,
+    /// How far the sidebar is shown, 0 to 1, as drawn this frame (MD-012).
+    pub(crate) sidebar_progress: f32,
+    /// The user showed or hid the sidebar and it's still on its way; a
+    /// window resize alone moves it at once (MD-014).
+    sidebar_sliding: bool,
+    /// Every view's count, worked out once per frame for the rail, the
+    /// sidebar and the list (MC-037).
+    pub(crate) counts: ui::sidebar::NavCounts,
+    /// The panes as views of their own (MC-036).
+    panes: panes::Panes,
+    /// An overlay on its way out (MD-007).
+    leaving_overlay: Option<LeavingOverlay>,
     /// ⌘= / ⌘-: scales all text through the window's rem size.
     pub text_scale: f32,
     pub search_open: bool,
     pub list_state: ListState,
     pub reader_scroll: ScrollHandle,
+    /// A keyboard scroll of the reader on its way (MD-018); a wheel or a
+    /// new conversation drops it.
+    pub(crate) reader_glide: Option<ui::motion::Glide>,
     pub html_cache: crate::html::HtmlCache,
     /// Remote images let load and fetched (W10, ATT-1).
     pub images: ui::html_view::LoadedImages,
@@ -181,6 +244,10 @@ pub struct PigeonApp {
     pub help_focus: FocusHandle,
     /// The open draft, with its event subscription.
     pub composer: Option<(Entity<Composer>, Subscription)>,
+    /// The reply card that left, by the conversation it answered, drawn
+    /// while it fades out (MD-019); and how far the card is shown.
+    reply_ghost: Option<(Entity<Composer>, String)>,
+    pub(crate) reply_card: f32,
     /// Drafts in windows of their own (MB-047).
     draft_windows: Vec<draft_window::DraftWindow>,
     /// Composers made in a draft window, which Undo makes again here.
@@ -191,6 +258,11 @@ pub struct PigeonApp {
     /// The message `n` and `p` move between, in the selected thread.
     pub focused_message: Option<usize>,
     pub toast: Option<Toast>,
+    /// The last toast, fading out (MD-008).
+    toast_ghost: Option<toast::ToastGhost>,
+    /// Conversations starred just now, by id, and when: their stars pop
+    /// (MD-027).
+    just_starred: (Vec<String>, Option<std::time::Instant>),
     /// The session's undo and redo (MA-071).
     pub undo_stack: undo::UndoStack,
     /// Sends waiting to go, for "Message sent" once they have (W6).
@@ -261,6 +333,14 @@ struct NavMemory {
     scroll: ListOffset,
 }
 
+/// A closed overlay, drawn while it fades out. Inert: focus has moved on,
+/// its events go nowhere and its backdrop takes no clicks (MD-007).
+enum LeavingOverlay {
+    Palette(Entity<CommandPalette>),
+    Help,
+    Card(Entity<ui::contact_card::ContactCardView>),
+}
+
 impl PigeonApp {
     /// The app on `backend`'s data, with the settings `saved` applied.
     pub fn new(
@@ -307,9 +387,10 @@ impl PigeonApp {
         });
         let search_events = cx.subscribe_in(&search_input, window, Self::on_search_event);
         let help_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter shortcuts"));
-        let help_events = cx.subscribe(&help_filter, |_, _, event: &InputEvent, cx| {
+        // Only the shortcuts sheet, in the overlay layer, reads the filter.
+        let help_events = cx.subscribe(&help_filter, |this, _, event: &InputEvent, cx| {
             if let InputEvent::Change = event {
-                cx.notify();
+                this.panes.layer.update(cx, |_, cx| cx.notify());
             }
         });
         let (settings_page, settings_events) = SettingsPage::new(window, cx);
@@ -317,12 +398,30 @@ impl PigeonApp {
         let calendar = cx.new(|cx| {
             CalendarView::new(calendar, contact_book.clone(), backend.clone(), window, cx)
         });
-        let backend_events = cx.subscribe(&backend, Self::on_backend_event);
+        // What the backend brings fades in (MD-024).
+        let backend_events = cx.subscribe(&backend, |this, backend, event, cx| {
+            this.with_row_cause(RowCause::Sync, |this| {
+                this.on_backend_event(backend, event, cx)
+            })
+        });
         // Settings are saved whenever they change, here or in the calendar.
         let settings_changed = cx.observe_self(|this, cx| this.save_settings(cx));
+        // MC-036: the panes draw from this state, so any change redraws them.
+        let panes = panes::Panes::new(
+            Self::sidebar_pane,
+            Self::list_pane,
+            Self::reader_pane,
+            Self::layer_pane,
+            cx,
+        );
+        let panes_follow = cx.observe_self(|this, cx| this.panes.notify(cx));
         let calendar_changed = cx.observe_in(&calendar, window, |this, _, window, cx| {
             this.save_settings(cx);
             this.refresh_menus(window, cx);
+            // The list's inbox-zero line names the next event, and the
+            // calendar's minute tick moves the panes' relative times
+            // ("Synced 4 min ago").
+            this.panes.notify(cx);
         });
         // MA-034: the frame is saved as it changes, debounced by the backend.
         let bounds = cx.observe_window_bounds(window, |this, window, cx| {
@@ -385,18 +484,35 @@ impl PigeonApp {
             data,
             nav: Nav::Folder(Folder::Inbox),
             rows: Vec::new(),
+            leaving_rows: Vec::new(),
+            next_leaving: 0,
+            growing_rows: HashMap::new(),
+            fresh_rows: (HashSet::new(), None),
+            row_cause: RowCause::User,
             selected: None,
             expanded_messages: HashSet::new(),
+            clicked_open: None,
             archived_expanded: false,
             sidebar_open: true,
             sidebar_forced: false,
             sidebar_width: SIDEBAR_DEFAULT,
             list_width: LIST_DEFAULT,
             resizing: None,
+            shown: PaneLayout {
+                sidebar: px(0.),
+                list: LIST_DEFAULT,
+            },
+            gliding: None,
+            sidebar_progress: 0.,
+            sidebar_sliding: false,
+            counts: Default::default(),
+            panes,
+            leaving_overlay: None,
             text_scale: 1.,
             search_open: false,
             list_state: ListState::new(0, ListAlignment::Top, px(400.)),
             reader_scroll: ScrollHandle::new(),
+            reader_glide: None,
             html_cache: Default::default(),
             images: Default::default(),
             reader_focused: false,
@@ -406,6 +522,8 @@ impl PigeonApp {
             contact_card: None,
             help_focus: cx.focus_handle(),
             composer: None,
+            reply_ghost: None,
+            reply_card: 0.,
             draft_windows: Vec::new(),
             windowed: HashSet::new(),
             contact_book,
@@ -413,6 +531,8 @@ impl PigeonApp {
             search_query: Query::default(),
             focused_message: None,
             toast: None,
+            toast_ghost: None,
+            just_starred: (Vec::new(), None),
             undo_stack: Default::default(),
             sends: Vec::new(),
             queued_sends: HashSet::new(),
@@ -450,6 +570,7 @@ impl PigeonApp {
                 help_events,
                 backend_events,
                 settings_changed,
+                panes_follow,
                 calendar_changed,
                 quit,
                 escape,
@@ -643,6 +764,13 @@ impl PigeonApp {
             rows.push(Row::LoadOlder);
         }
 
+        // A change while rows are still leaving takes them away at once.
+        self.leaving_rows.clear();
+        if keep_scroll {
+            rows = self.rows_in_motion(rows);
+        } else {
+            self.growing_rows.clear();
+        }
         if keep_scroll {
             let old = &self.rows;
             let prefix = old.iter().zip(&rows).take_while(|(a, b)| a == b).count();
@@ -673,6 +801,123 @@ impl PigeonApp {
             self.list_state.reset(rows.len());
         }
         self.rows = rows;
+    }
+
+    /// `rows`, with the conversations that just left still in place as
+    /// `Row::Leaving`, and the ones that just came marked to grow or fade
+    /// in, as `row_cause` says (MD-017, MD-024).
+    fn rows_in_motion(&mut self, mut rows: Vec<Row>) -> Vec<Row> {
+        let threads = &self.data.threads;
+        let id_of = |row: &Row| match row {
+            Row::Thread(ix) => threads.get(*ix).map(|t| t.id.as_str()),
+            _ => None,
+        };
+        let new_ids: HashSet<&str> = rows.iter().filter_map(id_of).collect();
+        let old_ids: HashSet<&str> = self.rows.iter().filter_map(id_of).collect();
+        if self.row_cause != RowCause::Quiet {
+            // Where each one that left was: after the rows before it that
+            // stayed.
+            let mut at = 0;
+            let mut leaving = Vec::new();
+            for (old_ix, row) in self.rows.iter().enumerate() {
+                match id_of(row) {
+                    Some(id) if !new_ids.contains(id) => {
+                        // Only one drawn before collapses; the rest just go.
+                        if let Some(bounds) = self.list_state.bounds_for_item(old_ix) {
+                            leaving.push((at, id.to_string(), bounds.size.height));
+                        }
+                    }
+                    _ => {
+                        if let Some(k) = rows[at..].iter().position(|r| r == row) {
+                            at += k + 1;
+                        }
+                    }
+                }
+            }
+            if leaving.len() <= LEAVING_MAX {
+                for (shift, (at, id, height)) in leaving.into_iter().enumerate() {
+                    let key = self.next_leaving;
+                    self.next_leaving += 1;
+                    rows.insert(at + shift, Row::Leaving(key));
+                    self.leaving_rows.push(LeavingRow {
+                        key,
+                        id,
+                        height,
+                        glide: ui::motion::Glide::exit(),
+                    });
+                }
+            }
+        }
+        let came: Vec<String> = rows
+            .iter()
+            .filter_map(id_of)
+            .filter(|id| !old_ids.contains(id))
+            .map(String::from)
+            .collect();
+        match self.row_cause {
+            RowCause::Undo => {
+                for id in came {
+                    self.growing_rows.insert(id, ui::motion::Glide::pane());
+                }
+            }
+            RowCause::Sync if !came.is_empty() => {
+                self.fresh_rows = (came.into_iter().collect(), Some(std::time::Instant::now()));
+            }
+            _ => {}
+        }
+        rows
+    }
+
+    /// One frame of the rows leaving and growing, as the list draws: each
+    /// is measured again, and a row that has left is taken out.
+    fn step_rows(&mut self, window: &mut Window, cx: &gpui::App) {
+        if self.leaving_rows.is_empty() && self.growing_rows.is_empty() {
+            return;
+        }
+        // Under Reduce Motion they snap.
+        let snap = cx.reduce_motion();
+        let mut gone = HashSet::new();
+        for row in &mut self.leaving_rows {
+            if snap || row.glide.step().1 {
+                gone.insert(row.key);
+            }
+        }
+        self.leaving_rows.retain(|row| !gone.contains(&row.key));
+        let mut grown = Vec::new();
+        for (id, glide) in &mut self.growing_rows {
+            if snap || glide.step().1 {
+                grown.push(id.clone());
+            }
+        }
+        for ix in (0..self.rows.len()).rev() {
+            let id = match self.rows[ix] {
+                Row::Leaving(key) if gone.contains(&key) => {
+                    self.rows.remove(ix);
+                    self.list_state.splice(ix..ix + 1, 0);
+                    continue;
+                }
+                Row::Leaving(_) => None,
+                Row::Thread(t) => self.data.threads.get(t).map(|t| t.id.as_str()),
+                _ => continue,
+            };
+            if id.is_none_or(|id| self.growing_rows.contains_key(id)) {
+                self.list_state.remeasure_items(ix..ix + 1);
+            }
+        }
+        for id in grown {
+            self.growing_rows.remove(&id);
+        }
+        if !self.leaving_rows.is_empty() || !self.growing_rows.is_empty() {
+            window.request_animation_frame();
+        }
+    }
+
+    /// Run `f` with the rows' changes moving as `cause` says.
+    fn with_row_cause<R>(&mut self, cause: RowCause, f: impl FnOnce(&mut Self) -> R) -> R {
+        let before = std::mem::replace(&mut self.row_cause, cause);
+        let result = f(self);
+        self.row_cause = before;
+        result
     }
 
     pub fn is_searching(&self) -> bool {
@@ -724,7 +969,9 @@ impl PigeonApp {
                     && self.rows.contains(&Row::Thread(ix))
             });
         self.expanded_messages.clear();
+        self.clicked_open = None;
         self.focused_message = None;
+        self.reader_glide = None;
         self.reader_scroll.set_offset(point(px(0.), px(0.)));
     }
 
@@ -744,8 +991,10 @@ impl PigeonApp {
         self.ensure_bodies(ix, cx);
         if self.selected != Some(ix) {
             self.expanded_messages.clear();
+            self.clicked_open = None;
             self.focused_message = None;
             self.select_all_text = None;
+            self.reader_glide = None;
             self.reader_scroll.set_offset(point(px(0.), px(0.)));
             self.expand_unread(ix);
         }
@@ -809,9 +1058,12 @@ impl PigeonApp {
         self.expanded_messages.extend(unread);
     }
 
+    /// A click on a message's header: it opens, fading in (MD-020), or
+    /// closes at once.
     pub fn toggle_message(&mut self, ix: usize, cx: &mut Context<Self>) {
         if !self.expanded_messages.remove(&ix) {
             self.expanded_messages.insert(ix);
+            self.clicked_open = Some(ix);
         }
         cx.notify();
     }
@@ -912,6 +1164,7 @@ impl PigeonApp {
         if !self.reader_focused {
             return self.select_edge(false, window, cx);
         }
+        self.reader_glide = None;
         self.reader_scroll.set_offset(point(px(0.), px(0.)));
         cx.notify();
     }
@@ -926,6 +1179,7 @@ impl PigeonApp {
             return self.select_edge(true, window, cx);
         }
         let max = self.reader_scroll.max_offset().y;
+        self.reader_glide = None;
         self.reader_scroll.set_offset(point(px(0.), -max));
         cx.notify();
     }
@@ -975,6 +1229,7 @@ impl PigeonApp {
             self.sidebar_open = true;
             self.sidebar_forced = !self.sidebar_fits(window.viewport_size().width);
         }
+        self.sidebar_sliding = true;
         cx.notify();
     }
 
@@ -1029,14 +1284,14 @@ impl PigeonApp {
         if text_field_focused(window) {
             return window.dispatch_action(Box::new(input::Undo), cx);
         }
-        self.undo_last(window, cx);
+        self.with_row_cause(RowCause::Undo, |this| this.undo_last(window, cx));
     }
 
     fn edit_redo(&mut self, _: &EditRedo, window: &mut Window, cx: &mut Context<Self>) {
         if text_field_focused(window) {
             return window.dispatch_action(Box::new(input::Redo), cx);
         }
-        self.redo_last(window, cx);
+        self.with_row_cause(RowCause::Undo, |this| this.redo_last(window, cx));
     }
 
     /// The field's text, else the selected text (the base root copies it),
@@ -1349,7 +1604,7 @@ impl PigeonApp {
         cx: &mut Context<Self>,
     ) {
         self.archived_expanded = !self.archived_expanded;
-        self.refresh_rows(true);
+        self.with_row_cause(RowCause::Quiet, |this| this.refresh_rows(true));
         cx.notify();
     }
 
@@ -1448,12 +1703,41 @@ impl PigeonApp {
             (Some(ix), false) => ix.saturating_sub(1),
         };
         self.focused_message = Some(target);
-        if target != last {
-            self.expanded_messages.insert(target);
+        let opened = target != last && self.expanded_messages.insert(target);
+        // Glides to a message drawn as it is; one that opens or was folded
+        // away is only placed once laid out, so the scroll waits for that.
+        let item = ui::reader::MESSAGES_START + target;
+        match self.reader_scroll_target(item).filter(|_| !opened) {
+            Some(y) => self.glide_reader(y, cx),
+            None => {
+                self.reader_glide = None;
+                self.reader_scroll.scroll_to_item(item);
+            }
         }
-        self.reader_scroll
-            .scroll_to_item(ui::reader::MESSAGES_START + target);
         cx.notify();
+    }
+
+    /// The reader's offset that shows child `ix` whole, or its top when it's
+    /// taller than the reader, moving the least: as `scroll_to_item` does.
+    /// None while it hasn't been laid out with a height.
+    fn reader_scroll_target(&self, ix: usize) -> Option<Pixels> {
+        let item = self.reader_scroll.bounds_for_item(ix)?;
+        if item.size.height <= px(0.) {
+            return None;
+        }
+        let view = self.reader_scroll.bounds();
+        let y = self
+            .reader_glide
+            .map_or(self.reader_scroll.offset().y, |g| px(g.target()));
+        Some(
+            if item.size.height > view.size.height || item.top() + y < view.top() {
+                view.top() - item.top()
+            } else if item.bottom() + y > view.bottom() {
+                view.bottom() - item.bottom()
+            } else {
+                y
+            },
+        )
     }
 
     /// ⌘A in the reader: all of the focused message's text, or the last one's.
@@ -1492,11 +1776,47 @@ impl PigeonApp {
     }
 
     fn scroll_reader(&mut self, delta: Pixels, cx: &mut Context<Self>) {
-        let offset = self.reader_scroll.offset();
+        // From where a glide under way is going, so held keys add up.
+        let from = self
+            .reader_glide
+            .map_or(self.reader_scroll.offset().y, |g| px(g.target()));
+        self.glide_reader(from - delta, cx);
+    }
+
+    /// Scroll the reader to `y` (an offset, 0 or less): gliding, unless
+    /// Reduce Motion is on (MD-018). Only the reader draws again.
+    fn glide_reader(&mut self, y: Pixels, cx: &mut Context<Self>) {
         let max = self.reader_scroll.max_offset().y;
-        let y = (offset.y - delta).clamp(-max, px(0.));
-        self.reader_scroll.set_offset(point(offset.x, y));
-        cx.notify();
+        let y = y.clamp(-max, px(0.));
+        if cx.reduce_motion() {
+            self.reader_glide = None;
+            self.reader_scroll
+                .set_offset(point(self.reader_scroll.offset().x, y));
+        } else {
+            match &mut self.reader_glide {
+                Some(glide) => glide.retarget(f32::from(y)),
+                None => {
+                    let from = f32::from(self.reader_scroll.offset().y);
+                    self.reader_glide = Some(ui::motion::Glide::new(from, f32::from(y)));
+                }
+            }
+        }
+        self.panes.reader.update(cx, |_, cx| cx.notify());
+    }
+
+    /// One frame of the reader's glide, as the reader draws.
+    fn step_reader_glide(&mut self, window: &mut Window) {
+        let Some(glide) = &mut self.reader_glide else {
+            return;
+        };
+        let (y, done) = glide.step();
+        let x = self.reader_scroll.offset().x;
+        self.reader_scroll.set_offset(point(x, px(y)));
+        if done {
+            self.reader_glide = None;
+        } else {
+            window.request_animation_frame();
+        }
     }
 
     fn scroll_reader_down(&mut self, _: &ScrollReaderDown, _: &mut Window, cx: &mut Context<Self>) {
@@ -1823,7 +2143,11 @@ impl PigeonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.close_overlays(window, cx);
+        if matches!(event, PaletteEvent::Dismiss) {
+            self.close_overlays(window, cx);
+        } else {
+            self.close_overlays_at_once(window, cx);
+        }
         // W5: quick add (CAL-39).
         if let PaletteEvent::QuickAdd(text) = event {
             self.set_mode(Mode::Calendar, window, cx);
@@ -1904,44 +2228,98 @@ impl PigeonApp {
         } else {
             self.palette = None;
             self.help_open = true;
-            self.help_filter
-                .update(cx, |input, cx| input.focus(window, cx));
+            // Cleared here, not on close, so the sheet fades out as it was.
+            self.help_filter.update(cx, |input, cx| {
+                input.set_value("", window, cx);
+                input.focus(window, cx);
+            });
             cx.notify();
         }
     }
 
+    /// Esc, a click outside or the overlay's own shortcut: it fades out
+    /// (MD-007).
     pub(crate) fn close_overlays(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let leaving = if let Some((palette, _)) = &self.palette {
+            Some(LeavingOverlay::Palette(palette.clone()))
+        } else if self.help_open {
+            Some(LeavingOverlay::Help)
+        } else {
+            self.contact_card
+                .as_ref()
+                .filter(|(card, _)| !card.read(cx).is_anchored())
+                .map(|(card, _)| LeavingOverlay::Card(card.clone()))
+        };
+        self.close_overlays_at_once(window, cx);
+        self.leaving_overlay = leaving;
+    }
+
+    /// A command ran from the palette: it goes at once, so its result
+    /// shows with nothing on top (MD-Q3).
+    fn close_overlays_at_once(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.palette = None;
         self.contact_card = None;
-        if self.help_open {
-            self.help_filter
-                .update(cx, |input, cx| input.set_value("", window, cx));
-        }
         self.help_open = false;
+        self.leaving_overlay = None;
         window.focus(&self.pane_focus(cx), cx);
         cx.notify();
     }
 
+    /// The palette, the shortcuts sheet or the contact card over a dimmed
+    /// window. One presence spring for all three, so swapping one for
+    /// another doesn't play it again (MD-007).
     fn render_overlay(
-        &self,
+        &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        let content = if let Some((palette, _)) = &self.palette {
-            ui::style::enter("palette-enter", div().child(palette.clone())).into_any_element()
+        // MB-069: hung at the click, the card is a popover with no backdrop.
+        let anchored = self
+            .contact_card
+            .as_ref()
+            .filter(|(card, _)| card.read(cx).is_anchored())
+            .map(|(card, _)| card.clone());
+        let open = self.overlay_open() && anchored.is_none();
+        let p = ui::motion::presence("overlay", open, window, cx);
+        if open || p == 0. {
+            self.leaving_overlay = None;
+        }
+        if let Some(card) = anchored {
+            // MD-011: it enters like the other popovers.
+            return Some(
+                div()
+                    .absolute()
+                    .child(ui::motion::enter(
+                        "contact-card-in",
+                        ui::motion::Rise::Down,
+                        div().child(card),
+                    ))
+                    .into_any_element(),
+            );
+        }
+        let (content, help) = if let Some((palette, _)) = &self.palette {
+            (div().child(palette.clone()).into_any_element(), false)
         } else if self.help_open {
-            ui::style::enter("help-enter", self.render_shortcuts_help(window, cx))
-                .into_any_element()
+            (
+                self.render_shortcuts_help(window, cx).into_any_element(),
+                true,
+            )
         } else if let Some((card, _)) = &self.contact_card {
-            // MB-069: hung at the click, it's a popover with no backdrop.
-            if card.read(cx).is_anchored() {
-                return Some(div().absolute().child(card.clone()).into_any_element());
-            }
-            ui::style::enter("contact-card-enter", div().child(card.clone())).into_any_element()
+            (div().child(card.clone()).into_any_element(), false)
         } else {
-            return None;
+            match self.leaving_overlay.as_ref()? {
+                LeavingOverlay::Palette(palette) => {
+                    (div().child(palette.clone()).into_any_element(), false)
+                }
+                LeavingOverlay::Help => (
+                    self.render_shortcuts_help(window, cx).into_any_element(),
+                    true,
+                ),
+                LeavingOverlay::Card(card) => (div().child(card.clone()).into_any_element(), false),
+            }
         };
         let theme = Theme::of(cx);
+        let rise = ui::motion::moving(ui::motion::Rise::Down, cx);
         Some(
             div()
                 .id("overlay-backdrop")
@@ -1951,19 +2329,27 @@ impl PigeonApp {
                 .flex_col()
                 .items_center()
                 .map(|this| {
-                    if self.help_open {
+                    if help {
                         this.justify_center().p(SPACE_2XL)
                     } else {
                         this.pt(OVERLAY_TOP).px(SPACE_2XL)
                     }
                 })
-                .bg(theme.backdrop)
-                .occlude()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _, window, cx| this.close_overlays(window, cx)),
-                )
-                .child(content)
+                .bg(theme.backdrop.opacity(p.clamp(0., 1.)))
+                .when(open, |this| {
+                    this.occlude().on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| this.close_overlays(window, cx)),
+                    )
+                })
+                .child(ui::motion::card_motion(
+                    div()
+                        .relative()
+                        .child(content)
+                        .when(!open, |this| this.child(ui::motion::inert_cover())),
+                    p,
+                    rise,
+                ))
                 .into_any_element(),
         )
     }
@@ -2030,8 +2416,9 @@ impl PigeonApp {
                 .absolute()
                 .bottom(SPACE_XL)
                 .right(SPACE_XL)
-                .child(ui::style::enter(
+                .child(ui::motion::enter(
                     "tip-enter",
+                    ui::motion::Rise::Up,
                     ui::controls::popover_surface(theme)
                         .id("first-run-tip")
                         .occlude()
@@ -2068,15 +2455,15 @@ impl PigeonApp {
         cx: &mut Context<Self>,
     ) {
         let kind = *event.drag(cx);
-        if self.resizing != Some(kind) {
-            self.resizing = Some(kind);
-            // The cursor stays a resize cursor off the divider too.
-            cx.set_active_drag_cursor_style(gpui::CursorStyle::ResizeLeftRight, window);
-        }
+        self.resizing = Some(kind);
+        self.gliding = None;
         let width = window.viewport_size().width;
         let x = event.event.position.x - RAIL_WIDTH;
-        // Leave the reader its minimum, and the list its own beside a sidebar.
-        let room = width - RAIL_WIDTH - READER_MIN;
+        let (min, max) = self.pane_range(kind, width);
+        let before = match kind {
+            PaneResize::Sidebar => self.sidebar_width,
+            PaneResize::List => self.list_width,
+        };
         match kind {
             // Dragged well past its minimum, the sidebar hides, keeping its
             // width for next time (MB-075).
@@ -2084,26 +2471,99 @@ impl PigeonApp {
                 self.sidebar_open = false;
                 self.sidebar_forced = false;
             }
-            PaneResize::Sidebar => {
-                let max = (room - LIST_WIDTH.0).min(SIDEBAR_WIDTH.1);
-                self.sidebar_width = x.min(max).max(SIDEBAR_WIDTH.0);
-            }
+            PaneResize::Sidebar => self.sidebar_width = x.min(max).max(min),
             PaneResize::List => {
                 let sidebar = self.pane_layout(width).sidebar;
-                let max = (room - sidebar).min(LIST_WIDTH.1);
-                self.list_width = (x - sidebar).min(max).max(LIST_WIDTH.0);
+                self.list_width = (x - sidebar).min(max).max(min);
             }
         }
+        let (after, default) = match kind {
+            PaneResize::Sidebar => (self.sidebar_width, SIDEBAR_DEFAULT),
+            PaneResize::List => (self.list_width, LIST_DEFAULT),
+        };
+        // MA-074: a tap as the pane reaches a limit or its default width.
+        if crosses_mark(before, after, &[min, max, default]) {
+            crate::native::haptic_alignment();
+        }
+        // The cursor stays a resize cursor off the divider too, pointing
+        // the way the pane can still go (MA-093).
+        cx.set_active_drag_cursor_style(self.divider_cursor(kind, width), window);
         cx.notify();
     }
 
-    /// Double-clicking a divider puts its pane back to the default width.
+    /// How narrow and wide a divider can make its pane: the reader keeps its
+    /// minimum, and the list its own beside a sidebar.
+    fn pane_range(&self, kind: PaneResize, width: Pixels) -> (Pixels, Pixels) {
+        let room = width - RAIL_WIDTH - READER_MIN;
+        match kind {
+            PaneResize::Sidebar => (SIDEBAR_WIDTH.0, (room - LIST_WIDTH.0).min(SIDEBAR_WIDTH.1)),
+            PaneResize::List => (
+                LIST_WIDTH.0,
+                (room - self.pane_layout(width).sidebar).min(LIST_WIDTH.1),
+            ),
+        }
+    }
+
+    /// ↔, or ← / → at a limit (MA-093). The sidebar at its minimum can
+    /// still be dragged left, to hide it.
+    fn divider_cursor(&self, kind: PaneResize, width: Pixels) -> gpui::CursorStyle {
+        let (min, max) = self.pane_range(kind, width);
+        let layout = self.pane_layout(width);
+        let shown = match kind {
+            PaneResize::Sidebar => layout.sidebar,
+            PaneResize::List => layout.list,
+        };
+        let at_min = kind == PaneResize::List && shown <= min;
+        match (at_min, shown >= max) {
+            (true, false) => gpui::CursorStyle::ResizeRight,
+            (false, true) => gpui::CursorStyle::ResizeLeft,
+            _ => gpui::CursorStyle::ResizeLeftRight,
+        }
+    }
+
+    /// Double-clicking a divider puts its pane back to the default width,
+    /// gliding there (MD-015).
     pub fn reset_pane(&mut self, kind: PaneResize, cx: &mut Context<Self>) {
         match kind {
             PaneResize::Sidebar => self.sidebar_width = SIDEBAR_DEFAULT,
             PaneResize::List => self.list_width = LIST_DEFAULT,
         }
+        self.gliding = Some(kind);
         cx.notify();
+    }
+
+    /// The panes' widths to draw: `layout` at once, or on a spring towards
+    /// it after a reset (MD-015).
+    fn glide_panes(
+        &mut self,
+        layout: PaneLayout,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PaneLayout {
+        let policy = |kind| {
+            ui::motion::SPRING_PANE
+                .with_epsilon(0.5)
+                .with_travel(self.gliding == Some(kind))
+        };
+        let sidebar = gpui::base::spring(
+            "sidebar-width",
+            layout.sidebar,
+            policy(PaneResize::Sidebar),
+            window,
+            cx,
+        );
+        let list = gpui::base::spring(
+            "list-width",
+            layout.list,
+            policy(PaneResize::List),
+            window,
+            cx,
+        );
+        let shown = PaneLayout { sidebar, list };
+        if shown == layout {
+            self.gliding = None;
+        }
+        shown
     }
 }
 
@@ -2138,21 +2598,23 @@ impl PigeonApp {
             self.resizing = None;
         }
         let layout = self.pane_layout(width);
-        // The sidebar slides open and shut; its content keeps its width and
-        // is clipped, so nothing reflows while it moves.
-        let sidebar_width = if layout.sidebar > px(0.) {
-            layout.sidebar
-        } else {
-            self.sidebar_width
-        };
-        let sidebar_open = gpui::base::motion::transition(
-            "sidebar-open",
-            if layout.sidebar > px(0.) { 1f32 } else { 0. },
-            ui::style::pane_transition(),
+        self.shown = self.glide_panes(layout, window, cx);
+        // The sidebar slides open and shut when the user says so, and
+        // follows a window resize at once (MD-013, MD-014). Its content
+        // keeps its width and is clipped, so nothing reflows while it moves.
+        let target = if layout.sidebar > px(0.) { 1. } else { 0. };
+        self.sidebar_progress = gpui::base::spring(
+            "sidebar-shown",
+            target,
+            ui::motion::SPRING_PANE.with_travel(self.sidebar_sliding),
             window,
             cx,
         );
-        let sidebar_shown = sidebar_width * sidebar_open;
+        if self.sidebar_progress == target {
+            self.sidebar_sliding = false;
+        }
+        let sidebar_open = self.sidebar_progress.clamp(0., 1.);
+        let sidebar_shown = self.sidebar_content_width() * sidebar_open;
         let settings_open = self.settings_page.open;
         let (signed_out, calendar_granted, sign_in, status) = {
             let b = self.backend.read(cx);
@@ -2164,9 +2626,13 @@ impl PigeonApp {
             )
         };
         // One pass over the threads for every count (MC-037).
-        let counts = self.nav_counts();
-        let inbox_unread = counts.unread(Nav::Folder(Folder::Inbox));
+        self.counts = self.nav_counts();
+        let inbox_unread = self.counts.unread(Nav::Folder(Folder::Inbox));
         let panes = !settings_open && !signed_out;
+        // MD-042: from the sign-in screen, the app fades in.
+        let signed_in = ui::motion::presence("signed-in", !signed_out, window, cx).clamp(0., 1.);
+        // A reused pane keeps the opacity it was painted with.
+        let cache = signed_in == 1.;
         let entity = cx.entity();
         let reset = move |kind| {
             let entity = entity.clone();
@@ -2225,7 +2691,9 @@ impl PigeonApp {
             // W3.
             .on_action(cx.listener(Self::change_from))
             .on_action(cx.listener(Self::toggle_signature))
-            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(|this, action: &Undo, window, cx| {
+                this.with_row_cause(RowCause::Undo, |this| this.undo(action, window, cx))
+            }))
             .on_action(cx.listener(Self::edit_undo))
             .on_action(cx.listener(Self::edit_redo))
             .on_action(cx.listener(Self::edit_copy))
@@ -2275,7 +2743,7 @@ impl PigeonApp {
                         .size_full()
                         .flex()
                         .flex_row()
-                        .child(ui::rail::render(None, inbox_unread, &theme))
+                        .child(ui::rail::render(None, inbox_unread, &theme, window, cx))
                         .child(self.render_settings(window, cx)),
                 )
             })
@@ -2288,11 +2756,14 @@ impl PigeonApp {
                         .size_full()
                         .flex()
                         .flex_row()
+                        .opacity(signed_in)
                         .child(ui::rail::render_with_status(
                             Some(self.mode),
                             inbox_unread,
                             Some(&status),
                             &theme,
+                            window,
+                            cx,
                         ))
                         .map(|this| {
                             if calendar_granted {
@@ -2316,6 +2787,7 @@ impl PigeonApp {
                         .size_full()
                         .flex()
                         .flex_row()
+                        .opacity(signed_in)
                         // The sidebar has the status line; hidden, the rail
                         // shows it (MA-068).
                         .child(ui::rail::render_with_status(
@@ -2323,6 +2795,8 @@ impl PigeonApp {
                             inbox_unread,
                             (layout.sidebar == px(0.)).then_some(&status),
                             &theme,
+                            window,
+                            cx,
                         ))
                         .when(sidebar_open > 0., |this| {
                             this.child(
@@ -2331,68 +2805,125 @@ impl PigeonApp {
                                     .h_full()
                                     .flex_none()
                                     .overflow_hidden()
-                                    .child(self.render_sidebar(sidebar_width, &counts, window, cx)),
+                                    .child(panes::embed(
+                                        &self.panes.sidebar,
+                                        div().w(self.sidebar_content_width()).h_full().flex_none(),
+                                        cache,
+                                        window,
+                                    )),
                             )
                         })
-                        .child(
-                            div()
-                                .h_full()
-                                .flex_none()
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _, window, cx| {
-                                        this.reader_focused = false;
-                                        if !this.search_input.focus_handle(cx).is_focused(window) {
-                                            window.focus(&this.focus_handle, cx);
-                                        }
-                                        cx.notify();
-                                    }),
-                                )
-                                .child(self.render_thread_list(
-                                    layout.list,
-                                    layout.sidebar > px(0.),
-                                    &counts,
-                                    window,
-                                    cx,
-                                )),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .h_full()
-                                .flex()
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _, _, cx| {
-                                        this.reader_focused = this.selected.is_some();
-                                        cx.notify();
-                                    }),
-                                )
-                                .child(self.render_reader(window, cx)),
-                        )
+                        .child(panes::embed(
+                            &self.panes.list,
+                            div().w(self.shown.list).h_full().flex_none(),
+                            cache,
+                            window,
+                        ))
+                        .child(panes::embed(
+                            &self.panes.reader,
+                            div().flex_1().min_w_0().h_full(),
+                            cache,
+                            window,
+                        ))
                         .when(layout.sidebar > px(0.), |this| {
                             this.child(ui::pane_divider(
                                 PaneResize::Sidebar,
                                 RAIL_WIDTH + sidebar_shown,
                                 self.resizing == Some(PaneResize::Sidebar),
+                                self.divider_cursor(PaneResize::Sidebar, width),
                                 &theme,
                                 reset(PaneResize::Sidebar),
                             ))
                         })
                         .child(ui::pane_divider(
                             PaneResize::List,
-                            RAIL_WIDTH + sidebar_shown + layout.list,
+                            RAIL_WIDTH + sidebar_shown + self.shown.list,
                             self.resizing == Some(PaneResize::List),
+                            self.divider_cursor(PaneResize::List, width),
                             &theme,
                             reset(PaneResize::List),
                         )),
                 )
             })
-            .children(self.render_toast(cx))
-            .when(panes, |this| this.children(self.render_tip(cx)))
-            .children(self.render_overlay(window, cx))
+            .child(self.panes.layer.clone())
             .when(profile::active(), |this| this.child(profile::marker()))
+    }
+
+    /// The sidebar's content width: as shown, or as it will show while it
+    /// slides in.
+    fn sidebar_content_width(&self) -> Pixels {
+        if self.shown.sidebar > px(0.) {
+            self.shown.sidebar
+        } else {
+            self.sidebar_width
+        }
+    }
+
+    // The panes (`app/panes.rs`), each drawn as a view of its own.
+
+    fn sidebar_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let width = self.sidebar_content_width();
+        self.render_sidebar(width, &self.counts, window, cx)
+            .into_any_element()
+    }
+
+    fn list_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        self.step_rows(window, cx);
+        div()
+            .size_full()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    this.reader_focused = false;
+                    if !this.search_input.focus_handle(cx).is_focused(window) {
+                        window.focus(&this.focus_handle, cx);
+                    }
+                    cx.notify();
+                }),
+            )
+            .child(self.render_thread_list(
+                self.shown.list,
+                self.sidebar_progress,
+                &self.counts,
+                window,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn reader_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .size_full()
+            .flex()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.reader_focused = this.selected.is_some();
+                    cx.notify();
+                }),
+            )
+            .child({
+                self.step_reader_glide(window);
+                self.reply_card_presence(window, cx);
+                self.render_reader(window, cx)
+            })
+            .into_any_element()
+    }
+
+    /// Toast, first-run tip and overlays, over everything. Not cached: it
+    /// draws whenever the app does, and its springs redraw it alone.
+    fn layer_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let panes = !self.settings_page.open && self.backend.read(cx).source() != Source::SignedOut;
+        let toast = self.render_toast(window, cx);
+        let tip = if panes { self.render_tip(cx) } else { None };
+        let overlay = self.render_overlay(window, cx);
+        div()
+            .absolute()
+            .inset_0()
+            .children(toast)
+            .children(tip)
+            .children(overlay)
+            .into_any_element()
     }
 }
 
@@ -2407,10 +2938,30 @@ fn on_screen(row: Option<Bounds<Pixels>>, viewport: Bounds<Pixels>) -> bool {
     row.is_some_and(|row| row.top() < viewport.bottom() && row.bottom() > viewport.top())
 }
 
+/// Whether a drag from `before` to `after` reached or passed one of
+/// `marks`, having started off it.
+fn crosses_mark(before: Pixels, after: Pixels, marks: &[Pixels]) -> bool {
+    marks
+        .iter()
+        .any(|&m| (before < m && after >= m) || (before > m && after <= m))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use gpui::size;
+
+    #[test]
+    fn divider_taps_once_on_reaching_a_mark() {
+        let marks = [px(180.), px(236.), px(360.)];
+        assert!(crosses_mark(px(200.), px(236.), &marks));
+        assert!(crosses_mark(px(230.), px(240.), &marks));
+        assert!(crosses_mark(px(350.), px(360.), &marks));
+        // Held at a limit, or leaving it.
+        assert!(!crosses_mark(px(360.), px(360.), &marks));
+        assert!(!crosses_mark(px(360.), px(350.), &marks));
+        assert!(!crosses_mark(px(200.), px(210.), &marks));
+    }
 
     fn rect(top: f32, height: f32) -> Bounds<Pixels> {
         Bounds::new(point(px(0.), px(top)), size(px(100.), px(height)))

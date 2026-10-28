@@ -2,10 +2,12 @@
 //! and Settings at the bottom.
 
 use gpui::{
-    Action, AnyElement, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
-    SharedString, StatefulInteractiveElement as _, Styled, div, prelude::FluentBuilder as _, px,
+    Action, AnyElement, App, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
+    SharedString, StatefulInteractiveElement as _, Styled, Window, base::spring, div,
+    prelude::FluentBuilder as _, px,
 };
 
+use super::motion::{SPRING_CONTROL, SPRING_EXIT, fade};
 use super::{HEADER_HEIGHT, icon, window_drag_area};
 use crate::ui::style::*;
 use crate::{
@@ -26,8 +28,14 @@ const DOT_RIGHT: Pixels = px(4.);
 /// `mode`: the app showing, none while Settings is. `unread`: unread
 /// threads in the Inbox, shown as a dot on Mail so new mail is visible from
 /// Calendar too.
-pub fn render(mode: Option<Mode>, unread: usize, theme: &Theme) -> impl IntoElement {
-    render_with_status(mode, unread, None, theme)
+pub fn render(
+    mode: Option<Mode>,
+    unread: usize,
+    theme: &Theme,
+    window: &mut Window,
+    cx: &mut App,
+) -> impl IntoElement {
+    render_with_status(mode, unread, None, theme, window, cx)
 }
 
 /// `render`, with the sync status at the bottom (MA-068): in Calendar or
@@ -37,7 +45,10 @@ pub fn render_with_status(
     unread: usize,
     status: Option<&SyncStatus>,
     theme: &Theme,
+    window: &mut Window,
+    cx: &mut App,
 ) -> impl IntoElement {
+    let dot = unread_dot(unread > 0, theme, window, cx);
     let item = |id: &'static str,
                 glyph: Icon,
                 item_mode: Option<Mode>,
@@ -110,17 +121,7 @@ pub fn render_with_status(
             },
             Box::new(GoToMail),
         )
-        .when(unread > 0, |this| {
-            this.child(
-                div()
-                    .absolute()
-                    .top(DOT_TOP)
-                    .right(DOT_RIGHT)
-                    .size(DOT)
-                    .rounded_full()
-                    .bg(theme.accent),
-            )
-        }),
+        .children(dot),
     )
     .child(item(
         "rail-calendar",
@@ -138,6 +139,45 @@ pub fn render_with_status(
         "Settings".into(),
         Box::new(OpenSettings),
     )))
+}
+
+/// The unread dot on Mail (MD-029): it pops in when the Inbox gets unread
+/// mail and fades out when it has none. Not at launch: the spring starts
+/// where it's going.
+fn unread_dot(
+    shown: bool,
+    theme: &Theme,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<impl IntoElement> {
+    let (size, opacity) = if cx.reduce_motion() {
+        let target = if shown { 1. } else { 0. };
+        (DOT, fade("rail-dot", target, target, window, cx))
+    } else {
+        let (target, policy) = if shown {
+            (DOT, SPRING_CONTROL)
+        } else {
+            (px(0.), SPRING_EXIT)
+        };
+        let value = spring("rail-dot", target, policy, window, cx);
+        if shown {
+            (value, 1.)
+        } else {
+            (DOT, value / DOT)
+        }
+    };
+    (size > px(0.) && opacity > 0.).then(|| {
+        // Grows from its center.
+        let inset = (DOT - size) / 2.;
+        div()
+            .absolute()
+            .top(DOT_TOP + inset)
+            .right(DOT_RIGHT + inset)
+            .size(size)
+            .rounded_full()
+            .bg(theme.accent)
+            .opacity(opacity.clamp(0., 1.))
+    })
 }
 
 /// MA-068: syncing, offline (with what's waiting) or signed out, as one

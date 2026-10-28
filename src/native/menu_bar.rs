@@ -3,8 +3,9 @@
 //! gpui has no per-window hide), click-away, and global hot keys through
 //! Carbon's `RegisterEventHotKey` (no Accessibility permission needed).
 //!
-//! The panel opens with a short fade and a few points of slide down from the
-//! menu bar (`NSAnimationContext`), and closes at once. It can become key
+//! The panel opens with a fade and a few points of slide down from the menu
+//! bar, and closes with a shorter fade, no slide (`NSAnimationContext`,
+//! MD-030, MD-031). Its resizes stay instant. It can become key
 //! (the keys in it work) but never the main window, so a Pigeon window that
 //! was main keeps its active look while the panel is up.
 //!
@@ -35,7 +36,7 @@ use objc2_app_kit::{
     NSWindowAnimationBehavior,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
-use objc2_quartz_core::{CAMediaTimingFunction, kCAMediaTimingFunctionEaseOut};
+use objc2_quartz_core::CAMediaTimingFunction;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 /// What the system tells the menu bar.
@@ -63,6 +64,11 @@ const SCREEN_MARGIN: f64 = 8.;
 const WARM_UP_ALPHA: f64 = 0.01;
 /// How far the panel slides down into place as it opens, in points.
 const OPEN_SLIDE: f64 = 6.;
+/// The panel's open: `SPRING_POP` as a curve, cubic-bezier(0.2, 0.9, 0.25, 1).
+const EASE_PANEL: [f32; 4] = [0.2, 0.9, 0.25, 1.];
+const MOTION_PANEL_IN: Duration = Duration::from_millis(180);
+/// The panel's close: a fade only, shorter than the open.
+const MOTION_PANEL_OUT: Duration = Duration::from_millis(100);
 /// The new-mail dot, in points.
 const DOT: f64 = 5.;
 
@@ -74,6 +80,11 @@ struct State {
     warming: bool,
     /// Until when the panel is opening, and the frame it opens to.
     opening: Option<(Instant, NSRect)>,
+    /// Fading out: still on screen, but closed for everyone else.
+    hiding: bool,
+    /// Bumped by every show and hide, so a fade's end that a reopen
+    /// overtook does nothing.
+    generation: u64,
     glyph: Option<Retained<NSImage>>,
     glyph_dot: Option<Retained<NSImage>>,
     dot: bool,
@@ -152,6 +163,8 @@ pub fn listen(handler: impl Fn(Signal) + 'static) {
             panel: None,
             warming: false,
             opening: None,
+            hiding: false,
+            generation: 0,
             glyph,
             glyph_dot,
             dot: false,
@@ -341,14 +354,16 @@ fn panel() -> Option<Retained<NSWindow>> {
 
 /// Showing, and not just being drawn at launch.
 pub fn panel_visible() -> bool {
-    panel().is_some_and(|p| p.isVisible()) && with_state(|state| !state.warming) == Some(true)
+    panel().is_some_and(|p| p.isVisible())
+        && with_state(|state| !state.warming && !state.hiding) == Some(true)
 }
 
 /// Put the panel under the item clicked, or for a hot key under the item
 /// when it's on the screen with the pointer, else at the top of that
 /// screen, right of centre. Then show it and make it key: fading in and
-/// sliding down over `animate`, or at once with `None`.
-pub fn show_panel(anchor: Option<&Anchor>, animate: Option<Duration>) {
+/// sliding down when `animate`, else at once. A reopen while it fades out
+/// takes it back at full opacity, without the slide.
+pub fn show_panel(anchor: Option<&Anchor>, animate: bool) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
@@ -357,68 +372,127 @@ pub fn show_panel(anchor: Option<&Anchor>, animate: Option<Duration>) {
     };
     place(&panel, anchor, mtm);
     let rest = panel.frame();
-    let opening = animate.map(|duration| (Instant::now() + duration, rest));
+    let was_hiding = with_state(|state| {
+        state.generation += 1;
+        std::mem::take(&mut state.hiding)
+    })
+    .unwrap_or(false);
+    let animate = animate && !was_hiding;
+    let opening = animate.then(|| (Instant::now() + MOTION_PANEL_IN, rest));
     with_state(|state| {
         state.warming = false;
         state.opening = opening;
     });
     panel.setIgnoresMouseEvents(false);
-    match animate {
-        Some(duration) => {
-            // Almost see-through and a little high when it's ordered
-            // front (gpui draws it then), so no frame of it shows at rest.
-            panel.setAlphaValue(WARM_UP_ALPHA);
-            let start = NSRect::new(
-                NSPoint::new(rest.origin.x, rest.origin.y + OPEN_SLIDE),
-                rest.size,
-            );
-            panel.setFrame_display(start, false);
-            panel.makeKeyAndOrderFront(None);
-            animate_to(&panel, rest, duration.as_secs_f64());
-        }
-        None => {
-            panel.setAlphaValue(1.);
-            panel.makeKeyAndOrderFront(None);
-        }
+    if animate {
+        // Almost see-through and a little high when it's ordered front
+        // (gpui draws it then), so no frame of it shows at rest.
+        panel.setAlphaValue(WARM_UP_ALPHA);
+        let start = NSRect::new(
+            NSPoint::new(rest.origin.x, rest.origin.y + OPEN_SLIDE),
+            rest.size,
+        );
+        panel.setFrame_display(start, false);
+        panel.makeKeyAndOrderFront(None);
+        animate_to(&panel, rest, MOTION_PANEL_IN.as_secs_f64());
+    } else {
+        // Ends a fade-out under way, if any.
+        animate_to(&panel, rest, 0.);
+        panel.makeKeyAndOrderFront(None);
     }
     panel.invalidateShadow();
     set_highlight(true);
 }
 
-/// Animate the panel's opacity and frame, with an ease-out.
+/// Animate the panel to full opacity and `frame`, on `EASE_PANEL`.
 fn animate_to(panel: &NSWindow, frame: NSRect, seconds: f64) {
     NSAnimationContext::beginGrouping();
     let context = NSAnimationContext::currentContext();
     context.setDuration(seconds);
-    // SAFETY: a constant name from QuartzCore.
-    let ease_out =
-        CAMediaTimingFunction::functionWithName(unsafe { kCAMediaTimingFunctionEaseOut });
-    context.setTimingFunction(Some(&ease_out));
+    let [x1, y1, x2, y2] = EASE_PANEL;
+    let ease = CAMediaTimingFunction::functionWithControlPoints(x1, y1, x2, y2);
+    context.setTimingFunction(Some(&ease));
     let animator = panel.animator();
     animator.setAlphaValue(1.);
     animator.setFrame_display(frame, true);
     NSAnimationContext::endGrouping();
 }
 
-pub fn hide_panel() {
-    if let Some(panel) = panel().filter(|p| p.isVisible()) {
-        // An opening still under way ends where it was going, so the next
-        // open starts clean.
-        if let Some((_, rest)) = with_state(|state| state.opening.take()).flatten() {
+/// Close the panel: fading out when `animate`, else at once. It counts as
+/// closed from the start (`panel_visible`, the item's highlight, the keys
+/// back to the main window); a reopen mid-fade cancels the rest.
+pub fn hide_panel(animate: bool) {
+    let Some(panel) = panel().filter(|p| p.isVisible()) else {
+        set_highlight(false);
+        return;
+    };
+    // An opening still under way ends where it was going, so the next
+    // open starts clean.
+    if let Some((_, rest)) = with_state(|state| state.opening.take()).flatten() {
+        if animate {
+            // The fade goes on from the opacity it's at.
+            snap_frame(&panel, rest);
+        } else {
             animate_to(&panel, rest, 0.);
         }
+    }
+    let generation = with_state(|state| {
+        state.generation += 1;
+        state.hiding = animate;
+        state.generation
+    })
+    .unwrap_or(0);
+    if animate {
+        panel.setIgnoresMouseEvents(true);
+        let fading = panel.clone();
+        let fade = RcBlock::new(move |context: NonNull<NSAnimationContext>| {
+            // SAFETY: AppKit passes the group's live context.
+            let context = unsafe { context.as_ref() };
+            context.setDuration(MOTION_PANEL_OUT.as_secs_f64());
+            fading.animator().setAlphaValue(0.);
+        });
+        let done = RcBlock::new(move || finish_hide(generation));
+        NSAnimationContext::runAnimationGroup_completionHandler(&fade, Some(&done));
+    } else {
         panel.orderOut(None);
-        // The window under it gets the keys back.
-        if let Some(mtm) = MainThreadMarker::new() {
-            let app = NSApplication::sharedApplication(mtm);
-            if app.isActive()
-                && let Some(main) = app.mainWindow()
-            {
-                main.makeKeyWindow();
-            }
+    }
+    // The window under it gets the keys back.
+    if let Some(mtm) = MainThreadMarker::new() {
+        let app = NSApplication::sharedApplication(mtm);
+        if app.isActive()
+            && let Some(main) = app.mainWindow()
+        {
+            main.makeKeyWindow();
         }
     }
     set_highlight(false);
+}
+
+/// The end of a fade-out, unless a show or hide came after it.
+fn finish_hide(generation: u64) {
+    let current = with_state(|state| {
+        let current = state.hiding && state.generation == generation;
+        if current {
+            state.hiding = false;
+        }
+        current
+    });
+    if current != Some(true) {
+        return;
+    }
+    if let Some(panel) = panel() {
+        panel.orderOut(None);
+        panel.setAlphaValue(1.);
+        panel.setIgnoresMouseEvents(false);
+    }
+}
+
+/// Move the panel to `frame` now, ending a frame animation under way.
+fn snap_frame(panel: &NSWindow, frame: NSRect) {
+    NSAnimationContext::beginGrouping();
+    NSAnimationContext::currentContext().setDuration(0.);
+    panel.animator().setFrame_display(frame, true);
+    NSAnimationContext::endGrouping();
 }
 
 /// Show the panel once at launch, see-through and not taking clicks, so
@@ -472,8 +546,9 @@ pub fn resize_panel(height: f64) {
         NSSize::new(frame.size.width, height),
     );
     if opening.is_some() {
-        // Replaces the slide under way: jumps the few points left.
-        animate_to(&panel, frame, 0.);
+        // Replaces the slide under way: jumps the few points left, the
+        // fade goes on.
+        snap_frame(&panel, frame);
         with_state(|state| {
             if let Some((_, rest)) = &mut state.opening {
                 *rest = frame;

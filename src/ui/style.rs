@@ -1,17 +1,14 @@
-//! The shared scales: type, spacing and radii, plus the focus ring and the
-//! entrance motion. Views use these instead of literal sizes.
+//! The shared scales: type, spacing and radii, plus the focus ring. Motion
+//! lives in `motion.rs`. Views use these instead of literal sizes.
 //!
 //! Type sizes are in rems so ⌘= / ⌘- scale every text in the app at once
 //! (`PigeonApp` sets the window's rem size). Control heights, inline icons
 //! and avatars are in rems too, so what holds text grows with it. Spacing
 //! and radii stay in pixels, so the layout keeps its rhythm.
 
-use std::time::Duration;
-
 use gpui::{
-    Animation, AnimationElement, AnimationExt as _, BoxShadow, DefiniteLength, Div, ElementId,
-    InteractiveElement, IntoElement, Pixels, Rems, Stateful, StatefulInteractiveElement as _,
-    Styled, ease_out_quint, point, px, relative, rems,
+    BoxShadow, DefiniteLength, Div, InteractiveElement, Pixels, Rems, Stateful,
+    StatefulInteractiveElement as _, Styled, point, px, relative, rems,
 };
 
 use crate::theme::Theme;
@@ -113,11 +110,6 @@ pub const HIT_TARGET: Pixels = px(28.);
 pub const TEXT_SCALE_STEP: f32 = 0.1;
 pub const TEXT_SCALE_RANGE: (f32, f32) = (0.8, 1.6);
 
-/// Overlays and toasts appearing.
-pub const MOTION_FAST: Duration = Duration::from_millis(120);
-/// Panes opening, closing and resizing.
-pub const MOTION_PANE: Duration = Duration::from_millis(160);
-
 /// The keyboard focus ring: 2px of accent inside the element's edge, so it
 /// never shifts the layout or gets clipped by a scroll view.
 pub fn focus_ring(theme: &Theme) -> Vec<BoxShadow> {
@@ -138,24 +130,6 @@ pub fn focusable_control(el: Stateful<Div>, theme: &Theme) -> Stateful<Div> {
         .focusable()
         .tab_stop(true)
         .focus_visible(move |s| s.shadow(ring))
-}
-
-/// Fades an overlay in while it rises 4px into place. Skipped with Reduce
-/// Motion, which GPUI's animations honor.
-pub fn enter<E: IntoElement + Styled + 'static>(
-    id: impl Into<ElementId>,
-    el: E,
-) -> AnimationElement<E> {
-    el.with_animation(
-        id,
-        Animation::new(MOTION_FAST).with_easing(ease_out_quint()),
-        |el, delta| el.relative().top(px(4. * (1. - delta))).opacity(delta),
-    )
-}
-
-/// The ease panes resize with.
-pub fn pane_transition() -> gpui::base::motion::Transition {
-    gpui::base::motion::Transition::new(MOTION_PANE).ease(ease_out_quint())
 }
 
 /// Digits of equal width, so counts and dates line up and don't jiggle.

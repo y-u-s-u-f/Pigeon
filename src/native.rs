@@ -239,7 +239,6 @@ pub fn bring_all_to_front() {
 }
 
 /// A light tap on a Force Touch trackpad, as something snaps into place.
-#[allow(dead_code)] // used by later waves (calendar drags)
 pub fn haptic_alignment() {
     if MainThreadMarker::new().is_none() {
         return;

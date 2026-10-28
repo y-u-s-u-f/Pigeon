@@ -21,7 +21,7 @@ use gpui::{
 use super::{
     HEADER_HEIGHT, avatar,
     controls::{ButtonKind, push_button},
-    html_view, icon, icon_button, icon_button_tinted,
+    html_view, icon, icon_button, icon_button_tinted, icon_button_with,
     selectable::{ORDER_BASE, OnClear, Selectable},
     window_drag_area,
 };
@@ -225,14 +225,17 @@ impl PigeonApp {
                 // The draft scrolls itself, above its send row.
                 Some(composer) => this
                     .child(self.render_compose_toolbar(&composer, &theme, cx))
-                    .child(
+                    // MD-019: `c` fades the draft in.
+                    .child(super::motion::enter(
+                        "compose-in",
+                        super::motion::Rise::None,
                         div()
                             .flex_1()
                             .min_h_0()
                             .w_full()
                             .max_w(READER_MAX)
                             .child(composer),
-                    ),
+                    )),
                 None if !self.checked.is_empty() => this
                     .child(window_drag_area(div().id("reader-toolbar")).h(HEADER_HEIGHT))
                     .child(self.render_bulk_summary(&theme, window)),
@@ -401,14 +404,14 @@ impl PigeonApp {
                 theme,
             ))
             .child(if thread.starred {
-                icon_button_tinted(
-                    "star",
-                    Icon::StarFilled,
-                    theme.star,
-                    "Unstar",
-                    Box::new(ToggleStar),
-                    theme,
-                )
+                let star = icon(Icon::StarFilled, ICON_TOOLBAR, theme.star);
+                // MD-027: a star set just now pops.
+                let star = if self.star_pops(&thread.id) {
+                    super::motion::pop("star-pop", star).into_any_element()
+                } else {
+                    star.into_any_element()
+                };
+                icon_button_with("star", star, "Unstar", Box::new(ToggleStar), theme)
             } else {
                 icon_button("star", Icon::Star, "Star", Box::new(ToggleStar), theme)
             })
@@ -526,7 +529,26 @@ impl PigeonApp {
                     Slot::Show => {
                         let focused = self.reader_focused && self.focused_message == Some(ix);
                         let body = if ix == last || self.expanded_messages.contains(&ix) {
-                            self.render_message(thread, ix, message, ix != last, narrow, theme, cx)
+                            let body = self.render_message(
+                                thread,
+                                ix,
+                                message,
+                                ix != last,
+                                narrow,
+                                theme,
+                                cx,
+                            );
+                            // MD-020: opened with a click, it fades in.
+                            if self.clicked_open == Some(ix) {
+                                super::motion::enter(
+                                    "opened",
+                                    super::motion::Rise::None,
+                                    div().w_full().child(body),
+                                )
+                                .into_any_element()
+                            } else {
+                                body
+                            }
                         } else {
                             self.render_collapsed_message(ix, message, last, theme, cx)
                         };
@@ -569,12 +591,13 @@ impl PigeonApp {
                 }
             })
             .collect::<Vec<_>>();
-        let composer = self
-            .composer
-            .as_ref()
-            .filter(|_| self.composer_inline(cx))
-            .map(|(composer, _)| {
+        // MD-019: rises in, and fades out after a send, Esc or discard.
+        let rise = super::motion::moving(super::motion::Rise::Up, cx);
+        let leaving = !self.composer_inline(cx);
+        let composer = self.reply_card_composer().map(|composer| {
+            super::motion::card_motion(
                 div()
+                    .relative()
                     .w_full()
                     .max_w(READER_MAX)
                     .mt(SPACE_LG)
@@ -585,8 +608,12 @@ impl PigeonApp {
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.card_bg)
-                    .child(composer.clone())
-            });
+                    .child(composer)
+                    .when(leaving, |this| this.child(super::motion::inert_cover())),
+                self.reply_card,
+                rise,
+            )
+        });
 
         div()
             .relative()
@@ -598,6 +625,8 @@ impl PigeonApp {
                     .size_full()
                     .overflow_y_scroll()
                     .track_scroll(&self.reader_scroll)
+                    // The trackpad wins over a keyboard glide (MD-018).
+                    .on_scroll_wheel(cx.listener(|this, _, _, _| this.reader_glide = None))
                     .px(SPACE_XL)
                     .pt(SPACE_SM)
                     .pb(SPACE_2XL)
@@ -2037,25 +2066,33 @@ fn render_body_loading(theme: &Theme) -> AnyElement {
             .rounded(RADIUS_SM)
             .bg(theme.chip_bg)
     };
-    div()
-        .id("message-loading")
-        .role(gpui::Role::Status)
-        .aria_label("Loading message")
-        .flex()
-        .flex_col()
-        .gap(SPACE_SM)
-        .child(bar(0.9))
-        .child(bar(0.75))
-        .child(bar(0.82))
-        .child(bar(0.4))
-        .with_animation(
-            "message-loading",
-            Animation::new(std::time::Duration::from_millis(1200))
-                .repeat()
-                .with_easing(gpui::pulsating_between(0.5, 1.)),
-            |this, delta| this.opacity(delta),
-        )
-        .into_any_element()
+    // MA-066: only once the body takes a moment, so a fast one never
+    // flashes it; it pulses at 30 frames a second.
+    super::motion::after_loading_delay(
+        "message-loading-in",
+        div().child(
+            div()
+                .id("message-loading")
+                .role(gpui::Role::Status)
+                .aria_label("Loading message")
+                .flex()
+                .flex_col()
+                .gap(SPACE_SM)
+                .child(bar(0.9))
+                .child(bar(0.75))
+                .child(bar(0.82))
+                .child(bar(0.4))
+                .with_animation(
+                    "message-loading",
+                    Animation::new(std::time::Duration::from_millis(1200))
+                        .repeat()
+                        .with_max_fps(30.)
+                        .with_easing(gpui::pulsating_between(0.5, 1.)),
+                    |this, delta| this.opacity(delta),
+                ),
+        ),
+    )
+    .into_any_element()
 }
 
 /// A body that didn't load, with why and a way to try again.

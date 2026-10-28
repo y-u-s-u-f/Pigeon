@@ -138,9 +138,11 @@ impl PigeonApp {
         if let Some((composer, _)) = &self.composer {
             composer.update(cx, |c, cx| c.set_identities(identities, cx));
         }
-        self.calendar.update(cx, |calendar, _| {
+        // The cached grid reads them (`is_me`, RSVP looks).
+        self.calendar.update(cx, |calendar, cx| {
             calendar.data.account.aliases = account.aliases;
             calendar.data.account.send_as = account.send_as;
+            cx.notify();
         });
         cx.notify();
     }
@@ -233,6 +235,8 @@ impl PigeonApp {
     fn on_contacts_changed(&mut self, cx: &mut Context<Self>) {
         let contacts = self.backend.read(cx).contacts();
         self.contact_book.borrow_mut().update(contacts);
+        // Names and avatars in the cached panes.
+        cx.notify();
     }
 
     // Status, the outbox and signing in.
@@ -249,8 +253,9 @@ impl PigeonApp {
         }
         self.auth_expired = expired;
         if let Some(account) = self.backend.read(cx).account().cloned() {
-            self.calendar.update(cx, |calendar, _| {
+            self.calendar.update(cx, |calendar, cx| {
                 calendar.data.account = account.clone();
+                cx.notify();
             });
             self.data.account = account;
         }

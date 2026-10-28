@@ -69,10 +69,21 @@ impl PigeonApp {
                 .flex_col()
                 .items_center()
                 .gap(SPACE_LG)
+                // MA-066: turning while the browser has it.
                 .child(
-                    live_text("sign-in-waiting", "Waiting for your browser…", Live::Polite)
-                        .text_size(TEXT_MD)
-                        .text_color(theme.text_muted),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(SPACE_SM)
+                        .child(super::motion::spinner(
+                            "sign-in-spinner",
+                            icon(Icon::RefreshCw, ICON_MD, theme.text_faint),
+                        ))
+                        .child(
+                            live_text("sign-in-waiting", "Waiting for your browser…", Live::Polite)
+                                .text_size(TEXT_MD)
+                                .text_color(theme.text_muted),
+                        ),
                 )
                 .child(
                     div()
@@ -106,17 +117,22 @@ impl PigeonApp {
                 .flex_col()
                 .items_center()
                 .gap(SPACE_SM)
+                // MD-042: the error fades in.
                 .children(error.map(|message| {
-                    div()
-                        .id("sign-in-error")
-                        .role(gpui::Role::Alert)
-                        .aria_label(SharedString::from(message.clone()))
-                        .max_w(ERROR_WIDTH)
-                        .mb(SPACE_SM)
-                        .text_center()
-                        .text_size(TEXT_SM)
-                        .text_color(theme.text_danger)
-                        .child(message)
+                    super::motion::enter(
+                        "sign-in-error-in",
+                        super::motion::Rise::None,
+                        div()
+                            .id("sign-in-error")
+                            .role(gpui::Role::Alert)
+                            .aria_label(SharedString::from(message.clone()))
+                            .max_w(ERROR_WIDTH)
+                            .mb(SPACE_SM)
+                            .text_center()
+                            .text_size(TEXT_SM)
+                            .text_color(theme.text_danger)
+                            .child(message),
+                    )
                 }))
                 .child(button(
                     "sign-in",

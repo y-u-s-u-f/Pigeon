@@ -27,6 +27,11 @@ pub struct QuickEvent {
     /// Exclusive; midnight after the day, all day.
     pub end: NaiveDateTime,
     pub all_day: bool,
+    /// "at Nopa": a place said after the times, in capitals.
+    pub location: Option<String>,
+    /// "with Sam and Ann": names to look up as guests. They stay in the
+    /// title.
+    pub people: Vec<String>,
 }
 
 impl QuickEvent {
@@ -129,6 +134,8 @@ pub fn parse(text: &str, now: NaiveDateTime, default_minutes: u32) -> QuickEvent
         i += 1;
     }
 
+    let location = location_at(&words, &lower, &mut used);
+    let people = people_at(&words, &lower, &used);
     let title = words
         .iter()
         .zip(&used)
@@ -144,6 +151,8 @@ pub fn parse(text: &str, now: NaiveDateTime, default_minutes: u32) -> QuickEvent
             start: midnight(day),
             end: midnight(day + Duration::days(1)),
             all_day: true,
+            location,
+            people,
         };
     }
     let start = match (date, start) {
@@ -167,7 +176,48 @@ pub fn parse(text: &str, now: NaiveDateTime, default_minutes: u32) -> QuickEvent
         start,
         end,
         all_day: false,
+        location,
+        people,
     }
+}
+
+fn capitalized(word: &str) -> bool {
+    word.chars().next().is_some_and(char::is_uppercase)
+}
+
+/// The last unused "at" or "@" followed by a capitalized word not taken by
+/// a date or time: the words up to the next taken word or "with". "Meet at
+/// noon" never gets here, since times are read first.
+fn location_at(words: &[&str], lower: &[String], used: &mut [bool]) -> Option<String> {
+    let at = (0..words.len().saturating_sub(1)).rev().find(|&i| {
+        !used[i]
+            && !used[i + 1]
+            && matches!(lower[i].as_str(), "at" | "@")
+            && capitalized(words[i + 1])
+    })?;
+    let end = (at + 1..words.len())
+        .find(|&i| used[i] || lower[i] == "with")
+        .unwrap_or(words.len());
+    for u in &mut used[at..end] {
+        *u = true;
+    }
+    Some(words[at + 1..end].join(" "))
+}
+
+/// Capitalized names after an unused "with", joined by "and" or "&".
+fn people_at(words: &[&str], lower: &[String], used: &[bool]) -> Vec<String> {
+    let mut people = Vec::new();
+    for i in (0..words.len()).filter(|&i| !used[i] && lower[i] == "with") {
+        let mut j = i + 1;
+        while j < words.len() && !used[j] && capitalized(words[j]) {
+            people.push(words[j].trim_end_matches(',').to_string());
+            j += 1;
+            if j + 1 < words.len() && matches!(lower[j].as_str(), "and" | "&") {
+                j += 1;
+            }
+        }
+    }
+    people
 }
 
 /// Marks `n` words from `i` taken, and the joiner before them.
@@ -280,6 +330,8 @@ mod tests {
     fn title_day_and_time() {
         let e = quick("Lunch with Sam Fri 1pm");
         assert_eq!(e.title, "Lunch with Sam");
+        assert_eq!(e.people, ["Sam"]);
+        assert_eq!(e.location, None);
         assert_eq!((e.start, e.end), (at(day(30), 13, 0), at(day(30), 14, 0)));
         assert!(!e.all_day);
         let e = quick("Dentist tomorrow at 9:30 for 45 min");
@@ -324,5 +376,22 @@ mod tests {
         assert_eq!(e.title, "Read 3 papers");
         assert_eq!(e.start, at(day(26), 15, 0));
         assert_eq!(parse("Sync 2pm", now(), 30).end, at(day(26), 14, 30));
+    }
+
+    #[test]
+    fn places_and_people() {
+        let e = quick("Lunch with Sam at Nopa Fri 1pm");
+        assert_eq!(e.title, "Lunch with Sam");
+        assert_eq!(e.location.as_deref(), Some("Nopa"));
+        assert_eq!(e.start, at(day(30), 13, 0));
+        let e = quick("Coffee @ Blue Bottle with Ann and Raj 9am");
+        assert_eq!(e.title, "Coffee with Ann and Raj");
+        assert_eq!(e.location.as_deref(), Some("Blue Bottle"));
+        assert_eq!(e.people, ["Ann", "Raj"]);
+        let e = quick("Meet at noon");
+        assert_eq!((e.title.as_str(), e.location), ("Meet", None));
+        let e = quick("Look at it with team");
+        assert_eq!(e.title, "Look at it with team");
+        assert!(e.location.is_none() && e.people.is_empty());
     }
 }

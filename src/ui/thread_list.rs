@@ -3,11 +3,14 @@
 use std::{collections::HashSet, rc::Rc};
 
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, AppContext as _, Context, Focusable as _, FontStyle,
-    FontWeight, HighlightStyle, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, StyledText, Window,
+    Animation, AnimationExt as _, AnyElement, AppContext as _, Context, ElementId, Focusable as _,
+    FontStyle, FontWeight, HighlightStyle, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+    StyledText, Window,
+    base::motion::MotionReveal,
+    base::spring,
     component::{input::Input, scroll::ScrollableElement as _},
-    deferred, div, ease_out_quint, list,
+    deferred, div, list,
     prelude::FluentBuilder as _,
     px, relative, rems,
 };
@@ -16,6 +19,7 @@ use super::{
     HEADER_HEIGHT, avatar, binding_caps,
     controls::{ButtonKind, popover_surface, push_button},
     icon, icon_button, icon_button_small, is_secondary, label,
+    motion::{self, SPRING_PANE, fade},
     status::thousands,
     tooltip, window_drag_area,
 };
@@ -48,6 +52,8 @@ const FOCUS_BAR: gpui::Pixels = px(3.);
 const ROW_GROUP: &str = "thread-row";
 /// The suggestions scroll past this (ME-015).
 const SUGGESTIONS_MAX: gpui::Rems = rems(22.5);
+/// How long after a sync its new rows fade in as they show (MD-024).
+const FRESH_FADE: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// Conversations being dragged onto the sidebar (MA-087): the row's, or
 /// every picked one when the row is one of them.
@@ -154,7 +160,8 @@ impl PigeonApp {
     pub(crate) fn render_thread_list(
         &self,
         width: gpui::Pixels,
-        sidebar_shown: bool,
+        // How far the sidebar is shown, 0 to 1, as it slides (MD-012).
+        sidebar: f32,
         counts: &crate::ui::sidebar::NavCounts,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -173,6 +180,15 @@ impl PigeonApp {
             .filter(|r| matches!(r, Row::Thread(ix) if self.is_checked(*ix)))
             .count();
         let selecting = !self.checked.is_empty();
+        // MD-016: the field opens on a spring, sampled open or not so it
+        // never plays again on its own; it closes at once, with the list.
+        let target = if self.search_open { 1. } else { 0. };
+        let search = if cx.reduce_motion() {
+            fade("search-open", target, target, window, cx)
+        } else {
+            let policy = SPRING_PANE.with_travel(self.search_open);
+            spring("search-open", target, policy, window, cx)
+        };
 
         let header = window_drag_area(div().id("list-header"))
             .h(HEADER_HEIGHT)
@@ -182,24 +198,37 @@ impl PigeonApp {
             .gap(SPACE_SM)
             .pr(SPACE_MD)
             .map(|this| {
-                if !sidebar_shown {
-                    // The way back, in the sidebar's button's place.
-                    this.pl(SPACE_SM).child(icon_button(
-                        "show-sidebar",
-                        Icon::PanelLeft,
-                        "Show sidebar",
-                        Box::new(ToggleSidebar),
-                        &theme,
-                    ))
-                } else if selecting && !self.search_open {
-                    this.pl(ROW_MARGIN)
+                let inset = if selecting && !self.search_open {
+                    ROW_MARGIN
                 } else {
-                    this.pl(ROW_MARGIN + ROW_INSET)
+                    ROW_MARGIN + ROW_INSET
+                };
+                if sidebar >= 1. {
+                    return this.pl(inset);
                 }
+                // The way back, in the sidebar's button's place. It fades as
+                // the sidebar slides in, and its slot narrows with it, so the
+                // title glides rather than jumps (MD-012).
+                let p = sidebar.clamp(0., 1.);
+                this.pl(SPACE_SM + (inset - SPACE_SM) * p).child(
+                    div()
+                        .flex_none()
+                        .w(HIT_TARGET * (1. - p))
+                        .mr(-SPACE_SM * p)
+                        .overflow_hidden()
+                        .opacity(1. - p)
+                        .child(icon_button(
+                            "show-sidebar",
+                            Icon::PanelLeft,
+                            "Show sidebar",
+                            Box::new(ToggleSidebar),
+                            &theme,
+                        )),
+                )
             })
             .map(|this| {
                 if self.search_open {
-                    return this.child(self.render_search_bar(&theme, window, cx));
+                    return this.child(self.render_search_bar(search, &theme, window, cx));
                 }
                 this.when(selecting, |this| {
                     this.child(self.render_select_all(checked_rows, thread_rows, &theme, cx))
@@ -343,7 +372,9 @@ impl PigeonApp {
                     .map(|line| muted_hint(line, &theme)),
                 &theme,
             );
-            if self.rows.is_empty() {
+            // Only rows on their way out: already the centered line, so it
+            // doesn't jump there when they've gone.
+            if self.rows.iter().all(|row| matches!(row, Row::Leaving(_))) {
                 centered(zero)
             } else {
                 div()
@@ -361,6 +392,20 @@ impl PigeonApp {
             list_view(row_cx).into_any_element()
         };
 
+        let summary_shown = searching
+            && (!empty
+                || matches!(
+                    self.server_search.state,
+                    ServerState::Offline | ServerState::Failed
+                ));
+        let target = if summary_shown { 1. } else { 0. };
+        let policy = SPRING_PANE.with_travel(summary_shown);
+        let summary = spring("search-summary", target, policy, window, cx);
+        let summary_opacity = if cx.reduce_motion() {
+            fade("search-summary", target, target, window, cx)
+        } else {
+            summary
+        };
         let suggestions = self.search_suggestions(window, cx);
         div()
             .relative()
@@ -373,15 +418,17 @@ impl PigeonApp {
             .border_r_1()
             .border_color(theme.border)
             .child(header)
-            .when(
-                searching
-                    && (!empty
-                        || matches!(
-                            self.server_search.state,
-                            ServerState::Offline | ServerState::Failed
-                        )),
-                |this| this.child(self.render_search_summary(&theme, cx)),
-            )
+            .when(summary > 0., |this| {
+                // MD-043: it opens the first time; its text then changes in
+                // place, and clearing the search takes it away at once.
+                this.child(gpui::base::motion::MotionReveal::new(
+                    "search-summary-reveal",
+                    summary,
+                    self.render_search_summary(&theme, cx)
+                        .opacity(summary_opacity)
+                        .into_any_element(),
+                ))
+            })
             .child(div().flex_1().min_h_0().child(body))
             .when(
                 empty && !inbox_zero && !self.rows.is_empty() && (searching || loaded),
@@ -603,7 +650,7 @@ impl PigeonApp {
 
     /// Under the search field: the operators it understood and how many
     /// threads match.
-    fn render_search_summary(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_search_summary(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
         let count = self
             .rows
             .iter()
@@ -658,6 +705,13 @@ impl PigeonApp {
                 .ml(SPACE_2XS)
                 .font_features(tabular_figures()),
             )
+            // MA-066: turning while Gmail is asked.
+            .when(self.server_search.state == ServerState::Waiting, |this| {
+                this.child(motion::spinner(
+                    "search-gmail-spinner",
+                    icon(Icon::RefreshCw, ICON_SM, theme.text_faint),
+                ))
+            })
             .children(note.map(|note| {
                 super::live_text("search-gmail-note", note, gpui::accesskit::Live::Polite)
                     .ml(SPACE_2XS)
@@ -681,6 +735,7 @@ impl PigeonApp {
     /// grows out of the button's place on the right.
     fn render_search_bar(
         &self,
+        open: f32,
         theme: &Theme,
         window: &Window,
         cx: &mut Context<Self>,
@@ -775,15 +830,14 @@ impl PigeonApp {
                     .child(Input::new(&self.search_input).appearance(false).px(px(0.))),
             )
             .child(clear)
-            .with_animation(
-                "search-expand",
-                Animation::new(MOTION_PANE).with_easing(ease_out_quint()),
-                |field, delta| {
-                    field
-                        .w(relative(0.12 + 0.88 * delta))
-                        .opacity(0.4 + 0.6 * delta)
-                },
-            );
+            // From most of its width, since it opens often (MA-095); Reduce
+            // Motion leaves the fade.
+            .w(relative(if cx.reduce_motion() {
+                1.
+            } else {
+                0.6 + 0.4 * open
+            }))
+            .opacity(open.clamp(0., 1.));
         div().flex_1().flex().justify_end().child(field)
     }
 
@@ -939,7 +993,10 @@ impl PigeonApp {
             }
             scroll.update(cx, |s, _| s.1 = highlighted_child);
         }
-        deferred(
+        // MD-011: fades in as it opens; typing doesn't play it again.
+        deferred(motion::enter(
+            "search-suggestions-in",
+            motion::Rise::None,
             popover_surface(theme)
                 .id("search-suggestions")
                 .role(gpui::Role::ListBox)
@@ -956,7 +1013,7 @@ impl PigeonApp {
                 .overflow_y_scroll()
                 .track_scroll(&handle)
                 .children(rows),
-        )
+        ))
         .with_priority(1)
     }
 
@@ -969,10 +1026,63 @@ impl PigeonApp {
     ) -> AnyElement {
         let theme = Theme::of(cx).clone();
         match self.rows[ix] {
-            Row::Thread(thread_ix) => self.render_thread_row(thread_ix, row_cx, &theme, window, cx),
+            Row::Thread(thread_ix) => {
+                let row = self.render_thread_row(thread_ix, row_cx, &theme, window, cx);
+                let id = &self.data.threads[thread_ix].id;
+                // MD-017: Undo brings it back growing into place.
+                if let Some(glide) = self.growing_rows.get(id) {
+                    let p = glide.value().clamp(0., 1.);
+                    return MotionReveal::new(
+                        ElementId::Name(format!("growing-{id}").into()),
+                        p,
+                        div().opacity(p).child(row).into_any_element(),
+                    )
+                    .into_any_element();
+                }
+                // MD-024: one a sync or Gmail's search added fades in.
+                let (fresh, at) = &self.fresh_rows;
+                if at.is_some_and(|at| at.elapsed() < FRESH_FADE) && fresh.contains(id) {
+                    return motion::enter(
+                        ElementId::Name(format!("fresh-{id}").into()),
+                        motion::Rise::None,
+                        div().child(row),
+                    )
+                    .into_any_element();
+                }
+                row
+            }
             Row::ArchivedHeader { count } => self.render_archived_header(count, &theme, cx),
             Row::LoadOlder => self.render_load_older(&theme, cx),
+            Row::Leaving(key) => self.render_leaving_row(key, row_cx, &theme, window, cx),
         }
+    }
+
+    /// MD-017: a conversation that left the view, collapsing and fading as
+    /// the rows below close up. Inert: a cover takes its clicks.
+    fn render_leaving_row(
+        &self,
+        key: u64,
+        row_cx: &RowContext,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(leaving) = self.leaving_rows.iter().find(|row| row.key == key) else {
+            return div().into_any_element();
+        };
+        let p = 1. - leaving.glide.value().clamp(0., 1.);
+        let row = self
+            .data
+            .thread_ix(&leaving.id)
+            .map(|ix| self.render_thread_row(ix, row_cx, theme, window, cx));
+        div()
+            .relative()
+            .h(leaving.height * p)
+            .overflow_hidden()
+            .opacity(p)
+            .children(row)
+            .child(motion::inert_cover())
+            .into_any_element()
     }
 
     /// W9 (LST-7): the end of the list, where older threads (or more of
@@ -1000,7 +1110,21 @@ impl PigeonApp {
                     } else {
                         theme.text_disabled
                     })
-                    .child(icon(Icon::ChevronDown, ICON_MD, theme.text_faint))
+                    .map(|this| {
+                        // MA-066: turning while it loads.
+                        let waiting = label.ends_with('…');
+                        let glyph = if waiting {
+                            Icon::RefreshCw
+                        } else {
+                            Icon::ChevronDown
+                        };
+                        let glyph = icon(glyph, ICON_MD, theme.text_faint);
+                        if waiting {
+                            this.child(motion::spinner("load-older-spinner", glyph))
+                        } else {
+                            this.child(glyph)
+                        }
+                    })
                     .child(label)
                     .when(enabled, |this| {
                         this.hover(|s| s.bg(theme.hover_bg))
@@ -1054,14 +1178,12 @@ impl PigeonApp {
                             .w(ROW_INSET - SPACE_XS)
                             .flex()
                             .justify_center()
-                            .child(icon(
-                                if expanded {
-                                    Icon::ChevronDown
-                                } else {
-                                    Icon::ChevronRight
-                                },
-                                ICON_MD,
-                                theme.text_faint,
+                            // MD-021: one glyph, turned.
+                            .child(motion::turn(
+                                "chevron",
+                                icon(Icon::ChevronRight, ICON_MD, theme.text_faint),
+                                expanded,
+                                1.,
                             )),
                     )
                     .child("Archived")
@@ -1218,7 +1340,13 @@ impl PigeonApp {
                 )
             })
             .when(thread.starred, |this| {
-                this.child(icon(Icon::StarFilled, ICON_SM, theme.star))
+                let star = icon(Icon::StarFilled, ICON_SM, theme.star);
+                // MD-027: a star set just now pops.
+                this.child(if self.star_pops(&thread.id) {
+                    motion::pop(("star-pop", thread_ix), star).into_any_element()
+                } else {
+                    star.into_any_element()
+                })
             })
             .child(
                 div()
@@ -1544,11 +1672,13 @@ impl PigeonApp {
     ) -> impl IntoElement {
         let thread = &self.data.threads[thread_ix];
         // ME-024: each teaches its key.
+        let pop = self.star_pops(&thread.id);
         let button = |id: &'static str,
                       glyph: Icon,
                       color,
                       tip: &'static str,
                       action: Box<dyn gpui::Action>| {
+            let glyph = icon(glyph, ICON_MD, color);
             div()
                 .id((id, thread_ix))
                 .role(gpui::Role::Button)
@@ -1560,7 +1690,11 @@ impl PigeonApp {
                 .rounded(RADIUS_SM)
                 .hover(|s| s.bg(theme.selected_bg))
                 .active(|s| s.bg(theme.selected_bg).opacity(0.8))
-                .child(icon(glyph, ICON_MD, color))
+                .child(if pop && id == "row-star" {
+                    motion::pop(("row-star-pop", thread_ix), glyph).into_any_element()
+                } else {
+                    glyph.into_any_element()
+                })
                 .tooltip(move |window, cx| {
                     tooltip(tip).action(action.as_ref(), None).build(window, cx)
                 })
@@ -1809,25 +1943,32 @@ fn render_skeleton(theme: &Theme) -> AnyElement {
             .child(bar(relative(0.7), TEXT_SM * 0.75))
             .child(bar(relative(0.9), TEXT_SM * 0.75))
     };
-    div()
-        .id("thread-list-loading")
-        .role(gpui::Role::Status)
-        .aria_label("Loading conversations")
-        .size_full()
-        .pt(SPACE_XS)
-        .flex()
-        .flex_col()
-        .children((0..6).map(row))
-        .with_animation(
-            "thread-list-loading",
-            // MC-041: it keeps pulsing (MC-Q9 a), at 30 frames a second.
-            Animation::new(std::time::Duration::from_millis(1200))
-                .repeat()
-                .with_max_fps(30.)
-                .with_easing(gpui::pulsating_between(0.5, 1.)),
-            |this, delta| this.opacity(delta),
-        )
-        .into_any_element()
+    // MA-066: only once the load takes a moment, so a fast one never
+    // flashes it.
+    motion::after_loading_delay(
+        "thread-list-loading-in",
+        div().size_full().child(
+            div()
+                .id("thread-list-loading")
+                .role(gpui::Role::Status)
+                .aria_label("Loading conversations")
+                .size_full()
+                .pt(SPACE_XS)
+                .flex()
+                .flex_col()
+                .children((0..6).map(row))
+                .with_animation(
+                    "thread-list-loading",
+                    // MC-041: it keeps pulsing (MC-Q9 a), at 30 frames a second.
+                    Animation::new(std::time::Duration::from_millis(1200))
+                        .repeat()
+                        .with_max_fps(30.)
+                        .with_easing(gpui::pulsating_between(0.5, 1.)),
+                    |this, delta| this.opacity(delta),
+                ),
+        ),
+    )
+    .into_any_element()
 }
 
 /// "12 results", or approximate while Gmail has more pages (SRC-6): its

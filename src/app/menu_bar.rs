@@ -26,10 +26,7 @@ use crate::{
     instance, logging,
     native::menu_bar::{self as native, Anchor, HOT_KEY_TAKEN, Signal},
     settings::{self, MenuBarPrefs},
-    ui::{
-        menu_bar::{MenuBarPanel, PANEL_START_HEIGHT, PANEL_WIDTH},
-        style::MOTION_FAST,
-    },
+    ui::menu_bar::{MenuBarPanel, PANEL_START_HEIGHT, PANEL_WIDTH},
 };
 
 const PANEL_HOT_KEY: u32 = 1;
@@ -226,7 +223,7 @@ fn show(source: Source, notice: Option<SharedString>) {
     };
     // A short fade and slide, unless Reduce Motion is on.
     let animate = with_app_value(|cx| !cx.reduce_motion()).unwrap_or(false);
-    native::show_panel(anchor, animate.then_some(MOTION_FAST));
+    native::show_panel(anchor, animate);
     logging::info(&format!(
         "menu-bar: {} → ordered front in {:.1} ms",
         source.label(),
@@ -238,7 +235,11 @@ fn hide(reason: HideReason) {
     if !native::panel_visible() {
         return;
     }
-    native::hide_panel();
+    // A short fade, except under Reduce Motion or when the main window
+    // brings up what was opened.
+    let animate =
+        reason != HideReason::Opened && with_app_value(|cx| !cx.reduce_motion()).unwrap_or(false);
+    native::hide_panel(animate);
     STATE.with_borrow_mut(|s| {
         if let Some(s) = s
             && matches!(reason, HideReason::LostKey | HideReason::ClickAway)

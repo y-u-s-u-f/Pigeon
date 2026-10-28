@@ -809,11 +809,22 @@ impl PigeonApp {
         }
     }
 
+    /// Whether the conversation's star was set a moment ago, so it pops
+    /// as it shows (MD-027).
+    pub(crate) fn star_pops(&self, id: &str) -> bool {
+        const POP: std::time::Duration = std::time::Duration::from_millis(400);
+        let (ids, at) = &self.just_starred;
+        at.is_some_and(|at| at.elapsed() < POP) && ids.iter().any(|i| i == id)
+    }
+
     pub(crate) fn star_threads(&mut self, targets: Vec<usize>, cx: &mut Context<Self>) {
         let star = targets.iter().any(|&ix| !self.data.threads[ix].starred);
         let changed = self.ids_where(&targets, |t| t.starred != star);
         for &ix in &targets {
             self.data.threads[ix].starred = star;
+        }
+        if star {
+            self.just_starred = (changed.clone(), Some(std::time::Instant::now()));
         }
         let label = vec![gmail::STARRED.to_string()];
         let (add, remove) = if star {
@@ -1625,7 +1636,8 @@ impl PigeonApp {
             let result = request.await;
             this.update(cx, |this, cx| {
                 if this.server_search.answer(serial, result) {
-                    this.refresh_rows(true);
+                    // Gmail's extra results fade in (MD-024).
+                    this.with_row_cause(super::RowCause::Sync, |this| this.refresh_rows(true));
                     cx.notify();
                 }
             })

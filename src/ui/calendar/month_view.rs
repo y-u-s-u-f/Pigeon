@@ -5,11 +5,11 @@
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime};
 use gpui::{
     AnyElement, Context, FontWeight, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    ParentElement, StatefulInteractiveElement as _, Styled, Window, div,
+    ParentElement, StatefulInteractiveElement as _, Styled, Window, anchored, deferred, div,
     prelude::FluentBuilder as _, px, relative,
 };
 
-use super::{CalendarView, occurrence_key, week_view::Look};
+use super::{CalendarView, Menu, occurrence_key, week_view::Look};
 use crate::ui::style::*;
 use crate::{
     assets::Icon,
@@ -19,7 +19,12 @@ use crate::{
         time::{self, compact_time_label, is_weekend, month_grid},
     },
     theme::Theme,
-    ui::{HEADER_HEIGHT, controls::bar_colors, icon, is_secondary},
+    ui::{
+        HEADER_HEIGHT,
+        controls::{bar_colors, popover_surface},
+        icon, is_secondary,
+        motion::{Rise, enter},
+    },
 };
 
 const WEEKDAY_ROW: f32 = 30.;
@@ -30,6 +35,9 @@ const SLOT: f32 = 21.;
 const WEEK_NUMBER: f32 = 36.;
 /// A timed event's calendar dot.
 const EVENT_DOT: gpui::Pixels = px(7.);
+/// How much an event on a day around the month shows.
+const OUTSIDE_OPACITY: f32 = 0.55;
+const DAY_LIST_WIDTH: gpui::Pixels = px(260.);
 
 /// An event's place in one week row.
 struct Item {
@@ -87,12 +95,14 @@ impl CalendarView {
             self.render_week_row(start, month, occurrences, slots, now, &theme, cx)
         });
 
+        let day_list_open = matches!(self.menu, Some(Menu::DayList(_)));
         div()
             .size_full()
             .flex()
             .flex_col()
             .child(weekday_row)
             .child(div().flex_1().min_h_0().flex().flex_col().children(rows))
+            .when(day_list_open, |d| d.child(self.menu_backdrop(window, cx)))
             .into_any_element()
     }
 
@@ -209,10 +219,15 @@ impl CalendarView {
                 .h_full()
                 .border_r_1()
                 .border_color(theme.cal_line)
-                .when(is_weekend(date), |d| d.bg(theme.cal_weekend_bg))
+                // The days around the month are tinted deeper than
+                // weekends (ME-087).
+                .when(is_weekend(date) && in_month, |d| d.bg(theme.cal_weekend_bg))
+                .when(!in_month, |d| d.bg(theme.cal_outside_bg))
                 .when(is_today, |d| d.bg(theme.cal_today_bg))
                 .pt(SPACE_XS)
-                .pl(SPACE_SM)
+                // With the number's padding, it lines up with the weekday
+                // and the events at 12 (ME-086).
+                .pl(SPACE_XS)
                 .flex()
                 .flex_col()
                 .items_start()
@@ -233,11 +248,9 @@ impl CalendarView {
                         .min_w(HIT_TARGET)
                         .h(HIT_TARGET)
                         .mt(-SPACE_XS)
-                        .ml(-SPACE_XS)
                         .flex()
                         .flex_none()
                         .items_center()
-                        .justify_center()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_click(cx.listener(move |this, _, _, cx| this.open_day(date, cx)))
                         .child(
@@ -279,6 +292,8 @@ impl CalendarView {
 
         let more_links = (0..7).filter(|&d| more[d] > 0).map(|d| {
             let date = start + Duration::days(d as i64);
+            let open = self.menu == Some(Menu::DayList(date));
+            let list = open.then(|| self.render_day_list(date, occurrences, theme, cx));
             div()
                 .absolute()
                 .top(px(DAY_NUMBER + shown[d] as f32 * SLOT))
@@ -299,11 +314,18 @@ impl CalendarView {
                         .text_color(theme.text_muted)
                         .role(gpui::Role::Button)
                         .aria_label(format!("{} more events", more[d]))
+                        .aria_expanded(open)
+                        .when(open, |d| d.bg(theme.selected_bg))
                         .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
                         .child(format!("+{} more", more[d]))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(cx.listener(move |this, _, _, cx| this.open_day(date, cx))),
+                        // The day's events over the month, not the Day view
+                        // (ME-087).
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.toggle_menu(Menu::DayList(date), cx)
+                        })),
                 )
+                .children(list)
         });
 
         let days = div()
@@ -367,6 +389,10 @@ impl CalendarView {
         let clipped_right = item.bar
             && (end < item.end || occurrence.end > week_start + Duration::days(end as i64));
 
+        // Out of the month shown: faded with its day (ME-087).
+        let outside = (week_start.date() + Duration::days(start as i64)).month()
+            != self.anchor.month()
+            && (week_start.date() + Duration::days(end as i64 - 1)).month() != self.anchor.month();
         let pill = div()
             .id((
                 "month-event",
@@ -400,7 +426,10 @@ impl CalendarView {
                     if selected {
                         d.bg(fill)
                     } else {
-                        look.bar(d, fill, accent).hover(move |s| s.bg(hover))
+                        look.bar(d, fill, accent)
+                            .hover(move |s| s.bg(hover))
+                            .relative()
+                            .children(look.stripes(accent))
                     }
                 })
                 // It goes on past the week's edge (ME-090).
@@ -442,15 +471,18 @@ impl CalendarView {
                         .rounded_full()
                         .map(|d| match look {
                             _ if selected => d.bg(theme.on_fill(theme.event_selected_fill(color))),
-                            Look::Normal => d.bg(accent),
-                            Look::Pending | Look::Declined => d.border_1().border_color(accent),
+                            Look::Normal if event.busy => d.bg(accent),
+                            // Free: a lighter dot (ME-051).
+                            Look::Normal => d.bg(accent.alpha(super::week_view::FREE_ALPHA)),
+                            _ => d.border_1().border_color(accent),
                         }),
                 )
                 .child(
                     div()
                         .flex_none()
                         .text_color(muted)
-                        .child(time::pill_time_label(occurrence.start.time())),
+                        .font_features(tabular_figures())
+                        .child(compact_time_label(occurrence.start.time())),
                 )
                 .child(
                     div()
@@ -471,6 +503,7 @@ impl CalendarView {
             .h(px(SLOT - 2.))
             .pl(if clipped_left { px(0.) } else { SPACE_XS })
             .pr(if clipped_right { px(0.) } else { SPACE_XS })
+            .when(outside && !selected, |d| d.opacity(OUTSIDE_OPACITY))
             .child(
                 pill.on_mouse_down(
                     MouseButton::Right,
@@ -501,5 +534,102 @@ impl CalendarView {
                 }),
             )
             .into_any_element()
+    }
+
+    /// A day's events in a list under its "+N more" (ME-087): a click
+    /// opens one, as in the grid.
+    fn render_day_list(
+        &self,
+        date: NaiveDate,
+        occurrences: &[Occurrence],
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let from = time::midnight(date);
+        let to = from + Duration::days(1);
+        let rows = occurrences
+            .iter()
+            .filter(|o| o.start < to && o.end > from)
+            .map(|&occurrence| {
+                let event = &self.data.events[occurrence.event];
+                let color = self.data.color_of(event);
+                let when = if event.is_spanning() {
+                    "All day".to_string()
+                } else {
+                    compact_time_label(occurrence.start.time())
+                };
+                let selected = self.is_selected(&occurrence);
+                div()
+                    .id(("day-list-event", occurrence_key(&occurrence, 0)))
+                    .role(gpui::Role::MenuItem)
+                    .aria_label(self.occurrence_label(&occurrence))
+                    .aria_selected(selected)
+                    .h(ROW_SM)
+                    .flex_none()
+                    .px(SPACE_SM)
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_SM)
+                    .rounded(RADIUS_SM)
+                    .text_size(TEXT_SM)
+                    .when(selected, |d| d.bg(theme.selected_bg))
+                    .hover(|s| s.bg(theme.hover_bg))
+                    .child(
+                        div()
+                            .size(EVENT_DOT)
+                            .flex_none()
+                            .rounded_full()
+                            .bg(theme.event_accent(color, false)),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_color(theme.text_muted)
+                            .font_features(tabular_figures())
+                            .child(when),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(event.display_title().to_string()),
+                    )
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.menu = None;
+                        this.click_occurrence(occurrence, window, cx)
+                    }))
+            })
+            .collect::<Vec<_>>();
+        deferred(
+            anchored().snap_to_window_with_margin(SPACE_SM).child(enter(
+                ("day-list", date.num_days_from_ce() as usize),
+                Rise::Down,
+                popover_surface(theme)
+                    .id("day-list")
+                    .occlude()
+                    .role(gpui::Role::Menu)
+                    .aria_label(super::header::full_date(date))
+                    .mt(SPACE_XS)
+                    .w(DAY_LIST_WIDTH)
+                    .p(SPACE_XS)
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .px(SPACE_SM)
+                            .py(SPACE_XS)
+                            .text_size(TEXT_XS)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.text_muted)
+                            .child(super::header::full_date(date)),
+                    )
+                    .children(rows),
+            )),
+        )
+        .with_priority(2)
+        .into_any_element()
     }
 }

@@ -55,13 +55,19 @@ impl ToastAction {
     }
 }
 
+/// A toast as last shown, drawn while it fades out (MD-008). Inert: no
+/// buttons, no hover; `When::Undo` reads `toast`, never this.
+pub(crate) struct ToastGhost {
+    kind: ToastKind,
+    message: SharedString,
+    button: Option<(SharedString, Option<&'static str>)>,
+}
+
 pub struct Toast {
     pub kind: ToastKind,
     pub message: SharedString,
     pub action: Option<ToastAction>,
     hovered: bool,
-    /// Counts toasts shown back to back, so each one animates in.
-    serial: usize,
     _timer: Option<Task<()>>,
 }
 
@@ -92,13 +98,11 @@ impl PigeonApp {
                 .ok();
             })
         });
-        let serial = self.toast.as_ref().map_or(0, |t| t.serial + 1);
         self.toast = Some(Toast {
             kind,
             message: message.into(),
             action,
             hovered: false,
-            serial,
             _timer: timer,
         });
         cx.notify();
@@ -133,26 +137,42 @@ impl PigeonApp {
         dismiss
     }
 
-    pub(super) fn render_toast(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        let toast = self.toast.as_ref()?;
+    /// One toast at a time, on one presence spring: a new one while one
+    /// shows only changes the text, and the last one fades out (MD-008).
+    pub(super) fn render_toast(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let p = ui::motion::presence("toast", self.toast.is_some(), window, cx);
+        if let Some(toast) = &self.toast {
+            self.toast_ghost = Some(ToastGhost {
+                kind: toast.kind,
+                message: toast.message.clone(),
+                button: self
+                    .toast_button(toast)
+                    .map(|(label, keycap, _)| (label, keycap)),
+            });
+        } else if p == 0. {
+            self.toast_ghost = None;
+        }
+        let ghost = self.toast_ghost.as_ref()?;
+        let live = self.toast.is_some();
         let theme = Theme::of(cx);
-        let (glyph, color) = match toast.kind {
+        let (glyph, color) = match ghost.kind {
             ToastKind::Done => (Some(Icon::Check), theme.text_success),
             ToastKind::Info => (None, theme.text_muted),
             ToastKind::Working => (Some(Icon::Clock), theme.text_muted),
             ToastKind::Error => (Some(Icon::OctagonAlert), theme.text_danger),
         };
-        // An Undo only while its entry is the newest.
-        let action = toast.action.clone().filter(|a| match a {
-            ToastAction::Undo(id) => self.undo_stack.newest_id() == Some(*id),
-            ToastAction::Run { .. } => true,
-        });
-        let button = action.map(|action| {
-            let (label, keycap) = match &action {
-                ToastAction::Undo(_) => (SharedString::from("Undo"), Some("cmd-z")),
-                ToastAction::Run { label, .. } => (label.clone(), None),
-            };
-            focusable_control(div().id("toast-action"), theme)
+        let action = self
+            .toast
+            .as_ref()
+            .and_then(|toast| self.toast_button(toast))
+            .map(|(_, _, action)| action);
+        let button = ghost.button.clone().map(|(label, keycap)| {
+            div()
+                .id("toast-action")
                 .h(CONTROL_MD)
                 .px(SPACE_MD)
                 .flex()
@@ -161,21 +181,96 @@ impl PigeonApp {
                 .rounded(RADIUS_MD)
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(theme.accent)
-                .hover(|s| s.bg(theme.hover_bg))
-                .role(gpui::Role::Button)
-                .aria_label(label.clone())
-                .child(label)
+                .child(label.clone())
                 .children(keycap.map(|k| ui::keys_caps(k, theme)))
-                .on_click(cx.listener(move |this, _, window, cx| match &action {
-                    ToastAction::Undo(_) => window.dispatch_action(Box::new(Undo), cx),
-                    ToastAction::Run { run, .. } => {
-                        this.dismiss_toast(cx);
-                        run(this, window, cx);
-                    }
-                }))
+                .when_some(action, |this, action| {
+                    focusable_control(this, theme)
+                        .hover(|s| s.bg(theme.hover_bg))
+                        .role(gpui::Role::Button)
+                        .aria_label(label)
+                        .on_click(cx.listener(move |this, _, window, cx| match &action {
+                            ToastAction::Undo(_) => window.dispatch_action(Box::new(Undo), cx),
+                            ToastAction::Run { run, .. } => {
+                                this.dismiss_toast(cx);
+                                run(this, window, cx);
+                            }
+                        }))
+                })
         });
         let has_button = button.is_some();
-        let error = toast.kind == ToastKind::Error;
+        let error = ghost.kind == ToastKind::Error;
+        let rise = ui::motion::moving(ui::motion::Rise::Up, cx);
+        let card = div()
+            .id("toast")
+            .min_h(CONTROL_LG)
+            .max_w(TOAST_MAX)
+            .py(SPACE_XS)
+            .pl(SPACE_LG)
+            .pr(SPACE_SM)
+            .flex()
+            .items_center()
+            .gap(SPACE_SM)
+            .rounded(RADIUS_MD)
+            .bg(theme.overlay_bg)
+            .border_1()
+            .border_color(theme.overlay_border)
+            .shadow(ui::overlay_shadow(theme))
+            .text_size(TEXT_BASE)
+            .when(live, |this| {
+                this.occlude()
+                    .role(if error {
+                        gpui::Role::Alert
+                    } else {
+                        gpui::Role::Status
+                    })
+                    .aria_label(ghost.message.clone())
+                    .on_hover(cx.listener(|this, hovered: &bool, _, _| {
+                        if let Some(toast) = &mut this.toast {
+                            toast.hovered = *hovered;
+                        }
+                    }))
+            })
+            .children(glyph.map(|g| ui::icon(g, ICON_MD, color)))
+            .child(if live {
+                ui::live_text(
+                    "toast-message",
+                    ghost.message.clone(),
+                    if error {
+                        gpui::accesskit::Live::Assertive
+                    } else {
+                        gpui::accesskit::Live::Polite
+                    },
+                )
+                .min_w_0()
+                .into_any_element()
+            } else {
+                div()
+                    .min_w_0()
+                    .child(ghost.message.clone())
+                    .into_any_element()
+            })
+            .children(button)
+            .when(error, |this| {
+                this.child(
+                    div()
+                        .id("toast-dismiss")
+                        .size(CONTROL_SM)
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .rounded(RADIUS_SM)
+                        .child(ui::icon(Icon::X, ICON_SM, theme.text_muted))
+                        .when(live, |this| {
+                            focusable_control(this, theme)
+                                .hover(|s| s.bg(theme.hover_bg))
+                                .role(gpui::Role::Button)
+                                .aria_label("Dismiss")
+                                .on_click(cx.listener(|this, _, _, cx| this.dismiss_toast(cx)))
+                        }),
+                )
+            })
+            .when(!has_button && !error, |this| this.pr(SPACE_LG));
         Some(
             div()
                 .absolute()
@@ -184,70 +279,26 @@ impl PigeonApp {
                 .right_0()
                 .flex()
                 .justify_center()
-                .child(enter(
-                    ("toast-enter", toast.serial),
-                    div()
-                        .id("toast")
-                        .occlude()
-                        .min_h(CONTROL_LG)
-                        .max_w(TOAST_MAX)
-                        .py(SPACE_XS)
-                        .pl(SPACE_LG)
-                        .pr(SPACE_SM)
-                        .flex()
-                        .items_center()
-                        .gap(SPACE_SM)
-                        .rounded(RADIUS_MD)
-                        .bg(theme.overlay_bg)
-                        .border_1()
-                        .border_color(theme.overlay_border)
-                        .shadow(ui::overlay_shadow(theme))
-                        .text_size(TEXT_BASE)
-                        .role(if error {
-                            gpui::Role::Alert
-                        } else {
-                            gpui::Role::Status
-                        })
-                        .aria_label(toast.message.clone())
-                        .on_hover(cx.listener(|this, hovered: &bool, _, _| {
-                            if let Some(toast) = &mut this.toast {
-                                toast.hovered = *hovered;
-                            }
-                        }))
-                        .children(glyph.map(|g| ui::icon(g, ICON_MD, color)))
-                        .child(
-                            ui::live_text(
-                                "toast-message",
-                                toast.message.clone(),
-                                if error {
-                                    gpui::accesskit::Live::Assertive
-                                } else {
-                                    gpui::accesskit::Live::Polite
-                                },
-                            )
-                            .min_w_0(),
-                        )
-                        .children(button)
-                        .when(error, |this| {
-                            this.child(
-                                focusable_control(div().id("toast-dismiss"), theme)
-                                    .size(CONTROL_SM)
-                                    .flex()
-                                    .flex_none()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded(RADIUS_SM)
-                                    .hover(|s| s.bg(theme.hover_bg))
-                                    .role(gpui::Role::Button)
-                                    .aria_label("Dismiss")
-                                    .child(ui::icon(Icon::X, ICON_SM, theme.text_muted))
-                                    .on_click(cx.listener(|this, _, _, cx| this.dismiss_toast(cx))),
-                            )
-                        })
-                        .when(!has_button && !error, |this| this.pr(SPACE_LG)),
-                ))
+                .child(ui::motion::card_motion(card, p, rise))
                 .into_any_element(),
         )
+    }
+
+    /// The toast's button: its label, keycap and what it does. An Undo
+    /// only while its entry is the newest.
+    fn toast_button(
+        &self,
+        toast: &Toast,
+    ) -> Option<(SharedString, Option<&'static str>, ToastAction)> {
+        let action = toast.action.clone().filter(|a| match a {
+            ToastAction::Undo(id) => self.undo_stack.newest_id() == Some(*id),
+            ToastAction::Run { .. } => true,
+        })?;
+        let (label, keycap) = match &action {
+            ToastAction::Undo(_) => (SharedString::from("Undo"), Some("cmd-z")),
+            ToastAction::Run { label, .. } => (label.clone(), None),
+        };
+        Some((label, keycap, action))
     }
 }
 

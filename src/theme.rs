@@ -119,6 +119,8 @@ pub struct Theme {
     /// Half-hour lines.
     pub cal_line_faint: Hsla,
     pub cal_weekend_bg: Hsla,
+    /// Days outside the month in the month view: deeper than a weekend.
+    pub cal_outside_bg: Hsla,
     /// Today's column in the week view and its cell in the month view.
     pub cal_today_bg: Hsla,
     /// The current-time line, and its label's fill.
@@ -227,6 +229,7 @@ impl Theme {
             cal_line: hex(0xffffff12),
             cal_line_faint: hex(0xffffff08),
             cal_weekend_bg: hex(0x00000010),
+            cal_outside_bg: hex(0x00000026),
             cal_today_bg: hex(0x6e9bff0a),
             cal_now: hex(0xd93a32ff),
             cal_ring: hex(0x1a1a1eff),
@@ -301,6 +304,7 @@ impl Theme {
             cal_line: hex(0x00000014),
             cal_line_faint: hex(0x0000000a),
             cal_weekend_bg: hex(0x00000007),
+            cal_outside_bg: hex(0x00000012),
             cal_today_bg: hex(0x1d5bd108),
             cal_now: hex(0xc8322aff),
             cal_ring: hex(0xffffffff),

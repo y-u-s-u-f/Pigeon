@@ -7,9 +7,9 @@
 use std::{cell::Cell, ops::Range, rc::Rc};
 
 use gpui::{
-    AppContext as _, ClipboardItem, Context, Entity, EventEmitter, ExternalPaths, FocusHandle,
-    Focusable as _, FontWeight, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    PathPromptOptions, Pixels, Rems, Render, ScrollHandle, SharedString,
+    AppContext as _, ClipboardItem, Context, ElementId, Entity, EventEmitter, ExternalPaths,
+    FocusHandle, Focusable as _, FontWeight, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, PathPromptOptions, Pixels, Rems, Render, ScrollHandle, SharedString,
     StatefulInteractiveElement as _, Styled, Subscription, Task, Window, actions,
     base::{
         actions::{SelectDown, SelectUp},
@@ -1586,7 +1586,11 @@ impl Composer {
                 } else {
                     theme.text
                 };
-                div()
+                // MD-028: a new chip fades in; keyed on its address, so
+                // the others don't play again when one goes.
+                let key =
+                    ElementId::NamedInteger(format!("chip-{}", contact.email).into(), ix as u64);
+                let chip = div()
                     .id(("chip", ix * 1000 + chip_ix))
                     .role(gpui::Role::Button)
                     .aria_label(label)
@@ -1663,7 +1667,8 @@ impl Composer {
                                 this.click_chip(ix, chip_ix, event.click_count(), window, cx);
                             }
                         }),
-                    )
+                    );
+                super::motion::enter(key, super::motion::Rise::None, chip)
             });
         let more = (hidden > 0).then(|| {
             focusable_control(div().id(("more-chips", ix)), theme)
@@ -1700,7 +1705,10 @@ impl Composer {
                             this.commit_suggestion(ix, row, window, cx)
                         }))
                 });
-            controls::popup(
+            // MD-011: fades in once per field; typing doesn't play it again.
+            controls::popup(super::motion::enter(
+                ("suggestions-in", ix),
+                super::motion::Rise::None,
                 controls::popover_surface(theme)
                     .id(("suggestions", ix))
                     .role(gpui::Role::ListBox)
@@ -1712,7 +1720,7 @@ impl Composer {
                     .flex()
                     .flex_col()
                     .children(rows),
-            )
+            ))
         });
 
         let error = self
@@ -1859,7 +1867,11 @@ impl Composer {
             return None;
         }
         let chips = self.attachments.iter().enumerate().map(|(ix, attachment)| {
-            div()
+            // MD-028: a new one fades in, keyed on its file.
+            let key = ElementId::Name(
+                format!("attachment-{}-{}", attachment.name, attachment.path).into(),
+            );
+            let chip = div()
                 .id(("attachment", ix))
                 .role(gpui::Role::Group)
                 .aria_label(format!(
@@ -1912,7 +1924,8 @@ impl Composer {
                         }
                         cx.notify();
                     })),
-                )
+                );
+            super::motion::enter(key, super::motion::Rise::None, chip)
         });
         Some(
             div()
@@ -2195,7 +2208,10 @@ impl Composer {
                         this.picker_activate(&FromActivate, window, cx);
                     }))
             });
-            controls::popup(
+            // MD-011: it drops from its button.
+            controls::popup(super::motion::enter(
+                "from-menu-in",
+                super::motion::Rise::Down,
                 controls::popover_surface(theme)
                     .id("from-menu")
                     .role(gpui::Role::ListBox)
@@ -2207,7 +2223,7 @@ impl Composer {
                     .flex()
                     .flex_col()
                     .children(rows),
-            )
+            ))
         });
         let ring = focus_ring(theme);
         div()
@@ -2754,8 +2770,17 @@ fn field_label(label: &'static str, theme: &Theme) -> impl IntoElement {
         .child(label)
 }
 
-/// A problem under a field: selectable, and read out when it shows.
+/// A problem under a field: selectable, and read out when it shows. It
+/// fades in (MD-028).
 fn field_error(error: SharedString, theme: &Theme) -> impl IntoElement {
+    super::motion::enter(
+        "field-error-in",
+        super::motion::Rise::None,
+        field_error_line(error, theme),
+    )
+}
+
+fn field_error_line(error: SharedString, theme: &Theme) -> gpui::Stateful<gpui::Div> {
     div()
         .id("field-error")
         .role(gpui::Role::Label)

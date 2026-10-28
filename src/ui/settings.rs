@@ -12,10 +12,11 @@
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, Focusable as _,
-    FontWeight, HighlightStyle, Hsla, InteractiveElement, IntoElement, KeyBinding, MouseButton,
-    ParentElement, Pixels, Rems, ScrollHandle, SharedString, StatefulInteractiveElement as _,
-    Styled, StyledText, Subscription, Task, Window, actions, anchored,
+    AnyElement, App, AppContext as _, ClickEvent, Context, ElementId, Entity, FocusHandle,
+    Focusable as _, FontWeight, HighlightStyle, Hsla, InteractiveElement, IntoElement, KeyBinding,
+    MouseButton, ParentElement, Pixels, Rems, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled, StyledText, Subscription, Task, Window, actions,
+    anchored,
     component::{
         input::{Input, InputEvent, InputState},
         scroll::ScrollableElement as _,
@@ -29,7 +30,7 @@ use super::{
     HEADER_HEIGHT, account_avatar, binding_caps,
     controls::{self, ButtonKind, dropdown, menu_check, menu_row, popup, push_button},
     empty_state, icon, icon_button_small, keys_caps,
-    motion::{self, Rise},
+    motion::{self, Rise, SPRING_PANE},
     window_drag_area,
 };
 use crate::ui::style::*;
@@ -68,8 +69,9 @@ actions!(
 pub const SETTINGS: &str = "Settings";
 pub const SETTINGS_SEARCH: &str = "SettingsSearch";
 
-/// How long a setting jumped to from the search stays lit.
-const FLASH: Duration = Duration::from_millis(1200);
+/// How long a setting jumped to from the search stays fully lit before it
+/// fades to the cursor's color (MD-026).
+const FLASH_HOLD: Duration = Duration::from_millis(900);
 const SECTIONS_WIDTH: Pixels = px(220.);
 const CONTENT_MAX: Pixels = px(680.);
 const MENU_WIDTH: Pixels = px(220.);
@@ -113,8 +115,11 @@ pub struct SettingsPage {
     result: usize,
     /// Moved with the keys since the last click, so the ring shows.
     keyboard: bool,
-    /// A setting jumped to, lit for a moment.
+    /// A setting jumped to, lit for a moment; fading once the hold is over.
     flash: Option<Entry>,
+    flash_fading: bool,
+    /// Counts jumps, so each one's light starts at full.
+    flash_serial: usize,
     /// Scroll the cursor into view at the next render, once its rows exist.
     pending_scroll: Option<Reveal>,
     pub focus: FocusHandle,
@@ -146,6 +151,8 @@ impl SettingsPage {
             result: 0,
             keyboard: false,
             flash: None,
+            flash_fading: false,
+            flash_serial: 0,
             pending_scroll: None,
             focus: cx.focus_handle(),
             search,
@@ -407,11 +414,13 @@ impl PigeonApp {
             page.scroll.set_offset(point(px(0.), px(0.)));
         }
         page.flash = row.is_some().then_some(entry);
+        page.flash_fading = false;
+        page.flash_serial += 1;
         page._flash = row.is_some().then(|| {
             cx.spawn(async |this, cx| {
-                cx.background_executor().timer(FLASH).await;
+                cx.background_executor().timer(FLASH_HOLD).await;
                 this.update(cx, |this, cx| {
-                    this.settings_page.flash = None;
+                    this.settings_page.flash_fading = true;
                     cx.notify();
                 })
                 .ok();
@@ -464,6 +473,7 @@ impl PigeonApp {
         } else if let Some(row) = self.settings_page.row {
             let len = self.section_rows(self.settings_page.section).len();
             self.settings_page.row = Some(step(row, len));
+            self.settings_page.flash = None;
             self.settings_page.pending_scroll = Some(Reveal::Nearest);
         } else {
             let ix = Section::ALL
@@ -1342,7 +1352,22 @@ impl PigeonApp {
                 .unwrap_or_default();
             StyledText::new(text).with_highlights(ranges)
         };
-        let flash = self.settings_page.flash == Some(entry);
+        // Full at once, then a fade to the cursor's color; moving the
+        // cursor away ends it.
+        let page = &self.settings_page;
+        let flash = (page.flash == Some(entry) && cursor).then(|| {
+            let id = (
+                ElementId::from(("settings-flash", page.flash_serial)),
+                "lit",
+            );
+            let target = if page.flash_fading { 0. } else { 1. };
+            if cx.reduce_motion() {
+                motion::fade(id, 1., target, window, cx)
+            } else {
+                gpui::base::spring(id, target, SPRING_PANE, window, cx)
+            }
+        });
+        let flash = flash.filter(|p| *p > 0.);
         let in_results = found.is_some();
         let control = match entry {
             Entry::Setting(id) => Some(self.control(id, window, cx)),
@@ -1636,8 +1661,13 @@ impl PigeonApp {
             .rounded(RADIUS_MD)
             .map(|this| {
                 // The keyboard's row as in every overlay (ME-080).
-                if flash {
-                    this.bg(theme.selected_focused_bg)
+                if let Some(p) = flash {
+                    let rest = if ring {
+                        theme.selected_bg
+                    } else {
+                        theme.selected_focused_bg.opacity(0.)
+                    };
+                    this.bg(mix(rest, theme.selected_focused_bg, p))
                 } else if cursor && ring {
                     this.bg(theme.selected_bg)
                 } else {
@@ -1685,6 +1715,7 @@ impl PigeonApp {
                     this.jump_to_setting(entry, window, cx);
                 } else {
                     this.settings_page.row = Some(ix);
+                    this.settings_page.flash = None;
                     window.focus(&this.settings_page.focus, cx);
                 }
                 this.settings_page.keyboard = false;
@@ -1842,6 +1873,20 @@ impl PigeonApp {
             .children(menu.map(popup))
             .into_any_element()
     }
+}
+
+/// `from` to `to` at `t`, alpha too.
+fn mix(from: Hsla, to: Hsla, t: f32) -> Hsla {
+    let (a, b) = (gpui::Rgba::from(from), gpui::Rgba::from(to));
+    let t = t.clamp(0., 1.);
+    let lerp = |x: f32, y: f32| x + (y - x) * t;
+    gpui::Rgba {
+        r: lerp(a.r, b.r),
+        g: lerp(a.g, b.g),
+        b: lerp(a.b, b.b),
+        a: lerp(a.a, b.a),
+    }
+    .into()
 }
 
 fn menu_options(names: &[&str]) -> Vec<(String, Option<Hsla>)> {

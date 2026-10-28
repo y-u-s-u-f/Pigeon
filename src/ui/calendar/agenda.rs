@@ -8,7 +8,7 @@ use gpui::{
     component::scroll::ScrollableElement as _, div, prelude::FluentBuilder as _, px,
 };
 
-use super::{CalendarView, ViewKind, event_panel::PANEL_WIDTH, occurrence_key, week_view::Look};
+use super::{CalendarView, ViewKind, occurrence_key, week_view::Look};
 use crate::ui::style::*;
 use crate::{
     assets::Icon,
@@ -37,24 +37,19 @@ fn when_on(date: NaiveDate, all_day: bool, start: NaiveDateTime, end: NaiveDateT
 /// The widest the Day view's event column gets.
 pub const DAY_COLUMN_MAX: f32 = 640.;
 /// The narrowest the area beside it is worth showing at.
-const SIDE_MIN: f32 = 280.;
+pub(crate) const SIDE_MIN: f32 = 280.;
 const SIDE_MAX: f32 = 400.;
 
 impl CalendarView {
-    /// The width the grid has: beside the rail, and beside a docked panel.
-    pub(crate) fn grid_area_width(&self, window: &Window) -> f32 {
-        let panel = if self.panel.is_some() && self.panel_docked(window) {
-            PANEL_WIDTH
-        } else {
-            0.
-        };
-        Self::content_width(window) - panel
+    /// The width the grid has: beside the rail, and beside a docked panel
+    /// (`lay_out_grid`).
+    pub(crate) fn grid_area_width(&self) -> f32 {
+        self.grid_width
     }
 
     /// Whether the Day view has room for its month and list.
-    pub(crate) fn day_side_shown(&self, window: &Window) -> bool {
-        self.view == ViewKind::Day
-            && self.grid_area_width(window) - super::week_view::GUTTER - DAY_COLUMN_MAX >= SIDE_MIN
+    pub(crate) fn day_side_shown(&self) -> bool {
+        self.view == ViewKind::Day && self.day_side
     }
 
     pub(crate) fn render_day(
@@ -65,7 +60,7 @@ impl CalendarView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let grid = self.render_time_grid(vec![self.anchor], occurrences, now, window, cx);
-        if !self.day_side_shown(window) {
+        if !self.day_side_shown() {
             return grid;
         }
         let theme = Theme::of(cx).clone();
@@ -149,7 +144,7 @@ impl CalendarView {
                         .flex_none()
                         .rounded_full()
                         .map(|d| {
-                            if look == Look::Pending {
+                            if look.outlined() {
                                 d.border_1().border_color(accent)
                             } else {
                                 d.bg(accent)

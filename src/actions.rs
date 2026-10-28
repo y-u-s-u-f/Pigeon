@@ -195,6 +195,14 @@ actions!(
         CopyLink,
         OpenInGoogleCalendar,
         ToggleEventReminders,
+        // Moving the selected event by keyboard (MA-092).
+        NudgeEventEarlier,
+        NudgeEventLater,
+        NudgeEventDayBack,
+        NudgeEventDayForward,
+        // The event panel's "…" menu (ME-097).
+        DuplicateEvent,
+        EmailGuests,
         // Mail (MB-061, MB-044, MB-059, MA-003, MB-062, ME-015, MB-047).
         OpenInGmail,
         QuickLookAttachment,
@@ -566,6 +574,11 @@ fn shared_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-m", MaybeEvent, Some(CAL)),
         KeyBinding::new("shift-n", DeclineEvent, Some(CAL)),
         KeyBinding::new("cmd-j", JoinEvent, Some(CALENDAR)),
+        // ⌥ and an arrow moves the selected event (MA-092).
+        KeyBinding::new("alt-up", NudgeEventEarlier, Some(CAL)),
+        KeyBinding::new("alt-down", NudgeEventLater, Some(CAL)),
+        KeyBinding::new("alt-left", NudgeEventDayBack, Some(CAL)),
+        KeyBinding::new("alt-right", NudgeEventDayForward, Some(CAL)),
         // Down and up go by event, like j and k in Mail; tab goes through
         // the header's controls (MA-005).
         KeyBinding::new("tab", FocusNextControl, Some(CAL_TABBING)),
@@ -1043,8 +1056,14 @@ pub const COMMANDS: &[Command] = commands! {
     CalendarEvents: "Add Reminder…", Bell, AddReminder if Event;
     CalendarEvents: "Open Location in Maps", MapPin, OpenLocation if Event;
     CalendarEvents: "Copy Link to Event", Copy, CopyLink if Event;
+    CalendarEvents: "Duplicate Event", Copy, DuplicateEvent if Event;
+    CalendarEvents: "Email Guests", Mail, EmailGuests if Event;
     CalendarEvents: "Open in Google Calendar", Calendar, OpenInGoogleCalendar if Event;
     CalendarEvents: "Open Event", Calendar, OpenEvent if Event;
+    CalendarEvents: "Move Event 15 Minutes Earlier", ChevronUp, NudgeEventEarlier if Event;
+    CalendarEvents: "Move Event 15 Minutes Later", ChevronDown, NudgeEventLater if Event;
+    CalendarEvents: "Move Event to the Day Before", ChevronLeft, NudgeEventDayBack if Event;
+    CalendarEvents: "Move Event to the Day After", ChevronRight, NudgeEventDayForward if Event;
     CalendarEvents: "Delete Event", Trash, DeleteEvent if Event;
     CalendarEvents: "Save Event", Check, SaveEvent if EventOpen;
     CalendarEvents: "Discard Changes to Event", Undo, DiscardEventChanges if EventOpen;

@@ -111,6 +111,18 @@ pub fn icon_button_tinted(
     action: Box<dyn Action>,
     theme: &Theme,
 ) -> Stateful<Div> {
+    icon_button_with(id, icon(glyph, ICON_TOOLBAR, color), tooltip, action, theme)
+}
+
+/// `icon_button_tinted` around a glyph of the caller's, such as one that
+/// moves (`motion::pop`).
+pub fn icon_button_with(
+    id: impl Into<ElementId>,
+    glyph: impl IntoElement,
+    tooltip: &'static str,
+    action: Box<dyn Action>,
+    theme: &Theme,
+) -> Stateful<Div> {
     let tooltip_action = action.boxed_clone();
     style::focusable_control(div().id(id), theme)
         .aria_label(tooltip)
@@ -123,7 +135,7 @@ pub fn icon_button_tinted(
         .rounded(RADIUS_MD)
         .hover(|s| s.bg(theme.hover_bg))
         .active(|s| s.bg(theme.selected_bg))
-        .child(icon(glyph, ICON_TOOLBAR, color))
+        .child(glyph)
         // Keep the press from starting a window drag in the header behind it.
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
@@ -334,11 +346,13 @@ const DIVIDER_BAND: Pixels = px(6.);
 /// The draggable divider over the border at `x`: a 6pt band centered on
 /// it, lit with a 1px accent line on hover and while `active` (dragged).
 /// Double-clicking calls `on_reset`. Drawn over the panes, after them, so
-/// both halves of the band take the mouse.
+/// both halves of the band take the mouse. `cursor` points the way the pane
+/// can still go (MA-093).
 pub fn pane_divider(
     kind: PaneResize,
     x: Pixels,
     active: bool,
+    cursor: gpui::CursorStyle,
     theme: &Theme,
     on_reset: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
@@ -358,7 +372,7 @@ pub fn pane_divider(
         .left(x - DIVIDER_BAND / 2.)
         .w(DIVIDER_BAND)
         .occlude()
-        .cursor_col_resize()
+        .cursor(cursor)
         .child(
             // Over the pane's own 1px border, the band's third pixel.
             div()

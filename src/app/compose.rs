@@ -421,6 +421,7 @@ impl PigeonApp {
             }
         });
         self.reader_focused = reply_to.is_some();
+        self.reader_glide = None;
         if reply_to.is_some() {
             self.reader_scroll.scroll_to_bottom();
         } else {
@@ -561,6 +562,46 @@ impl PigeonApp {
         });
         self.composer = Some((composer, events));
         cx.notify();
+    }
+
+    /// MD-019: the reply card arrives on `SPRING_POP` and leaves on
+    /// `SPRING_EXIT` after a send, Esc or discard; the card that left stays
+    /// drawn, inert (covered, without focus), until it's gone. Moving to
+    /// another conversation takes it away at once. Sampled as the reader
+    /// draws.
+    pub(super) fn reply_card_presence(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let inline = self
+            .composer
+            .as_ref()
+            .filter(|_| self.composer_inline(cx))
+            .map(|(composer, _)| composer.clone());
+        let thread = self.selected.map(|ix| self.data.threads[ix].id.clone());
+        if let (Some(composer), Some(thread)) = (&inline, &thread) {
+            self.reply_ghost = Some((composer.clone(), thread.clone()));
+        }
+        let here = self
+            .reply_ghost
+            .as_ref()
+            .is_some_and(|(_, t)| Some(t) == thread.as_ref());
+        if !here {
+            self.reply_ghost = None;
+        }
+        self.reply_card = if here {
+            crate::ui::motion::presence("reply-card", inline.is_some(), window, cx)
+        } else {
+            let policy = crate::ui::motion::SPRING_EXIT.with_travel(false);
+            gpui::base::spring("reply-card", 0., policy, window, cx)
+        };
+        if inline.is_none() && self.reply_card == 0. {
+            self.reply_ghost = None;
+        }
+    }
+
+    /// The reply card to draw: the open one, or the one fading out.
+    pub(crate) fn reply_card_composer(&self) -> Option<Entity<Composer>> {
+        self.reply_ghost
+            .as_ref()
+            .map(|(composer, _)| composer.clone())
     }
 
     /// Whether the composer shows under the selected conversation, rather than

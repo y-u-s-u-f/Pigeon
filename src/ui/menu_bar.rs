@@ -14,15 +14,16 @@ use std::{cell::Cell, rc::Rc, time::Instant};
 
 use chrono::{Duration, NaiveDateTime};
 use gpui::{
-    AnyElement, App, Context, Entity, FocusHandle, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
-    Styled, Task, Window, actions, component::scroll::ScrollableElement as _, div,
-    prelude::FluentBuilder as _, px,
+    AnyElement, App, Context, Div, Entity, FocusHandle, FontWeight, InteractiveElement,
+    IntoElement, ParentElement, Pixels, Render, ScrollHandle, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled, Task, Window, actions,
+    component::scroll::ScrollableElement as _, div, prelude::FluentBuilder as _, px,
 };
 
 use super::{
     controls::{dropdown, menu_check, menu_row},
     icon, keycap_on_accent, keys_caps,
+    motion::{self, Rise},
     style::*,
     tooltip,
 };
@@ -96,6 +97,10 @@ pub struct MenuBarPanel {
     /// Said once at the top, until the panel closes ("No meeting …").
     notice: Option<SharedString>,
     undo: Option<PanelUndo>,
+    /// The notice and undo bar as last drawn, kept while they fade out
+    /// (MD-032).
+    notice_shown: Option<SharedString>,
+    undo_shown: Option<String>,
     /// Set on show: the first render after logs how long it took.
     opening: Option<(Instant, &'static str)>,
     scroll: ScrollHandle,
@@ -134,6 +139,8 @@ impl MenuBarPanel {
             selected: 0,
             notice: None,
             undo: None,
+            notice_shown: None,
+            undo_shown: None,
             opening: None,
             scroll: ScrollHandle::new(),
             reveal: false,
@@ -433,13 +440,33 @@ fn guests_line(data: &CalendarData, o: &Occurrence) -> Option<String> {
 }
 
 impl Render for MenuBarPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some((started, source)) = self.opening.take() {
             crate::logging::info(&format!(
                 "menu-bar: shown in {:.1} ms ({source})",
                 started.elapsed().as_secs_f64() * 1000.
             ));
         }
+        // The bars stay drawn while they fade out, the window at its old
+        // height until they're gone; it then shrinks at once.
+        let notice_p = motion::presence("menu-bar-notice", self.notice.is_some(), window, cx);
+        if let Some(notice) = &self.notice {
+            self.notice_shown = Some(notice.clone());
+        } else if notice_p <= 0. {
+            self.notice_shown = None;
+        }
+        let undo_p = motion::presence("menu-bar-undo", self.undo.is_some(), window, cx);
+        if let Some(undo) = &self.undo {
+            self.undo_shown = Some(format!("Archived “{}”", today::truncate(&undo.subject, 32)));
+        } else if undo_p <= 0. {
+            self.undo_shown = None;
+        }
+        let rise = if cx.reduce_motion() {
+            Rise::None
+        } else {
+            Rise::Up
+        };
+
         let theme = Theme::of(cx).clone();
         let now = today::now();
         let today_entity = self.today.clone();
@@ -588,8 +615,8 @@ impl Render for MenuBarPanel {
                     .flex()
                     .flex_col()
                     .child(self.header(header, status, &sync, &theme))
-                    .when_some(self.notice.clone(), |el, notice| {
-                        el.child(
+                    .when_some(self.notice_shown.clone(), |el, notice| {
+                        el.child(motion::card_motion(
                             div()
                                 .id("menu-bar-notice")
                                 .role(gpui::Role::Status)
@@ -604,7 +631,9 @@ impl Render for MenuBarPanel {
                                 .text_size(TEXT_SM)
                                 .text_color(theme.text_muted)
                                 .child(notice),
-                        )
+                            notice_p,
+                            rise,
+                        ))
                     })
                     .when_some(agenda.next, |el, o| {
                         let selected = is_selected(&Item::Next(o));
@@ -630,8 +659,12 @@ impl Render for MenuBarPanel {
                             )
                             .vertical_scrollbar(&self.scroll),
                     )
-                    .when_some(self.undo.as_ref(), |el, undo| {
-                        el.child(self.undo_bar(undo, &theme, cx))
+                    .when_some(self.undo_shown.clone(), |el, message| {
+                        el.child(motion::card_motion(
+                            self.undo_bar(message, &theme, cx),
+                            undo_p,
+                            rise,
+                        ))
                     })
                     .when(self.gear_open, |el| el.child(self.gear_menu(&theme)))
                     .child(self.footer(&theme, cx)),
@@ -1010,8 +1043,8 @@ impl MenuBarPanel {
         }
     }
 
-    fn undo_bar(&self, undo: &PanelUndo, theme: &Theme, cx: &Context<Self>) -> impl IntoElement {
-        let message = format!("Archived “{}”", today::truncate(&undo.subject, 32));
+    /// While it fades out, its Undo does nothing: `self.undo` is gone.
+    fn undo_bar(&self, message: String, theme: &Theme, cx: &Context<Self>) -> Stateful<Div> {
         div()
             .id("menu-bar-undo")
             .role(gpui::Role::Status)

@@ -5,7 +5,7 @@
 
 use gpui::{
     AnyElement, App, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    StatefulInteractiveElement as _, Styled as _, div,
+    StatefulInteractiveElement as _, Styled as _, div, prelude::FluentBuilder as _,
 };
 
 use super::{
@@ -89,12 +89,13 @@ pub fn status_line(status: &SyncStatus, now_ms: i64, theme: &Theme) -> AnyElemen
             .into_any_element();
     }
     let text = label(status, now_ms);
-    // ME-057: Offline needs noticing; syncing shows it's under way.
+    // ME-057: Offline needs noticing; syncing turns while it's under way
+    // (MA-066).
     let (dot, color) = match status {
         SyncStatus::Offline { .. } => (Some(theme.warning), theme.text_muted),
-        SyncStatus::Syncing { .. } => (Some(theme.accent), theme.text_faint),
         _ => (None, theme.text_faint),
     };
+    let syncing = matches!(status, SyncStatus::Syncing { .. } | SyncStatus::Waiting);
     div()
         .id("sync-status")
         .role(gpui::Role::Status)
@@ -112,6 +113,12 @@ pub fn status_line(status: &SyncStatus, now_ms: i64, theme: &Theme) -> AnyElemen
                 .rounded_full()
                 .bg(dot)
         }))
+        .when(syncing, |this| {
+            this.child(super::motion::spinner(
+                "sync-spinner",
+                super::icon(Icon::RefreshCw, ICON_SM, theme.text_faint),
+            ))
+        })
         .child(div().min_w_0().truncate().child(text))
         .into_any_element()
 }

@@ -11,7 +11,7 @@ use gpui::{
     relative,
 };
 
-use super::{CalendarView, HOUR_HEIGHT, ViewKind, agenda::DAY_COLUMN_MAX, occurrence_key};
+use super::{CalendarView, HOUR_HEIGHT, ViewKind, agenda::DAY_COLUMN_MAX, drag, occurrence_key};
 use crate::ui::style::*;
 use crate::{
     assets::Icon,
@@ -22,7 +22,12 @@ use crate::{
         time::{self, compact_time_label, is_weekend, time_range_label},
     },
     theme::Theme,
-    ui::{controls::bar_colors, icon, icon_button_small, is_secondary, tooltip},
+    ui::{
+        controls::bar_colors,
+        icon, icon_button_small, is_secondary,
+        motion::{Rise, enter},
+        tooltip,
+    },
 };
 
 /// Width of the hour labels on the left.
@@ -50,6 +55,8 @@ const MIN_COLUMN: f32 = 60.;
 /// The strip kept free on the right of each day, to drag-create beside a
 /// full-width event (ME-053): a tenth of the day, within these bounds.
 const FREE_STRIP: (f32, f32) = (8., 16.);
+/// How much of its fill a free event shows (ME-051).
+pub const FREE_ALPHA: f32 = 0.55;
 /// How long before its start a meeting offers Join on its block.
 const JOIN_LEAD_MINUTES: i64 = 10;
 /// The size of text in blocks, in rems, and its line height: block layout
@@ -63,31 +70,50 @@ const CHAR_WIDTH: f32 = 0.54;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Look {
     Normal,
-    /// Not answered yet, or maybe: outlined.
+    /// Not answered yet: outlined.
     Pending,
+    /// Maybe: outlined, with faint stripes (ME-051).
+    Tentative,
     Declined,
 }
 
 impl Look {
     pub fn of(status: Option<RsvpStatus>) -> Self {
         match status {
-            Some(RsvpStatus::NeedsAction | RsvpStatus::Tentative) => Look::Pending,
+            Some(RsvpStatus::NeedsAction) => Look::Pending,
+            Some(RsvpStatus::Tentative) => Look::Tentative,
             Some(RsvpStatus::Declined) => Look::Declined,
             _ => Look::Normal,
         }
     }
 
+    /// Outlined over a light fill: not answered, or maybe.
+    pub fn outlined(self) -> bool {
+        matches!(self, Look::Pending | Look::Tentative)
+    }
+
     /// A bar or a pill as answered: pending outlined over a light fill,
-    /// declined faded (ME-041). The title strikes through separately.
+    /// declined faded (ME-041). The title strikes through separately, and
+    /// a maybe's stripes are `stripes`.
     pub fn bar<E: Styled>(self, el: E, fill: Hsla, accent: Hsla) -> E {
         match self {
             Look::Normal => el.bg(fill),
-            Look::Pending => el
+            Look::Pending | Look::Tentative => el
                 .bg(fill.alpha(0.25))
                 .border_1()
                 .border_color(accent.alpha(0.7)),
             Look::Declined => el.bg(fill.alpha(0.25)).opacity(0.6),
         }
+    }
+
+    /// A maybe's faint diagonal stripes over its block (ME-051).
+    pub fn stripes(self, accent: Hsla) -> Option<gpui::Div> {
+        (self == Look::Tentative).then(|| {
+            div()
+                .absolute()
+                .inset_0()
+                .bg(gpui::pattern_slash(accent.alpha(0.16), 1., 6.))
+        })
     }
 }
 
@@ -131,10 +157,10 @@ impl CalendarView {
         let metrics = TextMetrics::of(window);
         let n = days.len();
         // How wide a day is, to lay events out and fit their text.
-        let day_width = if self.day_side_shown(window) {
+        let day_width = if self.day_side_shown() {
             DAY_COLUMN_MAX
         } else {
-            (self.grid_area_width(window) - GUTTER) / n as f32
+            (self.grid_area_width() - GUTTER) / n as f32
         } - 1.;
         let first = days[0];
         let first_day = time::midnight(first);
@@ -398,6 +424,7 @@ impl CalendarView {
                     .right(SPACE_SM)
                     .text_size(TEXT_XS)
                     .text_color(theme.text_faint)
+                    .font_features(tabular_figures())
                     .child(compact_time_label(
                         chrono::NaiveTime::from_hms_opt(hour as u32, 0, 0).unwrap(),
                     )),
@@ -437,7 +464,7 @@ impl CalendarView {
                 .iter()
                 .map(|o| {
                     let start = time::minutes_into(date, o.start).max(0);
-                    let end = time::minutes_into(date, o.end).min(24 * 60);
+                    let end = time::minutes_into(date, o.end).min(drag::DAY_MINUTES);
                     (start, end.max(start))
                 })
                 .collect();
@@ -482,7 +509,7 @@ impl CalendarView {
                         None => (0., layout_width, false),
                     };
                     // Read-only events have no resize edge (CAL-22).
-                    let ends_here = time::minutes_into(date, timed[i].end) <= 24 * 60
+                    let ends_here = time::minutes_into(date, timed[i].end) <= drag::DAY_MINUTES
                         && self.can_edit_ix(timed[i].event);
                     self.render_block(
                         *timed[i],
@@ -529,7 +556,8 @@ impl CalendarView {
                     )
                 })
                 .children(blocks)
-                .children(self.render_drag_ghost(date, &theme))
+                .children(self.render_removed_block(date, &theme))
+                .children(self.render_drag_ghost(date, &theme, window, cx))
                 .when(is_today, |d| {
                     d.child(
                         div()
@@ -566,9 +594,21 @@ impl CalendarView {
                 .text_size(TEXT_XS)
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.on_fill(theme.cal_now))
+                .font_features(tabular_figures())
                 .child(time::clock_label(now.time()))
         });
 
+        // The zone the times are in, where midnight's label would be
+        // (ME-094).
+        let zone = div()
+            .absolute()
+            .top(SPACE_2XS)
+            .right(SPACE_SM)
+            .text_size(TEXT_XS)
+            .text_color(theme.text_faint)
+            .child(time::zone_offset_label(
+                chrono::Local::now().offset().local_minus_utc(),
+            ));
         let grid = div()
             .h(grid_height)
             .flex()
@@ -576,6 +616,7 @@ impl CalendarView {
                 gutter()
                     .relative()
                     .h_full()
+                    .child(zone)
                     .children(hour_labels)
                     .children(now_label),
             )
@@ -595,10 +636,7 @@ impl CalendarView {
                             .size_full(),
                     )
                     // A release before the drag layer is up.
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _, window, cx| this.finish_drag(window, cx)),
-                    )
+                    .on_mouse_up(MouseButton::Left, cx.listener(Self::drop_drag))
             });
 
         div()
@@ -617,6 +655,9 @@ impl CalendarView {
                             .id("time-grid")
                             .size_full()
                             .overflow_y_scroll()
+                            // A sideways swipe pages rather than scrolls
+                            // (MA-080).
+                            .restrict_scroll_to_axis()
                             .track_scroll(&self.grid_scroll)
                             .child(grid),
                     )
@@ -655,7 +696,6 @@ impl CalendarView {
         let narrow = width < 110.;
         let roomy = width > 260.;
         // Drawn over other events: opaque, so theirs don't show through.
-        let cascaded = overlapped;
 
         let (fill, text, muted) = if selected {
             let fill = theme.event_selected_fill(color);
@@ -664,12 +704,14 @@ impl CalendarView {
         } else {
             let text = theme.event_text(color, past);
             let fill = match look {
+                // Free time: a lighter fill (ME-051).
+                Look::Normal if !event.busy => theme.event_fill(color, past).alpha(FREE_ALPHA),
                 Look::Normal => theme.event_fill(color, past),
-                Look::Pending | Look::Declined => theme.event_fill(color, true).alpha(0.25),
+                _ => theme.event_fill(color, true).alpha(0.25),
             };
             (fill, text, text.alpha(0.75))
         };
-        let fill = if cascaded {
+        let fill = if overlapped {
             theme.overlay_bg.alpha(1.).blend(fill)
         } else {
             fill
@@ -679,14 +721,14 @@ impl CalendarView {
         let title: SharedString = event.display_title().to_string().into();
         let tooltip_text: SharedString = format!("{title}\n{time}").into();
         // A meeting about to start or under way offers Join (ME-096).
-        let join = policy::video_link(event)
-            .filter(|_| {
-                now >= occurrence.start - Duration::minutes(JOIN_LEAD_MINUTES)
-                    && now < occurrence.end
-                    && look != Look::Declined
-                    && !compact
-                    && width >= 90.
-            })
+        // The link search last: it reads the description.
+        let join = (now >= occurrence.start - Duration::minutes(JOIN_LEAD_MINUTES)
+            && now < occurrence.end
+            && look != Look::Declined
+            && !compact
+            && width >= 90.)
+            .then(|| policy::video_link(event))
+            .flatten()
             .map(str::to_string);
 
         let start_label = compact_time_label(occurrence.start.time());
@@ -772,13 +814,14 @@ impl CalendarView {
         };
 
         let hover = theme.event_fill_hover(color);
-        let hover = if cascaded {
+        let hover = if overlapped {
             theme.overlay_bg.alpha(1.).blend(hover)
         } else {
             hover
         };
         let key = occurrence_key(&occurrence, (start == 0) as i64);
-        div()
+        let added = self.just_added.as_deref() == Some(event.id.as_str());
+        let block = div()
             .absolute()
             .top(px(start as f32 / 60. * HOUR_HEIGHT + 1.))
             .left(relative(left / day))
@@ -786,7 +829,7 @@ impl CalendarView {
             .h(px(height))
             .pl(SPACE_2XS)
             .pr(px(1.))
-            .when(self.is_dragged(&occurrence), |d| d.opacity(0.35))
+            .when_some(self.drag_opacity(&occurrence), |d, o| d.opacity(o))
             // Declined: behind the rest, faded.
             .when(look == Look::Declined && !selected, |d| d.opacity(0.6))
             .child(
@@ -825,12 +868,13 @@ impl CalendarView {
                         }]),
                         Look::Normal => d
                             .hover(move |s| s.bg(hover))
-                            .when(cascaded, |d| d.border_1().border_color(theme.cal_ring)),
-                        Look::Pending | Look::Declined => d
+                            .when(overlapped, |d| d.border_1().border_color(theme.cal_ring)),
+                        _ => d
                             .hover(move |s| s.bg(hover.alpha(0.5)))
                             .border_1()
                             .border_color(accent.alpha(0.7)),
                     })
+                    .when(!selected, |d| d.children(look.stripes(accent)))
                     .when(!selected, |d| {
                         d.child(
                             div()
@@ -914,8 +958,18 @@ impl CalendarView {
                         }),
                     )
                     .tooltip(move |window, cx| tooltip(tooltip_text.clone()).build(window, cx)),
-            )
-            .into_any_element()
+            );
+        // Only the event just made or brought back fades in, keyed on its id
+        // and this part's start, not its index, which a reload can shift
+        // (MD-038).
+        if added {
+            let minutes = occurrence.start.and_utc().timestamp() / 60;
+            let id = SharedString::from(format!("event-added-{}", event.id));
+            let part = ((minutes << 1) | (start == 0) as i64) as usize;
+            enter((id, part), Rise::None, block).into_any_element()
+        } else {
+            block.into_any_element()
+        }
     }
 
     /// An all-day or multi-day event in the lane above the grid, over days
@@ -978,9 +1032,12 @@ impl CalendarView {
                         if selected {
                             d.bg(fill)
                         } else {
-                            look.bar(d, fill, accent).hover(move |s| s.bg(hover))
+                            look.bar(d, fill, accent)
+                                .hover(move |s| s.bg(hover))
+                                .children(look.stripes(accent))
                         }
                     })
+                    .relative()
                     .text_size(TEXT_SM)
                     // It goes on before the days shown (ME-090).
                     .when(clipped_left, |d| {
@@ -1057,5 +1114,36 @@ impl CalendarView {
                     }),
             )
             .into_any_element()
+    }
+
+    /// A deleted event's block on `date`, fading out where it was: drawn
+    /// only, it takes no mouse (MD-038).
+    fn render_removed_block(&self, date: NaiveDate, theme: &Theme) -> Option<AnyElement> {
+        let block = self.removed_block.as_ref()?;
+        let top = time::minutes_into(date, block.start).max(0);
+        let bottom = time::minutes_into(date, block.end).min(drag::DAY_MINUTES);
+        if bottom <= top {
+            return None;
+        }
+        let fill = theme.event_fill(block.color, false);
+        Some(
+            div()
+                .absolute()
+                .top(px(top as f32 / 60. * HOUR_HEIGHT + 1.))
+                .left(SPACE_2XS)
+                .right(px(1.))
+                .h(px(((bottom - top) as f32 / 60. * HOUR_HEIGHT - 2.).max(18.)))
+                .opacity(block.fade.clamp(0., 1.))
+                .rounded(RADIUS_SM)
+                .bg(fill)
+                .pl(SPACE_SM)
+                .py(SPACE_XS)
+                .overflow_hidden()
+                .text_size(TEXT_SM)
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.event_text(block.color, false))
+                .child(div().truncate().child(block.title.clone()))
+                .into_any_element(),
+        )
     }
 }

@@ -131,23 +131,6 @@ fn clock_label_on(time: NaiveTime, h24: bool) -> String {
         .to_string()
 }
 
-/// "9am", "9:30pm", or "09:30" on a 24-hour clock: month view pills.
-pub fn pill_time_label(time: NaiveTime) -> String {
-    pill_time_label_on(time, is_24_hour())
-}
-
-fn pill_time_label_on(time: NaiveTime, h24: bool) -> String {
-    if h24 {
-        return time_label_on(time, true);
-    }
-    time.format(if time.minute() == 0 {
-        "%-I%P"
-    } else {
-        "%-I:%M%P"
-    })
-    .to_string()
-}
-
 /// "9", "9:30": the hour and, when not on the hour, the minutes.
 fn short_time(time: NaiveTime) -> String {
     if time.minute() == 0 {
@@ -193,7 +176,8 @@ fn time_range_label_on(start: NaiveTime, end: NaiveTime, h24: bool) -> String {
     }
 }
 
-/// "9 AM", "9:30 AM"; "09:30" on a 24-hour clock.
+/// "9 AM", "9:30 AM"; "09:30" on a 24-hour clock. The one style for times
+/// in the grids: the hours, month pills and bars (ME-088).
 pub fn compact_time_label(time: NaiveTime) -> String {
     compact_time_label_on(time, is_24_hour())
 }
@@ -208,6 +192,22 @@ fn compact_time_label_on(time: NaiveTime, h24: bool) -> String {
         "%-I:%M %p"
     })
     .to_string()
+}
+
+/// "GMT+1", "GMT−5:30" or "GMT": a zone by its offset, short enough for
+/// the grid's corner (ME-094).
+pub fn zone_offset_label(offset_seconds: i32) -> String {
+    let minutes = offset_seconds / 60;
+    if minutes == 0 {
+        return "GMT".into();
+    }
+    let sign = if minutes < 0 { '−' } else { '+' };
+    let (h, m) = (minutes.abs() / 60, minutes.abs() % 60);
+    if m == 0 {
+        format!("GMT{sign}{h}")
+    } else {
+        format!("GMT{sign}{h}:{m:02}")
+    }
 }
 
 /// "Sun, Oct 25, 9:12 AM", with the year when it isn't `today`'s; "Sun,
@@ -519,9 +519,6 @@ mod tests {
             time_range_label_on(t(11, 0), t(13, 30), h24),
             "11:00 – 13:30"
         );
-        assert_eq!(pill_time_label_on(t(21, 30), h12), "9:30pm");
-        assert_eq!(pill_time_label_on(t(9, 0), h12), "9am");
-        assert_eq!(pill_time_label_on(t(21, 30), h24), "21:30");
         assert_eq!(clock_label_on(t(14, 2), h12), "2:02");
         assert_eq!(clock_label_on(t(14, 2), h24), "14:02");
         let today = d(2026, 10, 27);
@@ -589,5 +586,12 @@ mod tests {
         assert_eq!(parse_date("March 2027", today), Some(d(2027, 3, 1)));
         assert_eq!(parse_date("next", today), None);
         assert_eq!(parse_date("in 3 parsecs", today), None);
+    }
+
+    #[test]
+    fn zones_read_by_their_offset() {
+        assert_eq!(zone_offset_label(0), "GMT");
+        assert_eq!(zone_offset_label(3600), "GMT+1");
+        assert_eq!(zone_offset_label(-5 * 3600 - 1800), "GMT−5:30");
     }
 }

@@ -14,11 +14,13 @@
 //! the Month view (`press_read_only`); pressing them is a click. A move
 //! or resize goes to Google at once (CAL-21).
 
-use chrono::{Duration, NaiveDate, NaiveDateTime};
+use std::time::Instant;
+
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime};
 use gpui::{
     AnyElement, Bounds, Context, FontWeight, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Styled, Window, anchored,
-    deferred, div, point, prelude::FluentBuilder as _, px,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Styled, Window,
+    anchored, base::spring, deferred, div, point, prelude::FluentBuilder as _, px,
 };
 
 use super::{CalendarView, HOUR_HEIGHT, Leave, PromptKind, Selection, SeriesPrompt, ViewKind};
@@ -29,7 +31,10 @@ use crate::{
         time::{self, time_range_label},
     },
     theme::Theme,
-    ui::popover_shadow,
+    ui::{
+        motion::{self, SPRING_EXIT, SPRING_PANE, SPRING_POP, SPRING_SNAP},
+        popover_shadow,
+    },
 };
 
 const LABEL_HEIGHT: f32 = 20.;
@@ -37,12 +42,16 @@ const LABEL_HEIGHT: f32 = 20.;
 pub const SNAP_MINUTES: i64 = 15;
 /// How far the mouse moves before a press becomes a drag.
 const THRESHOLD: f32 = 4.;
-const DAY_MINUTES: i64 = 24 * 60;
+pub const DAY_MINUTES: i64 = 24 * 60;
 /// How close to the grid's top or bottom a drag starts scrolling it.
 const AUTOSCROLL_EDGE: f32 = 48.;
 /// Pixels scrolled per tick per pixel into the edge.
 const AUTOSCROLL_SPEED: f32 = 0.35;
 const AUTOSCROLL_TICK: std::time::Duration = std::time::Duration::from_millis(16);
+/// How close to the grid's left or right side a moved event pages to the
+/// period beside, and how long it rests there first (MA-092).
+const PAGE_EDGE: f32 = 24.;
+const PAGE_HOLD: std::time::Duration = std::time::Duration::from_millis(500);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DragKind {
@@ -73,6 +82,24 @@ pub struct GridDrag {
     pub end: NaiveDateTime,
     /// The event can't be changed, and the user was told (CAL-22).
     refused: bool,
+    /// The times line up with something (MA-074): the haptic tap played.
+    aligned: bool,
+    /// ⌥ is down: the drop copies the event rather than moving it (MA-092).
+    copy: bool,
+    /// Since when the mouse has rested at the grid's left or right edge,
+    /// and which way it would page (MA-092).
+    edge: Option<(bool, Instant)>,
+}
+
+/// What the grid previews of a drag: the times, the event moved (none for
+/// a new one), and whether it's sized (made or resized), which shows its
+/// length.
+#[derive(Clone, Copy)]
+pub(crate) struct Ghost {
+    start: NaiveDateTime,
+    end: NaiveDateTime,
+    event: Option<usize>,
+    sized: bool,
 }
 
 impl GridDrag {
@@ -132,8 +159,12 @@ impl CalendarView {
             start,
             end,
             refused: false,
+            aligned: false,
+            copy: false,
+            edge: None,
         });
         self.prompt = None;
+        self.returning = None;
         cx.notify();
     }
 
@@ -164,6 +195,9 @@ impl CalendarView {
             return true;
         }
         let pointer = drag.pointer;
+        if self.page_at_edge(cx) {
+            return true;
+        }
         let viewport = self.grid_scroll.bounds();
         let y = f32::from(pointer.y);
         let top = f32::from(viewport.origin.y);
@@ -188,6 +222,58 @@ impl CalendarView {
             self.update_drag(pointer, cx);
             cx.notify();
         }
+        true
+    }
+
+    /// A moved event resting at the grid's left or right side for
+    /// `PAGE_HOLD` goes on to the period beside, and on again while it
+    /// stays. Whether it paged.
+    fn page_at_edge(&mut self, cx: &mut Context<Self>) -> bool {
+        let bounds = self.grid_bounds.get();
+        let Some(drag) = &mut self.drag else {
+            return false;
+        };
+        if !matches!(drag.kind, DragKind::Move { .. }) || drag.refused {
+            drag.edge = None;
+            return false;
+        }
+        let x = f32::from(drag.pointer.x);
+        let left = f32::from(bounds.origin.x);
+        let right = left + f32::from(bounds.size.width);
+        let side = if x < left + PAGE_EDGE {
+            Some(false)
+        } else if x > right - PAGE_EDGE {
+            Some(true)
+        } else {
+            None
+        };
+        let now = Instant::now();
+        let Some(forward) = side else {
+            drag.edge = None;
+            return false;
+        };
+        match drag.edge {
+            Some((was, since)) if was == forward => {
+                if now.duration_since(since) < PAGE_HOLD {
+                    return false;
+                }
+            }
+            _ => {
+                drag.edge = Some((forward, now));
+                return false;
+            }
+        }
+        drag.edge = Some((forward, now));
+        let pointer = drag.pointer;
+        let sign = if forward { 1 } else { -1 };
+        self.anchor = match self.view {
+            ViewKind::Day => self.anchor + Duration::days(sign),
+            ViewKind::Week => self.anchor + Duration::days(7 * sign),
+            ViewKind::Month => return false,
+        };
+        self.mini_month = None;
+        self.update_drag(pointer, cx);
+        cx.notify();
         true
     }
 
@@ -316,6 +402,7 @@ impl CalendarView {
         if event.pressed_button != Some(MouseButton::Left) {
             return self.finish_drag(window, cx);
         }
+        self.set_drag_copy(event.modifiers.alt, cx);
         let Some(drag) = &mut self.drag else { return };
         drag.pointer = event.position;
         let moved = event.position - drag.origin;
@@ -372,9 +459,16 @@ impl CalendarView {
                 (occurrence.start, end.max(occurrence.start + snap))
             }
         };
-        let drag = self.drag.as_mut().expect("checked above");
+        let kind = drag.kind;
         let starting = !drag.active;
         if starting || (start, end) != (drag.start, drag.end) {
+            let aligned = !starting && self.aligns(kind, start, end);
+            let drag = self.drag.as_mut().expect("checked above");
+            // A tap as it lines up, once until it leaves (MA-074).
+            if aligned && !drag.aligned {
+                crate::native::haptic_alignment();
+            }
+            drag.aligned = aligned;
             drag.active = true;
             drag.start = start;
             drag.end = end;
@@ -385,13 +479,60 @@ impl CalendarView {
         }
     }
 
+    /// Whether a drag to `[start, end)` lines up: with another event's
+    /// edge that day, back where it began, or at the shortest length.
+    fn aligns(&self, kind: DragKind, start: NaiveDateTime, end: NaiveDateTime) -> bool {
+        let dragged = match kind {
+            DragKind::Move { occurrence, .. } | DragKind::Resize { occurrence, .. } => {
+                if (start, end) == (occurrence.start, occurrence.end) {
+                    return true;
+                }
+                Some(occurrence)
+            }
+            DragKind::Create { .. } => None,
+        };
+        if !matches!(kind, DragKind::Move { .. }) && end - start == Duration::minutes(SNAP_MINUTES)
+        {
+            return true;
+        }
+        let day = time::midnight(start.date());
+        self.occurrences_between(day, day + Duration::days(1))
+            .iter()
+            .filter(|o| Some(**o) != dragged && !self.data.events[o.event].is_spanning())
+            .any(|o| [o.start, o.end].contains(&start) || [o.start, o.end].contains(&end))
+    }
+
     /// The release: make, move or resize the event, or treat it as a click.
+    /// ⌥ held or let go during a drag, moving or not: the drop copies or
+    /// moves (MA-092).
+    pub(crate) fn set_drag_copy(&mut self, alt: bool, cx: &mut Context<Self>) {
+        if let Some(drag) = &mut self.drag
+            && drag.copy != alt
+        {
+            drag.copy = alt;
+            cx.notify();
+        }
+    }
+
+    /// The release, with ⌥ as it is now.
+    pub(crate) fn drop_drag(
+        &mut self,
+        event: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_drag_copy(event.modifiers.alt, cx);
+        self.finish_drag(window, cx);
+    }
+
     pub(crate) fn finish_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(drag) = self.drag.take() else { return };
         cx.notify();
         match (drag.kind, drag.active) {
             (DragKind::Create { .. }, true) => {
                 self.create_event(drag.start, drag.end, false, window, cx);
+                // The ghost already showed it.
+                self.just_added = None;
             }
             (DragKind::Create { .. }, false) => self.click_empty(window, cx),
             (DragKind::Move { occurrence, .. } | DragKind::Resize { occurrence, .. }, false) => {
@@ -403,6 +544,12 @@ impl CalendarView {
                 };
                 let id = event.id.clone();
                 let moved = (drag.start, drag.end) != (occurrence.start, occurrence.end);
+                // ⌥ at the drop: a copy there, the event left where it was
+                // (MA-092).
+                if drag.copy && moved && matches!(drag.kind, DragKind::Move { .. }) {
+                    self.copy_event(occurrence.event, drag.start, drag.end, window, cx);
+                    return;
+                }
                 if moved && event.is_series() {
                     // Asked first; drawn at the new times meanwhile.
                     self.prompt = Some(SeriesPrompt {
@@ -434,13 +581,81 @@ impl CalendarView {
         }
     }
 
-    /// Escape during a drag.
+    /// Escape during a drag: a moved or resized event glides home
+    /// (MD-036).
     pub(crate) fn cancel_drag(&mut self, cx: &mut Context<Self>) -> bool {
-        let cancelled = self.drag.take().is_some();
-        if cancelled {
-            cx.notify();
+        let Some(drag) = self.drag.take() else {
+            return false;
+        };
+        if let Some(occurrence) = drag.occurrence().filter(|_| drag.active) {
+            self.returning = Some(occurrence);
         }
-        cancelled
+        cx.notify();
+        true
+    }
+
+    /// "Move this repeating event?" cancelled: the event glides home from
+    /// where it was dropped (MD-036).
+    pub(crate) fn cancel_move_prompt(&mut self, prompt: &SeriesPrompt) {
+        if !matches!(prompt.kind, PromptKind::Move { .. }) {
+            return;
+        }
+        if let Some(ix) = self.data.event_ix(&prompt.event_id) {
+            let length = self.data.events[ix].duration();
+            self.returning = Some(Occurrence {
+                event: ix,
+                start: prompt.occurrence,
+                end: prompt.occurrence + length,
+            });
+        }
+    }
+
+    /// The drag's lift, from 0 (at rest) to 1 (picked up), on its spring:
+    /// the ghost's shadow and the original's fade follow it (MD-035). A
+    /// ghost gliding home is done once it's down.
+    pub(crate) fn settle_ghost(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let lifted = self.drag.as_ref().is_some_and(|d| d.active)
+            || self
+                .prompt
+                .as_ref()
+                .is_some_and(|p| matches!(p.kind, PromptKind::Move { .. }));
+        self.lift = spring(
+            "drag-lift",
+            if lifted { 1f32 } else { 0. },
+            if lifted { SPRING_POP } else { SPRING_PANE },
+            window,
+            cx,
+        );
+        if !lifted && self.lift <= 0.01 {
+            self.returning = None;
+        }
+        if let Some(block) = &mut self.removed_block {
+            let started = std::mem::replace(&mut block.started, true);
+            let key = block.start.and_utc().timestamp() as usize;
+            let id = gpui::ElementId::from(("event-removed", key));
+            let target = if started { 0f32 } else { 1. };
+            // A fade under Reduce Motion too (MD-Q2).
+            let p = if cx.reduce_motion() {
+                motion::fade(id, 1., target, window, cx)
+            } else {
+                spring(id, target, SPRING_EXIT, window, cx)
+            };
+            block.fade = p;
+            if !started {
+                window.request_animation_frame();
+            } else if p <= 0.01 {
+                self.removed_block = None;
+            }
+        }
+    }
+
+    /// How opaque an event's block is under a drag: faded while it's
+    /// picked up or waits to move, back to 1 as it's put down.
+    pub(crate) fn drag_opacity(&self, occurrence: &Occurrence) -> Option<f32> {
+        // A copy leaves the original as it is.
+        let copying = self.drag.as_ref().is_some_and(|d| d.copy);
+        (!copying && self.is_dragged(occurrence) || self.returning.as_ref() == Some(occurrence))
+            .then_some(1. - 0.65 * self.lift)
     }
 
     /// Whether `occurrence` is being moved or resized, or waits to be, so
@@ -456,23 +671,43 @@ impl CalendarView {
             })
     }
 
-    /// What the grid previews: the drag under way, or a move waiting for
-    /// "This event" or "All events". Its times, and the event it moves.
-    fn ghost(&self) -> Option<(NaiveDateTime, NaiveDateTime, Option<usize>)> {
+    /// What the grid previews: the drag under way, a move waiting for
+    /// "This event" or "All events", or a cancelled one gliding home.
+    fn ghost(&self) -> Option<Ghost> {
         if let Some(drag) = self.drag.as_ref().filter(|d| d.active) {
-            return Some((drag.start, drag.end, drag.occurrence().map(|o| o.event)));
+            return Some(Ghost {
+                start: drag.start,
+                end: drag.end,
+                event: drag.occurrence().map(|o| o.event),
+                sized: !matches!(drag.kind, DragKind::Move { .. }),
+            });
         }
-        let prompt = self.prompt.as_ref()?;
-        let PromptKind::Move { start, end } = prompt.kind else {
-            return None;
-        };
-        Some((start, end, self.data.event_ix(&prompt.event_id)))
+        if let Some(prompt) = &self.prompt
+            && let PromptKind::Move { start, end } = prompt.kind
+        {
+            return Some(Ghost {
+                start,
+                end,
+                event: self.data.event_ix(&prompt.event_id),
+                sized: false,
+            });
+        }
+        self.returning.map(|o| Ghost {
+            start: o.start,
+            end: o.end,
+            event: Some(o.event),
+            sized: false,
+        })
     }
 
     /// The layer over the window that takes the mouse during a drag.
     pub(crate) fn render_drag_layer(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let size = window.viewport_size();
         let kind = self.drag.as_ref().map(|d| (d.kind, d.refused));
+        let copy = self
+            .drag
+            .as_ref()
+            .is_some_and(|d| d.copy && matches!(d.kind, DragKind::Move { .. }));
         deferred(
             anchored().position(point(px(0.), px(0.))).child(
                 div()
@@ -485,13 +720,12 @@ impl CalendarView {
                     .map(|d| match kind {
                         Some((_, true)) => d.cursor_not_allowed(),
                         Some((DragKind::Resize { .. }, _)) => d.cursor_ns_resize(),
+                        // ⌥: the drop copies (MA-092).
+                        _ if copy => d.cursor(gpui::CursorStyle::DragCopy),
                         _ => d.cursor_default(),
                     })
                     .on_mouse_move(cx.listener(Self::drag_to))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _, window, cx| this.finish_drag(window, cx)),
-                    ),
+                    .on_mouse_up(MouseButton::Left, cx.listener(Self::drop_drag)),
             ),
         )
         .with_priority(3)
@@ -499,29 +733,74 @@ impl CalendarView {
     }
 
     /// The preview of a drag on `date`'s column: the event at its new
-    /// times, or the one being made.
-    pub(crate) fn render_drag_ghost(&self, date: NaiveDate, theme: &Theme) -> Option<AnyElement> {
-        let (start, end, event) = self.ghost()?;
+    /// times, the one being made, or one gliding home. Its top and height
+    /// glide between slots in the column's own coordinates, so scrolling
+    /// doesn't move them (MD-035).
+    pub(crate) fn render_drag_ghost(
+        &self,
+        date: NaiveDate,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> Option<AnyElement> {
+        let ghost = self.ghost()?;
+        let Ghost { start, end, .. } = ghost;
         let top = time::minutes_into(date, start).max(0);
         let bottom = time::minutes_into(date, end).min(DAY_MINUTES);
         if bottom <= top {
             return None;
         }
-        let (title, color) = match event {
+        let (title, color) = match ghost.event {
             Some(ix) => {
                 let event = self.data.events.get(ix)?;
                 (event.display_title().to_string(), self.data.color_of(event))
             }
-            None => ("New event".to_string(), theme.accent),
+            // In the calendar it goes to, not the accent (ME-085).
+            None => (
+                "New event".to_string(),
+                crate::calendar::new_event_calendar(
+                    &self.data.calendars,
+                    self.prefs.default_calendar.as_deref(),
+                )
+                .map_or(theme.accent, |c| c.color),
+            ),
         };
-        let top_px = top as f32 / 60. * HOUR_HEIGHT + 1.;
-        let height = ((bottom - top) as f32 / 60. * HOUR_HEIGHT - 2.).max(18.);
+        let glide = if self.returning.is_some() {
+            SPRING_PANE.with_epsilon(0.5)
+        } else {
+            SPRING_SNAP
+        };
+        let day = date.num_days_from_ce();
+        let top_px = spring(
+            gpui::ElementId::from(("drag-ghost-top", day as usize)),
+            top as f32 / 60. * HOUR_HEIGHT + 1.,
+            glide,
+            window,
+            cx,
+        );
+        let height = spring(
+            gpui::ElementId::from(("drag-ghost-height", day as usize)),
+            ((bottom - top) as f32 / 60. * HOUR_HEIGHT - 2.).max(18.),
+            glide,
+            window,
+            cx,
+        );
+        let lift = self.lift;
         let compact = height < 34.;
         let text = theme.on_fill(theme.event_selected_fill(color));
-        let time = time_range_label(start.time(), end.time());
+        // Made or resized: how long it is too (ME-085).
+        let time = if ghost.sized {
+            format!(
+                "{} · {}",
+                time_range_label(start.time(), end.time()),
+                time::duration_label(end - start)
+            )
+        } else {
+            time_range_label(start.time(), end.time())
+        };
         // The times, floating above the block (below it at the top of the
-        // day), so the snap reads at a glance.
-        let label = (date == start.date() || top == 0).then(|| {
+        // day), so the snap reads at a glance; not while it glides home.
+        let label = (self.returning.is_none() && (date == start.date() || top == 0)).then(|| {
             let above = top_px >= LABEL_HEIGHT + 4.;
             div()
                 .absolute()
@@ -543,8 +822,9 @@ impl CalendarView {
                 .text_size(TEXT_XS)
                 .font_weight(FontWeight::SEMIBOLD)
                 .whitespace_nowrap()
+                .font_features(tabular_figures())
                 .shadow(popover_shadow(theme))
-                .child(time.clone())
+                .child(time)
         });
         Some(
             div()
@@ -566,13 +846,15 @@ impl CalendarView {
                         .when(!compact, |d| d.flex_col())
                         .overflow_hidden()
                         .rounded(RADIUS_SM)
+                        .opacity(lift.clamp(0., 1.))
                         .bg(theme.event_selected_fill(color))
                         .border_1()
                         .border_color(text.alpha(0.5))
+                        // The lift: the shadow grows as it's picked up.
                         .shadow(vec![gpui::BoxShadow {
-                            color: theme.overlay_shadow.alpha(0.45),
-                            offset: point(px(0.), px(6.)),
-                            blur_radius: px(16.),
+                            color: theme.overlay_shadow.alpha(0.45 * lift.clamp(0., 1.)),
+                            offset: point(px(0.), px(2. + 4. * lift)),
+                            blur_radius: px(6. + 10. * lift),
                             spread_radius: px(-2.),
                             inset: false,
                         }])

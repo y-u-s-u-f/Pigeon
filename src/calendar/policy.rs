@@ -99,6 +99,25 @@ pub fn counts(data: &CalendarData, event: &Event) -> bool {
         && my_answer(data, event) != Some(RsvpStatus::Declined)
 }
 
+/// Timed, busy events that count and overlap `[start, end)`, other than
+/// event `id` itself, by start (ME-046).
+pub fn conflicts(
+    data: &CalendarData,
+    id: &str,
+    start: NaiveDateTime,
+    end: NaiveDateTime,
+) -> Vec<Occurrence> {
+    occurrences(
+        &data.events,
+        |e| e.id != id && !e.all_day && e.busy && counts(data, e),
+        start,
+        end,
+    )
+    .into_iter()
+    .filter(|o| o.start < end && o.end > start)
+    .collect()
+}
+
 /// How far ahead `joinable` looks.
 pub const JOIN_AHEAD: Duration = Duration::hours(24);
 
@@ -153,6 +172,31 @@ pub fn video_link(event: &Event) -> Option<&str> {
         .find(|l| !l.is_empty())
         .or_else(|| find_video_link(&event.location))
         .or_else(|| find_video_link(&event.description))
+}
+
+/// The web links in `text`, by byte range (ME-097): `http(s)://` up to
+/// whitespace or a bracket or quote, without trailing punctuation.
+pub fn link_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while let Some(found) = ["https://", "http://"]
+        .iter()
+        .filter_map(|scheme| text[at..].find(scheme))
+        .min()
+    {
+        let start = at + found;
+        let rest = &text[start..];
+        let len = rest
+            .find(|c: char| c.is_whitespace() || "<>\"'()[]".contains(c))
+            .unwrap_or(rest.len());
+        let link = rest[..len].trim_end_matches(['.', ',', ';', ':', '!', '?']);
+        let end = start + link.len();
+        if link.len() > "https://".len() {
+            out.push(start..end);
+        }
+        at = (start + len).max(start + 1);
+    }
+    out
 }
 
 /// The first Meet, Zoom, Teams or Webex link in `text`.
@@ -351,5 +395,13 @@ mod tests {
         assert_eq!(reminders_for(&e, &cal), [Reminder::popup(10)]);
         cal.default_reminders = vec![Reminder::popup(10), Reminder::popup(1440)];
         assert_eq!(reminders_for(&e, &cal), cal.default_reminders);
+    }
+
+    #[test]
+    fn links_are_found_without_their_punctuation() {
+        let text = "Agenda: https://docs.example.com/a?b=1, then (http://x.io).";
+        let links: Vec<&str> = link_ranges(text).into_iter().map(|r| &text[r]).collect();
+        assert_eq!(links, ["https://docs.example.com/a?b=1", "http://x.io"]);
+        assert!(link_ranges("no links, just https:// alone").is_empty());
     }
 }

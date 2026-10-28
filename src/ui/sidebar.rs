@@ -12,8 +12,8 @@ use gpui::{
 };
 
 use super::{
-    HEADER_HEIGHT, account_avatar, icon, icon_button, is_secondary, status::thousands, tooltip,
-    window_drag_area,
+    HEADER_HEIGHT, account_avatar, icon, icon_button, is_secondary, motion, status::thousands,
+    tooltip, window_drag_area,
 };
 use crate::ui::style::*;
 use crate::{
@@ -524,14 +524,11 @@ impl PigeonApp {
                     .text_size(TEXT_SM)
                     .text_color(theme.text_faint)
                     .hover(|s| s.bg(theme.hover_bg))
-                    .child(icon(
-                        if show_hidden {
-                            Icon::ChevronUp
-                        } else {
-                            Icon::ChevronDown
-                        },
-                        ICON_MD,
-                        theme.text_faint,
+                    .child(motion::turn(
+                        "chevron",
+                        icon(Icon::ChevronDown, ICON_MD, theme.text_faint),
+                        show_hidden,
+                        2.,
                     ))
                     .child(text)
                     .tooltip(|window, cx| {
@@ -747,14 +744,12 @@ impl PigeonApp {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(icon(
-                        if row.folded {
-                            Icon::ChevronRight
-                        } else {
-                            Icon::ChevronDown
-                        },
-                        ICON_SM,
-                        faint,
+                    // MD-021: one glyph, turned.
+                    .child(motion::turn(
+                        "chevron",
+                        icon(Icon::ChevronRight, ICON_SM, faint),
+                        !row.folded,
+                        1.,
                     ))
                     .tooltip(move |window, cx| tooltip(tip.clone()).build(window, cx))
                     // Not a drag of the row, nor a click on it.
@@ -985,14 +980,11 @@ fn labels_header(collapsed: bool, theme: &Theme, cx: &mut Context<PigeonApp>) ->
                         .when(!collapsed, |this| {
                             this.opacity(0.).group_hover(GROUP, |s| s.opacity(1.))
                         })
-                        .child(icon(
-                            if collapsed {
-                                Icon::ChevronRight
-                            } else {
-                                Icon::ChevronDown
-                            },
-                            ICON_SM,
-                            theme.text_faint,
+                        .child(motion::turn(
+                            "labels-chevron",
+                            icon(Icon::ChevronRight, ICON_SM, theme.text_faint),
+                            !collapsed,
+                            1.,
                         )),
                 )
                 .tooltip(move |window, cx| tooltip(tip).build(window, cx))

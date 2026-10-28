@@ -37,8 +37,8 @@ use chrono::{Duration, Local, NaiveDate, NaiveDateTime};
 use gpui::{
     AnyElement, AppContext as _, Bounds, Context, Entity, EventEmitter, FocusHandle, FontWeight,
     InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Point, Render,
-    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled, Subscription, Task,
-    Window, actions, anchored,
+    ScrollDelta, ScrollHandle, ScrollWheelEvent, SharedString, StatefulInteractiveElement as _,
+    StyleRefinement, Styled, Subscription, Task, TouchPhase, WeakEntity, Window, actions, anchored,
     base::spring,
     component::{
         input::{InputEvent, InputState},
@@ -68,7 +68,7 @@ use crate::{
     ui::{
         controls::{ButtonKind, popover_surface, push_button},
         keys_caps,
-        motion::{Rise, SPRING_EXIT, SPRING_PANE},
+        motion::{Rise, SPRING_EXIT, SPRING_PANE, SPRING_SCROLL},
     },
 };
 
@@ -126,6 +126,8 @@ pub enum Menu {
     Repeat,
     /// The date field and month under the header's title.
     GoToDate,
+    /// A Month day's events, from its "+N more" (ME-087).
+    DayList(NaiveDate),
 }
 
 /// A question about one occurrence of a series, waiting for an answer.
@@ -166,11 +168,7 @@ impl PromptKind {
                 (SeriesScope::Following, "Delete This and Following"),
                 (SeriesScope::All, "Delete All Events"),
             ],
-            PromptKind::Move { .. } => &[
-                (SeriesScope::This, "This Event"),
-                (SeriesScope::Following, "This and Following"),
-                (SeriesScope::All, "All Events"),
-            ],
+            PromptKind::Move { .. } => SCOPE_CHOICES,
         }
     }
 
@@ -303,46 +301,27 @@ fn discarded_message(event: &Event) -> String {
     }
 }
 
+/// The series scope answers, for moves and edits.
+pub(crate) const SCOPE_CHOICES: &[(SeriesScope, &str)] = &[
+    (SeriesScope::This, "This Event"),
+    (SeriesScope::Following, "This and Following"),
+    (SeriesScope::All, "All Events"),
+];
+
 const GUEST_CHOICES: &[(SendUpdates, &str)] = &[
     (SendUpdates::All, "Send"),
     (SendUpdates::None, "Don't Send"),
 ];
 
 /// The op with `send` as its `sendUpdates`.
-fn with_send(op: CalOp, send: SendUpdates) -> CalOp {
-    match op {
-        CalOp::Insert { event, .. } => CalOp::Insert {
-            event,
-            send_updates: send,
-        },
-        CalOp::Patch {
-            id,
-            before,
-            after,
-            scope,
-            ..
-        } => CalOp::Patch {
-            id,
-            before,
-            after,
-            scope,
-            send_updates: send,
-        },
-        CalOp::Split {
-            id,
-            before,
-            after,
-            new,
-            ..
-        } => CalOp::Split {
-            id,
-            before,
-            after,
-            new,
-            send_updates: send,
-        },
-        op => op,
+fn with_send(mut op: CalOp, send: SendUpdates) -> CalOp {
+    if let CalOp::Insert { send_updates, .. }
+    | CalOp::Patch { send_updates, .. }
+    | CalOp::Split { send_updates, .. } = &mut op
+    {
+        *send_updates = send;
     }
+    op
 }
 
 /// "This and following" as Google takes it: one op, which ends the series
@@ -432,6 +411,85 @@ pub enum MeetState {
     Failed,
 }
 
+/// The panel sliding shut, drawn from what it showed: its event may already
+/// be gone (MD-002). Read-only; nothing writes back from it.
+struct ClosingPanel {
+    panel: EventPanel,
+    event: Event,
+    was_new: bool,
+}
+
+/// The grid's scroll gliding from `from` to `to` (MD-040); `last` is where
+/// it set it, so a scroll by hand shows.
+#[derive(Clone, Copy)]
+struct ScrollGlide {
+    from: Pixels,
+    to: Pixels,
+    last: Option<Pixels>,
+}
+
+/// A deleted event's block as it was, fading out (MD-038). Drawn only;
+/// nothing reads from it.
+#[derive(Clone)]
+pub(crate) struct RemovedBlock {
+    pub start: NaiveDateTime,
+    pub end: NaiveDateTime,
+    pub title: SharedString,
+    pub color: gpui::Hsla,
+    /// Drawn once at full opacity, so its spring starts from there.
+    pub started: bool,
+    pub fade: f32,
+}
+
+/// The parts of the calendar drawn as views of their own (MC-036, MD-004).
+/// Each animates on its own frames, so the panel's slide, the header's
+/// controls and the prompts' entrances don't redraw the grid. The grid is
+/// cached: it redraws when the calendar notifies, when its own elements
+/// (hover, scroll, its springs) do, when its bounds change, or when the
+/// window refreshes (theme). `GridKey` covers what it reads from outside.
+#[derive(Clone)]
+struct Parts {
+    grid: Entity<CalendarPart>,
+    header: Entity<CalendarPart>,
+    panel: Entity<CalendarPart>,
+    move_prompt: Entity<CalendarPart>,
+    modal: Entity<CalendarPart>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Grid,
+    Header,
+    Panel,
+    MovePrompt,
+    Modal,
+}
+
+pub struct CalendarPart {
+    calendar: WeakEntity<CalendarView>,
+    part: Part,
+    _observe: Option<Subscription>,
+}
+
+impl Render for CalendarPart {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let part = self.part;
+        self.calendar
+            .update(cx, |calendar, cx| calendar.render_part(part, window, cx))
+            .unwrap_or_else(|_| div().into_any_element())
+    }
+}
+
+/// What the grid reads that changes outside the calendar without telling
+/// it: the text size, the clock, the week's first day and the account.
+#[derive(Clone, PartialEq)]
+struct GridKey {
+    rem: Pixels,
+    clock_24: bool,
+    first_weekday: chrono::Weekday,
+    me: String,
+}
+
 pub struct CalendarView {
     pub data: CalendarData,
     pub view: ViewKind,
@@ -447,9 +505,20 @@ pub struct CalendarView {
     /// "This and following" it's the new event as it was before the change.
     discard_base: Option<(Event, NaiveDateTime)>,
     /// The panel sliding shut, drawn until its width spring reaches 0.
-    closing_panel: Option<EventPanel>,
-    /// The panel sliding shut showed a new event, so it keeps its buttons.
-    closing_was_new: bool,
+    closing_panel: Option<ClosingPanel>,
+    /// The parts drawn as views of their own (MC-036), made on first render.
+    parts: Option<Parts>,
+    /// What the grid reads from outside the calendar, as last drawn.
+    grid_key: Option<GridKey>,
+    /// The grid's width as last laid out: beside the rail, less a docked
+    /// panel while one shows.
+    grid_width: f32,
+    /// The Day view shows its month and list (MD-003, with hysteresis).
+    day_side: bool,
+    /// The side the floating panel moved to while open, so it fades in
+    /// there (MD-006).
+    panel_flip: Option<bool>,
+    panel_side: Option<bool>,
     pub menu: Option<Menu>,
     pub prompt: Option<SeriesPrompt>,
     pub show_week_numbers: bool,
@@ -457,6 +526,20 @@ pub struct CalendarView {
     pub grid_scroll: ScrollHandle,
     /// The mouse drag in the time grid, if one is on.
     pub drag: Option<GridDrag>,
+    /// A cancelled drag's event, its ghost gliding home (MD-036).
+    returning: Option<Occurrence>,
+    /// How far a drag has lifted its event (`settle_ghost`).
+    lift: f32,
+    /// The grid gliding to Today or to an event (MD-040).
+    scroll_glide: Option<ScrollGlide>,
+    /// A two-finger swipe across the grid: how far it went, and whether it
+    /// turned the page yet (MA-080).
+    swipe: Option<(Point<Pixels>, bool)>,
+    /// The event made or brought back last, whose block fades in once
+    /// (MD-038); cleared when the period or view changes.
+    just_added: Option<String>,
+    /// A deleted event's block, fading out where it was (MD-038).
+    removed_block: Option<RemovedBlock>,
     /// Where the day columns of the time grid were last painted, in the
     /// window, scrolled with them: maps the mouse to a day and a time.
     grid_bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -500,7 +583,7 @@ pub struct CalendarView {
     /// Meet requests asked for, by event id: the id stays the same on a
     /// retry (CAL-34).
     meet_requests: std::collections::HashMap<String, String>,
-    /// Repaints every half minute so the current-time line moves.
+    /// Repaints just past each minute so the current-time line moves.
     /// Reminders are app-wide (`app::today`).
     _tick: Task<()>,
     _autoscroll: Option<Task<()>>,
@@ -514,6 +597,11 @@ impl EventEmitter<CalendarEvent> for CalendarView {}
 pub fn occurrence_key(occurrence: &Occurrence, part: i64) -> u64 {
     let minutes = occurrence.start.and_utc().timestamp() / 60;
     ((occurrence.event as u64) << 40) ^ ((minutes as u64) << 8) ^ (part as u64 & 0xff)
+}
+
+/// 32 hex digits, which Google takes as an event id (CAL-11).
+fn new_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
 }
 
 /// The start of an event's next occurrence from today, or of its last one.
@@ -545,10 +633,12 @@ impl CalendarView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // On the minute, as the menu bar clock turns (MD-034).
         let tick = cx.spawn(async |this, cx| {
             loop {
+                let second = chrono::Timelike::second(&Local::now()) as u64;
                 cx.background_executor()
-                    .timer(StdDuration::from_secs(30))
+                    .timer(StdDuration::from_secs(61 - second.min(60)))
                     .await;
                 let ticked = this.update(cx, |_, cx| cx.notify());
                 if ticked.is_err() {
@@ -578,13 +668,24 @@ impl CalendarView {
             panel_stale: false,
             discard_base: None,
             closing_panel: None,
-            closing_was_new: false,
+            parts: None,
+            grid_key: None,
+            grid_width: 0.,
+            day_side: false,
+            panel_flip: None,
+            panel_side: None,
             menu: None,
             prompt: None,
             show_week_numbers: false,
             focus_handle: cx.focus_handle(),
             grid_scroll: ScrollHandle::new(),
             drag: None,
+            returning: None,
+            lift: 0.,
+            scroll_glide: None,
+            swipe: None,
+            just_added: None,
+            removed_block: None,
             grid_bounds: Rc::default(),
             mini_month: None,
             date_input,
@@ -670,7 +771,8 @@ impl CalendarView {
 
     /// Where the grid opens: a little before now when today is on screen
     /// (ME-043), else at the morning. The grid clamps it at the bottom.
-    fn scroll_to_start(&self) {
+    fn scroll_to_start(&mut self) {
+        self.scroll_glide = None;
         let (from, to) = self.visible_range();
         let today = today();
         let hour = if (from..to).contains(&today) {
@@ -684,10 +786,30 @@ impl CalendarView {
     }
 
     /// Scroll the time grid so `[start, end)` minutes into the day show.
-    fn reveal_minutes(&self, start: i64, end: i64) {
+    fn reveal_minutes(&mut self, start: i64, end: i64) {
+        self.scroll_glide = None;
+        if let Some(y) = self.reveal_offset(start, end) {
+            let x = self.grid_scroll.offset().x;
+            self.grid_scroll.set_offset(point(x, y));
+        }
+    }
+
+    /// `reveal_minutes`, gliding there on `SPRING_SCROLL` (MD-040); the
+    /// wheel or the next key stops it.
+    fn glide_to_minutes(&mut self, start: i64, end: i64) {
+        self.scroll_glide = self.reveal_offset(start, end).map(|to| ScrollGlide {
+            from: self.grid_scroll.offset().y,
+            to,
+            last: None,
+        });
+    }
+
+    /// The grid's scroll offset that shows `[start, end)` minutes into the
+    /// day, if it has to move.
+    fn reveal_offset(&self, start: i64, end: i64) -> Option<Pixels> {
         let viewport = self.grid_scroll.bounds().size.height;
         if viewport <= px(0.) {
-            return;
+            return None;
         }
         let top = px(start as f32 / 60. * HOUR_HEIGHT);
         let bottom = px(end as f32 / 60. * HOUR_HEIGHT);
@@ -699,15 +821,48 @@ impl CalendarView {
         } else if bottom > visible_top + viewport - margin {
             (bottom + margin - viewport).min(top - margin)
         } else {
-            return;
+            return None;
         };
         let max = self.grid_scroll.max_offset().y;
-        self.grid_scroll
-            .set_offset(point(offset.x, -y.clamp(px(0.), max.max(px(0.)))));
+        Some(-y.clamp(px(0.), max.max(px(0.))))
+    }
+
+    /// Moves a glide on by a frame, before the grid draws; scrolling by
+    /// hand meanwhile stops it.
+    fn step_glide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(glide) = &mut self.scroll_glide else {
+            return;
+        };
+        let offset = self.grid_scroll.offset();
+        if glide
+            .last
+            .is_some_and(|last| (offset.y - last).abs() > px(0.5))
+        {
+            self.scroll_glide = None;
+            return;
+        }
+        let started = glide.last.is_some();
+        let key = gpui::ElementId::from(("grid-glide", f32::from(glide.to) as i32 as usize));
+        let y = spring(
+            key,
+            f32::from(if started { glide.to } else { glide.from }),
+            SPRING_SCROLL,
+            window,
+            cx,
+        );
+        let y = px(y);
+        glide.last = Some(y);
+        self.grid_scroll.set_offset(point(offset.x, y));
+        if !started {
+            window.request_animation_frame();
+        } else if (y - glide.to).abs() < px(0.5) {
+            self.scroll_glide = None;
+        }
     }
 
     pub fn set_view(&mut self, view: ViewKind, cx: &mut Context<Self>) {
         self.drag = None;
+        self.just_added = None;
         if self.view != view {
             let from_month = self.view == ViewKind::Month;
             self.view = view;
@@ -740,6 +895,7 @@ impl CalendarView {
     /// Jump to `date`, keeping the view.
     pub fn go_to_date(&mut self, date: NaiveDate, window: &mut Window, cx: &mut Context<Self>) {
         self.drag = None;
+        self.just_added = None;
         self.anchor = date;
         self.mini_month = None;
         if self.menu == Some(Menu::GoToDate) {
@@ -758,6 +914,7 @@ impl CalendarView {
 
     fn step(&mut self, forward: bool, cx: &mut Context<Self>) {
         self.drag = None;
+        self.just_added = None;
         let sign = if forward { 1 } else { -1 };
         self.anchor = match self.view {
             ViewKind::Day => self.anchor + Duration::days(sign),
@@ -829,7 +986,7 @@ impl CalendarView {
         };
         if !spanning && self.view != ViewKind::Month {
             let start = time::minutes_into(day, selection.start).max(0);
-            let end = time::minutes_into(day, end).min(24 * 60);
+            let end = time::minutes_into(day, end).min(drag::DAY_MINUTES);
             self.reveal_minutes(start, end);
         }
         // With the panel open, it follows the selection.
@@ -975,7 +1132,7 @@ impl CalendarView {
         };
         let untitled = self.event(&id).is_some_and(|e| e.title.trim().is_empty());
         if untitled && let Some(ix) = self.data.event_ix(&id) {
-            self.data.events.remove(ix);
+            let removed = self.data.events.remove(ix);
             if !never_went {
                 // It went in before its title was cleared.
                 self.queue(
@@ -992,9 +1149,24 @@ impl CalendarView {
                 self.selected = None;
             }
             if self.panel.as_ref().is_some_and(|p| p.event_id == id) {
-                self.panel = None;
+                self.start_closing(Some(removed), true);
             }
         }
+    }
+
+    /// The panel slides shut from what it shows now, even once its event
+    /// is gone (MD-002). `event` is the event as it was; without one the
+    /// live event is used.
+    fn start_closing(&mut self, event: Option<Event>, was_new: bool) {
+        let Some(panel) = self.panel.take() else {
+            return;
+        };
+        let event = event.or_else(|| self.event(&panel.event_id).cloned());
+        self.closing_panel = event.map(|event| ClosingPanel {
+            panel,
+            event,
+            was_new,
+        });
     }
 
     /// Whether the panel shows a new event that hasn't been saved yet.
@@ -1154,7 +1326,7 @@ impl CalendarView {
         if self.selected.as_ref().is_some_and(|s| s.event_id == id) {
             self.selected = None;
         }
-        self.panel = None;
+        self.start_closing(event.clone(), true);
         self.close_panel(window, cx);
         // An empty one is nothing to bring back.
         if let Some(event) = event.filter(|e| e.has_content()) {
@@ -1212,16 +1384,17 @@ impl CalendarView {
         if !still_there {
             self.unsent = Some(id.clone());
         }
+        self.just_added = Some(id.clone());
         self.new_event = Some(id);
         cx.notify();
     }
 
     pub fn close_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.closing_was_new = self.panel_is_new();
+        let was_new = self.panel_is_new();
         self.leave_panel(window, cx);
-        // Slides shut, unless its event just went; render drops it once
-        // the width spring is at 0.
-        self.closing_panel = self.panel.take();
+        // Slides shut, from a snapshot when its event just went; the panel
+        // part drops it once the width spring is at 0.
+        self.start_closing(None, was_new);
         self.menu = None;
         if self
             .prompt
@@ -1235,11 +1408,6 @@ impl CalendarView {
     }
 
     // Changing events.
-
-    /// 32 hex digits, which Google takes as an event id (CAL-11).
-    fn new_id(&mut self) -> String {
-        uuid::Uuid::new_v4().simple().to_string()
-    }
 
     /// Whether `id` has a change not yet handed to the backend: settling,
     /// waiting for its scope or for "Send updates to guests?".
@@ -1585,9 +1753,9 @@ impl CalendarView {
         } else {
             (start, end.max(start + Duration::minutes(15)))
         };
-        let id = self.new_id();
+        let id = new_id();
         let meet_request = auto_meet.then(|| {
-            let request = self.new_id();
+            let request = new_id();
             self.meet_requests.insert(id.clone(), request.clone());
             request
         });
@@ -1613,7 +1781,7 @@ impl CalendarView {
             let day = start.date();
             self.reveal_minutes(
                 time::minutes_into(day, start),
-                time::minutes_into(day, end).min(24 * 60),
+                time::minutes_into(day, end).min(drag::DAY_MINUTES),
             );
         }
         self.select_day_in_view(start.date());
@@ -1623,6 +1791,7 @@ impl CalendarView {
         });
         self.open_event(&id, start, true, window, cx);
         self.new_event = Some(id.clone());
+        self.just_added = Some(id.clone());
         Some(id)
     }
 
@@ -1641,7 +1810,14 @@ impl CalendarView {
         let Some(before) = self.event(id).cloned() else {
             return;
         };
-        let end = end.max(start + Duration::minutes(if before.all_day { 24 * 60 } else { 15 }));
+        let end = end.max(
+            start
+                + Duration::minutes(if before.all_day {
+                    drag::DAY_MINUTES
+                } else {
+                    drag::SNAP_MINUTES
+                }),
+        );
         if self.access_of(&before) != Access::Edit {
             if (start, end) != (occurrence, occurrence + (before.end - before.start)) {
                 self.refuse(id, cx);
@@ -1718,7 +1894,7 @@ impl CalendarView {
         let before = self.event(series_id)?.clone();
         let mut id = instance_id(series_id, occurrence, before.all_day, &LocalZone::system());
         if self.event(&id).is_some() {
-            id = self.new_id();
+            id = new_id();
         }
         let occurrence_of = |series: &Event, start, end| Event {
             id: id.clone(),
@@ -1764,7 +1940,7 @@ impl CalendarView {
         if !is_organizer(&before, self.me()) {
             return None;
         }
-        let new_id = self.new_id();
+        let new_id = new_id();
         let (old, new) = before.split(origin, start, &edited, new_id.clone())?;
         let id = before.id.clone();
         // What was settling for the series is this change.
@@ -1917,6 +2093,141 @@ impl CalendarView {
         }
     }
 
+    /// ⌥ and an arrow (MA-092): the selected event 15 minutes earlier or
+    /// later, or a day either way, with Undo. A repeating one asks which
+    /// occurrences, as a drop does.
+    fn nudge(&mut self, by: Duration, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal() {
+            return;
+        }
+        let Some((id, occurrence)) = self.target() else {
+            return cx.propagate();
+        };
+        let Some(event) = self.event(&id) else {
+            return;
+        };
+        // An all-day event moves by days only.
+        if event.all_day && by.num_days() == 0 {
+            return;
+        }
+        if self.access_of(event) != Access::Edit {
+            return self.refuse(&id, cx);
+        }
+        let length = event.duration();
+        let spanning = event.is_spanning();
+        let (start, end) = (occurrence + by, occurrence + by + length);
+        if event.is_series() {
+            self.prompt = Some(SeriesPrompt {
+                event_id: id,
+                occurrence,
+                kind: PromptKind::Move { start, end },
+            });
+            return cx.notify();
+        }
+        self.retime_occurrence(&id, occurrence, start, end, window, cx);
+        self.flush_edit(cx);
+        self.emit_retimed(&id, (occurrence, occurrence + length), (start, end), cx);
+        // The view follows it to its new day.
+        self.anchor = start.date();
+        if !spanning && self.view != ViewKind::Month {
+            let day = start.date();
+            self.reveal_minutes(
+                time::minutes_into(day, start),
+                time::minutes_into(day, end).min(drag::DAY_MINUTES),
+            );
+        }
+        cx.notify();
+    }
+
+    fn nudge_earlier(
+        &mut self,
+        _: &NudgeEventEarlier,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.nudge(Duration::minutes(-drag::SNAP_MINUTES), window, cx);
+    }
+
+    fn nudge_later(&mut self, _: &NudgeEventLater, window: &mut Window, cx: &mut Context<Self>) {
+        self.nudge(Duration::minutes(drag::SNAP_MINUTES), window, cx);
+    }
+
+    fn nudge_day_back(
+        &mut self,
+        _: &NudgeEventDayBack,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.nudge(Duration::days(-1), window, cx);
+    }
+
+    fn nudge_day_forward(
+        &mut self,
+        _: &NudgeEventDayForward,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.nudge(Duration::days(1), window, cx);
+    }
+
+    /// A copy of the event at `ix` over `[start, end)`, as an event of its
+    /// own, selected (⌥-drag, MA-092; Duplicate, ME-097). It goes in at
+    /// once, asking about the guests first.
+    pub(crate) fn copy_event(
+        &mut self,
+        ix: usize,
+        start: NaiveDateTime,
+        end: NaiveDateTime,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let source = self.data.events.get(ix)?;
+        if self.access_of(source) == Access::ReadOnly {
+            self.refuse(&source.id.clone(), cx);
+            return None;
+        }
+        let id = new_id();
+        let copy = Event {
+            id: id.clone(),
+            start,
+            end,
+            recurrence: None,
+            exceptions: Vec::new(),
+            recurring_event_id: None,
+            original_start: None,
+            etag: String::new(),
+            ical_uid: String::new(),
+            html_link: String::new(),
+            // A call of its own, if it wants one.
+            conference_uri: String::new(),
+            meet_request: None,
+            organizer: self.data.me(),
+            organizer_self: true,
+            ..source.clone()
+        };
+        self.data.events.push(copy.clone());
+        self.save(
+            vec![CalOp::Insert {
+                event: copy.clone(),
+                send_updates: SendUpdates::None,
+            }],
+            None,
+            &copy,
+            cx,
+        );
+        self.select_day_in_view(start.date());
+        self.selected = Some(Selection {
+            event_id: id.clone(),
+            start,
+        });
+        self.just_added = Some(id.clone());
+        if self.panel.is_some() {
+            self.open_event(&id, start, false, window, cx);
+        }
+        cx.notify();
+        Some(id)
+    }
+
     /// Right-click on an event (MB-010): it's selected, and a menu offers
     /// what can be done with it.
     pub(crate) fn event_menu(
@@ -1980,7 +2291,7 @@ impl CalendarView {
                 .menu("Open in Google Calendar", Box::new(OpenInGoogleCalendar));
         }
         if access == Access::Edit {
-            menu = menu.separator();
+            menu = menu.separator().menu("Duplicate", Box::new(DuplicateEvent));
             if !video {
                 menu = menu.menu("Add Google Meet", Box::new(AddGoogleMeet));
             }
@@ -2113,6 +2424,22 @@ impl CalendarView {
                 rule.until = Some(occurrence);
             }
         }
+        // The block fades out where it was (MD-038).
+        if let Some(event) = self.event(id).filter(|e| !e.is_spanning()) {
+            self.removed_block = Some(RemovedBlock {
+                start: occurrence,
+                end: occurrence + event.duration(),
+                title: event.display_title().to_string().into(),
+                color: self.data.color_of(event),
+                started: false,
+                fade: 1.,
+            });
+        }
+        // What the panel shows, for it to slide shut from (MD-002).
+        let shown = self
+            .panel
+            .as_ref()
+            .and_then(|p| self.event(&p.event_id).cloned());
         let mut ix = 0;
         while ix < self.data.events.len() {
             let event = &self.data.events[ix];
@@ -2136,7 +2463,8 @@ impl CalendarView {
         if let Some(panel) = &self.panel
             && gone(&panel.event_id, panel.occurrence)
         {
-            self.panel = None;
+            let was_new = self.panel_is_new();
+            self.start_closing(shown, was_new);
             self.menu = None;
             window.focus(&self.focus_handle, cx);
         }
@@ -2255,6 +2583,7 @@ impl CalendarView {
         }
         if let Some(select) = removal.select {
             self.select_day_in_view(select.start.date());
+            self.just_added = Some(select.event_id.clone());
             self.selected = Some(select);
         }
         window.focus(&self.focus_handle, cx);
@@ -2284,6 +2613,8 @@ impl CalendarView {
         }
         let event = &self.data.events[ix];
         let start = next_start(event);
+        let (from, to) = self.visible_range();
+        let on_screen = self.view != ViewKind::Month && (from..to).contains(&start.date());
         if let Some(calendar) = self
             .data
             .calendar_ix(&event.calendar)
@@ -2307,7 +2638,12 @@ impl CalendarView {
         if !event.is_spanning() {
             let day = start.date();
             let minutes = time::minutes_into(day, start);
-            self.reveal_minutes(minutes, minutes + event.duration().num_minutes());
+            let end = minutes + event.duration().num_minutes();
+            if on_screen {
+                self.glide_to_minutes(minutes, end);
+            } else {
+                self.reveal_minutes(minutes, end);
+            }
         }
         self.open_event(&id, start, false, window, cx);
     }
@@ -2475,12 +2811,46 @@ impl CalendarView {
         let Some(id) = self.create_event(quick.start, quick.end, quick.all_day, window, cx) else {
             return;
         };
+        let me = self.me().to_string();
+        let guests: Vec<crate::calendar::Attendee> = {
+            let book = self.book.borrow();
+            quick
+                .people
+                .iter()
+                .filter_map(|name| {
+                    let first = |n: &str| n.split_whitespace().next().map(str::to_lowercase);
+                    book.suggest(name, |c| c.email.eq_ignore_ascii_case(&me))
+                        .into_iter()
+                        .map(|ix| book.contact(ix))
+                        .find(|c| first(&c.name) == first(name))
+                })
+                .map(|c| crate::calendar::Attendee {
+                    name: c.name.clone(),
+                    email: c.email.clone(),
+                    status: RsvpStatus::NeedsAction,
+                })
+                .collect()
+        };
+        let location = quick.location.clone().unwrap_or_default();
         if let Some(event) = self.event_mut(&id) {
             event.title = quick.title.clone();
+            event.location = location.clone();
+            for guest in guests {
+                if !event
+                    .attendees
+                    .iter()
+                    .any(|a| a.email.eq_ignore_ascii_case(&guest.email))
+                {
+                    event.attendees.push(guest);
+                }
+            }
         }
         if let Some(panel) = &self.panel {
-            let title = panel.title.clone();
+            let (title, place) = (panel.title.clone(), panel.location.clone());
             title.update(cx, |input, cx| input.set_value(quick.title, window, cx));
+            if !location.is_empty() {
+                place.update(cx, |input, cx| input.set_value(location, window, cx));
+            }
         }
         self.settle_edit(cx);
         cx.notify();
@@ -2557,13 +2927,47 @@ impl CalendarView {
         if self.modal() {
             return;
         }
+        let (from, to) = self.visible_range();
+        let on_screen = (from..to).contains(&today());
         self.anchor = today();
         self.mini_month = None;
         if self.view != ViewKind::Month {
             let minutes = time::minutes_into(today(), now());
-            self.reveal_minutes(minutes, minutes + 60);
+            // A glide only when today was already in view (MD-040).
+            if on_screen {
+                self.glide_to_minutes(minutes, minutes + 60);
+            } else {
+                self.reveal_minutes(minutes, minutes + 60);
+            }
         }
         cx.notify();
+    }
+
+    /// Two fingers across the trackpad page like `]` and `[`, once per
+    /// swipe, when it's mostly sideways (MA-080). Mouse wheels, whose steps
+    /// are lines, and the momentum after a swipe don't page.
+    fn on_swipe(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
+        let ScrollDelta::Pixels(delta) = event.delta else {
+            return;
+        };
+        match event.touch_phase {
+            TouchPhase::Started => self.swipe = Some((delta, false)),
+            TouchPhase::Moved => {
+                let Some((total, paged)) = &mut self.swipe else {
+                    return;
+                };
+                *total += delta;
+                let (dx, dy) = (f32::from(total.x), f32::from(total.y));
+                if !*paged && dx.abs() > SWIPE_DISTANCE && dx.abs() > 2. * dy.abs() {
+                    *paged = true;
+                    if !self.modal() {
+                        // Fingers to the left bring the next period in.
+                        self.step(dx < 0., cx);
+                    }
+                }
+            }
+            _ => self.swipe = None,
+        }
     }
 
     fn next_period(&mut self, _: &NextPeriod, _: &mut Window, cx: &mut Context<Self>) {
@@ -2744,7 +3148,8 @@ impl CalendarView {
             self.answer_leave(None, window, cx);
         } else if self.guest_prompt.is_some() {
             self.answer_guests(None, window, cx);
-        } else if self.prompt.take().is_some() {
+        } else if let Some(prompt) = self.prompt.take() {
+            self.cancel_move_prompt(&prompt);
             cx.notify();
         } else if let Some(menu) = self.menu.take() {
             if menu == Menu::GoToDate {
@@ -3080,7 +3485,9 @@ impl CalendarView {
             theme,
             cx,
             |this, _, cx| {
-                this.prompt = None;
+                if let Some(prompt) = this.prompt.take() {
+                    this.cancel_move_prompt(&prompt);
+                }
                 cx.notify();
             },
         )
@@ -3218,16 +3625,89 @@ fn enter_cap(kind: ButtonKind, theme: &Theme) -> gpui::Div {
     }
 }
 
-impl Render for CalendarView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl CalendarView {
+    /// The parts, made on first render, when the calendar has an entity to
+    /// point back to. The grid follows every notify of the calendar.
+    fn parts(&mut self, cx: &mut Context<Self>) -> Parts {
+        if let Some(parts) = &self.parts {
+            return parts.clone();
+        }
+        let calendar = cx.entity();
+        let mut make = |part: Part| {
+            let weak = calendar.downgrade();
+            let observed = calendar.clone();
+            cx.new(|cx| CalendarPart {
+                calendar: weak,
+                part,
+                _observe: (part == Part::Grid)
+                    .then(|| cx.observe(&observed, |_, _, cx| cx.notify())),
+            })
+        };
+        let parts = Parts {
+            grid: make(Part::Grid),
+            header: make(Part::Header),
+            panel: make(Part::Panel),
+            move_prompt: make(Part::MovePrompt),
+            modal: make(Part::Modal),
+        };
+        self.parts = Some(parts.clone());
+        parts
+    }
+
+    fn render_part(
+        &mut self,
+        part: Part,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match part {
+            Part::Grid => {
+                self.settle_ghost(window, cx);
+                self.step_glide(window, cx);
+                self.render_body(window, cx)
+            }
+            Part::Header => self.render_header(window, cx),
+            Part::Panel => self.render_panel_slot(window, cx),
+            Part::MovePrompt => self.render_move_prompt(window, cx),
+            Part::Modal => self.render_modal(cx),
+        }
+    }
+
+    /// Whether a docked panel takes room from the grid: from the moment it
+    /// opens until it starts to close. The grid lays out once each way,
+    /// not on every frame of the slide; shutting, the panel slides out over
+    /// the grid, which has its room back already (MD-003, MD-004).
+    fn panel_reserves(&self, window: &Window) -> bool {
+        self.panel.is_some() && self.panel_docked(window)
+    }
+
+    /// The grid's width and whether the Day view's side shows, once per
+    /// frame; the side keeps its state within `SIDE_HYSTERESIS` of the
+    /// threshold, so a width near it doesn't flicker.
+    fn lay_out_grid(&mut self, window: &Window) {
+        let panel = if self.panel_reserves(window) {
+            event_panel::PANEL_WIDTH
+        } else {
+            0.
+        };
+        self.grid_width = Self::content_width(window) - panel;
+        let room = self.grid_width - week_view::GUTTER - agenda::DAY_COLUMN_MAX - agenda::SIDE_MIN;
+        let margin = if self.day_side {
+            -SIDE_HYSTERESIS
+        } else {
+            SIDE_HYSTERESIS
+        };
+        self.day_side = room >= margin;
+    }
+
+    /// The panel's slot: slides open from the edge and shut into it, on one
+    /// value-held spring (MD-001), here so its frames don't redraw the grid.
+    fn render_panel_slot(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         if self.panel_stale {
             self.reload_panel(window, cx);
         }
         let open = self.panel.is_some();
-        // One value-held spring for the panel's width: reversing mid-slide
-        // turns back from where it is, and coming back to Calendar doesn't
-        // replay it (MD-001).
         let shown = spring(
             ("event-panel", "shown"),
             if open { 1f32 } else { 0. },
@@ -3238,16 +3718,102 @@ impl Render for CalendarView {
         if !open && shown <= 0.001 {
             self.closing_panel = None;
         }
-        let panel = match (&self.panel, &self.closing_panel) {
-            (Some(panel), _) => self.render_panel(panel, self.panel_is_new(), window, cx),
-            (None, Some(panel)) => self.render_panel(panel, self.closing_was_new, window, cx),
-            (None, None) => None,
-        };
         let docked = self.panel_docked(window);
         let on_left = !docked && self.panel_on_left(window);
-        // Questions dim the calendar and ask near the top (MB-041); a
-        // drop's move question stays over the bottom of the grid.
-        let modal_card = match (&self.leave_prompt, &self.guest_prompt) {
+        // Moving sides while open fades in at the new one; the width
+        // doesn't replay (MD-006).
+        if open && !docked {
+            if self.panel_side.is_some_and(|side| side != on_left) {
+                self.panel_flip = Some(on_left);
+            }
+            self.panel_side = Some(on_left);
+        } else if !open {
+            self.panel_side = None;
+            self.panel_flip = None;
+        }
+        let flipped = self.panel_flip == Some(on_left) && !docked;
+        let panel = match (&self.panel, &self.closing_panel) {
+            (Some(panel), _) => self
+                .event(&panel.event_id)
+                .map(|event| self.render_panel(panel, event, self.panel_is_new(), window, cx)),
+            (None, Some(c)) => Some(self.render_panel(&c.panel, &c.event, c.was_new, window, cx)),
+            (None, None) => None,
+        };
+        let Some(panel) = panel else {
+            return div().into_any_element();
+        };
+        let width = event_panel::PANEL_WIDTH;
+        let slot = div()
+            .h_full()
+            .flex_none()
+            .overflow_hidden()
+            .w(px(width * shown.clamp(0., 1.)))
+            .when(docked && !open, |d| {
+                // Shutting, docked: out over the grid, which has its room
+                // back; opaque, so the grid doesn't show through.
+                d.absolute().top_0().right_0().bg(theme.overlay_bg)
+            })
+            .when(!docked, |d| {
+                // Opaque, so the grid doesn't show through.
+                d.absolute()
+                    .top_0()
+                    .map(|d| {
+                        if on_left {
+                            // Its content travels with the growing edge
+                            // (MD-005).
+                            d.left_0()
+                                .flex()
+                                .justify_end()
+                                .border_r_1()
+                                .border_color(theme.border)
+                        } else {
+                            d.right_0()
+                        }
+                    })
+                    .when(open, |d| d.occlude())
+                    .bg(theme.overlay_bg)
+                    .shadow(crate::ui::popover_shadow(&theme))
+            })
+            .child(panel)
+            // Shutting, it takes no clicks (MD-002).
+            .when(!open, |d| d.child(crate::ui::motion::inert_cover()));
+        if flipped {
+            crate::ui::motion::enter(("event-panel-side", on_left as usize), Rise::None, slot)
+                .into_any_element()
+        } else {
+            slot.into_any_element()
+        }
+    }
+
+    /// A drop's "Move this repeating event?" over the bottom of the grid.
+    fn render_move_prompt(&self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        let Some(prompt) = self
+            .floating_prompt()
+            .filter(|p| matches!(p.kind, PromptKind::Move { .. }))
+        else {
+            return div().into_any_element();
+        };
+        div()
+            .absolute()
+            .bottom(SPACE_XL)
+            .left_0()
+            .right_0()
+            .px(SPACE_LG)
+            .flex()
+            .justify_center()
+            .child(crate::ui::motion::enter(
+                "move-prompt",
+                Rise::Up,
+                self.render_series_prompt(prompt, &theme, cx),
+            ))
+            .into_any_element()
+    }
+
+    /// Questions dim the calendar and ask near the top (MB-041).
+    fn render_modal(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        let card = match (&self.leave_prompt, &self.guest_prompt) {
             (Some(p), _) => Some(self.render_leave_prompt(p, &theme, cx)),
             (None, Some(p)) => Some(self.render_guest_prompt(p, &theme, cx)),
             (None, None) => self
@@ -3255,24 +3821,63 @@ impl Render for CalendarView {
                 .filter(|p| p.kind == PromptKind::Delete)
                 .map(|p| self.render_series_prompt(p, &theme, cx)),
         };
-        let move_prompt = self
-            .floating_prompt()
-            .filter(|p| matches!(p.kind, PromptKind::Move { .. }))
-            .map(|p| {
-                div()
-                    .absolute()
-                    .bottom(SPACE_XL)
-                    .left_0()
-                    .right_0()
-                    .px(SPACE_LG)
-                    .flex()
-                    .justify_center()
-                    .child(crate::ui::motion::enter(
-                        "move-prompt",
-                        Rise::Up,
-                        self.render_series_prompt(p, &theme, cx),
-                    ))
-            });
+        let Some(card) = card else {
+            return div().into_any_element();
+        };
+        div()
+            .id("prompt-backdrop")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .bg(theme.backdrop)
+            .px(SPACE_LG)
+            .pt(crate::ui::HEADER_HEIGHT + SPACE_LG)
+            .flex()
+            .flex_col()
+            .items_center()
+            .child(crate::ui::motion::enter("prompt-modal", Rise::Down, card))
+            .into_any_element()
+    }
+}
+
+/// How far two fingers go sideways before the grid pages (MA-080).
+const SWIPE_DISTANCE: f32 = 80.;
+
+/// How far past the Day view's side threshold the width must go to show or
+/// hide it (MD-003).
+const SIDE_HYSTERESIS: f32 = 16.;
+
+impl Render for CalendarView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::of(cx).clone();
+        let parts = self.parts(cx);
+        self.lay_out_grid(window);
+        // What the grid reads from outside changed: draw it afresh this
+        // frame; it's cached again from the next.
+        let key = GridKey {
+            rem: window.rem_size(),
+            clock_24: time::is_24_hour(),
+            first_weekday: time::first_weekday(),
+            me: self.data.account.email.clone(),
+        };
+        // VoiceOver reads each frame's drawing: a reused grid would drop
+        // out of it.
+        let fresh = self.grid_key.as_ref() != Some(&key) || window.is_a11y_active();
+        self.grid_key = Some(key);
+        let reserve = if self.panel_reserves(window) {
+            event_panel::PANEL_WIDTH
+        } else {
+            0.
+        };
+        let grid: AnyElement = if fresh {
+            parts.grid.clone().into_any_element()
+        } else {
+            parts
+                .grid
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element()
+        };
         div()
             .id("calendar")
             .key_context(CALENDAR)
@@ -3303,10 +3908,21 @@ impl Render for CalendarView {
             .on_action(cx.listener(Self::maybe_event))
             .on_action(cx.listener(Self::decline_event))
             .on_action(cx.listener(Self::join_event))
+            .on_action(cx.listener(Self::nudge_earlier))
+            .on_action(cx.listener(Self::nudge_later))
+            .on_action(cx.listener(Self::nudge_day_back))
+            .on_action(cx.listener(Self::nudge_day_forward))
             // The panel's, from the grid and ⌘K too (W2-CALP).
             .on_action(cx.listener(Self::copy_link))
             .on_action(cx.listener(Self::open_in_google_calendar))
             .on_action(cx.listener(Self::open_location))
+            .on_action(cx.listener(Self::duplicate_event))
+            .on_action(cx.listener(Self::email_guests))
+            .on_modifiers_changed(cx.listener(
+                |this, event: &gpui::ModifiersChangedEvent, _, cx| {
+                    this.set_drag_copy(event.modifiers.alt, cx)
+                },
+            ))
             .relative()
             .flex_1()
             .min_w_0()
@@ -3322,63 +3938,35 @@ impl Render for CalendarView {
                     .flex()
                     .flex_col()
                     .bg(theme.cal_bg)
-                    .child(self.render_header(window, cx))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, window, cx| this.focus_grid(window, cx)),
-                            )
-                            .child(self.render_body(window, cx)),
-                    )
-                    .children(move_prompt),
+                    .child(parts.header.clone()),
             )
-            .when_some(panel, |this, panel| {
-                // Slides open from the edge, and shut into it.
-                let width = event_panel::PANEL_WIDTH;
-                this.child(
-                    div()
-                        .h_full()
-                        .flex_none()
-                        .overflow_hidden()
-                        .w(px(width * shown.clamp(0., 1.)))
-                        .when(!docked, |d| {
-                            // Opaque, so the grid doesn't show through.
-                            d.absolute()
-                                .top_0()
-                                .map(|d| {
-                                    if on_left {
-                                        d.left_0().border_r_1().border_color(theme.border)
-                                    } else {
-                                        d.right_0()
-                                    }
-                                })
-                                // Shutting, it no longer takes the mouse.
-                                .when(open, |d| d.occlude())
-                                .bg(theme.overlay_bg)
-                                .shadow(crate::ui::popover_shadow(&theme))
-                        })
-                        .child(panel),
-                )
-            })
-            .when_some(modal_card, |this, card| {
-                this.child(
-                    div()
-                        .id("prompt-backdrop")
-                        .absolute()
-                        .inset_0()
-                        .occlude()
-                        .bg(theme.backdrop)
-                        .px(SPACE_LG)
-                        .pt(crate::ui::HEADER_HEIGHT + SPACE_LG)
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .child(crate::ui::motion::enter("prompt-modal", Rise::Down, card)),
-                )
-            })
+            // Under the header, as wide as the grid's settled width, so the
+            // panel's slide neither moves nor resizes it.
+            .child(
+                div()
+                    .absolute()
+                    .top(crate::ui::HEADER_HEIGHT)
+                    .left_0()
+                    .bottom_0()
+                    .right(px(reserve))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| this.focus_grid(window, cx)),
+                    )
+                    .on_scroll_wheel(cx.listener(|this, event, _, cx| this.on_swipe(event, cx)))
+                    .child(grid),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(crate::ui::HEADER_HEIGHT)
+                    .left_0()
+                    .bottom_0()
+                    .right(px(reserve))
+                    .child(parts.move_prompt.clone()),
+            )
+            .child(parts.panel.clone())
+            .child(parts.modal.clone())
             .when(self.drag.is_some(), |this| {
                 this.child(self.render_drag_layer(window, cx))
             })
