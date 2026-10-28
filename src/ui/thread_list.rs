@@ -929,6 +929,19 @@ impl PigeonApp {
                         .bg(theme.focus_bar),
                 )
             })
+            .when(self.is_context_target(thread_ix), |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left_0()
+                        .right_0()
+                        .rounded(RADIUS_MD)
+                        .border_1()
+                        .border_color(theme.context_ring),
+                )
+            })
             .children(check)
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered {

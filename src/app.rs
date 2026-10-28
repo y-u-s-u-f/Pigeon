@@ -229,6 +229,9 @@ pub struct PigeonApp {
     select_anchor: Option<String>,
     /// The row under the mouse, which shows its quick actions.
     pub hovered_thread: Option<usize>,
+    /// The thread (by id) a row's context menu is open on, when it isn't one
+    /// of the picked threads: the menu's actions apply to it.
+    pub context_target: Option<String>,
     pub density: Density,
     /// Search all mail rather than the current view (the scope chip).
     pub search_all: bool,
@@ -371,6 +374,7 @@ impl PigeonApp {
             checked: HashSet::new(),
             select_anchor: None,
             hovered_thread: None,
+            context_target: None,
             density: Density::Comfortable,
             search_all: false,
             recent_searches: Vec::new(),

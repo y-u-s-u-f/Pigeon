@@ -34,6 +34,8 @@ pub struct Theme {
     pub focus_bar: Hsla,
     /// Rows picked for a bulk action (`x`, shift- and ⌘-click).
     pub checked_bg: Hsla,
+    /// The outline on the row a context menu is open on.
+    pub context_ring: Hsla,
     pub nav_active_bg: Hsla,
     pub card_bg: Hsla,
     /// The message `n` / `p` moved to.
@@ -125,6 +127,7 @@ impl Theme {
             selected_focused_bg: hex(0x7aa5ff38),
             focus_bar: hex(0x7aa5ff8c),
             checked_bg: hex(0x7aa5ff1f),
+            context_ring: hex(0x7aa5ff99),
             nav_active_bg: hex(0xffffff17),
             card_bg: hex(0xffffff0a),
             card_focused_bg: hex(0xffffff0d),
@@ -189,6 +192,7 @@ impl Theme {
             selected_focused_bg: hex(0x1d5bd11c),
             focus_bar: hex(0x1d5bd166),
             checked_bg: hex(0x1d5bd10f),
+            context_ring: hex(0x1d5bd180),
             nav_active_bg: hex(0x00000012),
             card_bg: hex(0xffffff00),
             card_focused_bg: hex(0x00000008),

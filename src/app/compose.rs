@@ -165,14 +165,17 @@ impl PigeonApp {
     }
 
     pub(super) fn reply(&mut self, _: &Reply, window: &mut Window, cx: &mut Context<Self>) {
+        self.adopt_context_target(window, cx);
         self.compose(ComposeKind::Reply, window, cx);
     }
 
     pub(super) fn reply_all(&mut self, _: &ReplyAll, window: &mut Window, cx: &mut Context<Self>) {
+        self.adopt_context_target(window, cx);
         self.compose(ComposeKind::ReplyAll, window, cx);
     }
 
     pub(super) fn forward(&mut self, _: &Forward, window: &mut Window, cx: &mut Context<Self>) {
+        self.adopt_context_target(window, cx);
         self.compose(ComposeKind::Forward, window, cx);
     }
 

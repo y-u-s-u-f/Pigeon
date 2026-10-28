@@ -187,12 +187,24 @@ impl PigeonApp {
         self.select_anchor = None;
     }
 
-    /// What an action applies to: the picked threads in list order, else
-    /// the selected one.
+    /// Whether a row's context menu is open on it.
+    pub fn is_context_target(&self, ix: usize) -> bool {
+        self.context_target
+            .as_ref()
+            .is_some_and(|id| *id == self.data.threads[ix].id)
+    }
+
+    /// What an action applies to: the row whose context menu is open, else
+    /// the picked threads in list order, else the selected one.
     pub(crate) fn targets(&self) -> Vec<usize> {
-        if self.checked.is_empty() {
-            return self.selected.into_iter().collect();
-        }
+        let context = self
+            .context_target
+            .as_ref()
+            .and_then(|id| self.data.thread_ix(id));
+        action_targets(context, self.selected, || self.picked())
+    }
+
+    fn picked(&self) -> Vec<usize> {
         let mut targets: Vec<usize> = self
             .rows
             .iter()
@@ -209,6 +221,22 @@ impl PigeonApp {
             }
         }
         targets
+    }
+
+    /// Make the context target the selected thread, alone: for the actions
+    /// that open a conversation (reply, forward).
+    pub(super) fn adopt_context_target(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self
+            .context_target
+            .take()
+            .and_then(|id| self.data.thread_ix(&id))
+        else {
+            return;
+        };
+        self.clear_checked();
+        if self.selected != Some(ix) {
+            self.select_thread(ix, window, cx);
+        }
     }
 
     fn toggle_checked(&mut self, ix: usize) {
@@ -357,7 +385,7 @@ impl PigeonApp {
         match drafts[..] {
             [] => {}
             // One draft: discarded like the discard button, with its undo.
-            [ix] if targets.len() == 1 => {
+            [ix] if targets.len() == 1 && self.selected == Some(ix) => {
                 self.selected = Some(ix);
                 return self.discard_selected_draft(window, cx);
             }
@@ -384,7 +412,11 @@ impl PigeonApp {
                 self.selected = selected.and_then(|id| self.data.thread_ix(&id));
                 self.checked.retain(|id| !ids.contains(id));
                 self.refresh_rows(true);
-                self.show_toast(format!("Discarded {} drafts", ids.len()), None, cx);
+                let message = match ids.len() {
+                    1 => "Discarded draft".to_string(),
+                    n => format!("Discarded {n} drafts"),
+                };
+                self.show_toast(message, None, cx);
             }
         }
         let rest = self
@@ -830,7 +862,8 @@ impl PigeonApp {
     }
 
     /// Right-click on a row: act on it (or on the picked threads it's one
-    /// of) from a menu.
+    /// of) from a menu, leaving the selection and the open thread alone. The
+    /// row is the context target until the menu closes.
     pub(crate) fn row_context_menu(
         &mut self,
         ix: usize,
@@ -839,12 +872,21 @@ impl PigeonApp {
         cx: &mut Context<Self>,
     ) {
         if !self.is_checked(ix) {
-            self.clear_checked();
-            self.select_thread(ix, window, cx);
+            self.context_target = Some(self.data.threads[ix].id.clone());
         }
-        self.reader_focused = false;
-        window.focus(&self.focus_handle, cx);
         self.show_thread_menu(position, true, window, cx);
+        // The menu runs its own loop and dispatches the chosen action when it
+        // closes, ahead of this task: it clears the target whether the menu
+        // chose something or was dismissed.
+        cx.spawn(async move |this, cx| {
+            this.update(cx, |this, cx| {
+                this.context_target = None;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
     }
 
     // The palette.
@@ -1185,5 +1227,45 @@ pub fn folder_icon(folder: Folder) -> Icon {
         Folder::Drafts => Icon::FilePen,
         Folder::Spam => Icon::OctagonAlert,
         Folder::Trash => Icon::Trash,
+    }
+}
+
+/// The threads an action applies to: the context menu's row, else the picked
+/// threads, else the selected one.
+fn action_targets(
+    context: Option<usize>,
+    selected: Option<usize>,
+    picked: impl FnOnce() -> Vec<usize>,
+) -> Vec<usize> {
+    if let Some(ix) = context {
+        return vec![ix];
+    }
+    let picked = picked();
+    if picked.is_empty() {
+        selected.into_iter().collect()
+    } else {
+        picked
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::action_targets;
+
+    #[test]
+    fn selection_when_nothing_is_picked() {
+        assert_eq!(action_targets(None, Some(3), Vec::new), vec![3]);
+        assert!(action_targets(None, None, Vec::new).is_empty());
+    }
+
+    #[test]
+    fn picked_threads_win_over_the_selection() {
+        assert_eq!(action_targets(None, Some(3), || vec![1, 2]), vec![1, 2]);
+    }
+
+    #[test]
+    fn context_row_wins_over_both() {
+        assert_eq!(action_targets(Some(7), Some(3), || vec![1, 2]), vec![7]);
+        assert_eq!(action_targets(Some(7), None, Vec::new), vec![7]);
     }
 }
