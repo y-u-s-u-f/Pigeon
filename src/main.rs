@@ -9,6 +9,7 @@ mod html;
 mod instance;
 mod logging;
 mod markdown;
+mod mcp;
 mod native;
 mod notify;
 mod search;
@@ -348,6 +349,8 @@ fn main() {
         shell::init(backend, cx);
         // The saved preset is known once the shell has read the settings.
         set_keymap(settings::get(cx).keymap, cx);
+        // SYS-4: the MCP server, when it's on.
+        mcp::init(cx);
         shell::show(Show::Main, cx);
         // W7b: the menu bar item, its panel and the reminders.
         shell::install_menu_bar(cx);

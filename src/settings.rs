@@ -173,6 +173,8 @@ pub struct Saved {
     pub event_reminders: bool,
     /// What the Dock badge counts (MB-055).
     pub dock_badge: DockBadge,
+    /// SYS-4: the MCP server and what agents may do.
+    pub mcp: crate::mcp::McpPrefs,
 }
 
 /// How many recent palette commands are kept (ME-062).
@@ -333,6 +335,7 @@ impl Default for Saved {
             notification_sound: true,
             event_reminders: true,
             dock_badge: DockBadge::Primary,
+            mcp: crate::mcp::McpPrefs::default(),
         }
     }
 }
@@ -413,19 +416,21 @@ pub enum Section {
     Calendar,
     Notifications,
     MenuBar,
+    Mcp,
     Accounts,
     Shortcuts,
 }
 
 impl Section {
     /// General first (ME-067).
-    pub const ALL: [Section; 8] = [
+    pub const ALL: [Section; 9] = [
         Section::General,
         Section::Appearance,
         Section::Mail,
         Section::Calendar,
         Section::Notifications,
         Section::MenuBar,
+        Section::Mcp,
         Section::Accounts,
         Section::Shortcuts,
     ];
@@ -437,6 +442,7 @@ impl Section {
             Section::Calendar => "Calendar",
             Section::Notifications => "Notifications",
             Section::MenuBar => "Menu Bar",
+            Section::Mcp => "MCP",
             Section::General => "General",
             Section::Accounts => "Accounts",
             Section::Shortcuts => "Keyboard Shortcuts",
@@ -450,6 +456,7 @@ impl Section {
             Section::Calendar => Icon::Calendar,
             Section::Notifications => Icon::Bell,
             Section::MenuBar => Icon::PanelTop,
+            Section::Mcp => Icon::Code,
             Section::General => Icon::Settings,
             Section::Accounts => Icon::User,
             Section::Shortcuts => Icon::Keyboard,
@@ -463,6 +470,14 @@ impl Section {
             Section::Calendar => &["events", "schedule"],
             Section::Notifications => &["alerts", "banners", "badge", "notify"],
             Section::MenuBar => &["status bar", "status item", "tray", "menubar", "panel"],
+            Section::Mcp => &[
+                "ai",
+                "agents",
+                "model context protocol",
+                "llm",
+                "claude",
+                "integrations",
+            ],
             Section::General => &["startup", "launch", "app"],
             Section::Accounts => &["profile", "user", "sign in", "login"],
             Section::Shortcuts => &["keys", "keymap", "hotkeys", "keybindings", "shortcuts"],
@@ -513,6 +528,18 @@ pub enum SettingId {
     EventReminders,
     DockBadge,
     NotificationPermission,
+    // SYS-4.
+    McpServer,
+    McpAddress,
+    McpToken,
+    McpReadMail,
+    McpOrganizeMail,
+    McpWriteDrafts,
+    McpSendMail,
+    McpReadCalendar,
+    McpEditCalendar,
+    McpConfig,
+    McpActivity,
 }
 
 pub struct SettingMeta {
@@ -610,6 +637,28 @@ pub const SETTINGS: &[SettingMeta] = settings! {
         ["mailto", "default", "email app", "mail client", "links", "handler"];
     Shortcuts: ShortcutPreset, "Shortcut preset", "Gmail's or Apple Mail's ⌘ shortcuts. Single-key shortcuts are the same in both.",
         ["apple mail", "gmail", "preset", "keymap", "command", "bindings"];
+    Mcp: McpServer, "MCP server", "Lets AI agents on this Mac use your mail and calendar while Pigeon is open, as far as the switches below allow.",
+        ["ai", "agent", "assistant", "llm", "claude", "codex", "cursor", "model context protocol", "server", "automation"];
+    Mcp: McpAddress, "Server address", "The URL agents connect to. Only apps on this Mac can reach it.",
+        ["url", "port", "localhost", "endpoint", "http"];
+    Mcp: McpToken, "Access token", "Agents send it with every request. A new one disconnects them until they have it.",
+        ["bearer", "key", "password", "secret", "auth", "authorization", "regenerate"];
+    Mcp: McpReadMail, "Read mail", "Search conversations, read them and list labels.",
+        ["search", "read", "email", "inbox", "labels"];
+    Mcp: McpOrganizeMail, "Organize mail", "Archive, trash, star, mark read or unread, and add or remove labels.",
+        ["archive", "trash", "delete", "star", "label", "unread"];
+    Mcp: McpWriteDrafts, "Write drafts", "Save new messages and replies to Drafts.",
+        ["draft", "compose", "write", "reply"];
+    Mcp: McpSendMail, "Send mail", "Send messages and drafts, with no confirmation.",
+        ["send", "email", "reply", "compose"];
+    Mcp: McpReadCalendar, "Read calendar", "List events and read them.",
+        ["events", "schedule", "agenda", "meetings"];
+    Mcp: McpEditCalendar, "Edit calendar", "Add, change and delete events, and answer invitations, with no confirmation.",
+        ["events", "create", "delete", "invite", "rsvp", "meeting"];
+    Mcp: McpConfig, "Add to your agent", "Paste this into your agent's MCP settings. Copy includes the token.",
+        ["config", "json", "setup", "connect", "install", "claude", "cursor", "codex"];
+    Mcp: McpActivity, "Activity", "The last 50 tool calls since Pigeon opened.",
+        ["log", "history", "calls", "audit", "requests"];
 };
 
 pub fn meta(id: SettingId) -> &'static SettingMeta {

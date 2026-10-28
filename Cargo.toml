@@ -101,6 +101,10 @@ objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["
 # NSWindow behind its gpui window. Both already in the lock file.
 block2 = "0.6"
 raw-window-handle = "0.6"
+# SYS-4: the MCP server's HTTP parsing, and its calls to the main thread.
+# Both already in the lock file.
+httparse = "1"
+async-channel = "2"
 
 # MA-011: Increase Contrast appearances; see vendor/gpui-pre-macos/PIGEON_PATCHES.md.
 [patch.crates-io]

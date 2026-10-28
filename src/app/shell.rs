@@ -274,6 +274,14 @@ pub(crate) fn backend_of(cx: &App) -> Entity<Backend> {
     cx.global::<Shell>().backend.clone()
 }
 
+/// The main window, while it's open (SYS-4).
+pub(crate) fn main_window(cx: &App) -> Option<MainWindow> {
+    cx.global::<Shell>()
+        .main
+        .clone()
+        .filter(|m| m.app.upgrade().is_some())
+}
+
 fn on_signal(signal: native::Signal, cx: &mut App) {
     match signal {
         native::Signal::ShowRequested => {

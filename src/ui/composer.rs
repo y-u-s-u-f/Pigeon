@@ -2822,7 +2822,7 @@ pub fn attachments_size(attachments: &[Attachment]) -> u64 {
 
 /// The quote under a sent message: a forward's header block, or a reply's
 /// "On … wrote:" over the answered message, as Gmail sends them.
-fn quote_html(kind: ComposeKind, quoted: &Quoted) -> String {
+pub(crate) fn quote_html(kind: ComposeKind, quoted: &Quoted) -> String {
     let mut out = String::new();
     if kind == ComposeKind::Forward {
         out.push_str("<blockquote><p>---------- Forwarded message ----------");

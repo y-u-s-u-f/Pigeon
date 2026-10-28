@@ -906,6 +906,60 @@ impl CalendarView {
         cx.notify();
     }
 
+    /// Whether the user is changing `id`: a change not yet handed to the
+    /// backend, an answer settling, or the panel open on it new or with
+    /// changes. SYS-4 refuses agents' changes to it meanwhile.
+    pub fn user_is_editing(&self, id: &str) -> bool {
+        self.has_local_edit(id)
+            || self.pending_rsvp.as_ref().is_some_and(|(p, _)| p == id)
+            || self.panel.as_ref().is_some_and(|p| p.event_id == id)
+                && (self.panel_is_new() || self.panel_dirty())
+    }
+
+    /// `id` changed, or went (wholly or at `removed`), from outside the
+    /// view: an agent over MCP (SYS-4). The panel and selection follow, as
+    /// for a sync: the panel shows the new version, or closes.
+    pub fn changed_elsewhere(
+        &mut self,
+        id: &str,
+        removed: Option<NaiveDateTime>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let event = self.event(id).cloned();
+        // An exception of a deleted series goes with it.
+        let gone = |this: &Self, event_id: &str, start: NaiveDateTime| {
+            this.event(event_id).is_none() || event_id == id && removed == Some(start)
+        };
+        let panel_gone = self
+            .panel
+            .as_ref()
+            .is_some_and(|p| gone(self, &p.event_id, p.occurrence));
+        if panel_gone {
+            self.close_panel(window, cx);
+        } else if let Some(panel) = &self.panel
+            && panel.event_id == id
+            && let Some(event) = &event
+        {
+            // Discard goes back to the agent's version, not before it.
+            self.discard_base = Some((event.clone(), panel.occurrence));
+        }
+        if event.is_some() {
+            self.events_reloaded(&[id.to_string()]);
+        }
+        if self
+            .selected
+            .as_ref()
+            .is_some_and(|s| gone(self, &s.event_id, s.start))
+        {
+            self.selected = None;
+        }
+        if event.is_none() && self.new_event.as_deref() == Some(id) {
+            self.new_event = None;
+        }
+        cx.notify();
+    }
+
     /// Whether the panel's event has a change since the panel opened on it,
     /// which Discard would take back.
     fn panel_dirty(&self) -> bool {

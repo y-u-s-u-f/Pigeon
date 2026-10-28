@@ -196,44 +196,11 @@ fn quote(value: &str) -> anyhow::Result<String> {
 
 impl TokenStore for Keychain {
     fn get(&self, email: &str) -> anyhow::Result<Option<Secret>> {
-        let output = Command::new(SECURITY)
-            .args([
-                "find-generic-password",
-                "-s",
-                KEYCHAIN_SERVICE,
-                "-a",
-                email,
-                "-w",
-            ])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .context("couldn't run /usr/bin/security")?;
-        if output.status.code() == Some(NOT_FOUND) {
-            return Ok(None);
-        }
-        if !output.status.success() {
-            return Err(anyhow!("the Keychain refused ({})", output.status));
-        }
-        let token = String::from_utf8(output.stdout)
-            .map_err(|_| anyhow!("the Keychain item isn't text"))?
-            .trim()
-            .to_string();
-        Ok((!token.is_empty()).then_some(Secret(token)))
+        keychain_get(KEYCHAIN_SERVICE, email)
     }
 
     fn set(&self, email: &str, token: &Secret) -> anyhow::Result<()> {
-        let command = format!(
-            "add-generic-password -U -s {} -a {} -w {}",
-            quote(KEYCHAIN_SERVICE)?,
-            quote(email)?,
-            quote(token.expose())?
-        );
-        let status = Self::interactive(&command)?;
-        if !status.success() {
-            return Err(anyhow!("couldn't save to the Keychain ({status})"));
-        }
-        Ok(())
+        keychain_set(KEYCHAIN_SERVICE, email, token.expose())
     }
 
     fn delete(&self, email: &str) -> anyhow::Result<()> {
@@ -242,12 +209,49 @@ impl TokenStore for Keychain {
             quote(KEYCHAIN_SERVICE)?,
             quote(email)?
         );
-        let status = Self::interactive(&command)?;
+        let status = Keychain::interactive(&command)?;
         if !status.success() && status.code() != Some(NOT_FOUND) {
             return Err(anyhow!("couldn't delete from the Keychain ({status})"));
         }
         Ok(())
     }
+}
+
+/// A generic password in the login Keychain, by service and account.
+pub fn keychain_get(service: &str, account: &str) -> anyhow::Result<Option<Secret>> {
+    let output = Command::new(SECURITY)
+        .args(["find-generic-password", "-s", service, "-a", account, "-w"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .context("couldn't run /usr/bin/security")?;
+    if output.status.code() == Some(NOT_FOUND) {
+        return Ok(None);
+    }
+    if !output.status.success() {
+        return Err(anyhow!("the Keychain refused ({})", output.status));
+    }
+    let token = String::from_utf8(output.stdout)
+        .map_err(|_| anyhow!("the Keychain item isn't text"))?
+        .trim()
+        .to_string();
+    Ok((!token.is_empty()).then_some(Secret(token)))
+}
+
+/// Save a generic password, replacing the one there. It goes on stdin,
+/// never in argv.
+pub fn keychain_set(service: &str, account: &str, secret: &str) -> anyhow::Result<()> {
+    let command = format!(
+        "add-generic-password -U -s {} -a {} -w {}",
+        quote(service)?,
+        quote(account)?,
+        quote(secret)?
+    );
+    let status = Keychain::interactive(&command)?;
+    if !status.success() {
+        return Err(anyhow!("couldn't save to the Keychain ({status})"));
+    }
+    Ok(())
 }
 
 /// Tests' Keychain.

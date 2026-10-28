@@ -38,8 +38,8 @@ To update: change the status cell in the area's table, then the counts below.
 | [Command palette](#82-command-palette-pal) | 0 | 0 | 3 | 3 |
 | [Data model](#83-data-model-dat) | 1 | 3 | 3 | 7 |
 | [Accessibility](#85-accessibility-a11y) | 0 | 9 | 1 | 10 |
-| [System integration](#86-system-integration-sys) | 3 | 0 | 0 | 3 |
-| **Overall** | **40** | **40** | **134** | **214** |
+| [System integration](#86-system-integration-sys) | 3 | 1 | 0 | 4 |
+| **Overall** | **40** | **41** | **134** | **215** |
 
 ## Contents
 
@@ -167,7 +167,7 @@ The user's own plans, not driven by Google's APIs.
 #### ACC-8 Google Cloud project and app verification
 
 - **Needs:** A Google Cloud project with the Gmail, Calendar and People APIs enabled, a desktop OAuth client, and a consent screen. Publishing to the public needs verification: restricted Gmail scopes need restricted-scope review; a security assessment is also needed if restricted data is stored on or sent through our servers.
-- **Notes:** This decides whether the backend is a local sync engine (data stays on the Mac) or a server. Push notifications (SYN-3, SYN-5) need a server.
+- **Notes:** This decides whether the backend is a local sync engine (data stays on the Mac) or a server. Push notifications (SYN-3, SYN-5) need a server. The MCP server (SYS-4) hands Gmail data to AI agents the user connects; verification must cover it under Limited Use.
 
 #### ACC-9 Profile photo
 
@@ -1677,13 +1677,14 @@ VoiceOver, keyboard access, contrast and the system display options (Increase Co
 
 ### 8.6 System integration (SYS)
 
-macOS features beyond links (LNK-4) and sharing (ACT-8, MB-061 step 2).
+macOS features beyond links (LNK-4) and sharing (ACT-8, MB-061 step 2), and the MCP server for AI agents (SYS-4).
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
 | SYS-1 | Spotlight | ⚪ Not done | None (reads the cache) |
 | SYS-2 | Handoff | ⚪ Not done | None (Gmail and Calendar web URLs) |
 | SYS-3 | Widgets | ⚪ Not done | None (reads the cache) |
+| SYS-4 | MCP server for AI agents | 🟡 Partially done | None (Gmail and Calendar through the existing outbox) |
 
 #### SYS-1 Spotlight
 
@@ -1699,6 +1700,16 @@ macOS features beyond links (LNK-4) and sharing (ACT-8, MB-061 step 2).
 
 - **Idea (MB-066):** A WidgetKit extension showing the agenda and unread mail from a JSON snapshot in an App Group container, reloaded after sync. The menu bar panel (NTF-4) covers the glanceable view meanwhile.
 - **Needs:** A Swift build step, entitlements and a provisioning profile.
+
+#### SYS-4 MCP server for AI agents
+
+- **Today:** While Pigeon runs and Settings › MCP › MCP server is on, Pigeon serves the Model Context Protocol (Streamable HTTP, protocol versions 2025-11-25, 2025-06-18 and 2025-03-26) at `http://127.0.0.1:6427/mcp`, or the next free port (the real one shows in Settings). One `POST /mcp` answered with `application/json`; GET is 405, DELETE ends a session. `src/mcp/server.rs` is the transport: `std::net` on 127.0.0.1 only, `httparse` for the request head, one request per connection, 16 KB head and 1 MB body limits, 10 s I/O timeouts and a 30 s whole-request deadline, at most 8 connections. Every request needs `Authorization: Bearer <token>` (401 otherwise); a present `Origin` must be localhost or 127.0.0.1 and `Host` must name the server (403 otherwise, against DNS rebinding). `initialize` hands out an `Mcp-Session-Id` that names the client in the activity log; an unknown session is 404. `MCP-Protocol-Version` is checked on every request but `initialize`, which negotiates in its body. The token (`pgn_` + 32 random bytes from SecRandom, base64url) is in the login Keychain (service "Pigeon MCP", account the data folder), shown masked in Settings with Copy and Regenerate (which asks first: agents using the old token are disconnected). A Keychain that can't be read keeps the server off with the reason in Settings, rather than replacing the token agents use; a token that can't be saved works for this run, with a warning under it.
+  - **Tools** (`src/mcp/tools.rs`), each behind a switch: Read mail (`search_mail` with Pigeon's search syntax over the cache plus Gmail's search when signed in, `read_conversation` with plain-text bodies and attachment metadata, fetching missing bodies, `list_labels`); Organize mail (`archive`, `trash`, `mark_read`, `star`, `add_label`, `remove_label`); Write drafts (`create_draft`, new or reply); Send mail (`send_mail`, new, reply or a draft by id); Read calendar (`list_events`, `get_event`); Edit calendar (`create_event`, `update_event`, `delete_event`, `respond_to_event`). `tools/list` lists all of them, each description naming its switch; a tool whose switch is off returns a tool error naming it.
+  - **Writes** are the UI's backend ops (`MailOp`, `CalOp`) through the outbox, so the undo window (archive, trash, send, delete wait 5 s), offline queueing, rollback on failure and sync behave as for the user's own changes. Mail ops are queued as the menu bar panel queues them, with `ThreadsChanged` so the windows read them back; calendar changes go through the open calendar's in-memory events and `queue()` as its own edits do, or straight to the backend with no window open. Calls run on the main thread (an `async-channel` to a foreground task). Each carries a 30 s deadline: the HTTP thread waits a little past it, and a call the main thread reaches after it is never run, so an agent told "Pigeon was busy and didn't run this" can safely retry; writes finish in the turn they start. An agent can't change an event the user is changing (panel open with changes or on a new event, an edit settling, an answer pending, a guest or scope question open); it gets a tool error saying so. An agent's change to the event the panel shows reloads the panel, and its delete closes it, as a sync does. Dates outside 1900–2200 are refused. Local ids the backend replaces (`IdReplaced`) still resolve. A draft open in a composer can't be sent over MCP.
+  - **Settings › MCP** (`src/ui/settings.rs`): MCP server switch, Server address (Copy), Access token (Copy, Regenerate), the six capability switches, "Add to your agent" with a JSON config snippet (Copy includes the token), and Activity (the last 50 calls this session: time, client, tool, OK or Error; in memory). Saved as `Saved::mcp` (`McpPrefs`): off by default; reads on, writes off until switched on. ⌘K: "MCP Settings".
+- **Needs:** A check with real agents (Claude Code, Codex, Cursor) against a real account. Not in the undo stack: an agent's archive or send shows no Undo toast in the window (the outbox's 5 s window still applies, and the change can be reversed by hand). A failed agent send gets no notice of its own in Pigeon beyond the window's usual handling of a failed op (the draft goes back to Drafts); the agent was already told "queued". With no window open, calendar reads (`list_events`, `get_event`) come from the store, which has an agent's change only once it's committed (about 1 s online; offline, once back online; a delete after its 5 s undo window); the write's result says so in a `note`. Keeping the agent's uncommitted events and overlaying them would close that gap. Not done: recurring-event time changes and "this and following" over MCP, Meet links, attachments on outgoing mail, label creation, SSE streaming and `listChanged`.
+  - **Protocol 2026-07-28:** the current MCP revision is stateless (no `initialize`, no sessions; version, client info and capabilities in every request's `_meta`; `server/discover`; `Mcp-Method`/`Mcp-Name` headers with header–body validation; `resultType` on results; `ttlMs`/`cacheScope` on `tools/list`; `UnsupportedProtocolVersionError` -32022). Pigeon speaks only the legacy, `initialize`-based revisions, so modern-only clients can't connect; dual-era clients probing with a modern request get a 400 with -32600, not a modern error, and fall back to `initialize`. Supporting it means serving both eras on the one endpoint.
+- **Notes:** Google's Limited Use policy (ACC-8): this hands Gmail data to whatever agent the user connects, which may send it to a model provider. In the user's own local build that's their choice; a published, verified app must disclose it in the privacy policy and consent screen, keep it user-initiated and off by default (it is), and Google's Limited Use rules forbid transferring Gmail data to third parties except to provide user-facing features the user asked for, and forbid its use for training models; check with Google during verification (ACC-8) whether an MCP bridge to arbitrary third-party AI clients is allowed, or limit what Read mail exposes. The token is the only guard against other local processes; any app running as the user can read it from Settings' Copy or the Keychain item it trusts.
 
 ---
 

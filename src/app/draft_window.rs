@@ -390,6 +390,15 @@ impl PigeonApp {
     pub(super) fn forget_draft_window(&mut self, composer: &Entity<Composer>) {
         self.draft_windows.retain(|d| d.composer != *composer);
     }
+
+    /// Draft `id` is open in the reading pane or a window of its own (SYS-4).
+    pub(crate) fn draft_is_open(&self, id: &str, cx: &gpui::App) -> bool {
+        self.composer
+            .iter()
+            .map(|(c, _)| c)
+            .chain(self.draft_windows.iter().map(|d| &d.composer))
+            .any(|c| c.read(cx).draft_id.as_deref() == Some(id))
+    }
 }
 
 /// A composer's state, to make it again in another window.

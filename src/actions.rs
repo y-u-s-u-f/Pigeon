@@ -1109,6 +1109,7 @@ pub const COMMANDS: &[Command] = commands! {
     App: "Calendar Settings", Settings, OpenSettingsSection(Section::Calendar);
     App: "Notification Settings", Settings, OpenSettingsSection(Section::Notifications);
     App: "Menu Bar Settings", Settings, OpenSettingsSection(Section::MenuBar);
+    App: "MCP Settings", Code, OpenSettingsSection(Section::Mcp);
     App: "General Settings", Settings, OpenSettingsSection(Section::General);
     App: "Account Settings", Settings, OpenSettingsSection(Section::Accounts);
     App: "Keyboard Shortcut Settings", Settings, OpenSettingsSection(Section::Shortcuts);

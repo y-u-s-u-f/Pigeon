@@ -28,7 +28,7 @@ use gpui::{
 
 use super::{
     HEADER_HEIGHT, account_avatar,
-    controls::{self, ButtonKind, dropdown, menu_check, menu_row, popup, push_button},
+    controls::{self, ButtonKind, dropdown, error_line, menu_check, menu_row, popup, push_button},
     empty_state, icon, icon_button_small, keys_caps,
     motion::{self, Rise, SPRING_PANE},
     window_drag_area,
@@ -36,10 +36,11 @@ use super::{
 use crate::ui::style::*;
 use crate::{
     actions::{COMMANDS, Scope, SignOut, SyncNow},
-    app::{Density, PigeonApp, menu_bar, shell},
+    app::{Density, PigeonApp, ToastKind, menu_bar, shell},
     assets::Icon,
     backend::Source,
     data::Contact,
+    mcp::{self, Capability},
     native::{self, LoginItem},
     notify::{self, Permission},
     settings::{
@@ -125,11 +126,12 @@ pub struct SettingsPage {
     pub focus: FocusHandle,
     pub search: Entity<InputState>,
     scroll: ScrollHandle,
-    /// Sign Out was pressed once: the row asks to confirm.
-    confirm_sign_out: bool,
-    /// While confirming, the keyboard is on Sign Out rather than Cancel
+    /// Sign Out or Regenerate (SYS-4) was pressed once: its row asks to
+    /// confirm.
+    confirm: Option<SettingId>,
+    /// While confirming, the keyboard is on the action rather than Cancel
     /// (MB-028: Return cancels unless → moved it).
-    sign_out_armed: bool,
+    confirm_armed: bool,
     /// The pop-up menu of this setting is open.
     menu: Option<SettingId>,
     /// The option the keyboard is on in the open menu (MC-069).
@@ -157,8 +159,8 @@ impl SettingsPage {
             focus: cx.focus_handle(),
             search,
             scroll: ScrollHandle::new(),
-            confirm_sign_out: false,
-            sign_out_armed: false,
+            confirm: None,
+            confirm_armed: false,
             menu: None,
             menu_cursor: 0,
             bindings: None,
@@ -189,6 +191,13 @@ enum Control {
     Keys(Vec<KeyBinding>),
     /// Read-only text, shown under the label.
     Info(String),
+    /// A value under the description, monospaced for codes, with buttons
+    /// that act on it (SYS-4: Copy, Regenerate).
+    Text {
+        text: String,
+        mono: bool,
+        buttons: &'static [&'static str],
+    },
     /// Runs something; `danger` asks first.
     Button {
         label: &'static str,
@@ -319,8 +328,8 @@ impl PigeonApp {
     pub(crate) fn ask_sign_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_settings_page(window, cx);
         self.jump_to_setting(Entry::Setting(SettingId::SignOut), window, cx);
-        self.settings_page.confirm_sign_out = true;
-        self.settings_page.sign_out_armed = false;
+        self.settings_page.confirm = Some(SettingId::SignOut);
+        self.settings_page.confirm_armed = false;
         cx.notify();
     }
 
@@ -441,7 +450,7 @@ impl PigeonApp {
         }
         let page = &mut self.settings_page;
         page.row = None;
-        page.confirm_sign_out = false;
+        page.confirm = None;
         page.menu = None;
         cx.notify();
     }
@@ -457,7 +466,7 @@ impl PigeonApp {
             }
         };
         self.settings_page.keyboard = true;
-        self.settings_page.confirm_sign_out = false;
+        self.settings_page.confirm = None;
         // ↑/↓ move through an open menu's options (MC-069).
         if let Some(id) = self.settings_page.menu {
             if let Control::Menu(_, options) = self.control(id, window, cx) {
@@ -538,21 +547,114 @@ impl PigeonApp {
             Control::Stepper { .. } => Change::Reset,
             Control::Slider { locked, .. } if !locked => Change::Reset,
             // Return on the confirmation is Cancel unless → moved to Sign
-            // Out (MB-028).
-            Control::Button { .. }
-                if id == SettingId::SignOut
-                    && self.settings_page.confirm_sign_out
-                    && !self.settings_page.sign_out_armed =>
-            {
-                self.settings_page.confirm_sign_out = false;
+            // Out or Regenerate (MB-028).
+            _ if self.settings_page.confirm == Some(id) && !self.settings_page.confirm_armed => {
+                self.settings_page.confirm = None;
                 return cx.notify();
             }
+            Control::Text { .. } if self.settings_page.confirm == Some(id) => {
+                return self.press_text_button(id, 1, window, cx);
+            }
             Control::Button { .. } => return self.press_setting(id, window, cx),
-            Control::Account(_) | Control::Keys(_) | Control::Info(_) | Control::Slider { .. } => {
+            Control::Text { buttons, .. } if !buttons.is_empty() => {
+                return self.press_text_button(id, 0, window, cx);
+            }
+            Control::Account(_)
+            | Control::Keys(_)
+            | Control::Info(_)
+            | Control::Text { .. }
+            | Control::Slider { .. } => {
                 return;
             }
         };
         self.change_setting(id, change, window, cx);
+    }
+
+    /// A row's confirmation: Cancel, and `label` doing the thing. The
+    /// keyboard ring (`keyboard`) is on whichever ← and → chose.
+    fn confirm_buttons(
+        &self,
+        ix: usize,
+        label: &'static str,
+        keyboard: bool,
+        confirm: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let armed = self.settings_page.confirm_armed;
+        let keyboard_ring = |on: bool| {
+            let ring = focus_ring(theme);
+            move |el: gpui::Stateful<gpui::Div>| {
+                if on { el.shadow(ring) } else { el }
+            }
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap(SPACE_SM)
+            .child(
+                push_button(("settings-cancel", ix), "Cancel", ButtonKind::Plain, theme)
+                    .map(keyboard_ring(keyboard && !armed))
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.settings_page.confirm = None;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                push_button(
+                    ("settings-confirm", ix),
+                    label,
+                    ButtonKind::Destructive,
+                    theme,
+                )
+                .map(keyboard_ring(keyboard && armed))
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    cx.stop_propagation();
+                    confirm(this, window, cx);
+                })),
+            )
+            .into_any_element()
+    }
+
+    /// SYS-4: Settings › MCP's Copy and Regenerate.
+    fn press_text_button(
+        &mut self,
+        id: SettingId,
+        button: usize,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let copied = match (id, button) {
+            (SettingId::McpAddress, 0) => mcp::url(cx).map(|url| (url, "Copied the address")),
+            (SettingId::McpToken, 0) => mcp::token(cx).map(|token| (token, "Copied the token")),
+            (SettingId::McpConfig, 0) => mcp::url(cx)
+                .zip(mcp::token(cx))
+                .map(|(url, token)| (mcp::config_snippet(&url, &token), "Copied the config")),
+            // Disconnects every agent, so it asks first, as Sign Out does.
+            (SettingId::McpToken, 1) if self.settings_page.confirm != Some(id) => {
+                self.settings_page.confirm = Some(id);
+                self.settings_page.confirm_armed = false;
+                None
+            }
+            (SettingId::McpToken, 1) => {
+                self.settings_page.confirm = None;
+                mcp::regenerate_token(cx);
+                self.show_toast(
+                    ToastKind::Done,
+                    "New token made. Agents need it to connect again.",
+                    None,
+                    cx,
+                );
+                None
+            }
+            _ => None,
+        };
+        if let Some((text, message)) = copied {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+            self.show_toast(ToastKind::Done, message, None, cx);
+        }
+        cx.notify();
     }
 
     /// Open setting `id`'s pop-up, the keyboard on option `at`.
@@ -576,11 +678,11 @@ impl PigeonApp {
             SettingId::DefaultMailApp => shell::make_default_mail_app(cx),
             SettingId::SignOut => {
                 let google = self.backend.read(cx).source() == Source::Google;
-                if google && !self.settings_page.confirm_sign_out {
-                    self.settings_page.confirm_sign_out = true;
-                    self.settings_page.sign_out_armed = false;
+                if google && self.settings_page.confirm != Some(id) {
+                    self.settings_page.confirm = Some(id);
+                    self.settings_page.confirm_armed = false;
                 } else {
-                    self.settings_page.confirm_sign_out = false;
+                    self.settings_page.confirm = None;
                     if google {
                         self.close_settings(window, cx);
                         self.backend.update(cx, |b, cx| b.sign_out(cx));
@@ -608,8 +710,8 @@ impl PigeonApp {
             }
             return;
         };
-        if id == SettingId::SignOut && self.settings_page.confirm_sign_out {
-            self.settings_page.sign_out_armed = up;
+        if self.settings_page.confirm == Some(id) {
+            self.settings_page.confirm_armed = up;
             return cx.notify();
         }
         let change = match self.control(id, window, cx) {
@@ -622,6 +724,7 @@ impl PigeonApp {
             Control::Account(_)
             | Control::Keys(_)
             | Control::Info(_)
+            | Control::Text { .. }
             | Control::Button { .. }
             | Control::Slider { .. } => {
                 return;
@@ -631,9 +734,7 @@ impl PigeonApp {
     }
 
     fn settings_close(&mut self, _: &Close, window: &mut Window, cx: &mut Context<Self>) {
-        if self.settings_page.menu.take().is_some()
-            || std::mem::take(&mut self.settings_page.confirm_sign_out)
-        {
+        if self.settings_page.menu.take().is_some() || self.settings_page.confirm.take().is_some() {
             cx.notify();
         } else if !self.settings_query(cx).is_empty() {
             self.clear_settings_search(window, cx);
@@ -800,6 +901,79 @@ impl PigeonApp {
                 let ix = KeymapPreset::ALL.iter().position(|k| *k == keymap);
                 Control::Choice(ix.unwrap_or(0), KEYMAPS)
             }
+            // SYS-4.
+            SettingId::McpServer => Control::Switch(settings::get(cx).mcp.enabled),
+            SettingId::McpAddress => match mcp::status(cx) {
+                mcp::Status::Listening(_) => Control::Text {
+                    text: mcp::url(cx).unwrap_or_default(),
+                    mono: true,
+                    buttons: &["Copy"],
+                },
+                status => Control::Text {
+                    text: match status {
+                        mcp::Status::Starting => "Starting…".into(),
+                        // Why, in red under it.
+                        _ => "Off".into(),
+                    },
+                    mono: false,
+                    buttons: &[],
+                },
+            },
+            SettingId::McpToken => match mcp::token(cx) {
+                Some(token) => Control::Text {
+                    text: mcp::masked(&token),
+                    mono: true,
+                    buttons: &["Copy", "Regenerate"],
+                },
+                None => Control::Text {
+                    text: "Made when the server first turns on.".into(),
+                    mono: false,
+                    buttons: &[],
+                },
+            },
+            SettingId::McpConfig => match mcp::url(cx).zip(mcp::token(cx)) {
+                Some((url, token)) => Control::Text {
+                    text: mcp::config_snippet(&url, &mcp::masked(&token)),
+                    mono: true,
+                    buttons: &["Copy"],
+                },
+                None => Control::Text {
+                    text: "Turn on the server first.".into(),
+                    mono: false,
+                    buttons: &[],
+                },
+            },
+            SettingId::McpActivity => {
+                let lines: Vec<String> = mcp::activity(cx)
+                    .iter()
+                    .map(|a| {
+                        format!(
+                            "{}  {} · {} · {}",
+                            crate::calendar::time::time_label(a.at.time()),
+                            a.client,
+                            a.tool,
+                            if a.ok { "OK" } else { "Error" }
+                        )
+                    })
+                    .collect();
+                Control::Text {
+                    text: if lines.is_empty() {
+                        "No calls yet.".into()
+                    } else {
+                        lines.join("\n")
+                    },
+                    mono: false,
+                    buttons: &[],
+                }
+            }
+            SettingId::McpReadMail
+            | SettingId::McpOrganizeMail
+            | SettingId::McpWriteDrafts
+            | SettingId::McpSendMail
+            | SettingId::McpReadCalendar
+            | SettingId::McpEditCalendar => {
+                Control::Switch(mcp_capability(id).is_some_and(|c| settings::get(cx).mcp.allows(c)))
+            }
         }
     }
 
@@ -913,6 +1087,21 @@ impl PigeonApp {
                 };
                 let glass = 100 - (transparency.clamp(0., 1.) * 100.).round() as u8;
                 shell::set_glass(glass, cx);
+            }
+            SettingId::McpServer => mcp::set_enabled(on, cx),
+            SettingId::McpAddress
+            | SettingId::McpToken
+            | SettingId::McpConfig
+            | SettingId::McpActivity => {}
+            SettingId::McpReadMail
+            | SettingId::McpOrganizeMail
+            | SettingId::McpWriteDrafts
+            | SettingId::McpSendMail
+            | SettingId::McpReadCalendar
+            | SettingId::McpEditCalendar => {
+                if let Some(capability) = mcp_capability(id) {
+                    mcp::set_capability(capability, on, cx);
+                }
             }
             SettingId::ShortcutPreset => {
                 let preset = KeymapPreset::ALL[choice];
@@ -1381,13 +1570,20 @@ impl PigeonApp {
             }
             _ => entry.description(),
         };
-        let confirming = entry == Entry::Setting(SettingId::SignOut)
-            && self.settings_page.confirm_sign_out
+        let confirming = matches!(entry, Entry::Setting(id) if self.settings_page.confirm == Some(id))
             && !in_results;
-        // Why Make Default failed, until it works (ME-074).
-        let error = (entry == Entry::Setting(SettingId::DefaultMailApp) && !in_results)
-            .then(shell::default_mail_app_error)
-            .flatten();
+        // Why Make Default failed, until it works (ME-074); why the MCP
+        // token won't last (SYS-4).
+        let error = match entry {
+            _ if in_results => None,
+            Entry::Setting(SettingId::DefaultMailApp) => shell::default_mail_app_error(),
+            Entry::Setting(SettingId::McpAddress) => match mcp::status(cx) {
+                mcp::Status::Failed(why) => Some(why),
+                _ => None,
+            },
+            Entry::Setting(SettingId::McpToken) => mcp::warning(cx),
+            _ => None,
+        };
 
         // MA-073: what macOS says, above Turn On or Open System Settings.
         let permission = (entry == Entry::Setting(SettingId::NotificationPermission)
@@ -1436,6 +1632,41 @@ impl PigeonApp {
                         .into_any_element(),
                 ),
             ),
+            Some(Control::Text { text, mono, .. }) if !in_results && !confirming => (
+                div().child(label).into_any_element(),
+                Some(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(SPACE_XS)
+                        .when(!description.is_empty(), |d| d.child(description))
+                        .child(
+                            div()
+                                .text_color(theme.text)
+                                .when(*mono, |d| {
+                                    d.font_family(MONO)
+                                        .px(SPACE_SM)
+                                        .py(SPACE_XS)
+                                        .rounded(RADIUS_SM)
+                                        .bg(theme.control_track)
+                                })
+                                .child(
+                                    super::selectable::Selectable::plain(
+                                        ("settings-text", ix),
+                                        text.clone(),
+                                        theme.text_selection,
+                                    )
+                                    .silent(),
+                                ),
+                        )
+                        .children(
+                            error
+                                .clone()
+                                .map(|error| error_line(("settings-error", ix), error, &theme)),
+                        )
+                        .into_any_element(),
+                ),
+            ),
             _ if permission.is_some() => (
                 div().child(label).into_any_element(),
                 Some(div().children(permission).into_any_element()),
@@ -1453,6 +1684,15 @@ impl PigeonApp {
                             )
                             .silent()
                         }))
+                        .into_any_element(),
+                ),
+            ),
+            _ if confirming && entry == Entry::Setting(SettingId::McpToken) => (
+                div().child("Regenerate the token?").into_any_element(),
+                Some(
+                    div()
+                        .text_color(theme.text_danger)
+                        .child("Agents using the current token will be disconnected.")
                         .into_any_element(),
                 ),
             ),
@@ -1576,54 +1816,60 @@ impl PigeonApp {
                     .into_any_element(),
             ),
             Some(Control::Info(_)) => None,
-            Some(Control::Button { label, danger }) => {
+            Some(Control::Text { .. }) if confirming => {
                 let Entry::Setting(id) = entry else {
                     unreachable!()
                 };
-                let armed = self.settings_page.sign_out_armed;
-                let keyboard_ring = |on: bool| {
-                    let ring = focus_ring(&theme);
-                    move |el: gpui::Stateful<gpui::Div>| {
-                        if on { el.shadow(ring) } else { el }
-                    }
+                Some(self.confirm_buttons(
+                    ix,
+                    "Regenerate",
+                    cursor && ring,
+                    move |this, window, cx| this.press_text_button(id, 1, window, cx),
+                    &theme,
+                    cx,
+                ))
+            }
+            Some(Control::Text { buttons, .. }) if !in_results && !buttons.is_empty() => {
+                let Entry::Setting(id) = entry else {
+                    unreachable!()
                 };
-                let press = |name: &'static str| {
-                    cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        cx.stop_propagation();
-                        if name == "settings-cancel" {
-                            this.settings_page.confirm_sign_out = false;
-                            cx.notify();
-                        } else {
-                            this.press_setting(id, window, cx);
-                        }
-                    })
-                };
-                Some(if confirming {
+                Some(
                     div()
                         .flex()
                         .items_center()
                         .gap(SPACE_SM)
-                        .child(
+                        .children(buttons.iter().enumerate().map(|(button, label)| {
                             push_button(
-                                ("settings-cancel", ix),
-                                "Cancel",
+                                ("settings-text-button", ix * 4 + button),
+                                *label,
                                 ButtonKind::Plain,
                                 &theme,
                             )
-                            .map(keyboard_ring(cursor && ring && !armed))
-                            .on_click(press("settings-cancel")),
-                        )
-                        .child(
-                            push_button(
-                                ("settings-confirm", ix),
-                                label,
-                                ButtonKind::Destructive,
-                                &theme,
-                            )
-                            .map(keyboard_ring(cursor && ring && armed))
-                            .on_click(press("settings-confirm")),
-                        )
-                        .into_any_element()
+                            .aria_label(text_button_label(id, button, label))
+                            .on_click(cx.listener(
+                                move |this, _: &ClickEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    this.press_text_button(id, button, window, cx);
+                                },
+                            ))
+                        }))
+                        .into_any_element(),
+                )
+            }
+            Some(Control::Text { .. }) => None,
+            Some(Control::Button { label, danger }) => {
+                let Entry::Setting(id) = entry else {
+                    unreachable!()
+                };
+                Some(if confirming {
+                    self.confirm_buttons(
+                        ix,
+                        label,
+                        cursor && ring,
+                        move |this, window, cx| this.press_setting(id, window, cx),
+                        &theme,
+                        cx,
+                    )
                 } else {
                     let kind = if danger {
                         ButtonKind::Danger
@@ -1631,7 +1877,10 @@ impl PigeonApp {
                         ButtonKind::Plain
                     };
                     push_button(("settings-button", ix), label, kind, &theme)
-                        .on_click(press("settings-button"))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.press_setting(id, window, cx);
+                        }))
                         .into_any_element()
                 })
             }
@@ -1713,7 +1962,7 @@ impl PigeonApp {
             .children(trailing.map(|t| div().flex_none().child(t)))
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 if !confirming {
-                    this.settings_page.confirm_sign_out = false;
+                    this.settings_page.confirm = None;
                 }
                 if in_results {
                     this.jump_to_setting(entry, window, cx);
@@ -1891,6 +2140,31 @@ fn mix(from: Hsla, to: Hsla, t: f32) -> Hsla {
         a: lerp(a.a, b.a),
     }
     .into()
+}
+
+/// What VoiceOver reads for a row's button: the visible label says only
+/// "Copy" on three rows.
+fn text_button_label(id: SettingId, button: usize, label: &str) -> String {
+    match (id, button) {
+        (SettingId::McpAddress, 0) => "Copy Server Address".into(),
+        (SettingId::McpToken, 0) => "Copy Access Token".into(),
+        (SettingId::McpToken, 1) => "Regenerate Access Token".into(),
+        (SettingId::McpConfig, 0) => "Copy Agent Config".into(),
+        _ => label.to_string(),
+    }
+}
+
+/// The capability an MCP switch stands for.
+fn mcp_capability(id: SettingId) -> Option<Capability> {
+    Some(match id {
+        SettingId::McpReadMail => Capability::ReadMail,
+        SettingId::McpOrganizeMail => Capability::OrganizeMail,
+        SettingId::McpWriteDrafts => Capability::WriteDrafts,
+        SettingId::McpSendMail => Capability::SendMail,
+        SettingId::McpReadCalendar => Capability::ReadCalendar,
+        SettingId::McpEditCalendar => Capability::EditCalendar,
+        _ => return None,
+    })
 }
 
 fn menu_options(names: &[&str]) -> Vec<(String, Option<Hsla>)> {
