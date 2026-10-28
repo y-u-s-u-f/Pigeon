@@ -399,6 +399,98 @@ impl Event {
         Some((old, new))
     }
 
+    /// Whether this occurrence record really differs from its `series`.
+    /// Google lists an instance for occurrences that were never changed
+    /// too, so having a `recurring_event_id` says nothing: it counts only
+    /// when it moved, was resized, or has fields of its own.
+    pub fn differs_from_series(&self, series: &Event) -> bool {
+        let rule_start = self.original_start.unwrap_or(self.start);
+        self.start != rule_start
+            || self.duration() != series.duration()
+            || (self.all_day, &self.title, &self.location, &self.description)
+                != (
+                    series.all_day,
+                    &series.title,
+                    &series.location,
+                    &series.description,
+                )
+            || (&self.video_link, &self.conference_uri, self.busy)
+                != (&series.video_link, &series.conference_uri, series.busy)
+            || self.attendees != series.attendees
+            || (
+                self.reminder_use_default,
+                self.reminder_minutes,
+                &self.reminders,
+            ) != (
+                series.reminder_use_default,
+                series.reminder_minutes,
+                &series.reminders,
+            )
+    }
+
+    /// Whether the fields the panel edits, and Discard puts back, are the
+    /// same as `other`'s. The Meet isn't one: Google keeps a conference once
+    /// it made it.
+    pub fn same_edits(&self, other: &Event) -> bool {
+        (
+            &self.calendar,
+            &self.title,
+            &self.location,
+            &self.description,
+            &self.video_link,
+            &self.attendees,
+        ) == (
+            &other.calendar,
+            &other.title,
+            &other.location,
+            &other.description,
+            &other.video_link,
+            &other.attendees,
+        ) && (
+            self.start,
+            self.end,
+            self.all_day,
+            &self.recurrence,
+            &self.exceptions,
+        ) == (
+            other.start,
+            other.end,
+            other.all_day,
+            &other.recurrence,
+            &other.exceptions,
+        ) && (
+            self.busy,
+            self.reminder_use_default,
+            self.reminder_minutes,
+            &self.reminders,
+        ) == (
+            other.busy,
+            other.reminder_use_default,
+            other.reminder_minutes,
+            &other.reminders,
+        )
+    }
+
+    /// Put the fields `same_edits` compares back to `from`'s, keeping the
+    /// rest (the id, Google's etag and what it made) as it is now.
+    pub fn restore_edits(&mut self, from: &Event) {
+        self.calendar = from.calendar.clone();
+        self.title = from.title.clone();
+        self.location = from.location.clone();
+        self.description = from.description.clone();
+        self.video_link = from.video_link.clone();
+        self.attendees = from.attendees.clone();
+        self.start = from.start;
+        self.end = from.end;
+        self.all_day = from.all_day;
+        self.recurrence = from.recurrence.clone();
+        self.exceptions = from.exceptions.clone();
+        self.busy = from.busy;
+        self.reminder_use_default = from.reminder_use_default;
+        self.reminder_minutes = from.reminder_minutes;
+        self.reminders = from.reminders.clone();
+    }
+
     /// My answer to an invite, when someone else organizes it. Any of my
     /// addresses is me (ACC-2).
     pub fn my_status(&self, me: &crate::data::Account) -> Option<RsvpStatus> {
@@ -640,6 +732,93 @@ mod tests {
             .split(monday(16), monday(16), &single, "n2".into())
             .unwrap();
         assert!(new.recurrence.is_none() && !new.is_series());
+    }
+
+    /// The record Google lists for an occurrence nobody changed.
+    fn instance_of(series: &Event, at: NaiveDateTime) -> Event {
+        Event {
+            id: format!("{}_{at}", series.id),
+            start: at,
+            end: at + series.duration(),
+            recurrence: None,
+            exceptions: Vec::new(),
+            recurring_event_id: Some(series.id.clone()),
+            original_start: Some(at),
+            ..series.clone()
+        }
+    }
+
+    #[test]
+    fn an_unchanged_instance_does_not_differ_from_its_series() {
+        let series = weekly();
+        assert!(!instance_of(&series, monday(16)).differs_from_series(&series));
+    }
+
+    #[test]
+    fn an_instance_differs_when_moved_resized_or_edited() {
+        let series = weekly();
+        let same = || instance_of(&series, monday(16));
+        let moved = Event {
+            start: monday(16) + Duration::hours(1),
+            end: monday(16) + Duration::hours(1) + series.duration(),
+            ..same()
+        };
+        let resized = Event {
+            end: monday(16) + Duration::hours(2),
+            ..same()
+        };
+        let renamed = Event {
+            title: "Sync (new room)".into(),
+            ..same()
+        };
+        let guest = Event {
+            attendees: vec![Attendee {
+                name: String::new(),
+                email: "a@b.c".into(),
+                status: RsvpStatus::Accepted,
+            }],
+            ..same()
+        };
+        let free = Event {
+            busy: !series.busy,
+            ..same()
+        };
+        for changed in [moved, resized, renamed, guest, free] {
+            assert!(changed.differs_from_series(&series), "{changed:?}");
+        }
+    }
+
+    #[test]
+    fn restoring_edits_keeps_what_google_made() {
+        let base = weekly();
+        let mut event = Event {
+            title: "Renamed".into(),
+            location: "Room 2".into(),
+            start: monday(3),
+            end: monday(3) + Duration::hours(1),
+            busy: !base.busy,
+            exceptions: vec![monday(10)],
+            recurrence: None,
+            calendar: "other".into(),
+            etag: "\"newer\"".into(),
+            conference_uri: "https://meet.google.com/abc-defg-hij".into(),
+            ..base.clone()
+        };
+        assert!(!event.same_edits(&base));
+        event.restore_edits(&base);
+        assert!(event.same_edits(&base));
+        assert_eq!(event.etag, "\"newer\"");
+        assert_eq!(event.conference_uri, "https://meet.google.com/abc-defg-hij");
+        assert_eq!(
+            (event.start, &event.exceptions),
+            (base.start, &base.exceptions)
+        );
+        // Only the Meet differs: nothing to discard.
+        assert!(event.same_edits(&Event {
+            conference_uri: String::new(),
+            meet_request: Some("req".into()),
+            ..base
+        }));
     }
 
     #[test]

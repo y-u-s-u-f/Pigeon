@@ -56,6 +56,15 @@ const SLOT_MINUTES: i64 = 15;
 /// The reminders "Add reminder" offers, in minutes before (CAL-33).
 const REMINDER_PRESETS: [u32; 10] = [0, 5, 10, 15, 30, 60, 120, 1440, 2880, 10080];
 
+/// Indices into `calendars` in the order the event's calendar picker lists
+/// them: the ones the user can write to, then the greyed read-only ones,
+/// each in list order.
+fn picker_order(calendars: &[crate::calendar::Calendar]) -> Vec<usize> {
+    let (writable, read_only): (Vec<usize>, Vec<usize>) =
+        (0..calendars.len()).partition(|&ix| calendars[ix].writable());
+    writable.into_iter().chain(read_only).collect()
+}
+
 fn reminder_label(minutes: u32) -> String {
     match minutes {
         0 => "At start time".into(),
@@ -345,8 +354,10 @@ impl EventPanel {
     }
 
     /// The fields in tab order: as they read, top to bottom.
-    fn fields(all_day: bool) -> &'static [Field] {
-        if all_day {
+    fn fields(all_day: bool, editable: bool) -> &'static [Field] {
+        if !editable {
+            &[Field::Calendar, Field::Title]
+        } else if all_day {
             &[
                 Field::Calendar,
                 Field::Title,
@@ -379,7 +390,7 @@ impl EventPanel {
     }
 
     fn focused_field(&self, window: &Window, cx: &gpui::App) -> Option<Field> {
-        Self::fields(false)
+        Self::fields(false, true)
             .iter()
             .copied()
             .chain([Field::EndDate])
@@ -631,12 +642,25 @@ impl CalendarView {
             let Some(edited) = self.event(&series_id).cloned() else {
                 return;
             };
+            // Discard puts the new series back as the old one had it there.
+            let as_was = snapshot
+                .split(origin, origin, &snapshot, String::new())
+                .map(|(_, new)| new);
             match self.split_series(snapshot, origin, start, edited, cx) {
                 Some(id) => {
                     if let Some(panel) = &mut self.panel {
                         panel.event_id = id.clone();
                         panel.edit_scope.switched_event();
                     }
+                    self.discard_base = as_was.map(|new| {
+                        (
+                            Event {
+                                id: id.clone(),
+                                ..new
+                            },
+                            origin,
+                        )
+                    });
                     self.selected = Some(super::Selection {
                         event_id: id,
                         start,
@@ -653,6 +677,7 @@ impl CalendarView {
                 return;
             };
             // The series goes back; the occurrence takes the change.
+            let series_was = snapshot.clone();
             if let Some(series) = self.event_mut(&series_id) {
                 *series = snapshot;
             }
@@ -664,6 +689,20 @@ impl CalendarView {
                 panel.event_id = id.clone();
                 panel.edit_scope.switched_event();
             }
+            // Discard puts the occurrence back as the series had it there.
+            self.discard_base = Some((
+                Event {
+                    id: id.clone(),
+                    start: origin,
+                    end: origin + series_was.duration(),
+                    recurrence: None,
+                    exceptions: Vec::new(),
+                    recurring_event_id: Some(series_id.clone()),
+                    original_start: Some(origin),
+                    ..series_was
+                },
+                origin,
+            ));
             self.selected = Some(super::Selection {
                 event_id: id,
                 start,
@@ -673,6 +712,71 @@ impl CalendarView {
             self.settle_edit(cx);
         }
         cx.notify();
+    }
+
+    /// Whether the panel's event has a change since the panel opened on it,
+    /// which Discard would take back.
+    fn panel_dirty(&self) -> bool {
+        let Some((panel, event)) = self.panel_event() else {
+            return false;
+        };
+        !self.panel_is_new()
+            && self
+                .discard_base
+                .as_ref()
+                .is_some_and(|(base, _)| base.id == panel.event_id && !event.same_edits(base))
+    }
+
+    /// Discard (⌘⇧D): a new event goes; for another, the changes since the
+    /// panel opened are taken back and the panel closes.
+    pub(crate) fn discard_event_changes(
+        &mut self,
+        _: &DiscardEventChanges,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.panel_is_new() {
+            return self.discard_new_event(window, cx);
+        }
+        if self.panel_dirty() || self.asking_scope() {
+            self.discard_changes(window, cx);
+        }
+    }
+
+    /// Everything changed in the panel goes back: one patch restores the
+    /// fields (a change still waiting for its scope was never sent, and is
+    /// just dropped). The patch is any other edit's: ETag, rollback, toast,
+    /// and the guest question.
+    fn discard_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.asking_scope() {
+            self.drop_unscoped_edit(cx);
+        } else if let Some((base, occurrence)) = self.discard_base.clone()
+            && let Some(before) = self.event(&base.id).cloned()
+            && !before.same_edits(&base)
+        {
+            let id = base.id.clone();
+            let demo = self.backend.read(cx).is_demo();
+            if let Some(event) = self.event_mut(&id) {
+                event.restore_edits(&base);
+                // Demo mode makes up its Meet links here; Google's stay.
+                if demo {
+                    event.conference_uri = base.conference_uri.clone();
+                }
+            }
+            self.patched(before, cx);
+            if let Some(panel) = &mut self.panel {
+                panel.occurrence = occurrence;
+            }
+            if let Some(selected) = &mut self.selected
+                && selected.event_id == id
+            {
+                selected.start = occurrence;
+            }
+        }
+        // The fields show it as it was, so closing doesn't write them back.
+        self.reload_panel(window, cx);
+        self.sync_panel_times(window, cx);
+        self.close_panel(window, cx);
     }
 
     pub(crate) fn edit_event(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Event)) {
@@ -875,7 +979,7 @@ impl CalendarView {
         let Some((panel, event)) = self.panel_event() else {
             return;
         };
-        let fields = EventPanel::fields(event.all_day);
+        let fields = EventPanel::fields(event.all_day, self.access_of(event) == Access::Edit);
         let current = panel
             .focused_field(window, cx)
             .and_then(|f| fields.iter().position(|&x| x == f));
@@ -929,7 +1033,15 @@ impl CalendarView {
             return;
         }
         let current = match menu {
-            Menu::EventCalendar => self.data.calendar_ix(&event.calendar).unwrap_or(0),
+            Menu::EventCalendar => self
+                .data
+                .calendar_ix(&event.calendar)
+                .and_then(|ix| {
+                    picker_order(&self.data.calendars)
+                        .iter()
+                        .position(|&o| o == ix)
+                })
+                .unwrap_or(0),
             Menu::Repeat => {
                 let start = self.panel.as_ref().map_or(event.start, |p| p.occurrence);
                 repeat::preset_index(event.recurrence.as_ref(), start.date())
@@ -954,17 +1066,11 @@ impl CalendarView {
     ) {
         match menu {
             Menu::EventCalendar => {
-                let writable = |c: &&crate::calendar::Calendar| {
-                    matches!(
-                        c.access_role,
-                        crate::calendar::AccessRole::Owner | crate::calendar::AccessRole::Writer
-                    )
-                };
-                if let Some((id, default)) = self
-                    .data
-                    .calendars
+                // `ix` is the row; the picker lists writable calendars first.
+                if let Some((id, default)) = picker_order(&self.data.calendars)
                     .get(ix)
-                    .filter(writable)
+                    .and_then(|&at| self.data.calendars.get(at))
+                    .filter(|c| c.writable())
                     .map(|c| (c.id.clone(), c.default_reminder))
                 {
                     self.edit_event(cx, |e| {
@@ -1658,12 +1764,20 @@ impl CalendarView {
                         div()
                             .pl(SPACE_LG)
                             .flex()
-                            .items_center()
+                            .items_start()
                             .gap(SPACE_SM)
                             .text_size(TEXT_SM)
+                            .line_height(relative(1.5))
                             .text_color(theme.text_muted)
-                            .child(icon(Icon::Repeat, px(13.), theme.text_faint))
-                            .child(line)
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .h(px(18.))
+                                    .flex()
+                                    .items_center()
+                                    .child(icon(Icon::Repeat, px(13.), theme.text_faint)),
+                            )
+                            .child(div().flex_1().min_w_0().child(line))
                     }),
             )
             .children(read_only_note)
@@ -1697,6 +1811,16 @@ impl CalendarView {
                 ))
             });
 
+        // Without a way to change them, empty ones aren't shown.
+        let sections = [
+            self.render_place(panel, event, &theme, window, cx),
+            self.render_guests(panel, event, &theme, window, cx),
+            self.render_notes(panel, event, &theme, window, cx),
+        ]
+        .into_iter()
+        .flatten()
+        .flat_map(|s| [divider(&theme).into_any_element(), s]);
+
         let body = div()
             .id("event-panel-body")
             .flex_1()
@@ -1709,33 +1833,7 @@ impl CalendarView {
             .when(self.can_repeat(event), |d| {
                 d.child(self.render_repeat(panel, event, &theme, window, cx))
             })
-            .child(divider(&theme))
-            .child(self.render_place(panel, event, &theme, window, cx))
-            .child(divider(&theme))
-            .child(self.render_guests(panel, event, &theme, window, cx))
-            .child(divider(&theme))
-            .child(section(
-                Icon::Text,
-                &theme,
-                field_box(panel.is_focused(Field::Notes, window, cx), &theme)
-                    .h_auto()
-                    .min_h(px(30.))
-                    .py(SPACE_XS)
-                    .px(px(0.))
-                    .child(
-                        div()
-                            .w_full()
-                            .text_size(TEXT_BASE)
-                            .line_height(relative(1.5))
-                            .mx(px(-2.))
-                            .child(
-                                Textarea::new(&panel.notes)
-                                    .readonly(!editable)
-                                    .appearance(false)
-                                    .text_size(TEXT_BASE),
-                            ),
-                    ),
-            ))
+            .children(sections)
             .child(divider(&theme))
             .child(self.render_options(event, &theme, window, cx))
             // A new event has Discard instead.
@@ -1765,15 +1863,16 @@ impl CalendarView {
             .child(header)
             .child(body)
             .when(is_new || editable, |d| {
-                d.child(self.render_footer(is_new, &theme))
+                d.child(self.render_footer(is_new, self.panel_dirty(), &theme))
             })
             .into_any_element()
             .into()
     }
 
     /// Save and Discard for a new event; Done for one whose edits already
-    /// went as they were made.
-    fn render_footer(&self, is_new: bool, theme: &Theme) -> impl IntoElement {
+    /// went as they were made, with Discard once there's something to take
+    /// back.
+    fn render_footer(&self, is_new: bool, dirty: bool, theme: &Theme) -> impl IntoElement {
         let button = |id: &'static str, label: &'static str, primary: bool| {
             focusable_control(div().id(id), theme)
                 .role(gpui::Role::Button)
@@ -1829,6 +1928,15 @@ impl CalendarView {
                         .on_click(|_, window, cx| window.dispatch_action(Box::new(CloseEvent), cx)),
                 )
             })
+            .when(!is_new && dirty, |d| {
+                d.child(
+                    button("event-discard", "Discard", false)
+                        .child(keycap("⇧⌘D", theme))
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(DiscardEventChanges), cx)
+                        }),
+                )
+            })
             .child(
                 button("event-save", label, true)
                     .child(
@@ -1841,8 +1949,8 @@ impl CalendarView {
             )
     }
 
-    /// "Repeats every week", or for an occurrence changed on its own, the
-    /// series it belongs to.
+    /// "Repeats every week", or for an occurrence, the series it belongs
+    /// to, saying so only when this one really differs from it.
     fn repeat_line(&self, event: &Event) -> Option<String> {
         if let Some(recurrence) = &event.recurrence {
             return Some(recurrence.label());
@@ -1852,7 +1960,11 @@ impl CalendarView {
             .recurrence
             .as_ref()
             .map_or_else(|| "Repeating".to_string(), |r| r.label());
-        Some(format!("{label} · this one changed separately"))
+        Some(if event.differs_from_series(series) {
+            format!("{label} · this one changed separately")
+        } else {
+            label
+        })
     }
 
     /// The delete row, with its shortcut; for a repeating event, once
@@ -1942,17 +2054,13 @@ impl CalendarView {
         let color = self.data.color_of(event);
         let highlight = self.panel.as_ref().map_or(0, |p| p.menu_highlight);
         let menu = open.then(|| {
-            let rows = self
-                .data
-                .calendars
-                .iter()
+            let rows = picker_order(&self.data.calendars)
+                .into_iter()
+                .filter_map(|at| self.data.calendars.get(at))
                 .enumerate()
                 .map(|(ix, calendar)| {
                     let current = calendar.id == event.calendar;
-                    let writable = matches!(
-                        calendar.access_role,
-                        crate::calendar::AccessRole::Owner | crate::calendar::AccessRole::Writer
-                    );
+                    let writable = calendar.writable();
                     menu_row(("calendar-choice", ix), ix == highlight, theme)
                         .role(gpui::Role::MenuItem)
                         .aria_label(calendar.name.clone())
@@ -2010,6 +2118,66 @@ impl CalendarView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (start, end) = panel.times(event);
+        // Nothing to change: the times as plain text.
+        if self.access_of(event) != Access::Edit {
+            let today = today();
+            let (day, detail) = if event.all_day {
+                let last = (end - Duration::days(1)).date().max(start.date());
+                let day = if last == start.date() {
+                    date_label(last, today)
+                } else {
+                    format!(
+                        "{} – {}",
+                        date_label(start.date(), today),
+                        date_label(last, today)
+                    )
+                };
+                (day, "All day".to_string())
+            } else if end.date() == start.date()
+                || end == time::midnight(start.date() + Duration::days(1))
+            {
+                (
+                    date_label(start.date(), today),
+                    format!(
+                        "{} · {}",
+                        time::time_range_label(start.time(), end.time()),
+                        duration_label(end - start)
+                    ),
+                )
+            } else {
+                (
+                    date_label(start.date(), today),
+                    format!(
+                        "{} – {}, {} · {}",
+                        time_label(start.time()),
+                        date_label(end.date(), today),
+                        time_label(end.time()),
+                        duration_label(end - start)
+                    ),
+                )
+            };
+            return section(
+                Icon::Clock,
+                theme,
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        plain_box()
+                            .text_size(TEXT_BASE)
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(day),
+                    )
+                    .child(
+                        plain_box()
+                            .h(px(28.))
+                            .text_size(TEXT_BASE)
+                            .text_color(theme.text_muted)
+                            .child(detail),
+                    ),
+            )
+            .into_any_element();
+        }
         let field = |f: Field, width: Option<f32>, cx: &mut Context<Self>| {
             self.render_date_time_field(panel, event, f, width, theme, window, cx)
         };
@@ -2343,14 +2511,57 @@ impl CalendarView {
         theme: &Theme,
         window: &Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> Option<AnyElement> {
         let link = event.video_link.clone();
         // Also a link in the location or notes.
         let join = policy::video_link(event).map(str::to_string);
         let editable = self.access_of(event) == Access::Edit;
+        // Nothing to change: what's there as text, a link that opens, Join.
+        if !editable {
+            let location = (!event.location.is_empty())
+                .then(|| section(Icon::MapPin, theme, plain_text(&event.location, theme.text)));
+            let has_location = location.is_some();
+            let video = (!link.is_empty() || join.is_some()).then(|| {
+                let open = link.clone();
+                section(
+                    Icon::Video,
+                    theme,
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(SPACE_SM)
+                        .children((!link.is_empty()).then(|| {
+                            plain_box().flex_1().min_w_0().child(
+                                div()
+                                    .id("video-link")
+                                    .role(gpui::Role::Link)
+                                    .aria_label(format!("Open {link}"))
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(TEXT_BASE)
+                                    .text_color(theme.accent)
+                                    .cursor_pointer()
+                                    .hover(|s| s.opacity(0.8))
+                                    .child(link.clone())
+                                    .on_click(move |_, _, cx| cx.open_url(&open)),
+                            )
+                        }))
+                        .children(join.map(|join| join_button(join, theme))),
+                )
+                .when(has_location, |d| d.pt(px(0.)))
+            });
+            return (location.is_some() || video.is_some()).then(|| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .children(location)
+                    .children(video)
+                    .into_any_element()
+            });
+        }
         let meet = self.meet_state(event, cx).filter(|_| link.is_empty());
         // A Meet link from Google stays as Google made it (CAL-17).
-        let video_readonly = !editable || !event.conference_uri.is_empty();
+        let video_readonly = !event.conference_uri.is_empty();
         div()
             .flex()
             .flex_col()
@@ -2359,7 +2570,7 @@ impl CalendarView {
                 theme,
                 field_box(panel.is_focused(Field::Location, window, cx), theme)
                     .text_size(TEXT_BASE)
-                    .child(field_input(&panel.location, !editable)),
+                    .child(field_input(&panel.location, false)),
             ))
             .child(
                 section(
@@ -2399,35 +2610,63 @@ impl CalendarView {
                                     }
                                 })
                         })
-                        .when_some(join, |d, join| {
-                            let service = crate::app::today::video_service(&join);
-                            d.child(
-                                div()
-                                    .id("join-call")
-                                    .role(gpui::Role::Button)
-                                    .aria_label(format!("Join {service}"))
-                                    .flex_none()
-                                    .h(px(28.))
-                                    .px(SPACE_MD)
-                                    .flex()
-                                    .items_center()
-                                    .gap(SPACE_SM)
-                                    .rounded(RADIUS_MD)
-                                    .bg(theme.accent)
-                                    .text_color(theme.accent_text)
-                                    .text_size(TEXT_SM)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .hover(|s| s.opacity(0.9))
-                                    .child(icon(Icon::Video, px(14.), theme.accent_text))
-                                    .child("Join")
-                                    .on_click(move |_, _, cx| cx.open_url(&join)),
-                            )
-                        })
+                        .children(join.map(|join| join_button(join, theme)))
                         .when_some(meet, |d, state| d.child(meet_button(state, theme, cx))),
                 )
                 .pt(px(0.)),
             )
             .into_any_element()
+            .into()
+    }
+
+    /// The description, or nothing for an event that can't be changed and
+    /// has none.
+    fn render_notes(
+        &self,
+        panel: &EventPanel,
+        event: &Event,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if self.access_of(event) != Access::Edit {
+            return (!event.description.is_empty()).then(|| {
+                section(
+                    Icon::Text,
+                    theme,
+                    plain_text(&event.description, theme.text),
+                )
+                .into_any_element()
+            });
+        }
+        // The textarea pads its text by its own top and bottom; the margin
+        // takes that back, so the first line sits where the icon is.
+        let inset = gpui::component::Size::default().input_py();
+        Some(
+            section(
+                Icon::Text,
+                theme,
+                field_box(panel.is_focused(Field::Notes, window, cx), theme)
+                    .h_auto()
+                    .min_h(px(30.))
+                    .py(SPACE_XS)
+                    .px(px(0.))
+                    .child(
+                        div()
+                            .w_full()
+                            .text_size(TEXT_BASE)
+                            .line_height(relative(1.5))
+                            .mx(px(-2.))
+                            .my(-inset)
+                            .child(
+                                Textarea::new(&panel.notes)
+                                    .appearance(false)
+                                    .text_size(TEXT_BASE),
+                            ),
+                    ),
+            )
+            .into_any_element(),
+        )
     }
 
     fn render_guests(
@@ -2437,7 +2676,7 @@ impl CalendarView {
         theme: &Theme,
         window: &Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> Option<AnyElement> {
         let account = &self.data.account;
         let is_me = |email: &str| account.is_me(email);
         let editable = self.access_of(event) == Access::Edit;
@@ -2558,6 +2797,10 @@ impl CalendarView {
                 )
                 .into_any_element(),
             );
+        }
+        // No guests and no way to add one: no row.
+        if !editable && rows.is_empty() {
+            return None;
         }
 
         // Everyone listed: the organizer, who goes, and the guests.
@@ -2686,6 +2929,7 @@ impl CalendarView {
                 }),
         )
         .into_any_element()
+        .into()
     }
 
     /// The reminders that apply, each with its method; "Add reminder".
@@ -3201,17 +3445,25 @@ impl CalendarView {
         let reminder = self.render_reminders(event, theme, window, cx);
 
         let busy = event.busy;
-        let availability = section(
-            Icon::Briefcase,
-            theme,
-            div().flex().child(segmented(
-                [("Busy", busy), ("Free", !busy)],
-                "busy",
+        let availability = if self.access_of(event) == Access::Edit {
+            section(
+                Icon::Briefcase,
                 theme,
-                cx,
-                |this, ix, cx| this.edit_event(cx, |e| e.busy = ix == 0),
-            )),
-        );
+                div().flex().child(segmented(
+                    [("Busy", busy), ("Free", !busy)],
+                    "busy",
+                    theme,
+                    cx,
+                    |this, ix, cx| this.edit_event(cx, |e| e.busy = ix == 0),
+                )),
+            )
+        } else {
+            section(
+                Icon::Briefcase,
+                theme,
+                plain_text(if busy { "Busy" } else { "Free" }, theme.text_muted),
+            )
+        };
 
         let rsvp = event.my_status(&self.data.account).map(|status| {
             let id = event.id.clone();
@@ -3277,6 +3529,54 @@ fn section(glyph: Icon, theme: &Theme, content: impl IntoElement) -> gpui::Div {
                 .child(icon(glyph, px(16.), theme.text_faint)),
         )
         .child(div().flex_1().min_w_0().flex().flex_col().child(content))
+}
+
+/// `field_box` for text that can't be changed: the same place and size, no
+/// hover or focus.
+fn plain_box() -> gpui::Div {
+    div()
+        .h(px(30.))
+        .px(SPACE_SM)
+        .flex()
+        .items_center()
+        .border_1()
+        .border_color(gpui::transparent_black())
+}
+
+/// Text in a row of the panel that can't be changed; it wraps.
+fn plain_text(text: &str, color: Hsla) -> gpui::Div {
+    plain_box().h_auto().min_h(px(30.)).py(SPACE_XS).child(
+        div()
+            .min_w_0()
+            .text_size(TEXT_BASE)
+            .line_height(relative(1.5))
+            .text_color(color)
+            .child(text.to_string()),
+    )
+}
+
+/// "Join", for the event's video call.
+fn join_button(join: String, theme: &Theme) -> impl IntoElement {
+    let service = crate::app::today::video_service(&join);
+    div()
+        .id("join-call")
+        .role(gpui::Role::Button)
+        .aria_label(format!("Join {service}"))
+        .flex_none()
+        .h(px(28.))
+        .px(SPACE_MD)
+        .flex()
+        .items_center()
+        .gap(SPACE_SM)
+        .rounded(RADIUS_MD)
+        .bg(theme.accent)
+        .text_color(theme.accent_text)
+        .text_size(TEXT_SM)
+        .font_weight(FontWeight::SEMIBOLD)
+        .hover(|s| s.opacity(0.9))
+        .child(icon(Icon::Video, px(14.), theme.accent_text))
+        .child("Join")
+        .on_click(move |_, _, cx| cx.open_url(&join))
 }
 
 fn field_input(input: &Entity<InputState>, readonly: bool) -> Input {
@@ -3652,6 +3952,32 @@ mod tests {
         scope.mark_rule_changed();
         assert!(scope.asking());
         assert_eq!(scope.choices().len(), 2);
+    }
+
+    #[test]
+    fn the_picker_lists_writable_calendars_first_in_list_order() {
+        use crate::calendar::{AccessRole, Calendar};
+        let calendar = |id: &str, access_role| Calendar {
+            id: id.into(),
+            name: id.into(),
+            color: gpui::hsla(0., 0., 0.5, 1.),
+            visible: true,
+            access_role,
+            primary: false,
+            time_zone: None,
+            default_reminder: None,
+            default_reminders: Vec::new(),
+            conference_types: Vec::new(),
+        };
+        let calendars = [
+            calendar("asiya", AccessRole::Reader),
+            calendar("me", AccessRole::Owner),
+            calendar("ibrahim", AccessRole::FreeBusyReader),
+            calendar("team", AccessRole::Writer),
+            calendar("sarah", AccessRole::Reader),
+        ];
+        assert_eq!(picker_order(&calendars), [1, 3, 0, 2, 4]);
+        assert!(picker_order(&[]).is_empty());
     }
 
     #[test]

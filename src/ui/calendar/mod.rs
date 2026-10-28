@@ -319,6 +319,10 @@ pub struct CalendarView {
     pub panel: Option<EventPanel>,
     /// The panel's event was reloaded; its fields catch up on render.
     panel_stale: bool,
+    /// The panel's event, and the occurrence shown, as they were when the
+    /// panel opened on it: what Discard puts back. After "This event" or
+    /// "This and following" it's the new event as it was before the change.
+    discard_base: Option<(Event, NaiveDateTime)>,
     /// The panel sliding shut, drawn until its animation ends.
     closing_panel: Option<EventPanel>,
     /// The panel sliding shut showed a new event, so it keeps its buttons.
@@ -436,6 +440,7 @@ impl CalendarView {
             selected: None,
             panel: None,
             panel_stale: false,
+            discard_base: None,
             closing_panel: None,
             closing_was_new: false,
             menu: None,
@@ -756,6 +761,7 @@ impl CalendarView {
             self.menu = None;
             self.closing_panel = None;
             self.panel = Some(EventPanel::new(&event, occurrence, window, cx));
+            self.discard_base = Some((event, occurrence));
         }
         if focus_title {
             if let Some(panel) = &self.panel {
@@ -772,6 +778,7 @@ impl CalendarView {
     /// a new event left without a title goes.
     fn leave_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_panel(window, cx);
+        self.discard_base = None;
         let new_event = self.new_event.take();
         let mut never_went = false;
         if let Some(id) = &new_event
@@ -1743,6 +1750,7 @@ impl CalendarView {
             && removal.added.contains(&panel.event_id)
         {
             self.panel = Some(EventPanel::new(before, select.start, window, cx));
+            self.discard_base = Some((before.clone(), select.start));
         }
         if let Some(select) = removal.select {
             self.select_day_in_view(select.start.date());
@@ -2522,6 +2530,7 @@ impl Render for CalendarView {
             .on_action(cx.listener(Self::delete_selected))
             .on_action(cx.listener(Self::close_event))
             .on_action(cx.listener(Self::save_event))
+            .on_action(cx.listener(Self::discard_event_changes))
             .on_action(cx.listener(Self::toggle_calendars_menu))
             .on_action(cx.listener(Self::add_google_meet))
             .on_action(cx.listener(Self::set_repeat))
