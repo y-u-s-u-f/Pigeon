@@ -19,7 +19,8 @@
 //! - `Settings`: the settings page (⌘,), in place of `Mailbox` or
 //!   `Calendar` while it shows. Its search field adds `SettingsSearch`.
 //! - `ContactCard` (W6): the contact card overlay, a sibling of `Mailbox`
-//!   like the palette.
+//!   like the palette. `LaterPicker`: the Snooze and Send Later time
+//!   picker, likewise.
 //! - `Input`: gpui-component's text inputs. Single-letter shortcuts also
 //!   require `!Input`, so typing never triggers them.
 
@@ -36,7 +37,7 @@ use crate::{
             self, BulletedList, ClearFormatting, FormatBold, FormatCode, FormatItalic,
             FormatStrikethrough, FormatUnderline, InsertLink, NumberedList, QuoteLines,
         },
-        contact_card, menu_bar, onboarding, settings as settings_page,
+        contact_card, later_picker, menu_bar, onboarding, settings as settings_page,
     },
 };
 
@@ -214,6 +215,14 @@ actions!(
         // Onboarding (MC-089) and the contact card.
         CancelSignIn,
         SearchFromContact,
+        // Polish stretch B: Snooze (ACT-11) and Send Later (CMP-17).
+        Snooze,
+        Unsnooze,
+        SendLater,
+        GoToSnoozed,
+        GoToScheduled,
+        EditScheduledSend,
+        CancelScheduledSend,
     ]
 );
 
@@ -282,6 +291,8 @@ pub const CONTROL: &str = "Control";
 pub const ORIGINAL: &str = "Original";
 /// The sign-in screen (MC-089).
 pub const ONBOARDING: &str = "Onboarding";
+/// The Snooze and Send Later time picker, a sibling of `Mailbox`.
+pub const LATER: &str = later_picker::LATER_PICKER;
 /// An attachment chip that has focus (MB-044).
 pub const ATTACHMENT: &str = "Attachment";
 
@@ -363,6 +374,7 @@ fn shared_bindings() -> Vec<KeyBinding> {
     const CAL_INPUT: &str = "Calendar > Input";
     const CAL_TABBING: &str = "Calendar && !Input && !EventPanel";
     const SETTINGS: &str = settings_page::SETTINGS;
+    const LATER_INPUT: &str = "LaterPicker > Input";
 
     vec![
         // Menu-bar shortcuts first: the menu shows an action's first binding.
@@ -721,6 +733,24 @@ fn shared_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("escape", CancelSignIn, Some(ONBOARDING)),
         KeyBinding::new("enter", onboarding::Confirm, Some(ONBOARDING_KEYS)),
         KeyBinding::new("d", onboarding::TryDemo, Some(ONBOARDING_KEYS)),
+        // Snooze (Gmail's `b`) and Send Later (ACT-11, CMP-17). The picker's
+        // field swallows the arrows, so they bind inside it too.
+        KeyBinding::new("b", Snooze, Some(MAIL)),
+        KeyBinding::new("shift-b", Unsnooze, Some(MAIL)),
+        KeyBinding::new("g b", GoToSnoozed, Some(MAIL)),
+        KeyBinding::new("g shift-t", GoToScheduled, Some(MAIL)),
+        KeyBinding::new("cmd-shift-enter", SendLater, Some(COMPOSER)),
+        KeyBinding::new("cmd-shift-enter", SendLater, Some(COMPOSER_INPUT)),
+        KeyBinding::new("down", later_picker::SelectNext, Some(LATER)),
+        KeyBinding::new("up", later_picker::SelectPrev, Some(LATER)),
+        KeyBinding::new("down", later_picker::SelectNext, Some(LATER_INPUT)),
+        KeyBinding::new("up", later_picker::SelectPrev, Some(LATER_INPUT)),
+        KeyBinding::new("ctrl-n", later_picker::SelectNext, Some(LATER_INPUT)),
+        KeyBinding::new("ctrl-p", later_picker::SelectPrev, Some(LATER_INPUT)),
+        KeyBinding::new("escape", later_picker::Dismiss, Some(LATER)),
+        KeyBinding::new("cmd-.", later_picker::Dismiss, Some(LATER)),
+        KeyBinding::new("cmd-.", later_picker::Dismiss, Some(LATER_INPUT)),
+        KeyBinding::new("cmd-w", later_picker::Dismiss, Some(LATER)),
     ]
 }
 
@@ -872,6 +902,8 @@ pub enum Toggle {
     LabelFolded,
     /// The draft carries its signature.
     Signature,
+    /// The selected conversation is snoozed.
+    Snoozed,
 }
 
 impl Toggle {
@@ -896,6 +928,7 @@ impl Toggle {
             Toggle::HiddenLabels => ("Hide Hidden Labels", "Show Hidden Labels"),
             Toggle::LabelFolded => ("Unfold Sublabels", "Fold Sublabels"),
             Toggle::Signature => ("Remove Signature", "Add Signature"),
+            Toggle::Snoozed => ("Change Snooze…", "Snooze…"),
         };
         if on { on_title } else { off_title }
     }
@@ -944,6 +977,10 @@ pub enum When {
     SignedOut,
     /// Signed out, or on demo data picked on the sign-in screen (ME-050).
     CanSignIn,
+    /// A snoozed conversation is selected (ACT-11).
+    Snoozed,
+    /// A draft scheduled to send is selected (CMP-17).
+    Scheduled,
     /// Signed in, or on demo data picked on the sign-in screen (ME-050).
     CanSignOut,
 }
@@ -1152,6 +1189,14 @@ pub const COMMANDS: &[Command] = commands! {
     App: "Make Pigeon the Default Mail App", Mail, MakeDefaultMailApp;
     // W6: the contact card.
     Conversation: "Show Contact", User, ShowContact if Thread;
+    // Polish stretch B: Snooze (ACT-11) and Send Later (CMP-17).
+    Conversation: "Snooze…", AlarmClock, Snooze if Thread => Snoozed;
+    Conversation: "Unsnooze", Inbox, Unsnooze if Snoozed;
+    Compose: "Send Later…", Clock, SendLater if Draft;
+    Compose: "Edit Scheduled Message", SquarePen, EditScheduledSend if Scheduled;
+    Compose: "Cancel Scheduled Send", X, CancelScheduledSend if Scheduled;
+    GoTo: "Go to Snoozed", AlarmClock, GoToSnoozed;
+    GoTo: "Go to Scheduled", Clock, GoToScheduled;
 };
 
 #[cfg(test)]

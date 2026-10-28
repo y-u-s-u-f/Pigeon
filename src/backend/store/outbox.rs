@@ -91,11 +91,13 @@ impl Store {
         Ok(out)
     }
 
-    /// How many of the account's rows are still to go.
-    pub fn outbox_count(&self, account: &str) -> anyhow::Result<usize> {
+    /// How many of the account's rows are still to go, but scheduled
+    /// sends (CMP-17) before their time.
+    pub fn outbox_count(&self, account: &str, now: i64) -> anyhow::Result<usize> {
         Ok(self.conn().query_row(
-            "SELECT COUNT(*) FROM outbox WHERE account = ?1 AND state IN ('pending', 'inflight')",
-            [account],
+            "SELECT COUNT(*) FROM outbox WHERE account = ?1 AND state IN ('pending', 'inflight')
+             AND NOT (kind = 'mail.send_later' AND not_before > ?2)",
+            params![account, now],
             |r| r.get::<_, i64>(0),
         )? as usize)
     }

@@ -618,13 +618,18 @@ impl PigeonApp {
 
     /// `draft-local-<uuid>` or `sent-local-<uuid>`, until the server gives
     /// the thread its id (DAT-5).
-    fn new_id(&self, prefix: &str) -> String {
+    pub(super) fn new_id(&self, prefix: &str) -> String {
         format!("{prefix}-local-{}", uuid::Uuid::new_v4().simple())
     }
 
     /// What the composer holds, as a message to save or send carrying
     /// `html`.
-    fn outgoing(&self, composer: &Composer, content: DraftContent, html: String) -> Outgoing {
+    pub(super) fn outgoing(
+        &self,
+        composer: &Composer,
+        content: DraftContent,
+        html: String,
+    ) -> Outgoing {
         // W3 (MST-1, MST-2): the alias's name, Reply-To and signature.
         let identity = self.data.account.identity(&content.from);
         let signature = composer
@@ -1072,6 +1077,23 @@ impl PigeonApp {
                 });
                 (composer, removed_draft)
             }
+            // CMP-17: the schedule goes; the draft opens again.
+            UndoAction::SendLater {
+                draft_id,
+                composer,
+                op,
+            } => {
+                if !self.backend.update(cx, |b, _| b.cancel(op)) {
+                    self.show_toast(ToastKind::Info, "Already sending", None, cx);
+                    return;
+                }
+                self.update_threads(|data| {
+                    if let Some(ix) = data.thread_ix(&draft_id) {
+                        data.threads[ix].later.send_at = None;
+                    }
+                });
+                (composer, None)
+            }
             UndoAction::Discard {
                 removed_draft,
                 composer,
@@ -1092,7 +1114,13 @@ impl PigeonApp {
             self.update_threads(|data| data.threads.push(thread));
         }
         // Back to where the draft was, then the draft itself.
-        let home = draft_id.or_else(|| composer.read(cx).reply_to.clone());
+        let home = draft_id.or_else(|| {
+            let c = composer.read(cx);
+            c.draft_id
+                .clone()
+                .filter(|id| self.data.thread_ix(id).is_some())
+                .or_else(|| c.reply_to.clone())
+        });
         if let Some(ix) = home.and_then(|id| self.data.thread_ix(&id)) {
             self.reveal_thread(ix, window, cx);
         }

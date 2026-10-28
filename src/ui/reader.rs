@@ -37,6 +37,62 @@ use crate::{
     theme::Theme,
 };
 
+/// ACT-11, CMP-17: when a snoozed conversation comes back or a scheduled
+/// draft goes, with what changes it.
+fn render_later_bar(thread: &Thread, theme: &Theme) -> Option<AnyElement> {
+    let when = |at: i64| {
+        crate::later::in_sentence(crate::later::local_time(at), crate::later::now_local())
+    };
+    type Buttons = Vec<(&'static str, &'static str, fn() -> Box<dyn gpui::Action>)>;
+    let (glyph, text, buttons): (Icon, String, Buttons) =
+        if let Some(at) = thread.later.snoozed_until {
+            (
+                Icon::AlarmClock,
+                format!("Snoozed until {}", when(at)),
+                vec![("later-unsnooze", "Unsnooze", || Box::new(Unsnooze))],
+            )
+        } else {
+            let at = thread.later.send_at?;
+            (
+                Icon::Clock,
+                format!("Scheduled to send {}", when(at)),
+                vec![
+                    ("later-edit", "Edit", || Box::new(EditScheduledSend)),
+                    ("later-cancel", "Cancel Send", || {
+                        Box::new(CancelScheduledSend)
+                    }),
+                ],
+            )
+        };
+    Some(
+        div()
+            .w_full()
+            .max_w(READER_MAX)
+            .mt(SPACE_MD)
+            .px(SPACE_MD)
+            .py(SPACE_XS)
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(SPACE_SM)
+            .rounded(RADIUS_MD)
+            .bg(theme.chip_bg)
+            .child(icon(glyph, ICON_MD, theme.accent))
+            .child(
+                super::label("later-status", text)
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(TEXT_SM)
+                    .text_color(theme.text_muted),
+            )
+            .children(buttons.into_iter().map(|(id, label, action)| {
+                push_button(id, label, ButtonKind::Plain, theme)
+                    .on_click(move |_, window, cx| window.dispatch_action(action(), cx))
+            }))
+            .into_any_element(),
+    )
+}
+
 /// Children of the conversation's scroll view before its first message: the
 /// subject and the line under it. Every message stays a child, folded or
 /// not, so `MESSAGES_START + ix` is always message `ix`.
@@ -370,6 +426,13 @@ impl PigeonApp {
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(SendMessage), cx)),
             )
             .child(icon_button(
+                "compose-send-later",
+                Icon::Clock,
+                "Send later",
+                Box::new(SendLater),
+                theme,
+            ))
+            .child(icon_button(
                 "compose-new-window",
                 Icon::PanelTop,
                 "Open in new window",
@@ -447,6 +510,19 @@ impl PigeonApp {
                 Box::new(MarkUnread),
                 theme,
             ))
+            // ACT-11.
+            .when(
+                !matches!(thread.folder, Folder::Drafts | Folder::Spam | Folder::Trash),
+                |this| {
+                    this.child(icon_button(
+                        "snooze",
+                        Icon::AlarmClock,
+                        "Snooze",
+                        Box::new(Snooze),
+                        theme,
+                    ))
+                },
+            )
             .child(if thread.starred {
                 let star = icon(Icon::StarFilled, ICON_TOOLBAR, theme.star);
                 // MD-027: a star set just now pops.
@@ -696,6 +772,7 @@ impl PigeonApp {
                                 .heading(1),
                             ),
                     )
+                    .children(render_later_bar(thread, theme))
                     .child(
                         div()
                             .w_full()

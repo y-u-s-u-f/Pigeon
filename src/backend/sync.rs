@@ -824,7 +824,10 @@ impl Backend {
             cx.emit(BackendEvent::AccountChanged);
         }
         if !outcome.changed.is_empty() {
+            let changed = outcome.changed.clone();
             cx.emit(BackendEvent::ThreadsChanged(outcome.changed));
+            // ACT-11: new mail wakes a snoozed conversation.
+            self.wake_on_reply(&changed, cx);
         }
         if !outcome.removed.is_empty() {
             cx.emit(BackendEvent::ThreadsRemoved(outcome.removed));

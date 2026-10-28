@@ -21,8 +21,8 @@ To update: change the status cell in the area's table, then the counts below.
 | [Folders and labels](#51-folders-and-labels-fol) | 1 | 2 | 11 | 14 |
 | [Thread list](#52-thread-list-lst) | 0 | 1 | 9 | 10 |
 | [Reading pane](#53-reading-pane-rdr) | 0 | 2 | 8 | 10 |
-| [Message actions](#54-message-and-thread-actions-act) | 1 | 2 | 7 | 10 |
-| [Compose and sending](#55-compose-and-sending-cmp) | 0 | 3 | 13 | 16 |
+| [Message actions](#54-message-and-thread-actions-act) | 1 | 3 | 7 | 11 |
+| [Compose and sending](#55-compose-and-sending-cmp) | 0 | 4 | 13 | 17 |
 | [Drafts](#56-drafts-drf) | 0 | 0 | 6 | 6 |
 | [Undo](#57-undo-und) | 0 | 1 | 3 | 4 |
 | [Search](#58-search-src) | 0 | 0 | 9 | 9 |
@@ -39,7 +39,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Data model](#83-data-model-dat) | 1 | 3 | 3 | 7 |
 | [Accessibility](#85-accessibility-a11y) | 0 | 9 | 1 | 10 |
 | [System integration](#86-system-integration-sys) | 3 | 1 | 0 | 4 |
-| **Overall** | **40** | **41** | **134** | **215** |
+| **Overall** | **40** | **43** | **134** | **217** |
 
 ## Contents
 
@@ -437,6 +437,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 | ACT-7 | Open in Gmail | 🟡 Partially done | None: a web link with `authuser` |
 | ACT-8 | Share… | ⚪ Not done | None (`NSSharingServicePicker`) |
 | ACT-9 | Mark all as read in a view | 🟡 Partially done | `threads.list` (`labelIds` + `UNREAD`), `threads.batchModify` |
+| ACT-11 | Snooze conversations | 🟡 Partially done | `threads.modify` (a hidden `Pigeon/Snoozed` label, `INBOX`, `UNREAD`); `labels.create` |
 
 #### ACT-1 Archive and move to Inbox
 
@@ -493,6 +494,11 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 - **Today (polish W2, MB-010):** Right-clicking a folder, category or label in the sidebar offers "Mark All as Read" (left out when nothing there is unread); the label stays outlined while its menu is open (MB-017). It marks the view's cached unread conversations read as one undoable change (`PigeonApp::mark_all_read()`, `sidebar::MarkAllRead(Nav)`, `set_unread()`), through the outbox as usual.
 - **Needs:** Gmail's count can hold more than the cache (older mail): a server-side pass listing the view's unread threads (`threads.list` with `labelIds` + `UNREAD`, paged) and taking `UNREAD` off them in batches (`threads.batchModify` or `messages.batchModify`), with the undo covering those too. IMAP: `STORE 1:* +FLAGS \Seen`.
 
+#### ACT-11 Snooze conversations
+
+- **Today (polish Stretch B):** `b`, the reader's alarm-clock button, ⌘K "Snooze…" (or "Change Snooze…" on a snoozed one) and Message › Snooze… open the shared time picker (`src/ui/later_picker.rs`): Later Today (+3 h, rounded), This Evening (6 PM), Tomorrow (8 AM), This Weekend (Sat 8 AM), Next Week (Mon 8 AM), skipping the ones already past, plus a typed field on the quick-add parser with a live read-back ("Fri, Oct 30, 9:00 AM"); presets and parsing in `src/later.rs`. Works on a multi-selection, with Undo. The conversation leaves the Inbox: Pigeon adds a hidden `Pigeon/Snoozed` label and removes `INBOX` through the outbox (`later::resolve_snoozed` finds the label, or creates it hidden with `labels.create`), and keeps the wake time in SQLite (`snoozes` table, `src/backend/store/snoozes.rs`). The label is left out of Pigeon's label list. Mailbox › Snoozed (`g b`) lists them soonest first, with the wake time in place of the date (no count in the sidebar, like Gmail's); Unsnooze (`⇧B`, the reader's bar, ⌘K) brings one back now, with Undo. On wake (a timer in `src/backend/later.rs`, also caught up at launch, on wake from sleep and on a time zone change, and never waiting more than 15 minutes, so a clock changed by hand is seen) the label comes off, `INBOX` and `UNREAD` go back, and the conversation sorts at the top (`Thread::sort_time()`, from the wake time). A new reply wakes it early (`sync.rs`). Moved back to the Inbox or unlabeled in another client (Gmail web's "Move to Inbox"), it stops being snoozed at the next sync, without the unread wake later (a leftover label comes off); trashed or marked spam there, it stays asleep and is dropped at its wake time. A snooze Gmail refuses (the label can't be made) rolls back and isn't snoozed. The picker re-reads its presets if one passes while it's open, and ↩ on typed text that isn't a time ahead picks nothing. After a catch-up, one notification says "3 conversations are back" (Settings › Notifications on). Demo mode keeps it all in memory.
+- **Needs:** A user check on the real account: the label gets made hidden, the snooze survives a relaunch, it wakes on time and after sleep, a reply wakes it, and "Move to Inbox" in Gmail web ends it. Snoozes are app-side: nothing wakes while Pigeon isn't running (it catches up at the next launch), and other clients (Gmail web, phones) see the conversation in `Pigeon/Snoozed`, out of the Inbox, and after the wake at its original date, not at the top. A server-side waker would need a backend of our own.
+
 ### 5.5 Compose and sending (CMP)
 
 | ID | Feature | Status | Google API |
@@ -513,6 +519,7 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 | CMP-14 | Replies quote the answered message | 🟡 Partially done | `raw` MIME (HTML part) |
 | CMP-15 | Reply to any message in a conversation | 🟡 Partially done | `In-Reply-To`, `References` |
 | CMP-16 | Open a draft in its own window | 🟡 Partially done | None |
+| CMP-17 | Send later (scheduled send) | 🟡 Partially done | `drafts.update`, `drafts.send` at the chosen time (app-side) |
 
 #### CMP-1 New message
 
@@ -615,6 +622,11 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 - **Today (polish W3, MB-047):** ⌘K "Open Draft in New Window" and File › Open Draft in New Window move the open draft out of the reading pane into a window of its own (`src/app/draft_window.rs`), as it is: saved if changed, then made again there from the same state (text fields belong to the window they're made in). The window is titled with the subject (the draft's kind until it has one, updated as it autosaves), has the reading pane's draft toolbar (Send, Discard) past the traffic lights, and takes the draft's keys (send, ⌘S, Escape, From, Cc/Bcc, signature, formatting, the Edit menu). Escape, ⌘W and the close button put it in Drafts like closing it in the pane ("Saved to Drafts"). Sending or discarding from it closes the window; toasts and Undo show in the main window, and Undo Send / Undo Discard bring the draft back in the reading pane, also after its window closed. Selecting the draft in Drafts, or replying again to its conversation, brings its window forward instead of opening it twice. Closing the main window saves and closes the draft windows. Inline stays the default.
 - **Today (polish W3 fix step):** The reading pane's draft toolbar has an "Open in new window" button. A Gmail draft moved to a window while its text is still loading gets it there (`refresh_open_draft`). The window follows Light / Dark while open.
 - **Needs:** No backend. A user check of the two windows (not tested live this sprint). The contact card from a chip in the window opens in the main window, centered.
+
+#### CMP-17 Send later (scheduled send)
+
+- **Today (polish Stretch B):** ⇧⌘⏎ in the composer, its Send Later button, ⌘K "Send Later…" and Message › Send Later… open the shared time picker (ACT-11). The draft is saved, then queued in the outbox as `Op::Later { at, op: Send }` (kind `mail.send_later`, `not_before` = the time), which commits through the normal send path when due (`src/backend/later.rs`, `scheduled_sends`). "Scheduled for Fri 8:00 AM" with Undo for 5 s. Mailbox › Scheduled (`g ⇧T`, shown in the sidebar only while something is scheduled) lists them with the send time; the draft leaves Drafts meanwhile. Selecting one shows a bar with Edit (cancels the schedule and reopens the draft) and Cancel Send (back to Drafts), also in ⌘K ("Edit Scheduled Message", "Cancel Scheduled Send"). Each scheduled send waits only for its own draft's saves, so it never holds back other sends, scheduled or not; it isn't hurried by Quit and doesn't count as "waiting to send" until due. Its timer is re-checked on wake from sleep, a time zone change and at least every 15 minutes. What goes is Pigeon's saved copy (`drafts.send` with its `raw`), so edits made to the draft in Gmail web meanwhile are overwritten. A draft deleted in another client meanwhile (the drafts sync drops it) isn't sent: at its time it fails with "Not sent: the draft was deleted". Sends that go out more than a minute late post "A scheduled message went out late" with when it was due and when it went (the reason isn't known: not running, asleep or offline); a click opens Sent. A scheduled send that fails posts "A scheduled message wasn’t sent" (opens Drafts when the draft is back there), and its toast offers Open Drafts like a send's. Deleting a scheduled draft cancels it; one already going stays ("Already sending"). Not from a separate draft window: the Send Later button shows only in the main window's composer.
+- **Needs:** A user check on the real account: it sends on time, after a relaunch and after sleep, and a draft deleted in Gmail web isn't sent. App-side only: Pigeon must be running (or it sends at the next launch), and Gmail shows the message in Drafts until then, not in Gmail's own Scheduled. A server-side scheduler would need a backend of our own.
 
 ### 5.6 Drafts (DRF)
 
@@ -1733,4 +1745,4 @@ Not catalogued in depth; each would be its own item when picked up.
 - **Email markup, AMP for Gmail:** AMP needs a web runtime, against the no-webview principle. Sender-side markup (actions, highlights) is ignored.
 - **Gmail inbox feed (Atom)** and **Gmail and Calendar add-on scopes** (`gmail.addons.*`, `calendar.addons.*`): for legacy readers and Workspace add-ons, not standalone clients.
 - **`calendars.clear`, `calendars.transferOwnership`, event `gadget`:** destructive or admin-only, or deprecated.
-- **Not in Google's APIs at all:** snooze, scheduled send and server-side undo send. If wanted they must be app-side (local timers plus a label, or a server), which is a new decision, not an API mapping.
+- **Not in Google's APIs at all:** snooze, scheduled send and server-side undo send. Snooze (ACT-11) and send later (CMP-17) are app-side: local timers plus a hidden label and the outbox; they only fire while Pigeon runs. Gmail's own snoozes and scheduled sends aren't readable.

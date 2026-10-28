@@ -85,6 +85,8 @@ fn add_addresses(list: &mut Vec<String>, field: &str) {
 pub enum Show {
     Main,
     Thread(String),
+    /// A mail folder (CMP-17's notices).
+    Folder(crate::data::Folder),
     Event {
         calendar: String,
         id: String,
@@ -295,6 +297,9 @@ fn on_signal(signal: native::Signal, cx: &mut App) {
         native::Signal::TimeZoneChanged => {
             logging::info("time zone changed");
             crate::calendar::time::reset_zone_name();
+            // Snoozes and scheduled sends are instants: their timers wait
+            // the right time again.
+            backend_of(cx).update(cx, |b, cx| b.recheck_due(cx));
             cx.refresh_windows();
         }
         native::Signal::DisplayChanged => {
@@ -709,6 +714,35 @@ fn on_backend_event(backend: Entity<Backend>, event: &BackendEvent, cx: &mut App
             }
             update_badge(cx);
         }
+        // ACT-11, CMP-17: caught up after Pigeon wasn't running or the Mac
+        // slept.
+        BackendEvent::Woke { late, .. } if !late.is_empty() => {
+            if settings::get(cx).notifications {
+                let subjects: Vec<String> = backend
+                    .read(cx)
+                    .load_threads(late)
+                    .iter()
+                    .map(|t| t.subject_or_placeholder().to_string())
+                    .collect();
+                notify::notify(notify::snoozes_back(late, &subjects), cx);
+            }
+            update_badge(cx);
+        }
+        BackendEvent::SentLate(sends) => {
+            if settings::get(cx).notifications {
+                notify::notify(notify::sent_late(sends), cx);
+            }
+        }
+        BackendEvent::ScheduledFailed {
+            subject,
+            message,
+            in_drafts,
+            ..
+        } => {
+            if settings::get(cx).notifications {
+                notify::notify(notify::scheduled_failed(subject, message, *in_drafts), cx);
+            }
+        }
         BackendEvent::CountsChanged
         | BackendEvent::OpCommitted(_)
         | BackendEvent::Status(_)
@@ -797,6 +831,7 @@ impl PigeonApp {
     fn show(&mut self, what: Show, window: &mut Window, cx: &mut Context<Self>) {
         match what {
             Show::Main => {}
+            Show::Folder(folder) => self.go_to(super::Nav::Folder(folder), window, cx),
             Show::Thread(id) => {
                 self.set_mode(Mode::Mail, window, cx);
                 if let Some(ix) = self.data.thread_ix(&id) {
@@ -863,6 +898,7 @@ pub fn target_show(target: NoticeTarget) -> Show {
             id,
             start,
         },
+        NoticeTarget::Folder(folder) => Show::Folder(folder),
         NoticeTarget::Inbox => Show::Main,
     }
 }

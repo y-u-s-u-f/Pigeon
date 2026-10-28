@@ -38,8 +38,10 @@ use crate::{
     app::{shell, today},
     backend::{
         categories::{Category, in_category},
+        later::LateSend,
         new_mail::NewMail,
     },
+    data::Folder,
     instance, logging,
     settings::{self, AppSettings, Section},
     ui::menu_bar,
@@ -56,6 +58,8 @@ pub enum NoticeTarget {
         id: String,
         start: NaiveDateTime,
     },
+    /// A mail folder: Sent, Drafts (CMP-17).
+    Folder(Folder),
     Inbox,
 }
 
@@ -411,6 +415,87 @@ pub fn mail_notices(new: &[NewMail], primary: impl Fn(&str) -> bool) -> Vec<(Not
         .collect()
 }
 
+/// ACT-11: snoozed conversations that came back while Pigeon wasn't
+/// running or the Mac slept, with their subjects.
+pub fn snoozes_back(threads: &[String], subjects: &[String]) -> Notice {
+    let (title, target) = match threads {
+        [id] => (
+            "A snoozed conversation is back".to_string(),
+            NoticeTarget::Thread { id: id.clone() },
+        ),
+        _ => (
+            format!("{} conversations are back", threads.len()),
+            NoticeTarget::Inbox,
+        ),
+    };
+    Notice {
+        tag: "snoozed".into(),
+        title,
+        body: subjects.join("\n"),
+        target,
+        join_url: None,
+        kind: Kind::App,
+    }
+}
+
+fn quoted(subject: &str) -> String {
+    let subject = subject.trim();
+    if subject.is_empty() {
+        "(no subject)".into()
+    } else {
+        format!("“{subject}”")
+    }
+}
+
+/// CMP-17: scheduled sends that went out late. Why isn't known (Pigeon
+/// wasn't running, the Mac slept, it was offline), so it says when.
+pub fn sent_late(sends: &[LateSend]) -> Notice {
+    let clock = |ms: i64| crate::later::local_time(ms);
+    let now = crate::later::now_local();
+    let title = match sends.len() {
+        1 => "A scheduled message went out late".to_string(),
+        n => format!("{n} scheduled messages went out late"),
+    };
+    let subjects = sends
+        .iter()
+        .map(|s| quoted(&s.subject))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let body = match sends {
+        [one] => format!(
+            "Scheduled for {}; sent {}. {subjects}",
+            crate::later::in_sentence(clock(one.due), now),
+            crate::later::in_sentence(clock(one.sent), now),
+        ),
+        _ => format!("Later than scheduled. {subjects}"),
+    };
+    Notice {
+        tag: "sent-late".into(),
+        title,
+        body,
+        target: NoticeTarget::Folder(Folder::Sent),
+        join_url: None,
+        kind: Kind::App,
+    }
+}
+
+/// CMP-17: a scheduled send that failed, with why; its draft is in
+/// Drafts again unless it was deleted.
+pub fn scheduled_failed(subject: &str, message: &str, in_drafts: bool) -> Notice {
+    Notice {
+        tag: "scheduled-failed".into(),
+        title: "A scheduled message wasn’t sent".into(),
+        body: format!("{}. {}", message.trim_end_matches('.'), quoted(subject)),
+        target: if in_drafts {
+            NoticeTarget::Folder(Folder::Drafts)
+        } else {
+            NoticeTarget::Inbox
+        },
+        join_url: None,
+        kind: Kind::App,
+    }
+}
+
 /// Post the notices for `new`, already filtered by the caller.
 pub fn notify_new_mail(new: &[NewMail], cx: &mut App) {
     if new.is_empty() {
@@ -601,6 +686,33 @@ pub fn dismiss_card(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scheduled_send_notices_say_what_happened() {
+        let failed = scheduled_failed("Plan", "Not sent: the draft was deleted", false);
+        assert_eq!(failed.title, "A scheduled message wasn’t sent");
+        assert_eq!(failed.body, "Not sent: the draft was deleted. “Plan”");
+        assert_eq!(failed.target, NoticeTarget::Inbox);
+        let back = scheduled_failed("", "Not sent: Invalid To header", true);
+        assert_eq!(back.body, "Not sent: Invalid To header. (no subject)");
+        assert_eq!(back.target, NoticeTarget::Folder(Folder::Drafts));
+        // When it was due and when it went, not a guess at why.
+        let now = chrono::Utc::now().timestamp_millis();
+        let late = |subject: &str| LateSend {
+            subject: subject.into(),
+            due: now - 3_600_000,
+            sent: now,
+        };
+        let one = sent_late(&[late("Plan")]);
+        assert!(one.body.starts_with("Scheduled for "), "{}", one.body);
+        assert!(one.body.contains("; sent "), "{}", one.body);
+        assert!(one.body.ends_with("“Plan”"));
+        assert!(!one.body.contains("running"));
+        assert_eq!(one.target, NoticeTarget::Folder(Folder::Sent));
+        let two = sent_late(&[late("A"), late("B")]);
+        assert_eq!(two.title, "2 scheduled messages went out late");
+        assert_eq!(two.body, "Later than scheduled. “A”, “B”");
+    }
 
     fn mail(ix: usize, thread: &str, from: &str) -> NewMail {
         NewMail {

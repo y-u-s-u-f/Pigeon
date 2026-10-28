@@ -10,7 +10,7 @@ use gpui::{Context, Entity, SharedString, Window};
 use super::{Mode, PigeonApp, ToastAction, ToastKind};
 use crate::{
     actions::Undo,
-    backend::{OpId, UNDO_WINDOW, categories::Category, gmail},
+    backend::{OpId, UNDO_WINDOW, categories::Category, gmail, store::Snooze},
     data::{Folder, Thread},
     ui::{
         calendar::{Discarded, Removal},
@@ -60,6 +60,30 @@ pub enum UndoAction {
     Category { moves: Vec<(String, Category)> },
     /// A calendar event moved or resized.
     Retime(Retime),
+    /// ACT-11: conversations snoozed, re-snoozed or unsnoozed; `rows` are
+    /// the stored snoozes before, for an undo inside the undo window.
+    Snooze {
+        changes: Vec<SnoozeUndo>,
+        rows: Vec<(String, Option<Snooze>)>,
+        ops: Vec<OpId>,
+    },
+    /// CMP-17: take back a scheduled send and reopen its draft. Never
+    /// redone.
+    SendLater {
+        draft_id: String,
+        composer: Entity<Composer>,
+        op: OpId,
+    },
+}
+
+/// One conversation's snooze before (`None`: awake) and after a change,
+/// and its folder before.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SnoozeUndo {
+    pub thread: String,
+    pub from: Option<i64>,
+    pub to: Option<i64>,
+    pub folder: Folder,
 }
 
 /// An event's times before and after a change. Undo retimes it back,
@@ -247,8 +271,13 @@ impl PigeonApp {
 
     /// A send went: it can no longer be taken back.
     pub(super) fn forget_send(&mut self, op: OpId, cx: &mut Context<Self>) {
-        self.undo_stack
-            .retain(|a| !matches!(a, UndoAction::Send { op: sent, .. } if *sent == op));
+        self.undo_stack.retain(|a| {
+            !matches!(
+                a,
+                UndoAction::Send { op: sent, .. } | UndoAction::SendLater { op: sent, .. }
+                    if *sent == op
+            )
+        });
         self.undo_changed(cx);
     }
 
@@ -308,7 +337,10 @@ impl PigeonApp {
         self.mode != Mode::Mail
             && matches!(
                 action,
-                UndoAction::Move { .. } | UndoAction::Labels { .. } | UndoAction::Category { .. }
+                UndoAction::Move { .. }
+                    | UndoAction::Labels { .. }
+                    | UndoAction::Category { .. }
+                    | UndoAction::Snooze { .. }
             )
     }
 
@@ -342,7 +374,9 @@ impl PigeonApp {
                     .update(cx, |c, cx| c.restore_discarded(*discarded, window, cx));
                 None
             }
-            action @ (UndoAction::Send { .. } | UndoAction::Discard { .. }) => {
+            action @ (UndoAction::Send { .. }
+            | UndoAction::Discard { .. }
+            | UndoAction::SendLater { .. }) => {
                 self.undo_compose(action, fresh, window, cx);
                 None
             }
@@ -357,6 +391,9 @@ impl PigeonApp {
                 remove,
             } => Some(self.undo_labels(threads, add, remove, cx)),
             UndoAction::Category { moves } => Some(self.undo_category(moves, cx)),
+            UndoAction::Snooze { changes, rows, ops } => {
+                Some(self.undo_snooze(changes, rows, ops, fresh, undoing, window, cx))
+            }
             UndoAction::Retime(retime) => {
                 let Retime {
                     event_id,

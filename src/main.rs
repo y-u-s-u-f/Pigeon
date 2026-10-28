@@ -7,6 +7,7 @@ mod contacts;
 mod data;
 mod html;
 mod instance;
+mod later;
 mod logging;
 mod markdown;
 mod mcp;
@@ -43,6 +44,8 @@ pub struct MenuState {
     /// The selected conversation is starred, or important.
     pub starred: bool,
     pub important: bool,
+    /// The selected conversations are snoozed (ACT-11).
+    pub snoozed: bool,
     pub full_screen: bool,
     pub signed_in: bool,
     /// "Undo Archive", or `None` for a plain "Undo"; the same for redo.
@@ -60,6 +63,7 @@ impl Default for MenuState {
             week_numbers: false,
             starred: false,
             important: false,
+            snoozed: false,
             full_screen: false,
             signed_in: false,
             undo: None,
@@ -201,7 +205,9 @@ fn menus(state: &MenuState) -> Vec<Menu> {
         Menu::new("Mailbox").items([
             MenuItem::action("Inbox", GoToInbox),
             MenuItem::action("Starred", GoToStarred),
+            MenuItem::action("Snoozed", GoToSnoozed),
             MenuItem::action("Sent", GoToSent),
+            MenuItem::action("Scheduled", GoToScheduled),
             MenuItem::action("Drafts", GoToDrafts),
             MenuItem::action("Archive", GoToArchive),
             MenuItem::action("Spam", GoToSpam),
@@ -224,6 +230,7 @@ fn menus(state: &MenuState) -> Vec<Menu> {
         ]),
         Menu::new("Message").items([
             MenuItem::action("Send", SendMessage),
+            MenuItem::action("Send Later…", SendLater),
             MenuItem::action("Show Cc and Bcc", ShowCcBcc),
             MenuItem::separator(),
             MenuItem::action("Reply", Reply),
@@ -235,6 +242,8 @@ fn menus(state: &MenuState) -> Vec<Menu> {
             MenuItem::action("Move to…", MoveTo),
             MenuItem::action("Move to Category…", MoveToCategory),
             MenuItem::action("Label…", ApplyLabel),
+            MenuItem::action(Toggle::Snoozed.title(state.snoozed), Snooze),
+            MenuItem::action("Unsnooze", Unsnooze),
             MenuItem::separator(),
             MenuItem::action(Toggle::Star.title(state.starred), ToggleStar),
             MenuItem::action(Toggle::Important.title(state.important), ToggleImportant),

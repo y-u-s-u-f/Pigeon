@@ -23,6 +23,7 @@ pub mod health;
 pub mod http;
 pub mod images;
 pub mod labels;
+pub mod later;
 pub mod mime;
 pub mod new_mail;
 pub mod outbox;
@@ -445,6 +446,12 @@ impl CalOp {
 pub enum Op {
     Mail(MailOp),
     Calendar(CalOp),
+    /// CMP-17: a `MailOp::Send` scheduled for `at` (Unix ms). Not undoable
+    /// in the usual sense: it's cancelled (`Backend::cancel`) until it goes.
+    Later {
+        at: i64,
+        op: MailOp,
+    },
 }
 
 impl Op {
@@ -467,6 +474,7 @@ impl Op {
                 CalOp::SetSelected { .. } => "calendar.set_selected",
                 CalOp::Split { .. } => "calendar.split",
             },
+            Op::Later { .. } => later::SEND_LATER_KIND,
         }
     }
 
@@ -499,6 +507,15 @@ impl Op {
                 CalOp::Split { id, new, .. } => format!("{id},{}", new.id),
                 CalOp::SetSelected { calendar, .. } => format!("calendar:{calendar}"),
             },
+            // Its draft only: it waits behind the draft's saves, while
+            // other sends, scheduled or not, don't wait for its time.
+            Op::Later { op, .. } => match op {
+                MailOp::Send {
+                    local_id: Some(local_id),
+                    ..
+                } => local_id.clone(),
+                _ => "later".into(),
+            },
         }
     }
 
@@ -506,6 +523,7 @@ impl Op {
         match self {
             Op::Mail(op) => op.undoable(),
             Op::Calendar(op) => op.undoable(),
+            Op::Later { .. } => false,
         }
     }
 }
@@ -540,6 +558,22 @@ pub enum BackendEvent {
     // Sprint 2 W1.
     /// Mail that just arrived and is news (NTF-1); never from a full sync.
     NewMail(Vec<new_mail::NewMail>),
+    /// ACT-11: snoozed conversations back in the Inbox; `late` are those
+    /// caught up after Pigeon wasn't running (or the Mac slept).
+    Woke {
+        threads: Vec<String>,
+        late: Vec<String>,
+    },
+    /// CMP-17: scheduled sends that went out late.
+    SentLate(Vec<later::LateSend>),
+    /// CMP-17: a scheduled send failed for good (`OpFailed` follows);
+    /// `in_drafts` when its draft is back in Drafts.
+    ScheduledFailed {
+        op: OpId,
+        subject: String,
+        message: String,
+        in_drafts: bool,
+    },
 }
 
 /// A view that can load older threads (LST-7).
@@ -624,6 +658,8 @@ pub struct Backend {
     older: Vec<(ViewKey, OlderPages)>,
     /// W4a: Inbox category counts (FOL-11).
     categories: categories::CategoryState,
+    /// ACT-11: wakes the next snoozed conversation.
+    _wake: Option<Task<()>>,
 }
 
 impl EventEmitter<BackendEvent> for Backend {}
@@ -666,6 +702,10 @@ struct Commit {
     outcome: outbox::Outcome,
     events: Vec<BackendEvent>,
     calendar: bool,
+    /// CMP-17: a scheduled send, with the time it was due.
+    scheduled: Option<(i64, MailOp)>,
+    /// ACT-11: the threads it snoozes; a failure wakes them here too.
+    snoozing: Vec<String>,
 }
 
 fn log_outbox(result: anyhow::Result<()>) {
@@ -686,11 +726,25 @@ fn commit_google(
     op: &Op,
 ) -> (outbox::Outcome, Vec<BackendEvent>) {
     match op {
-        // Thread actions (W5).
-        Op::Mail(op @ (MailOp::Modify { .. } | MailOp::Trash { .. } | MailOp::Untrash { .. })) => (
-            outbox::commit_threads(gmail, store, account, op),
-            Vec::new(),
-        ),
+        // Thread actions (W5); ACT-11's Snoozed label by its Gmail id.
+        Op::Mail(op @ (MailOp::Modify { .. } | MailOp::Trash { .. } | MailOp::Untrash { .. })) => {
+            let op = match later::resolve_snoozed(gmail, store, account, op) {
+                Ok(op) => op,
+                Err(e) => {
+                    let outcome = match e.later() {
+                        Some(e) => outbox::Outcome::Later(e),
+                        None => outbox::Outcome::failed(format!(
+                            "Couldn't make the Snoozed label in Gmail: {e}"
+                        )),
+                    };
+                    return (outcome, Vec::new());
+                }
+            };
+            (
+                outbox::commit_threads(gmail, store, account, &op),
+                Vec::new(),
+            )
+        }
         // Drafts and sends (W6).
         Op::Mail(op) => {
             let (result, events) = compose::commit_compose(gmail, store, account, op);
@@ -703,6 +757,14 @@ fn commit_google(
                 },
             };
             (outcome, events)
+        }
+        // Deleted in Gmail web or on a phone since it was scheduled (the
+        // drafts sync dropped it): not sent from the snapshot.
+        Op::Later { op, .. } => {
+            if later::draft_deleted(store, account, op) {
+                return (outbox::Outcome::failed(later::DRAFT_DELETED), Vec::new());
+            }
+            commit_google(transport, gmail, store, account, &Op::Mail(op.clone()))
         }
         // Calendar writes (W7).
         Op::Calendar(op) => {
@@ -722,6 +784,7 @@ fn commit_demo(store: &Store, account: &str, op: &Op) -> (outbox::Outcome, Vec<B
     let result = match op {
         Op::Mail(op) => store.apply_mail_op(account, op),
         Op::Calendar(op) => store.apply_cal_op(account, account, op),
+        Op::Later { op, .. } => store.apply_mail_op(account, op),
     };
     let outcome = match result {
         Ok(()) => outbox::Outcome::Committed,
@@ -871,13 +934,16 @@ impl Backend {
             sync: Default::default(),
             older: Vec::new(),
             categories: Default::default(),
+            _wake: None,
         };
         if this.source == Source::Google {
             this.profile_photo = photo::cached(&data_dir(), this.email());
         }
         this.start_categories();
-        // Whatever was left queued at the last quit goes now.
+        // Whatever was left queued at the last quit goes now, and snoozes
+        // that came due while Pigeon wasn't running wake (ACT-11).
         this.schedule(cx);
+        this.start_snoozes(cx);
         this.check_profile(cx);
         if let Some(transport) = this.transport() {
             this.start_mail_sync(transport, cx);
@@ -947,6 +1013,7 @@ impl Backend {
                 }),
         };
         self.outbox.overlay(&mut data.threads);
+        self.overlay_snoozes(&mut data.threads);
         data.sort_threads();
         data
     }
@@ -957,8 +1024,11 @@ impl Backend {
         self.outbox.queued_sends()
     }
 
+    /// The account's labels, without Pigeon's own Snoozed (ACT-11).
     pub fn load_labels(&self) -> Vec<Label> {
-        self.store.load_labels(self.email()).unwrap_or_default()
+        let mut labels = self.store.load_labels(self.email()).unwrap_or_default();
+        labels.retain(|l| l.name != later::SNOOZED);
+        labels
     }
 
     /// The stored threads among `ids`, with the changes still queued for
@@ -969,6 +1039,7 @@ impl Backend {
             .load_threads(self.email(), ids)
             .unwrap_or_default();
         self.outbox.overlay(&mut threads);
+        self.overlay_snoozes(&mut threads);
         self.overlay_bodies(&mut threads);
         threads
     }
@@ -1104,7 +1175,8 @@ impl Backend {
             self._worker = None;
             return;
         };
-        let wait = Duration::from_millis((due - now_ms()).max(0) as u64);
+        // Capped, so a clock changed by hand is seen (ACT-11, CMP-17).
+        let wait = Duration::from_millis((due - now_ms()).max(0) as u64).min(later::RECHECK);
         self._worker = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(wait).await;
             let Ok(Some((store, account, google, due))) = this.update(cx, |this, _| {
@@ -1124,6 +1196,18 @@ impl Backend {
                     due.into_iter()
                         .map(|(id, op)| {
                             let calendar = matches!(op, Op::Calendar(_));
+                            let scheduled = match &op {
+                                Op::Later { at, op } => Some((*at, op.clone())),
+                                _ => None,
+                            };
+                            let snoozing = match &op {
+                                Op::Mail(MailOp::Modify { threads, add, .. })
+                                    if add.iter().any(|l| l == later::SNOOZED) =>
+                                {
+                                    threads.clone()
+                                }
+                                _ => Vec::new(),
+                            };
                             let (outcome, events) = match &google {
                                 Some((transport, gmail)) => {
                                     commit_google(transport, gmail, &store, &account, &op)
@@ -1135,6 +1219,8 @@ impl Backend {
                                 outcome,
                                 events,
                                 calendar,
+                                scheduled,
+                                snoozing,
                             }
                         })
                         .collect::<Vec<_>>()
@@ -1153,11 +1239,14 @@ impl Backend {
     /// rollback already stored) or back in the queue.
     fn committed(&mut self, results: Vec<Commit>, cx: &mut Context<Self>) {
         let (mut mail, mut calendar) = (false, false);
+        let mut sent_late = Vec::new();
         for Commit {
             id,
             outcome,
             events,
             calendar: is_calendar,
+            scheduled,
+            snoozing,
         } in results
         {
             // The row is done (or failed, or waiting) first: what the commit
@@ -1184,6 +1273,9 @@ impl Backend {
                     } else {
                         mail = true;
                     }
+                    if let Some((at, op)) = &scheduled {
+                        self.scheduled_sent(*at, op, &mut sent_late, cx);
+                    }
                     cx.emit(BackendEvent::OpCommitted(id));
                 }
                 outbox::Outcome::Failed {
@@ -1192,6 +1284,23 @@ impl Backend {
                     removed,
                 } => {
                     calendar |= is_calendar;
+                    // ACT-11: the refused threads (all of them when the
+                    // label couldn't be made) aren't snoozed after all.
+                    if !snoozing.is_empty() {
+                        let refused: Vec<String> = if changed.is_empty() && removed.is_empty() {
+                            snoozing
+                        } else {
+                            snoozing
+                                .into_iter()
+                                .filter(|t| changed.contains(t) || removed.contains(t))
+                                .collect()
+                        };
+                        self.forget_snoozes(&refused, cx);
+                        self.schedule_wakes(cx);
+                    }
+                    if let Some((_, op)) = &scheduled {
+                        self.scheduled_failed(id, op, &message, cx);
+                    }
                     if !changed.is_empty() {
                         cx.emit(BackendEvent::ThreadsChanged(changed));
                     }
@@ -1202,6 +1311,9 @@ impl Backend {
                 }
                 outbox::Outcome::Later(error) => self.note_error(&error, cx),
             }
+        }
+        if !sent_late.is_empty() {
+            cx.emit(BackendEvent::SentLate(sent_late));
         }
         // W4a: demo counts follow its commits.
         if mail && self.source == Source::Demo {
@@ -1704,6 +1816,14 @@ impl Backend {
     pub fn wake(&mut self, cx: &mut Context<Self>) {
         self.sync.calendar_due = true;
         self.run_sync(cx);
+        self.recheck_due(cx);
+    }
+
+    /// Timers stood still while the Mac slept, or the clock or time zone
+    /// changed: what came due goes now (ACT-11, CMP-17).
+    pub fn recheck_due(&mut self, cx: &mut Context<Self>) {
+        self.schedule(cx);
+        self.schedule_wakes(cx);
     }
 
     /// Whether these threads are read, or out of the Inbox, now: their
@@ -1734,8 +1854,11 @@ impl Backend {
                 .background_executor()
                 .spawn(async move { store.load_inbox_heads(&email, &also).unwrap_or_default() })
                 .await;
-            this.update(cx, |this, _| this.outbox.overlay(&mut threads))
-                .ok();
+            this.update(cx, |this, _| {
+                this.outbox.overlay(&mut threads);
+                this.overlay_snoozes(&mut threads);
+            })
+            .ok();
             threads
         })
     }

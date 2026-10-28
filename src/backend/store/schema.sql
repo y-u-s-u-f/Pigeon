@@ -238,3 +238,17 @@ ALTER TABLE bodies DROP COLUMN invite_details;
 -- look up without the calendar (MC-005).
 CREATE INDEX events_by_id ON events (account, id);
 CREATE INDEX events_by_series ON events (account, recurring_event_id);
+
+-- migration: 200
+-- Polish stretch B (ACT-11): snoozed conversations. Gmail has no snooze:
+-- the thread carries the "Pigeon/Snoozed" label and leaves the Inbox, and
+-- the wake time lives only here. A row stays once woken (wake_at NULL,
+-- woke_at set), so the conversation sorts by when it came back.
+CREATE TABLE snoozes (
+    account TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    wake_at INTEGER,                     -- ms; NULL once woken
+    snoozed_at INTEGER NOT NULL,         -- ms
+    woke_at INTEGER,                     -- ms
+    PRIMARY KEY (account, thread_id)
+);

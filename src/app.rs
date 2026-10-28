@@ -6,6 +6,7 @@ mod compose;
 mod contact_card;
 mod draft_window;
 mod labels;
+mod later;
 mod mail;
 pub mod menu_bar;
 mod panes;
@@ -17,7 +18,7 @@ mod undo;
 pub use labels::LabelCommand;
 pub use mail::{Density, SearchSuggestion};
 pub use toast::{Toast, ToastAction, ToastKind};
-pub use undo::{Retime, UndoAction};
+pub use undo::{Retime, SnoozeUndo, UndoAction};
 
 use std::collections::{HashMap, HashSet};
 
@@ -98,6 +99,10 @@ pub enum Nav {
     /// W4b: an Inbox category but Primary, which the Inbox itself shows
     /// (FOL-11).
     Category(crate::backend::categories::Category),
+    /// ACT-11: conversations snoozed, by when they come back.
+    Snoozed,
+    /// CMP-17: drafts scheduled to send, by when they go.
+    Scheduled,
 }
 
 /// Whether a view shows the thread. W4b: the Inbox shows Primary, each
@@ -109,7 +114,16 @@ pub fn nav_holds(nav: Nav, thread: &Thread, labels: &[crate::data::Label]) -> bo
         Nav::Folder(Folder::Inbox) => {
             thread.folder == Folder::Inbox && in_category(thread, Category::Primary)
         }
+        // Snoozed ones show in Snoozed, scheduled drafts in Scheduled.
+        Nav::Folder(Folder::Archive) => {
+            thread.folder == Folder::Archive && thread.later.snoozed_until.is_none()
+        }
+        Nav::Folder(Folder::Drafts) => {
+            thread.folder == Folder::Drafts && thread.later.send_at.is_none()
+        }
         Nav::Folder(folder) => thread.folder == folder,
+        Nav::Snoozed => thread.later.snoozed_until.is_some() && !thread.is_hidden(),
+        Nav::Scheduled => thread.folder == Folder::Drafts && thread.later.send_at.is_some(),
         Nav::Starred => thread.starred && !thread.is_hidden(),
         Nav::Label(ix) => !thread.is_hidden() && thread.labels.contains(&labels[ix].id),
         Nav::Category(category) => thread.folder == Folder::Inbox && in_category(thread, category),
@@ -251,6 +265,12 @@ pub struct PigeonApp {
     pub help_open: bool,
     /// W6: the contact card (CON-5), an overlay like the palette.
     contact_card: Option<(Entity<ui::contact_card::ContactCardView>, Subscription)>,
+    /// ACT-11, CMP-17: the Snooze or Send Later time picker, and what for.
+    later_picker: Option<(
+        Entity<ui::later_picker::LaterPicker>,
+        later::LaterTarget,
+        Subscription,
+    )>,
     pub help_focus: FocusHandle,
     /// The open draft, with its event subscription.
     pub composer: Option<(Entity<Composer>, Subscription)>,
@@ -349,6 +369,7 @@ enum LeavingOverlay {
     Palette(Entity<CommandPalette>),
     Help,
     Card(Entity<ui::contact_card::ContactCardView>),
+    Later(Entity<ui::later_picker::LaterPicker>),
 }
 
 impl PigeonApp {
@@ -530,6 +551,7 @@ impl PigeonApp {
             palette: None,
             help_open: false,
             contact_card: None,
+            later_picker: None,
             help_focus: cx.focus_handle(),
             composer: None,
             reply_ghost: None,
@@ -614,6 +636,8 @@ impl PigeonApp {
             SavedNav::Starred => Nav::Starred,
             SavedNav::Label(id) => Nav::Label(self.data.labels.iter().position(|l| &l.id == id)?),
             SavedNav::Category(category) => Nav::Category(*category),
+            SavedNav::Snoozed => Nav::Snoozed,
+            SavedNav::Scheduled => Nav::Scheduled,
         })
     }
 
@@ -627,6 +651,8 @@ impl PigeonApp {
                 .get(ix)
                 .map_or_else(SavedNav::default, |l| SavedNav::Label(l.id.clone())),
             Nav::Category(category) => SavedNav::Category(category),
+            Nav::Snoozed => SavedNav::Snoozed,
+            Nav::Scheduled => SavedNav::Scheduled,
         }
     }
 
@@ -760,8 +786,24 @@ impl PigeonApp {
                 .collect()
         };
 
+        // Soonest first (ACT-11, CMP-17).
+        if !searching {
+            match self.nav {
+                Nav::Snoozed => rows.sort_by_key(|row| match row {
+                    Row::Thread(ix) => threads[*ix].later.snoozed_until,
+                    _ => None,
+                }),
+                Nav::Scheduled => rows.sort_by_key(|row| match row {
+                    Row::Thread(ix) => threads[*ix].later.send_at,
+                    _ => None,
+                }),
+                _ => {}
+            }
+        }
         if self.nav == Nav::Folder(Folder::Inbox) && !searching {
-            let archived = (0..threads.len()).filter(|&ix| threads[ix].folder == Folder::Archive);
+            let archived = (0..threads.len()).filter(|&ix| {
+                threads[ix].folder == Folder::Archive && threads[ix].later.snoozed_until.is_none()
+            });
             let count = archived.clone().count();
             if count > 0 {
                 rows.push(Row::ArchivedHeader { count });
@@ -1030,7 +1072,9 @@ impl PigeonApp {
         // Bodies come on demand, once the selection settles (RDR-6).
         self.backend.update(cx, |b, cx| b.fetch_body(&id, cx));
         // A draft in its own window stays there, brought forward (MB-047).
+        // CMP-17: a scheduled one opens to read; Edit takes it back.
         if self.data.threads[ix].folder == Folder::Drafts
+            && self.data.threads[ix].later.send_at.is_none()
             && !already_open
             && !self.raise_draft_window(&id, cx)
         {
@@ -1346,6 +1390,7 @@ impl PigeonApp {
             week_numbers: calendar.show_week_numbers,
             starred: all(|t| t.starred),
             important: all(|t| t.important),
+            snoozed: all(|t| t.later.snoozed_until.is_some()),
             full_screen: window.is_fullscreen(),
             signed_in: self.backend.read(cx).source() == Source::Google,
             undo: self
@@ -1362,7 +1407,10 @@ impl PigeonApp {
 
     /// The palette, the shortcuts sheet or the contact card.
     pub(crate) fn overlay_open(&self) -> bool {
-        self.palette.is_some() || self.help_open || self.contact_card.is_some()
+        self.palette.is_some()
+            || self.help_open
+            || self.contact_card.is_some()
+            || self.later_picker.is_some()
     }
 
     /// MB-008: the standard About panel; the unbundled dev build, which
@@ -2252,6 +2300,8 @@ impl PigeonApp {
             Some(LeavingOverlay::Palette(palette.clone()))
         } else if self.help_open {
             Some(LeavingOverlay::Help)
+        } else if let Some((picker, ..)) = &self.later_picker {
+            Some(LeavingOverlay::Later(picker.clone()))
         } else {
             self.contact_card
                 .as_ref()
@@ -2267,6 +2317,7 @@ impl PigeonApp {
     fn close_overlays_at_once(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.palette = None;
         self.contact_card = None;
+        self.later_picker = None;
         self.help_open = false;
         self.leaving_overlay = None;
         window.focus(&self.pane_focus(cx), cx);
@@ -2314,6 +2365,8 @@ impl PigeonApp {
             )
         } else if let Some((card, _)) = &self.contact_card {
             (div().child(card.clone()).into_any_element(), false)
+        } else if let Some((picker, ..)) = &self.later_picker {
+            (div().child(picker.clone()).into_any_element(), false)
         } else {
             match self.leaving_overlay.as_ref()? {
                 LeavingOverlay::Palette(palette) => {
@@ -2324,6 +2377,9 @@ impl PigeonApp {
                     true,
                 ),
                 LeavingOverlay::Card(card) => (div().child(card.clone()).into_any_element(), false),
+                LeavingOverlay::Later(picker) => {
+                    (div().child(picker.clone()).into_any_element(), false)
+                }
             }
         };
         let theme = Theme::of(cx);
@@ -2739,6 +2795,7 @@ impl PigeonApp {
             .map(|this| self.on_label_actions(this, cx))
             .map(|this| self.on_attachment_actions(this, cx))
             .map(|this| self.on_contact_actions(this, cx))
+            .map(|this| self.on_later_actions(this, cx))
             .on_drag_move(cx.listener(Self::resize_pane))
             .relative()
             .size_full()

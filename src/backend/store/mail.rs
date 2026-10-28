@@ -665,6 +665,7 @@ fn load_threads_in(
             messages,
             search: Default::default(),
             origin: origins.remove(&id).flatten(),
+            later: Default::default(),
             id,
         };
         thread.set_search(r.get(7)?);

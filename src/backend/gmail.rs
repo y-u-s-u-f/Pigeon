@@ -773,6 +773,21 @@ pub fn label_create_request(name: &str) -> Request {
     )
 }
 
+/// ACT-11: Pigeon's own label, left out of Gmail's label list but shown on
+/// the mail it's on.
+pub fn hidden_label_create_request(name: &str) -> Request {
+    Request::json(
+        "POST",
+        format!("{API}/labels"),
+        &serde_json::json!({
+            "name": name,
+            "labelListVisibility": "labelHide",
+            "messageListVisibility": "show",
+        }),
+        label_cost::CREATE,
+    )
+}
+
 /// Some of a label's fields: its name, colour or visibility.
 pub fn label_patch_request(id: &str, fields: &serde_json::Value) -> Request {
     Request::json(
@@ -1068,6 +1083,7 @@ pub fn thread_from_gmail(t: &GThread, me: &Account) -> Option<Thread> {
         search: Default::default(),
         origin: None,
         label_ids: Vec::new(),
+        later: Default::default(),
     };
     thread.derive_from_labels();
     thread.reindex();

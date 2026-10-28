@@ -201,6 +201,8 @@ pub enum SavedNav {
     Starred,
     Label(String),
     Category(crate::backend::categories::Category),
+    Snoozed,
+    Scheduled,
 }
 
 impl Default for SavedNav {

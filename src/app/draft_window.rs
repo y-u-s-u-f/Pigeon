@@ -240,6 +240,7 @@ impl PigeonApp {
         let opened = gpui::open_window(options, cx, move |window, cx| {
             Theme::sync_for(settings::get(cx).appearance, window, cx);
             let composer = seed.build(false, window, cx);
+            composer.update(cx, |c, _| c.in_window = true);
             let host = cx.new(|cx| {
                 // The title follows the subject as the draft saves.
                 let events = cx.subscribe_in(

@@ -210,7 +210,8 @@ impl Outbox {
 
     /// Lay the thread ops still to go over `threads` read from the store.
     /// A draft being discarded or sent is gone already, so one left queued
-    /// at the last quit doesn't come back.
+    /// at the last quit doesn't come back. One scheduled to send (CMP-17)
+    /// stays, marked with its time.
     pub fn overlay(&self, threads: &mut Vec<Thread>) {
         let Ok(rows) = self.store.outbox_pending(&self.account) else {
             return;
@@ -226,6 +227,18 @@ impl Outbox {
                     },
                 )) => threads.retain(|t| t.id != local_id),
                 Ok(Op::Mail(op)) => apply(&op, threads, &me),
+                Ok(Op::Later {
+                    at,
+                    op:
+                        MailOp::Send {
+                            local_id: Some(local_id),
+                            ..
+                        },
+                }) => {
+                    if let Some(t) = threads.iter_mut().find(|t| t.id == local_id) {
+                        t.later.send_at = Some(at);
+                    }
+                }
                 _ => {}
             }
         }
@@ -246,9 +259,11 @@ impl Outbox {
         Ok(())
     }
 
-    /// How many ops are still to go ("3 changes waiting").
+    /// How many ops are still to go ("3 changes waiting"); a scheduled
+    /// send counts once its time has come.
     pub fn waiting(&self) -> usize {
-        self.store.outbox_count(&self.account).unwrap_or(0)
+        let now = chrono::Utc::now().timestamp_millis();
+        self.store.outbox_count(&self.account, now).unwrap_or(0)
     }
 
     /// The threads with label, trash or untrash ops still to go: those a

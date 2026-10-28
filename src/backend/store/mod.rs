@@ -9,6 +9,9 @@ mod images;
 mod mail;
 mod notified;
 mod outbox;
+mod snoozes;
+
+pub use snoozes::Snooze;
 
 pub use images::IMAGE_CACHE_CAP;
 pub use mail::modify_thread;
@@ -157,6 +160,7 @@ impl Store {
             "notified",
             "fired_reminders",
             "draft_tombstones",
+            "snoozes",
         ] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE account = ?1"),

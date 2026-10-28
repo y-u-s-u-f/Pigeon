@@ -282,6 +282,8 @@ pub struct Composer {
     pub quoted: Option<Quoted>,
     /// Under the conversation it answers, rather than alone in the pane.
     pub inline: bool,
+    /// In a draft window of its own (CMP-16): no Send Later there.
+    pub in_window: bool,
     recipients: [Recipients; 3],
     show_cc_bcc: bool,
     subject: Entity<InputState>,
@@ -468,6 +470,7 @@ impl Composer {
             draft_id,
             quoted,
             inline,
+            in_window: false,
             show_cc_bcc: !content.cc.is_empty() || !content.bcc.is_empty(),
             recipients,
             subject,
@@ -2516,6 +2519,16 @@ impl Render for Composer {
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(SendMessage), cx)),
             )
+            // CMP-17, from the main window only.
+            .when(!self.in_window, |this| {
+                this.child(super::icon_button(
+                    "send-later",
+                    Icon::Clock,
+                    "Send later",
+                    Box::new(crate::actions::SendLater),
+                    &theme,
+                ))
+            })
             .child(
                 div()
                     .flex()

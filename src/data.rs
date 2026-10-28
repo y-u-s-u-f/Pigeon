@@ -221,6 +221,19 @@ pub struct Thread {
     /// For a draft: how it was started, so reopening restores it.
     #[serde(skip)]
     pub origin: Option<DraftOrigin>,
+    /// Snooze and Send Later (ACT-11, CMP-17), kept here, not in Gmail.
+    #[serde(skip)]
+    pub later: Later,
+}
+
+/// When a snoozed conversation comes back, when it last did, and when a
+/// draft's scheduled send goes; all Unix ms.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Later {
+    pub snoozed_until: Option<i64>,
+    /// It came back then, so it sorts as if new then.
+    pub woke_at: Option<i64>,
+    pub send_at: Option<i64>,
 }
 
 /// How much of a thread the store has: headers only, or bodies too.
@@ -496,7 +509,7 @@ impl MailData {
     /// Newest first; every view is a filter over this order.
     pub fn sort_threads(&mut self) {
         self.threads
-            .sort_by_key(|t| std::cmp::Reverse(t.last_message().internal_date));
+            .sort_by_key(|t| std::cmp::Reverse(t.sort_time()));
     }
 
     /// Fresh copies of threads: each replaces its thread, or joins the
@@ -677,9 +690,16 @@ impl Thread {
             loaded: Loaded::Full,
             search: SearchIndex::default(),
             origin,
+            later: Later::default(),
         };
         thread.reindex();
         thread
+    }
+
+    /// Where it sorts: its newest message, or its return from a snooze.
+    pub fn sort_time(&self) -> i64 {
+        let last = self.last_message().internal_date;
+        self.later.woke_at.map_or(last, |w| w.max(last))
     }
 
     pub fn last_message(&self) -> &Message {

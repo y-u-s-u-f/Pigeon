@@ -27,8 +27,8 @@ use crate::ui::style::*;
 use crate::{
     actions::{
         ApplyLabel, Archive, CloseSearch, Compose, Delete, LoadOlderConversations, MarkRead,
-        MarkUnread, SEARCH, SyncNow, ToggleArchivedSection, ToggleSearch, ToggleSidebar,
-        ToggleStar,
+        MarkUnread, SEARCH, SendLater, Snooze, SyncNow, ToggleArchivedSection, ToggleSearch,
+        ToggleSidebar, ToggleStar,
     },
     app::{Density, Nav, PigeonApp, Row, SearchSuggestion},
     assets::Icon,
@@ -111,6 +111,8 @@ impl PigeonApp {
         match self.nav {
             Nav::Folder(folder) => folder.title().into(),
             Nav::Starred => "Starred".into(),
+            Nav::Snoozed => "Snoozed".into(),
+            Nav::Scheduled => "Scheduled".into(),
             Nav::Label(ix) => {
                 let name = &self.data.labels[ix].name;
                 name.rsplit('/').next().unwrap_or(name).to_string().into()
@@ -547,6 +549,16 @@ impl PigeonApp {
                 Icon::Star,
                 "No starred conversations".into(),
                 key("Press", &ToggleStar, "on a conversation to star it"),
+            ),
+            Nav::Snoozed => (
+                Icon::AlarmClock,
+                "Nothing snoozed".into(),
+                key("Press", &Snooze, "to bring a conversation back later"),
+            ),
+            Nav::Scheduled => (
+                Icon::Clock,
+                "Nothing scheduled".into(),
+                key("Press", &SendLater, "in a draft to send it later"),
             ),
             Nav::Label(_) => (
                 Icon::Tag,
@@ -1238,7 +1250,29 @@ impl PigeonApp {
         let count = thread.messages.len();
         let subject: SharedString = thread.subject_or_placeholder().to_string().into();
         let no_subject = !thread.has_subject();
-        let date = list_date_on(&last.date, row_cx.now);
+        // ACT-11, CMP-17: when it wakes or sends, in place of its date; a
+        // woken one by when it came back.
+        let later = thread.later.snoozed_until.or(thread.later.send_at);
+        let date = match (later, thread.later.woke_at) {
+            (Some(at), _) => {
+                crate::later::short_label(crate::later::local_time(at), row_cx.now.naive_local())
+            }
+            (None, Some(woke)) if woke > last.internal_date => {
+                let woke = chrono::DateTime::from_timestamp_millis(woke)
+                    .unwrap_or_default()
+                    .with_timezone(&chrono::Local)
+                    .fixed_offset();
+                list_date_on(&woke, row_cx.now)
+            }
+            _ => list_date_on(&last.date, row_cx.now),
+        };
+        let later_mark = if thread.later.snoozed_until.is_some() {
+            Some((Icon::AlarmClock, "Snoozed until"))
+        } else if thread.later.send_at.is_some() {
+            Some((Icon::Clock, "Sends"))
+        } else {
+            None
+        };
 
         let (primary, secondary) = if unread {
             (theme.text, theme.text_muted)
@@ -1323,6 +1357,9 @@ impl PigeonApp {
             })
             .when(thread.has_attachments(), |this| {
                 this.child(icon(Icon::Paperclip, ICON_SM, secondary))
+            })
+            .when_some(later_mark, |this, (glyph, _)| {
+                this.child(icon(glyph, ICON_SM, theme.accent))
             })
             .when(thread.important, |this| {
                 // W4b (FOL-12): Gmail's Important marker.
@@ -1441,7 +1478,10 @@ impl PigeonApp {
             spoken.push("Draft".into());
         }
         spoken.push(subject.to_string());
-        spoken.push(date.clone());
+        match later_mark {
+            Some((_, what)) => spoken.push(format!("{what} {date}")),
+            None => spoken.push(date.clone()),
+        }
         for (on, what) in [
             (thread.starred, "Starred"),
             (thread.important, "Important"),

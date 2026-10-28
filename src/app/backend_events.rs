@@ -34,8 +34,16 @@ impl PigeonApp {
             BackendEvent::OpFailed { op, message } => self.on_op_failed(*op, message, cx),
             BackendEvent::SignedIn => self.on_signed_in(cx),
             BackendEvent::SignedOut => self.on_signed_out(cx),
-            // Sprint 2 W1: handled app-wide (`app::shell`).
-            BackendEvent::NewMail(_) => {}
+            // Sprint 2 W1: handled app-wide (`app::shell`); ACT-11 and
+            // CMP-17 too, the rows coming as `ThreadsChanged`.
+            BackendEvent::NewMail(_) | BackendEvent::Woke { .. } | BackendEvent::SentLate(_) => {}
+            // CMP-17: its `OpFailed` comes next; with the draft back in
+            // Drafts, the toast offers them like a send's.
+            BackendEvent::ScheduledFailed { op, in_drafts, .. } => {
+                if *in_drafts && !self.sends.contains(op) {
+                    self.sends.push(*op);
+                }
+            }
         }
     }
 
@@ -269,6 +277,8 @@ impl PigeonApp {
 
     fn on_op_committed(&mut self, op: OpId, cx: &mut Context<Self>) {
         self.refresh_queued_sends(cx);
+        // CMP-17: a scheduled send that went can't be taken back.
+        self.forget_send(op, cx);
         // W6: "Sending…" becomes "Message sent".
         self.on_send_committed(op, cx);
     }

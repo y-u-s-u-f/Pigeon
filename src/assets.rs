@@ -29,6 +29,7 @@ macro_rules! icons {
 }
 
 icons! {
+    AlarmClock => "alarm-clock",
     Archive => "archive",
     Bell => "bell",
     Bold => "bold",

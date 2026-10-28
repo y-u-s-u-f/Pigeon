@@ -488,6 +488,22 @@ impl PigeonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // CMP-17: a scheduled draft stops waiting to send first; one
+        // already going stays.
+        let scheduled = self.ids_where(&targets, |t| t.later.send_at.is_some());
+        let going = if scheduled.is_empty() {
+            Vec::new()
+        } else {
+            self.cancel_schedules(&scheduled, cx)
+        };
+        let mut targets = targets;
+        if !going.is_empty() {
+            targets.retain(|&ix| !going.contains(&self.data.threads[ix].id));
+            self.show_toast(ToastKind::Info, "Already sending", None, cx);
+            if targets.is_empty() {
+                return;
+            }
+        }
         let drafts: Vec<usize> = targets
             .iter()
             .copied()
@@ -581,27 +597,7 @@ impl PigeonApp {
         self.stash_composer(cx);
         let selected = self.selected.map(|ix| self.data.threads[ix].id.clone());
         let selected_goes = selected.as_ref().is_some_and(|id| ids.contains(id));
-        let moved_rows: Vec<usize> = ids
-            .iter()
-            .filter_map(|id| self.data.thread_ix(id))
-            .filter_map(|ix| self.rows.iter().position(|r| *r == Row::Thread(ix)))
-            .collect();
-        let stays = |ix: &usize| !ids.contains(&self.data.threads[*ix].id);
-        let next = moved_rows.iter().max().and_then(|&last| {
-            self.rows[last + 1..]
-                .iter()
-                .filter_map(Row::thread)
-                .find(stays)
-                .or_else(|| {
-                    let first = *moved_rows.iter().min().expect("non-empty");
-                    self.rows[..first]
-                        .iter()
-                        .rev()
-                        .filter_map(Row::thread)
-                        .find(stays)
-                })
-                .map(|ix| self.data.threads[ix].id.clone())
-        });
+        let next = self.next_staying(&ids);
 
         let mut moves = Vec::new();
         for id in &ids {
@@ -665,6 +661,32 @@ impl PigeonApp {
             cx,
         );
         cx.notify();
+    }
+
+    /// The thread to select once `ids` leave the list: the next row that
+    /// stays, else the one before them.
+    pub(super) fn next_staying(&self, ids: &[String]) -> Option<String> {
+        let moved_rows: Vec<usize> = ids
+            .iter()
+            .filter_map(|id| self.data.thread_ix(id))
+            .filter_map(|ix| self.rows.iter().position(|r| *r == Row::Thread(ix)))
+            .collect();
+        let stays = |ix: &usize| !ids.contains(&self.data.threads[*ix].id);
+        moved_rows.iter().max().and_then(|&last| {
+            self.rows[last + 1..]
+                .iter()
+                .filter_map(Row::thread)
+                .find(stays)
+                .or_else(|| {
+                    let first = *moved_rows.iter().min().expect("non-empty");
+                    self.rows[..first]
+                        .iter()
+                        .rev()
+                        .filter_map(Row::thread)
+                        .find(stays)
+                })
+                .map(|ix| self.data.threads[ix].id.clone())
+        })
     }
 
     /// Hand the backend the ops for threads moving (id, from, to), one
@@ -1056,7 +1078,7 @@ impl PigeonApp {
             Nav::Folder(
                 folder @ (Folder::Inbox | Folder::Archive | Folder::Spam | Folder::Trash),
             ) => threads.filter(not_draft).any(|t| t.folder != folder),
-            Nav::Folder(_) => false,
+            Nav::Folder(_) | Nav::Snoozed | Nav::Scheduled => false,
             Nav::Starred => threads.filter(not_draft).any(|t| !t.starred),
             Nav::Label(ix) => self.data.labels.get(ix).is_some_and(|label| {
                 threads
@@ -1095,6 +1117,7 @@ impl PigeonApp {
             }
             Nav::Label(ix) => self.set_label(ix, movable, false, cx),
             Nav::Category(category) => self.move_to_category(targets, category, cx),
+            Nav::Snoozed | Nav::Scheduled => {}
         }
     }
 
@@ -1219,6 +1242,21 @@ impl PigeonApp {
             );
         }
         if !draft {
+            // ACT-11.
+            let snoozed = targets
+                .iter()
+                .any(|&ix| self.data.threads[ix].later.snoozed_until.is_some());
+            menu = menu.menu(
+                if snoozed {
+                    "Change Snooze…"
+                } else {
+                    "Snooze…"
+                },
+                Box::new(Snooze),
+            );
+            if snoozed {
+                menu = menu.menu("Unsnooze", Box::new(Unsnooze));
+            }
             // MB-018: not the folder they're all in already.
             let mut folders = NativeMenu::new();
             for folder in Folder::ALL {
@@ -1343,6 +1381,13 @@ impl PigeonApp {
                 let b = self.backend.read(cx);
                 b.source() == Source::Google || b.demo_by_choice()
             }
+            When::Snoozed => {
+                mail && self
+                    .targets()
+                    .iter()
+                    .any(|&ix| self.data.threads[ix].later.snoozed_until.is_some())
+            }
+            When::Scheduled => mail && thread.is_some_and(|t| t.later.send_at.is_some()),
         }
     }
 
@@ -1379,6 +1424,7 @@ impl PigeonApp {
                 .composer
                 .as_ref()
                 .is_some_and(|(c, _)| c.read(cx).signature_html().is_some()),
+            Toggle::Snoozed => all(|t| t.later.snoozed_until.is_some()),
         }
     }
 
@@ -1595,6 +1641,9 @@ impl PigeonApp {
             Nav::Category(category) => ViewKey::Category(category),
             Nav::Folder(folder) => ViewKey::Folder(folder),
             Nav::Starred => ViewKey::Starred,
+            // Local views: Archive and Drafts hold their threads.
+            Nav::Snoozed => ViewKey::Folder(Folder::Archive),
+            Nav::Scheduled => ViewKey::Folder(Folder::Drafts),
             Nav::Label(ix) => ViewKey::Label(self.data.labels[ix].id.clone()),
         }
     }
@@ -1673,7 +1722,10 @@ impl PigeonApp {
         if self.is_searching() {
             return self.server_search.has_more();
         }
-        self.nav != Nav::Folder(Folder::Drafts)
+        !matches!(
+            self.nav,
+            Nav::Folder(Folder::Drafts) | Nav::Snoozed | Nav::Scheduled
+        )
     }
 
     /// "Load older": Enter or a click on the row, `j` onto it, or the

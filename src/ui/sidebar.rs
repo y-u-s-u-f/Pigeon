@@ -17,9 +17,9 @@ use super::{
 use crate::ui::style::*;
 use crate::{
     actions::{
-        GoToArchive, GoToDrafts, GoToForums, GoToInbox, GoToPromotions, GoToSent, GoToSocial,
-        GoToSpam, GoToStarred, GoToTrash, GoToUpdates, NewLabel, OpenSettingsSection, SignIn,
-        ToggleHiddenLabels, ToggleSidebar,
+        GoToArchive, GoToDrafts, GoToForums, GoToInbox, GoToPromotions, GoToScheduled, GoToSent,
+        GoToSnoozed, GoToSocial, GoToSpam, GoToStarred, GoToTrash, GoToUpdates, NewLabel,
+        OpenSettingsSection, SignIn, ToggleHiddenLabels, ToggleSidebar,
     },
     app::{Nav, PigeonApp, nav_holds},
     assets::Icon,
@@ -66,17 +66,21 @@ pub struct NavCounts {
     /// by what changed here (`PigeonApp::nav_counts`).
     unread: Vec<usize>,
     drafts: usize,
+    /// CMP-17: drafts scheduled to send, not counted in `drafts`.
+    scheduled: usize,
     /// By `Category as usize`.
     in_inbox: [bool; 5],
 }
 
 /// Where a view's count sits in `NavCounts::unread`.
 fn slot(nav: Nav) -> usize {
-    const CATEGORY: usize = Folder::ALL.len() + 1;
+    const CATEGORY: usize = Folder::ALL.len() + 3;
     const LABEL: usize = CATEGORY + Category::ALL.len();
     match nav {
         Nav::Folder(folder) => folder as usize,
         Nav::Starred => Folder::ALL.len(),
+        Nav::Snoozed => Folder::ALL.len() + 1,
+        Nav::Scheduled => Folder::ALL.len() + 2,
         Nav::Category(category) => CATEGORY + category as usize,
         Nav::Label(ix) => LABEL + ix,
     }
@@ -96,7 +100,11 @@ impl NavCounts {
         };
         for t in threads {
             if t.folder == Folder::Drafts {
-                this.drafts += 1;
+                if t.later.send_at.is_some() {
+                    this.scheduled += 1;
+                } else {
+                    this.drafts += 1;
+                }
             }
             if t.folder == Folder::Inbox {
                 for c in Category::ALL {
@@ -119,6 +127,9 @@ impl NavCounts {
             }
             if nav_holds(Nav::Starred, t, labels) {
                 this.unread[slot(Nav::Starred)] += 1;
+            }
+            if nav_holds(Nav::Snoozed, t, labels) {
+                this.unread[slot(Nav::Snoozed)] += 1;
             }
             if !t.is_hidden() {
                 for id in &t.labels {
@@ -143,7 +154,10 @@ impl NavCounts {
     pub fn shown(&self, nav: Nav) -> usize {
         match nav {
             Nav::Folder(Folder::Drafts) => self.drafts,
-            Nav::Folder(Folder::Sent | Folder::Archive | Folder::Trash) | Nav::Starred => 0,
+            Nav::Scheduled => self.scheduled,
+            Nav::Folder(Folder::Sent | Folder::Archive | Folder::Trash)
+            | Nav::Starred
+            | Nav::Snoozed => 0,
             _ => self.unread(nav),
         }
     }
@@ -169,6 +183,8 @@ fn nav_action(nav: Nav) -> Option<Box<dyn Action>> {
         Nav::Folder(Folder::Spam) => Box::new(GoToSpam),
         Nav::Folder(Folder::Trash) => Box::new(GoToTrash),
         Nav::Starred => Box::new(GoToStarred),
+        Nav::Snoozed => Box::new(GoToSnoozed),
+        Nav::Scheduled => Box::new(GoToScheduled),
         Nav::Category(Category::Social) => Box::new(GoToSocial),
         Nav::Category(Category::Promotions) => Box::new(GoToPromotions),
         Nav::Category(Category::Updates) => Box::new(GoToUpdates),
@@ -296,10 +312,13 @@ impl gpui::Render for DragGhost {
     }
 }
 
-const FOLDERS: [(Nav, &str, Icon); 7] = [
+const FOLDERS: [(Nav, &str, Icon); 9] = [
     (Nav::Folder(Folder::Inbox), "Inbox", Icon::Inbox),
     (Nav::Starred, "Starred", Icon::Star),
+    (Nav::Snoozed, "Snoozed", Icon::AlarmClock),
     (Nav::Folder(Folder::Sent), "Sent", Icon::Send),
+    // Only while something is scheduled, like Gmail's.
+    (Nav::Scheduled, "Scheduled", Icon::Clock),
     (Nav::Folder(Folder::Drafts), "Drafts", Icon::FilePen),
     (Nav::Folder(Folder::Archive), "Archive", Icon::Archive),
     (Nav::Folder(Folder::Spam), "Spam", Icon::ShieldAlert),
@@ -467,6 +486,9 @@ impl PigeonApp {
             shown_categories(counts, self.backend.read(cx).category_counts(), self.nav);
         let mut folders = Vec::new();
         for &(nav, name, glyph) in &FOLDERS {
+            if nav == Nav::Scheduled && counts.shown(nav) == 0 && self.nav != nav {
+                continue;
+            }
             folders.push(
                 self.nav_item(nav, name.into(), Marker::Icon(glyph), 0, counts, &theme, cx)
                     .into_any_element(),
@@ -815,13 +837,17 @@ impl PigeonApp {
         let id = match nav {
             Nav::Folder(folder) => ("nav-folder", folder as usize),
             Nav::Starred => ("nav-starred", 0),
+            Nav::Snoozed => ("nav-snoozed", 0),
+            Nav::Scheduled => ("nav-scheduled", 0),
             Nav::Label(ix) => ("nav-label", ix),
             Nav::Category(c) => ("nav-category", c as usize),
         };
         // MA-048: the name carries the count it shows.
         let label = match (count, nav) {
             (0, _) => name.to_string(),
-            (n, Nav::Folder(Folder::Drafts)) => format!("{name}, {}", thousands(n)),
+            (n, Nav::Folder(Folder::Drafts) | Nav::Scheduled) => {
+                format!("{name}, {}", thousands(n))
+            }
             (n, _) => format!("{name}, {} unread", thousands(n)),
         };
         let tip = name.clone();
@@ -1101,6 +1127,10 @@ mod tests {
         labelled.labels = vec!["L0".into()];
         let mut spam = thread("x", Folder::Spam, &[], true);
         spam.labels = vec!["L0".into()];
+        let mut snoozed = thread("z", Folder::Archive, &[], true);
+        snoozed.later.snoozed_until = Some(1);
+        let mut scheduled = thread("d3", Folder::Drafts, &[], false);
+        scheduled.later.send_at = Some(1);
         let threads = [
             thread("p", Folder::Inbox, &["INBOX"], false),
             thread(
@@ -1114,13 +1144,15 @@ mod tests {
             starred,
             labelled,
             spam,
+            snoozed,
+            scheduled,
         ];
         let labels = [Label::new("L0".to_string(), "Work", gpui::black())];
         let counts = NavCounts::local(&threads, &labels);
         let navs = Folder::ALL
             .into_iter()
             .map(Nav::Folder)
-            .chain([Nav::Starred, Nav::Label(0)])
+            .chain([Nav::Starred, Nav::Snoozed, Nav::Label(0)])
             .chain(Category::ALL[1..].iter().map(|&c| Nav::Category(c)));
         for nav in navs {
             let expected = threads
@@ -1130,6 +1162,10 @@ mod tests {
             assert_eq!(counts.unread(nav), expected, "{nav:?}");
         }
         assert_eq!(counts.shown(Nav::Folder(Folder::Drafts)), 2);
+        assert_eq!(counts.shown(Nav::Scheduled), 1);
+        assert_eq!(counts.unread(Nav::Snoozed), 1);
+        // The starred one only: snoozed conversations aren't in Archive.
+        assert_eq!(counts.unread(Nav::Folder(Folder::Archive)), 1);
         assert_eq!(counts.shown(Nav::Starred), 0);
         assert_eq!(counts.unread(Nav::Label(0)), 1);
         assert_eq!(counts.unread(Nav::Label(7)), 0);

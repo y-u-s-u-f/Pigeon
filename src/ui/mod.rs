@@ -6,6 +6,7 @@ pub mod composer;
 pub mod contact_card;
 pub mod controls;
 pub mod html_view;
+pub mod later_picker;
 pub mod menu_bar;
 pub mod motion;
 pub mod onboarding;
