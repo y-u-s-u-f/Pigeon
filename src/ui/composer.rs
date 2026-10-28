@@ -1405,7 +1405,6 @@ impl Composer {
             .filter(|(at, _)| *at == recipient_field(ix))
             .map(|(_, error)| {
                 div()
-                    .pl(px(60.))
                     .pb(SPACE_SM)
                     .flex()
                     .items_center()
@@ -1421,7 +1420,7 @@ impl Composer {
             .py(SPACE_SM)
             .flex()
             .items_start()
-            .gap(SPACE_SM)
+            .gap(SPACE_XS)
             .child(field_label(label, theme))
             .child(
                 div()
@@ -1843,7 +1842,7 @@ impl Composer {
             .py(SPACE_SM)
             .flex()
             .items_start()
-            .gap(SPACE_SM)
+            .gap(SPACE_XS)
             .border_b_1()
             .border_color(theme.border)
             .child(field_label("From", theme))
@@ -2148,7 +2147,7 @@ impl Render for Composer {
                         .h(px(42.))
                         .flex()
                         .items_center()
-                        .gap(SPACE_SM)
+                        .gap(SPACE_XS)
                         .border_b_1()
                         .border_color(theme.border)
                         .child(field_label("Subject", &theme))
@@ -2255,7 +2254,6 @@ impl Render for Composer {
 fn field_label(label: &'static str, theme: &Theme) -> impl IntoElement {
     div()
         .flex_none()
-        .w(px(52.))
         .h(px(28.))
         .flex()
         .items_center()
