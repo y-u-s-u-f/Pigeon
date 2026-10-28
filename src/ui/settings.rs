@@ -1493,7 +1493,7 @@ fn switch(
                 .size(px(14.))
                 .rounded_full()
                 .bg(theme.control_knob)
-                .shadow(super::popover_shadow(theme)),
+                .shadow(super::segment_shadow(theme)),
         )
 }
 
@@ -1540,7 +1540,7 @@ where
                     if chosen {
                         this.bg(theme.segment_bg)
                             .text_color(theme.text)
-                            .shadow(super::popover_shadow(theme))
+                            .shadow(super::segment_shadow(theme))
                     } else {
                         this.text_color(theme.text_muted)
                             .hover(|s| s.text_color(theme.text))

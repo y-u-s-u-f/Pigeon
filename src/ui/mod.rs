@@ -322,6 +322,18 @@ pub fn popover_shadow(theme: &Theme) -> Vec<gpui::BoxShadow> {
     ]
 }
 
+/// A 1px lift for small controls (the chosen segment, the toggle knob) that
+/// stays inside the track they sit in.
+pub fn segment_shadow(theme: &Theme) -> Vec<gpui::BoxShadow> {
+    vec![gpui::BoxShadow {
+        color: theme.overlay_shadow.alpha(0.18),
+        offset: gpui::point(px(0.), px(1.)),
+        blur_radius: px(2.),
+        spread_radius: px(0.),
+        inset: false,
+    }]
+}
+
 /// The shadow under floating panels.
 pub fn overlay_shadow(theme: &Theme) -> Vec<gpui::BoxShadow> {
     vec![gpui::BoxShadow {
