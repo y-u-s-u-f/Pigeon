@@ -19,7 +19,7 @@ use gpui::{
     deferred, div, point, prelude::FluentBuilder as _, px,
 };
 
-use super::{CalendarView, HOUR_HEIGHT, PromptKind, Selection, SeriesPrompt, ViewKind};
+use super::{CalendarView, HOUR_HEIGHT, Leave, PromptKind, Selection, SeriesPrompt, ViewKind};
 use crate::ui::style::*;
 use crate::{
     calendar::{
@@ -213,6 +213,11 @@ impl CalendarView {
         cx: &mut Context<Self>,
     ) {
         self.focus_grid(window, cx);
+        // Another event than the unsaved new one: ask before leaving it.
+        let selection = self.selection_of(&occurrence);
+        if self.ask_to_leave(Leave::Click(selection), cx) {
+            return;
+        }
         let Some((day, minutes)) = self.grid_time(event.position) else {
             return;
         };
@@ -239,6 +244,10 @@ impl CalendarView {
         cx: &mut Context<Self>,
     ) {
         self.focus_grid(window, cx);
+        let selection = self.selection_of(&occurrence);
+        if self.ask_to_leave(Leave::Click(selection), cx) {
+            return;
+        }
         let kind = DragKind::Move {
             occurrence,
             grab: Duration::zero(),

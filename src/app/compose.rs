@@ -802,6 +802,16 @@ impl PigeonApp {
                 cx.notify();
                 return;
             }
+            UndoAction::DiscardEvent(discarded) => {
+                // The event comes back open in the calendar.
+                if self.mode != Mode::Calendar {
+                    self.set_mode(Mode::Calendar, window, cx);
+                }
+                self.calendar
+                    .update(cx, |c, cx| c.restore_discarded(*discarded, window, cx));
+                cx.notify();
+                return;
+            }
             UndoAction::Send {
                 thread_id,
                 appended,

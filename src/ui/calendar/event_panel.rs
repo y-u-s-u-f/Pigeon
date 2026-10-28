@@ -15,7 +15,7 @@ use gpui::{
 };
 
 use super::{
-    CalendarEvent, CalendarView, MeetState, Menu, PromptKind,
+    CalendarEvent, CalendarView, LeaveChoice, MeetState, Menu, PromptKind,
     repeat::{self, RepeatDraft, RepeatEnd},
     today,
 };
@@ -735,6 +735,9 @@ impl CalendarView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.leave_prompt.is_some() {
+            return self.answer_leave(Some(LeaveChoice::Discard), window, cx);
+        }
         if self.panel_is_new() {
             return self.discard_new_event(window, cx);
         }

@@ -208,6 +208,79 @@ impl GuestPrompt {
     }
 }
 
+/// "Save this event?", asked when something would move the panel off a new
+/// event that isn't saved yet.
+#[derive(Clone, Debug)]
+pub struct LeavePrompt {
+    pub event_id: String,
+    /// What the user was doing, carried on with once answered.
+    pub then: Leave,
+}
+
+#[derive(Clone, Debug)]
+pub enum Leave {
+    Open {
+        id: String,
+        occurrence: NaiveDateTime,
+        focus_title: bool,
+    },
+    /// An arrow key moved the selection; the panel follows it.
+    Select(Selection),
+    /// A click on another event.
+    Click(Selection),
+    /// The palette or an invite jumped to an event.
+    Reveal(String),
+    Create {
+        start: NaiveDateTime,
+        end: NaiveDateTime,
+        all_day: bool,
+    },
+    QuickAdd(String),
+    Restore(Box<Discarded>),
+    /// The panel closes; nothing more to do.
+    Close,
+}
+
+impl Leave {
+    /// The event this goes to, when it's one.
+    fn target(&self) -> Option<&str> {
+        match self {
+            Leave::Open { id, .. } | Leave::Reveal(id) => Some(id),
+            Leave::Select(s) | Leave::Click(s) => Some(&s.event_id),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeaveChoice {
+    Save,
+    Discard,
+}
+
+const LEAVE_CHOICES: &[(LeaveChoice, &str)] = &[
+    (LeaveChoice::Save, "Save"),
+    (LeaveChoice::Discard, "Discard"),
+];
+
+/// A new event that was discarded, for Undo to bring back unsaved.
+#[derive(Clone, Debug)]
+pub struct Discarded {
+    event: Event,
+    meet_request: Option<String>,
+    /// The delete, when the event had already gone in.
+    op: Option<OpId>,
+}
+
+/// The toast's words for a discarded new event.
+fn discarded_message(event: &Event) -> String {
+    if event.title.trim().is_empty() {
+        "Discarded new event".into()
+    } else {
+        format!("Discarded “{}”", event.title.trim())
+    }
+}
+
 const GUEST_CHOICES: &[(SendUpdates, &str)] = &[
     (SendUpdates::All, "Send"),
     (SendUpdates::None, "Don't send"),
@@ -288,6 +361,11 @@ pub enum CalendarEvent {
     Refused(String),
     /// W6: a guest was clicked: their contact card (CON-5).
     ShowContact(crate::data::Contact),
+    /// A new event was discarded: the app shows a toast that brings it back.
+    Discarded {
+        message: String,
+        discarded: Box<Discarded>,
+    },
 }
 
 /// Calendar settings changed in Pigeon; `None` follows Google (CAL-41).
@@ -357,6 +435,7 @@ pub struct CalendarView {
     pending_rsvp: Option<(String, RsvpStatus)>,
     _rsvp_timer: Option<Task<()>>,
     pub guest_prompt: Option<GuestPrompt>,
+    pub leave_prompt: Option<LeavePrompt>,
     /// The user's Google Calendar settings (CAL-41).
     pub google: GoogleSettings,
     pub prefs: CalendarPrefs,
@@ -461,6 +540,7 @@ impl CalendarView {
             pending_rsvp: None,
             _rsvp_timer: None,
             guest_prompt: None,
+            leave_prompt: None,
             google,
             prefs: CalendarPrefs::default(),
             meet_requests: Default::default(),
@@ -640,6 +720,9 @@ impl CalendarView {
                     self.select(selection, window, cx);
                 }
                 None => {
+                    if self.ask_to_leave(Leave::Close, cx) {
+                        return;
+                    }
                     self.selected = None;
                     if self.panel.is_some() {
                         self.close_panel(window, cx);
@@ -659,6 +742,9 @@ impl CalendarView {
         else {
             return;
         };
+        if self.panel.is_some() && self.ask_to_leave(Leave::Select(selection.clone()), cx) {
+            return;
+        }
         // The selected day follows; a bar that started before the period
         // shown keeps the period.
         let (from, to) = self.visible_range();
@@ -733,6 +819,18 @@ impl CalendarView {
         cx: &mut Context<Self>,
     ) {
         let selection = self.selection_of(&occurrence);
+        self.click_selection(selection, window, cx);
+    }
+
+    fn click_selection(
+        &mut self,
+        selection: Selection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.ask_to_leave(Leave::Click(selection.clone()), cx) {
+            return;
+        }
         self.select_day_in_view(selection.start.date());
         self.selected = Some(selection.clone());
         self.open_event(&selection.event_id, selection.start, false, window, cx);
@@ -754,6 +852,14 @@ impl CalendarView {
             .as_ref()
             .is_some_and(|p| p.event_id == id && p.occurrence == occurrence);
         if !already_open {
+            let then = Leave::Open {
+                id: id.to_string(),
+                occurrence,
+                focus_title,
+            };
+            if self.ask_to_leave(then, cx) {
+                return;
+            }
             self.leave_panel(window, cx);
             let Some(event) = self.event(id).cloned() else {
                 return;
@@ -779,6 +885,7 @@ impl CalendarView {
     fn leave_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_panel(window, cx);
         self.discard_base = None;
+        self.leave_prompt = None;
         let new_event = self.new_event.take();
         let mut never_went = false;
         if let Some(id) = &new_event
@@ -829,9 +936,20 @@ impl CalendarView {
     /// (asking about guests); edits to others already went as typed. Either
     /// way the panel closes. A new event needs a title first.
     fn save_event(&mut self, _: &SaveEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(panel) = &self.panel else {
+        if self.leave_prompt.is_some() {
+            return self.answer_leave(Some(LeaveChoice::Save), window, cx);
+        }
+        if self.panel.is_none() {
             cx.propagate();
             return;
+        }
+        self.save_panel(window, cx);
+    }
+
+    /// `save_event` on the open panel; whether it closed.
+    fn save_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(panel) = &self.panel else {
+            return false;
         };
         if self.panel_is_new() && panel.title.read(cx).value().trim().is_empty() {
             let title = panel.title.clone();
@@ -839,17 +957,104 @@ impl CalendarView {
             cx.emit(CalendarEvent::Refused(
                 "Add a title to save the event".into(),
             ));
-            return;
+            return false;
         }
         // The question about a repeating event's change stays to be answered.
         if self.asking_scope() {
-            return;
+            return false;
         }
         self.close_panel(window, cx);
+        true
+    }
+
+    /// The unsaved new event the panel shows, if it has anything filled in:
+    /// one without is nothing to ask about.
+    fn unsaved_new_event(&self) -> Option<String> {
+        let panel = self.panel.as_ref().filter(|_| self.panel_is_new())?;
+        self.event(&panel.event_id)
+            .filter(|e| e.has_content())
+            .map(|e| e.id.clone())
+    }
+
+    /// Before something moves the panel off an unsaved new event: ask "Save
+    /// this event?" and return true, so the caller stops. `then` carries on
+    /// once it's answered (`answer_leave`).
+    pub(crate) fn ask_to_leave(&mut self, then: Leave, cx: &mut Context<Self>) -> bool {
+        let Some(event_id) = self.unsaved_new_event() else {
+            return false;
+        };
+        if then.target() == Some(event_id.as_str()) {
+            return false;
+        }
+        self.leave_prompt = Some(LeavePrompt { event_id, then });
+        cx.notify();
+        true
+    }
+
+    /// Save or Discard, then what the user was doing; `None` is Cancel,
+    /// which stays on the new event.
+    pub fn answer_leave(
+        &mut self,
+        choice: Option<LeaveChoice>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(prompt) = self.leave_prompt.take() else {
+            return;
+        };
+        match choice {
+            None => {}
+            Some(LeaveChoice::Discard) => {
+                self.discard_new_event(window, cx);
+                self.carry_on(prompt.then, window, cx);
+            }
+            Some(LeaveChoice::Save) => {
+                // Without a title it stays, asking for one.
+                if !self.save_panel(window, cx) {
+                    return cx.notify();
+                }
+                // A question about the guests is for that event; the rest
+                // waits for the user to do it again.
+                if self.guest_prompt.is_none() {
+                    self.carry_on(prompt.then, window, cx);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn carry_on(&mut self, then: Leave, window: &mut Window, cx: &mut Context<Self>) {
+        match then {
+            Leave::Open {
+                id,
+                occurrence,
+                focus_title,
+            } => self.open_event(&id, occurrence, focus_title, window, cx),
+            Leave::Select(selection) => {
+                self.select(selection.clone(), window, cx);
+                self.open_event(&selection.event_id, selection.start, false, window, cx);
+            }
+            Leave::Click(selection) => self.click_selection(selection, window, cx),
+            Leave::Reveal(id) => {
+                if let Some(ix) = self.data.event_ix(&id) {
+                    self.reveal_event(ix, window, cx);
+                }
+            }
+            Leave::Create {
+                start,
+                end,
+                all_day,
+            } => {
+                self.create_event(start, end, all_day, window, cx);
+            }
+            Leave::QuickAdd(text) => self.quick_add(&text, window, cx),
+            Leave::Restore(discarded) => self.restore_discarded(*discarded, window, cx),
+            Leave::Close => {}
+        }
     }
 
     /// Discard (and X or Escape on a new event): it goes without being
-    /// saved, and nothing of it reaches the backend.
+    /// saved, and nothing of it reaches the backend. A toast offers Undo.
     pub(crate) fn discard_new_event(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.new_event.take() else {
             return self.close_panel(window, cx);
@@ -860,9 +1065,10 @@ impl CalendarView {
         }
         // Edits to other events still settling go.
         self.flush_edit(cx);
+        let event = self.event(&id).cloned();
         self.data.events.retain(|e| e.id != id);
-        self.meet_requests.remove(&id);
-        if !never_went {
+        let meet_request = self.meet_requests.remove(&id);
+        let op = (!never_went).then(|| {
             self.queue(
                 CalOp::Delete {
                     id: id.clone(),
@@ -871,13 +1077,71 @@ impl CalendarView {
                     send_updates: SendUpdates::None,
                 },
                 cx,
-            );
-        }
+            )
+        });
         if self.selected.as_ref().is_some_and(|s| s.event_id == id) {
             self.selected = None;
         }
         self.panel = None;
         self.close_panel(window, cx);
+        // An empty one is nothing to bring back.
+        if let Some(event) = event.filter(|e| e.has_content()) {
+            cx.emit(CalendarEvent::Discarded {
+                message: discarded_message(&event),
+                discarded: Box::new(Discarded {
+                    event,
+                    meet_request,
+                    op,
+                }),
+            });
+        }
+    }
+
+    /// Undo a discard: the new event and its panel are back, still unsaved.
+    pub fn restore_discarded(
+        &mut self,
+        discarded: Discarded,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Discarded {
+            event,
+            meet_request,
+            op,
+        } = discarded;
+        let (id, start) = (event.id.clone(), event.start);
+        if self.event(&id).is_some() {
+            return;
+        }
+        if self.ask_to_leave(
+            Leave::Restore(Box::new(Discarded {
+                event: event.clone(),
+                meet_request: meet_request.clone(),
+                op,
+            })),
+            cx,
+        ) {
+            return;
+        }
+        // Inside the undo window a delete that was held back is cancelled
+        // and the event still stands in Google; past it, or if it never
+        // went, it goes in when saved.
+        let still_there = op.is_some_and(|op| self.backend.update(cx, |b, _| b.cancel(op)));
+        self.data.events.push(event);
+        if let Some(request) = meet_request {
+            self.meet_requests.insert(id.clone(), request);
+        }
+        self.select_day_in_view(start.date());
+        self.selected = Some(Selection {
+            event_id: id.clone(),
+            start,
+        });
+        self.open_event(&id, start, true, window, cx);
+        if !still_there {
+            self.unsent = Some(id.clone());
+        }
+        self.new_event = Some(id);
+        cx.notify();
     }
 
     pub fn close_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1206,7 +1470,8 @@ impl CalendarView {
     }
 
     /// Make an event over `[start, end)` and open it with its title focused.
-    /// All-day events take whole days. Returns the new event's id.
+    /// All-day events take whole days. Returns the new event's id; `None`
+    /// when an unsaved new event is open, and asking about it comes first.
     pub fn create_event(
         &mut self,
         start: NaiveDateTime,
@@ -1214,7 +1479,15 @@ impl CalendarView {
         all_day: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> String {
+    ) -> Option<String> {
+        let then = Leave::Create {
+            start,
+            end,
+            all_day,
+        };
+        if self.ask_to_leave(then, cx) {
+            return None;
+        }
         // The default calendar (Settings), else the primary one. Before the
         // first sync there may be none.
         let calendar = crate::calendar::new_event_calendar(
@@ -1281,7 +1554,7 @@ impl CalendarView {
         });
         self.open_event(&id, start, true, window, cx);
         self.new_event = Some(id.clone());
-        id
+        Some(id)
     }
 
     /// Move or resize the occurrence of `id` starting at `occurrence` to
@@ -1775,10 +2048,13 @@ impl CalendarView {
     /// Jump to an event from anywhere (the palette): its next occurrence
     /// from today, or its last one, selected and open.
     pub fn reveal_event(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(event) = self.data.events.get(ix) else {
+        let Some(id) = self.data.events.get(ix).map(|e| e.id.clone()) else {
             return;
         };
-        let id = event.id.clone();
+        if self.ask_to_leave(Leave::Reveal(id.clone()), cx) {
+            return;
+        }
+        let event = &self.data.events[ix];
         let start = next_start(event);
         if let Some(calendar) = self
             .data
@@ -1956,10 +2232,15 @@ impl CalendarView {
     /// "New event: Lunch with Sam Fri 1pm" from ⌘K (CAL-39): the event,
     /// open in the panel to confirm.
     pub fn quick_add(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ask_to_leave(Leave::QuickAdd(text.to_string()), cx) {
+            return;
+        }
         let quick = quick_add::parse(text, now(), self.event_minutes());
         self.anchor = quick.start.date();
         self.mini_month = None;
-        let id = self.create_event(quick.start, quick.end, quick.all_day, window, cx);
+        let Some(id) = self.create_event(quick.start, quick.end, quick.all_day, window, cx) else {
+            return;
+        };
         if let Some(event) = self.event_mut(&id) {
             event.title = quick.title.clone();
         }
@@ -2102,6 +2383,9 @@ impl CalendarView {
     /// Enter: answers an open prompt with its first choice, or opens the
     /// selected event.
     fn open_selected(&mut self, _: &OpenEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.leave_prompt.is_some() {
+            return self.answer_leave(Some(LeaveChoice::Save), window, cx);
+        }
         if self.guest_prompt.is_some() {
             return self.answer_guests(Some(SendUpdates::All), window, cx);
         }
@@ -2150,7 +2434,9 @@ impl CalendarView {
         if self.cancel_drag(cx) {
             return;
         }
-        if self.guest_prompt.is_some() {
+        if self.leave_prompt.is_some() {
+            self.answer_leave(None, window, cx);
+        } else if self.guest_prompt.is_some() {
             self.answer_guests(None, window, cx);
         } else if self.prompt.take().is_some() {
             cx.notify();
@@ -2374,6 +2660,35 @@ impl CalendarView {
         })
     }
 
+    /// "Save this event?" over the bottom of the grid, before leaving a new
+    /// event that isn't saved yet.
+    fn render_leave_prompt(
+        &self,
+        prompt: &LeavePrompt,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let title = self
+            .event(&prompt.event_id)
+            .map(|e| e.display_title().to_string())
+            .unwrap_or_default();
+        let buttons = self.render_scope_buttons(
+            LEAVE_CHOICES,
+            true,
+            theme,
+            cx,
+            |this, choice, window, cx| this.answer_leave(Some(choice), window, cx),
+        );
+        self.render_prompt_card(
+            "Save this event?",
+            title,
+            buttons,
+            theme,
+            cx,
+            |this, window, cx| this.answer_leave(None, window, cx),
+        )
+    }
+
     /// "Send updates to guests?" over the bottom of the grid (CAL-13).
     fn render_guest_prompt(
         &self,
@@ -2505,9 +2820,10 @@ impl Render for CalendarView {
                     .as_ref()
                     .is_some_and(|panel| panel.event_id == p.event_id))
         });
-        let floating_prompt = match &self.guest_prompt {
-            Some(p) => Some(self.render_guest_prompt(p, &theme, cx)),
-            None => floating_prompt.map(|p| self.render_floating_prompt(p, &theme, cx)),
+        let floating_prompt = match (&self.leave_prompt, &self.guest_prompt) {
+            (Some(p), _) => Some(self.render_leave_prompt(p, &theme, cx)),
+            (None, Some(p)) => Some(self.render_guest_prompt(p, &theme, cx)),
+            (None, None) => floating_prompt.map(|p| self.render_floating_prompt(p, &theme, cx)),
         };
         div()
             .id("calendar")
@@ -2611,6 +2927,30 @@ impl Render for CalendarView {
 mod tests {
     use super::*;
     use crate::calendar::Rule;
+
+    #[test]
+    fn the_discard_toast_names_the_event() {
+        let event = |title: &str| Event {
+            title: title.into(),
+            ..Event::default()
+        };
+        assert_eq!(discarded_message(&event(" Lunch ")), "Discarded “Lunch”");
+        assert_eq!(discarded_message(&event("")), "Discarded new event");
+    }
+
+    #[test]
+    fn leaving_for_the_event_already_open_is_not_leaving() {
+        let selection = Selection {
+            event_id: "n1".into(),
+            start: time::at(NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(), 9, 0),
+        };
+        assert_eq!(Leave::Click(selection.clone()).target(), Some("n1"));
+        assert_eq!(Leave::Select(selection).target(), Some("n1"));
+        assert_eq!(Leave::Reveal("n1".into()).target(), Some("n1"));
+        // Making another event or closing the panel goes to no event.
+        assert_eq!(Leave::Close.target(), None);
+        assert_eq!(Leave::QuickAdd("lunch".into()).target(), None);
+    }
 
     #[test]
     fn a_split_is_one_op_that_ends_the_series_then_inserts() {

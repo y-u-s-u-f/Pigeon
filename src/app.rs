@@ -40,7 +40,7 @@ use crate::{
     theme::Theme,
     ui::{
         self, PaneResize,
-        calendar::{CalendarEvent, CalendarView, Removal, ViewKind},
+        calendar::{CalendarEvent, CalendarView, Discarded, Removal, ViewKind},
         command_palette::{CommandPalette, Leading, PaletteCommand, PaletteEvent, PaletteItem},
         composer::Composer,
         settings::SettingsPage,
@@ -158,6 +158,8 @@ pub enum UndoAction {
     /// Put deleted calendar events (or occurrences) back, or a split series
     /// together again.
     DeleteEvent(Box<Removal>),
+    /// Bring back a discarded new calendar event, open and still unsaved.
+    DiscardEvent(Box<Discarded>),
     /// Put moved threads back in their folders: (thread id, old folder).
     Move {
         moves: Vec<(String, Folder)>,
@@ -326,6 +328,10 @@ impl PigeonApp {
                 |this, _, event, window, cx| match event {
                     CalendarEvent::Undoable { message, removal } => {
                         let undo = UndoAction::DeleteEvent(removal.clone());
+                        this.show_toast(message.clone(), Some(undo), cx);
+                    }
+                    CalendarEvent::Discarded { message, discarded } => {
+                        let undo = UndoAction::DiscardEvent(discarded.clone());
                         this.show_toast(message.clone(), Some(undo), cx);
                     }
                     // W6 (CAL-22, CON-5).

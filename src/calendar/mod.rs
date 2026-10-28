@@ -399,6 +399,17 @@ impl Event {
         Some((old, new))
     }
 
+    /// Whether the user filled anything in: a new event without it (no
+    /// title, place, notes, link, guests or repeat) is nothing to keep.
+    pub fn has_content(&self) -> bool {
+        !self.title.trim().is_empty()
+            || !self.location.trim().is_empty()
+            || !self.description.trim().is_empty()
+            || !self.video_link.trim().is_empty()
+            || !self.attendees.is_empty()
+            || self.recurrence.is_some()
+    }
+
     /// Whether this occurrence record really differs from its `series`.
     /// Google lists an instance for occurrences that were never changed
     /// too, so having a `recurring_event_id` says nothing: it counts only
@@ -785,6 +796,52 @@ mod tests {
         };
         for changed in [moved, resized, renamed, guest, free] {
             assert!(changed.differs_from_series(&series), "{changed:?}");
+        }
+    }
+
+    #[test]
+    fn a_new_event_has_content_once_anything_is_filled_in() {
+        let blank = Event::default();
+        assert!(!blank.has_content());
+        assert!(
+            !Event {
+                title: "  ".into(),
+                ..blank.clone()
+            }
+            .has_content()
+        );
+        let filled = [
+            Event {
+                title: "Lunch".into(),
+                ..blank.clone()
+            },
+            Event {
+                location: "Cafe".into(),
+                ..blank.clone()
+            },
+            Event {
+                description: "Bring the notes".into(),
+                ..blank.clone()
+            },
+            Event {
+                video_link: "https://meet.google.com/abc-defg-hij".into(),
+                ..blank.clone()
+            },
+            Event {
+                attendees: vec![Attendee {
+                    name: String::new(),
+                    email: "a@b.c".into(),
+                    status: RsvpStatus::NeedsAction,
+                }],
+                ..blank.clone()
+            },
+            Event {
+                recurrence: Some(Rule::weekly()),
+                ..blank
+            },
+        ];
+        for event in filled {
+            assert!(event.has_content(), "{event:?}");
         }
     }
 
