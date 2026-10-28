@@ -3,7 +3,7 @@
 
 use chrono::{Datelike, Duration};
 use gpui::{
-    Action, AnyElement, Context, FontWeight, InteractiveElement, IntoElement, MouseButton,
+    Action, Anchor, AnyElement, Context, FontWeight, InteractiveElement, IntoElement, MouseButton,
     ParentElement, SharedString, StatefulInteractiveElement as _, Styled, Window, anchored,
     component::{input::Input, tooltip::Tooltip},
     deferred, div,
@@ -478,30 +478,37 @@ impl CalendarView {
                         .children(calendars.into_iter().map(|(ix, c)| row(ix, c)))
                 })
             };
-            deferred(
-                anchored().snap_to_window_with_margin(px(8.)).child(
-                    div()
-                        .id("calendars-menu")
-                        .occlude()
-                        .role(gpui::Role::Group)
-                        .aria_label("Calendars")
-                        .mt(SPACE_2XL)
-                        .w(px(260.))
-                        .max_h(px(440.))
-                        .overflow_y_scroll()
-                        .p(SPACE_XS)
-                        .flex()
-                        .flex_col()
-                        .rounded(RADIUS_MD)
-                        .bg(theme.overlay_bg)
-                        .border_1()
-                        .border_color(theme.overlay_border)
-                        .shadow(popover_shadow(theme))
-                        .children(section("My calendars", mine))
-                        .children(section("Other calendars", others)),
-                ),
+            // Anchored to the button's right edge (against the view switch),
+            // which stays put when the label changes width.
+            div().absolute().top_0().right_0().child(
+                deferred(
+                    anchored()
+                        .anchor(Anchor::TopRight)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(
+                            div()
+                                .id("calendars-menu")
+                                .occlude()
+                                .role(gpui::Role::Group)
+                                .aria_label("Calendars")
+                                .mt(SPACE_2XL)
+                                .w(px(260.))
+                                .max_h(px(440.))
+                                .overflow_y_scroll()
+                                .p(SPACE_XS)
+                                .flex()
+                                .flex_col()
+                                .rounded(RADIUS_MD)
+                                .bg(theme.overlay_bg)
+                                .border_1()
+                                .border_color(theme.overlay_border)
+                                .shadow(popover_shadow(theme))
+                                .children(section("My calendars", mine))
+                                .children(section("Other calendars", others)),
+                        ),
+                )
+                .with_priority(2),
             )
-            .with_priority(2)
         });
 
         let label: SharedString = if hidden > 0 {
@@ -512,6 +519,7 @@ impl CalendarView {
 
         div()
             .flex_none()
+            .relative()
             .child(
                 div()
                     .id("calendars-button")
@@ -525,8 +533,15 @@ impl CalendarView {
                     .text_color(theme.text_muted)
                     .when(open, |d| d.bg(theme.selected_bg))
                     .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
-                    .child(div().flex().items_center().pl(SPACE_XS).children(dots))
-                    .child(label)
+                    .child(
+                        div()
+                            .min_w(px(30.))
+                            .flex()
+                            .items_center()
+                            .pl(SPACE_XS)
+                            .children(dots),
+                    )
+                    .child(div().min_w(px(64.)).whitespace_nowrap().child(label))
                     .child(icon(Icon::ChevronDown, px(13.), theme.text_faint))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Calendars, cx)))
