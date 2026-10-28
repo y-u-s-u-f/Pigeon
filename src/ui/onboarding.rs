@@ -1,21 +1,30 @@
-//! The sign-in screen (ACC-3): shown while nobody is signed in. Enter signs
-//! in with Google in the browser, D tries the demo data, Esc cancels a
-//! sign-in that's waiting for the browser.
+//! The sign-in screen (ACC-3): shown while nobody is signed in. Return
+//! signs in with Google in the browser, D tries the demo data, Esc cancels a
+//! sign-in that's waiting for the browser; the keys are bound in the
+//! `Onboarding` context (MC-089).
 
 use gpui::{
     AnyElement, App, Context, Div, FocusHandle, FontWeight, InteractiveElement as _, IntoElement,
-    KeyDownEvent, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Window, accesskit::Live, div, prelude::FluentBuilder as _, px,
+    ParentElement as _, Pixels, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
+    accesskit::Live, actions, div, prelude::FluentBuilder as _, px,
 };
 
 use super::{icon, keycap_on_accent, keys_caps, live_text, style::*, window_drag_area};
 use crate::{
-    actions::{SignIn, UseDemoData},
+    actions::{CancelSignIn, ONBOARDING, SignIn, UseDemoData},
     app::PigeonApp,
     assets::Icon,
     backend::SignInState,
     theme::Theme,
 };
+
+// Return and D on the screen. Their own actions, so the menu items for
+// SignIn and UseDemoData carry no bare key (W2-R15).
+actions!(onboarding, [Confirm, TryDemo]);
+
+/// The wide buttons, and the error above them.
+const BUTTON_WIDTH: Pixels = px(260.);
+const ERROR_WIDTH: Pixels = px(360.);
 
 impl PigeonApp {
     pub(crate) fn render_onboarding(
@@ -48,9 +57,7 @@ impl PigeonApp {
                     keys_caps("escape", &theme),
                     false,
                     &theme,
-                    cx.listener(|this, _, _, cx| {
-                        this.backend.update(cx, |b, cx| b.cancel_sign_in(cx));
-                    }),
+                    |_, window, cx| window.dispatch_action(Box::new(CancelSignIn), cx),
                 ))
         } else {
             div()
@@ -63,7 +70,7 @@ impl PigeonApp {
                         .id("sign-in-error")
                         .role(gpui::Role::Alert)
                         .aria_label(SharedString::from(message.clone()))
-                        .max_w(px(360.))
+                        .max_w(ERROR_WIDTH)
                         .mb(SPACE_SM)
                         .text_center()
                         .text_size(TEXT_SM)
@@ -72,7 +79,7 @@ impl PigeonApp {
                 }))
                 .child(button(
                     "sign-in",
-                    "Sign in with Google",
+                    "Sign In with Google",
                     keycap_on_accent("↩", &theme),
                     true,
                     &theme,
@@ -80,7 +87,7 @@ impl PigeonApp {
                 ))
                 .child(button(
                     "use-demo",
-                    "Try with demo data",
+                    "Try with Demo Data",
                     keys_caps("d", &theme),
                     false,
                     &theme,
@@ -89,24 +96,34 @@ impl PigeonApp {
         };
 
         window_drag_area(div().id("onboarding"))
-            .key_context("Onboarding")
+            .key_context(ONBOARDING)
             .track_focus(focus)
             .role(gpui::Role::Main)
             .aria_label("Sign in to Pigeon")
-            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                let keystroke = &event.keystroke;
-                if keystroke.modifiers.modified() {
-                    return;
+            // While the browser is open, Return and D do nothing; the app's
+            // handlers take them otherwise.
+            .on_action(cx.listener(move |_, _: &SignIn, _, cx| {
+                if !waiting {
+                    cx.propagate();
                 }
-                match keystroke.key.as_str() {
-                    "enter" if !waiting => window.dispatch_action(Box::new(SignIn), cx),
-                    "d" if !waiting => window.dispatch_action(Box::new(UseDemoData), cx),
-                    "escape" if waiting => {
-                        this.backend.update(cx, |b, cx| b.cancel_sign_in(cx));
-                    }
-                    _ => return,
+            }))
+            .on_action(cx.listener(move |_, _: &UseDemoData, _, cx| {
+                if !waiting {
+                    cx.propagate();
                 }
-                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(move |_, _: &Confirm, window, cx| {
+                if !waiting {
+                    window.dispatch_action(Box::new(SignIn), cx);
+                }
+            }))
+            .on_action(cx.listener(move |_, _: &TryDemo, window, cx| {
+                if !waiting {
+                    window.dispatch_action(Box::new(UseDemoData), cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &CancelSignIn, _, cx| {
+                this.backend.update(cx, |b, cx| b.cancel_sign_in(cx));
             }))
             .size_full()
             .flex()
@@ -155,7 +172,7 @@ fn button(
     focusable_control(div().id(id), theme)
         .role(gpui::Role::Button)
         .aria_label(label)
-        .w(px(260.))
+        .w(BUTTON_WIDTH)
         .min_h(CONTROL_LG)
         .py(SPACE_SM)
         .px(SPACE_LG)
@@ -165,16 +182,17 @@ fn button(
         .rounded(RADIUS_MD)
         .text_size(TEXT_BASE)
         .font_weight(FontWeight::MEDIUM)
-        .cursor_pointer()
         .map(|this| {
             if primary {
                 this.bg(theme.accent)
                     .text_color(theme.accent_text)
                     .hover(|s| s.opacity(0.9))
+                    .active(|s| s.opacity(0.8))
             } else {
                 this.bg(theme.chip_bg)
                     .text_color(theme.text)
                     .hover(|s| s.bg(theme.hover_bg))
+                    .active(|s| s.bg(theme.selected_bg))
             }
         })
         .child(label)

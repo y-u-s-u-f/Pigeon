@@ -502,16 +502,25 @@ impl Event {
         self.reminders = from.reminders.clone();
     }
 
-    /// My answer to an invite, when someone else organizes it. Any of my
-    /// addresses is me (ACC-2).
+    /// My answer to an invite, when someone else organizes it: Google's
+    /// `organizer.self`, or any of my addresses, makes it mine (ACC-2). The
+    /// one rule for this; `policy::my_answer` reads it (MC-Q18).
     pub fn my_status(&self, me: &crate::data::Account) -> Option<RsvpStatus> {
-        if me.is_me(&self.organizer.email) {
+        if self.organizer_self || me.is_me(&self.organizer.email) {
             return None;
         }
         self.attendees
             .iter()
             .find(|a| me.is_me(&a.email))
             .map(|a| a.status)
+    }
+
+    /// The event's own zone, when it isn't this Mac's (ME-095): "Set in
+    /// Europe/London".
+    pub fn foreign_zone(&self) -> Option<&str> {
+        self.time_zone
+            .as_deref()
+            .filter(|&z| !z.is_empty() && z != time::LocalZone::system().name)
     }
 }
 
@@ -578,6 +587,44 @@ impl CalendarData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn google_saying_i_organize_means_there_is_no_answer_to_give() {
+        let me = crate::data::Account {
+            email: "me@example.com".into(),
+            ..Default::default()
+        };
+        let mut event = Event {
+            organizer: Contact {
+                name: String::new(),
+                email: "team@group.calendar.google.com".into(),
+            },
+            attendees: vec![Attendee {
+                name: String::new(),
+                email: "me@example.com".into(),
+                status: RsvpStatus::NeedsAction,
+            }],
+            ..Event::default()
+        };
+        assert_eq!(event.my_status(&me), Some(RsvpStatus::NeedsAction));
+        event.organizer_self = true;
+        assert_eq!(event.my_status(&me), None);
+    }
+
+    #[test]
+    fn an_event_set_in_this_macs_zone_has_no_foreign_zone() {
+        let mut event = Event::default();
+        assert_eq!(event.foreign_zone(), None);
+        event.time_zone = Some(time::LocalZone::system().name.to_string());
+        assert_eq!(event.foreign_zone(), None);
+        let elsewhere = if time::LocalZone::system().name == "Pacific/Kiritimati" {
+            "Europe/London"
+        } else {
+            "Pacific/Kiritimati"
+        };
+        event.time_zone = Some(elsewhere.into());
+        assert_eq!(event.foreign_zone(), Some(elsewhere));
+    }
 
     #[test]
     fn bundled_calendar_loads() {

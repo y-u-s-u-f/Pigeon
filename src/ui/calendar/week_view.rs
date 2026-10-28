@@ -1,40 +1,57 @@
 //! The Day and Week views: a header per day, a lane of all-day and
 //! multi-day events, and the scrolling time grid with events side by side
-//! where they overlap.
+//! where they overlap. Declined events take no column: they're drawn faded
+//! behind the rest (ME-042).
 
-use chrono::{Datelike, Duration, NaiveDate, Timelike};
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
 use gpui::{
-    AnyElement, Context, FontWeight, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    SharedString, StatefulInteractiveElement as _, Styled, Window, canvas,
-    component::{scroll::ScrollableElement as _, tooltip::Tooltip},
-    div,
-    prelude::FluentBuilder as _,
-    px, relative,
+    AnyElement, Context, FontWeight, Hsla, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, ParentElement, SharedString, StatefulInteractiveElement as _, Styled, Window,
+    canvas, component::scroll::ScrollableElement as _, div, prelude::FluentBuilder as _, px,
+    relative,
 };
 
-use super::{
-    CalendarView, HOUR_HEIGHT, ViewKind, agenda::DAY_COLUMN_MAX, now, occurrence_key, today,
-};
+use super::{CalendarView, HOUR_HEIGHT, ViewKind, agenda::DAY_COLUMN_MAX, occurrence_key};
 use crate::ui::style::*;
 use crate::{
     assets::Icon,
     calendar::{
         Occurrence, RsvpStatus,
         layout::{column_box, pack_columns, pack_lanes},
+        policy,
         time::{self, compact_time_label, is_weekend, time_range_label},
     },
     theme::Theme,
-    ui::icon,
+    ui::{controls::bar_colors, icon, icon_button_small, is_secondary, tooltip},
 };
 
 /// Width of the hour labels on the left.
 pub const GUTTER: f32 = 58.;
 const LANE_HEIGHT: f32 = 24.;
+/// The gap under and after an all-day bar in its lane.
+const LANE_GAP: f32 = 3.;
+/// The calendar color's stripe on an event's leading edge.
+pub const STRIPE_WIDTH: gpui::Pixels = px(3.);
+/// The grab area at a timed event's bottom edge.
+const RESIZE_HANDLE: gpui::Pixels = px(6.);
+/// The all-day lanes shown before the rest fold into "+N" (ME-040).
+const MAX_LANES: usize = 3;
 /// Events shorter than this are laid out as if they were this long, since
 /// they're drawn that tall.
 const MIN_LAYOUT_MINUTES: i64 = 25;
 /// Side-by-side events narrower than this overlap a little instead.
 const MIN_COLUMN: f32 = 60.;
+/// The strip kept free on the right of each day, to drag-create beside a
+/// full-width event (ME-053): a tenth of the day, within these bounds.
+const FREE_STRIP: (f32, f32) = (8., 16.);
+/// How long before its start a meeting offers Join on its block.
+const JOIN_LEAD_MINUTES: i64 = 10;
+/// The size of text in blocks, in rems, and its line height: block layout
+/// reads them with the window's rem size (ME-039).
+const BLOCK_TEXT_REMS: f32 = 12. / BASE_REM;
+const BLOCK_LINE: f32 = 1.25;
+/// About how wide a character of block text is, per point of its size.
+const CHAR_WIDTH: f32 = 0.54;
 
 /// How an event is drawn, from the user's answer to it.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -53,6 +70,45 @@ impl Look {
             _ => Look::Normal,
         }
     }
+
+    /// A bar or a pill as answered: pending outlined over a light fill,
+    /// declined faded (ME-041). The title strikes through separately.
+    pub fn bar<E: Styled>(self, el: E, fill: Hsla, accent: Hsla) -> E {
+        match self {
+            Look::Normal => el.bg(fill),
+            Look::Pending => el
+                .bg(fill.alpha(0.25))
+                .border_1()
+                .border_color(accent.alpha(0.7)),
+            Look::Declined => el.bg(fill.alpha(0.25)).opacity(0.6),
+        }
+    }
+}
+
+/// Line height and character width of block text at the window's rem size.
+#[derive(Clone, Copy)]
+struct TextMetrics {
+    line: f32,
+    char: f32,
+}
+
+impl TextMetrics {
+    fn of(window: &Window) -> Self {
+        let size = f32::from(window.rem_size()) * BLOCK_TEXT_REMS;
+        TextMetrics {
+            line: size * BLOCK_LINE,
+            char: size * CHAR_WIDTH,
+        }
+    }
+}
+
+/// A block's place in its day: `left` and `width` across a day `day`
+/// wide.
+#[derive(Clone, Copy)]
+struct BlockBox {
+    left: f32,
+    width: f32,
+    day: f32,
 }
 
 impl CalendarView {
@@ -60,11 +116,13 @@ impl CalendarView {
         &self,
         days: Vec<NaiveDate>,
         occurrences: &[Occurrence],
+        now: NaiveDateTime,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = Theme::of(cx).clone();
-        let today = today();
+        let today = now.date();
+        let metrics = TextMetrics::of(window);
         let n = days.len();
         // How wide a day is, to lay events out and fit their text.
         let day_width = if self.day_side_shown(window) {
@@ -73,6 +131,7 @@ impl CalendarView {
             (self.grid_area_width(window) - GUTTER) / n as f32
         } - 1.;
         let first = days[0];
+        let first_day = time::midnight(first);
         let day_ix = |date: NaiveDate| (date - first).num_days();
 
         // All-day and multi-day events, in lanes over the days they cover.
@@ -92,12 +151,67 @@ impl CalendarView {
             .collect();
         let lanes = pack_lanes(&spans);
         let lane_count = lanes.iter().map(|l| l + 1).max().unwrap_or(0);
+        // A busy week folds its lanes past the first few into "+N" per day;
+        // a selected bar in them unfolds them, so the keyboard reaches it.
+        let selected_hidden = spanning
+            .iter()
+            .zip(&lanes)
+            .any(|(o, &lane)| lane + 1 >= MAX_LANES && self.is_selected(o));
+        let folds = lane_count > MAX_LANES;
+        let expanded = !folds || self.all_day_expanded || selected_hidden;
+        let shown_lanes = if expanded { lane_count } else { MAX_LANES - 1 };
+        let hidden: Vec<usize> = (0..n as i64)
+            .map(|day| {
+                spans
+                    .iter()
+                    .zip(&lanes)
+                    .filter(|&(&(s, e), &lane)| lane >= shown_lanes && s <= day && day < e)
+                    .count()
+            })
+            .collect();
+        let rows = if expanded { lane_count } else { MAX_LANES };
         let bars = spanning
             .iter()
             .zip(&spans)
             .zip(&lanes)
+            .filter(|&(_, &lane)| lane < shown_lanes)
             .map(|((o, &(start, end)), &lane)| {
-                self.render_bar(**o, start, end, n, lane, &theme, cx)
+                self.render_bar(**o, (start, end), n, first_day, lane, now, &theme, cx)
+            })
+            .collect::<Vec<_>>();
+        let more = hidden
+            .iter()
+            .enumerate()
+            .filter(|&(_, &count)| count > 0)
+            .map(|(day, &count)| {
+                div()
+                    .absolute()
+                    .top(px(f32::from(SPACE_XS) + shown_lanes as f32 * LANE_HEIGHT))
+                    .left(relative(day as f32 / n as f32))
+                    .w(relative(1. / n as f32))
+                    .h(px(LANE_HEIGHT - LANE_GAP))
+                    .px(SPACE_2XS)
+                    .child(
+                        div()
+                            .id(("all-day-more", day))
+                            .role(gpui::Role::Button)
+                            .aria_label(format!("{count} more all-day events"))
+                            .size_full()
+                            .px(SPACE_SM)
+                            .flex()
+                            .items_center()
+                            .rounded(RADIUS_SM)
+                            .text_size(TEXT_SM)
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_muted)
+                            .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
+                            .child(format!("+{count} more"))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.all_day_expanded = true;
+                                cx.notify();
+                            })),
+                    )
             })
             .collect::<Vec<_>>();
 
@@ -147,7 +261,7 @@ impl CalendarView {
                         .rounded_full()
                         .text_size(TEXT_XL)
                         .role(gpui::Role::Button)
-                        .aria_label(format!("Open {}", date.format("%A, %B %-d")))
+                        .aria_label(format!("Open {}", super::header::full_date(date)))
                         .map(|d| {
                             if is_today {
                                 d.bg(theme.accent)
@@ -168,7 +282,6 @@ impl CalendarView {
                             }
                         })
                         .child(date.day().to_string())
-                        .cursor_pointer()
                         .on_click(cx.listener(move |this, _, _, cx| this.open_day(date, cx))),
                 )
         });
@@ -196,6 +309,34 @@ impl CalendarView {
                 .children(day_headers)
         });
 
+        // Under the bars, one slot per day: a double click there makes an
+        // all-day event on it (ME-044), a click clears the selection.
+        let lane_days = days.iter().map(|&date| {
+            div()
+                .id(("all-day-slot", date.num_days_from_ce() as usize))
+                .flex_1()
+                .h_full()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        this.press_day(date, event, window, cx)
+                    }),
+                )
+        });
+        let fold_toggle = folds.then(|| {
+            let (glyph, label) = if expanded {
+                (Icon::ChevronUp, "Show fewer all-day events")
+            } else {
+                (Icon::ChevronDown, "Show all all-day events")
+            };
+            icon_button_small("all-day-fold", glyph, label, &theme)
+                .aria_expanded(expanded)
+                .mr(-SPACE_XS)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.all_day_expanded = !this.all_day_expanded;
+                    cx.notify();
+                }))
+        });
         let all_day = div()
             .flex_none()
             .flex()
@@ -203,31 +344,39 @@ impl CalendarView {
             .border_color(theme.cal_line)
             .child(
                 gutter()
-                    .pt(SPACE_SM)
+                    .pt(SPACE_XS)
                     .pr(SPACE_SM)
                     .flex()
-                    .justify_end()
+                    .flex_col()
+                    .items_end()
                     .child(
                         div()
+                            .pt(SPACE_XS)
                             .text_size(TEXT_XS)
                             .text_color(theme.text_faint)
-                            .when(lane_count > 0, |d| d.child("all-day")),
-                    ),
+                            .when(lane_count > 0, |d| d.child("All day")),
+                    )
+                    .children(fold_toggle),
             )
             .child(
                 div()
                     .flex_1()
                     .relative()
-                    .h(px(
-                        lane_count as f32 * LANE_HEIGHT + if lane_count > 0 { 8. } else { 4. }
-                    ))
-                    .children(bars),
+                    .h(px(rows as f32 * LANE_HEIGHT
+                        + if rows > 0 {
+                            f32::from(SPACE_SM)
+                        } else {
+                            f32::from(SPACE_XS)
+                        }))
+                    .child(div().absolute().inset_0().flex().children(lane_days))
+                    .children(bars)
+                    .children(more),
             );
 
         // The time grid.
         let grid_height = px(24. * HOUR_HEIGHT);
-        let now = now();
         let now_minutes = time::minutes_into(today, now);
+        let now_top = now_minutes as f32 / 60. * HOUR_HEIGHT;
         let today_visible = days.contains(&today);
 
         let hour_labels = (1..24).filter_map(|hour| {
@@ -263,6 +412,10 @@ impl CalendarView {
                 })
         });
 
+        // Room on the right of each day to drag-create beside a block.
+        let free = (day_width * 0.1).clamp(FREE_STRIP.0, FREE_STRIP.1);
+        let layout_width = (day_width - free).max(MIN_COLUMN);
+
         let columns = days.iter().map(|&date| {
             let day_start = time::midnight(date);
             let day_end = day_start + Duration::days(1);
@@ -282,36 +435,61 @@ impl CalendarView {
                     (start, end.max(start))
                 })
                 .collect();
-            let layout_spans: Vec<(i64, i64)> = minutes
+            // Only the events the user goes to share the width.
+            let declined: Vec<bool> = timed
                 .iter()
-                .map(|&(s, e)| (s, e.max(s + MIN_LAYOUT_MINUTES)))
+                .map(|o| {
+                    Look::of(self.data.events[o.event].my_status(&self.data.account))
+                        == Look::Declined
+                })
+                .collect();
+            let active: Vec<usize> = (0..timed.len()).filter(|&i| !declined[i]).collect();
+            let layout_spans: Vec<(i64, i64)> = active
+                .iter()
+                .map(|&i| {
+                    let (s, e) = minutes[i];
+                    (s, e.max(s + MIN_LAYOUT_MINUTES))
+                })
                 .collect();
             let placements = pack_columns(&layout_spans);
-            // Left to right, so where narrow columns overlap, each is drawn
-            // over the one to its left.
-            let mut order: Vec<usize> = (0..timed.len()).collect();
-            order.sort_by_key(|&i| (placements[i].col, minutes[i].0));
+            // Declined ones first, behind; then left to right, so where
+            // narrow columns overlap, each is drawn over the one to its left.
+            let mut order: Vec<(Option<usize>, usize)> = (0..timed.len())
+                .filter(|&i| declined[i])
+                .map(|i| (None, i))
+                .collect();
+            let mut placed: Vec<(usize, usize)> =
+                (0..active.len()).map(|p| (p, active[p])).collect();
+            placed.sort_by_key(|&(p, i)| (placements[p].col, minutes[i].0));
+            order.extend(placed.into_iter().map(|(p, i)| (Some(p), i)));
             let blocks = order
                 .into_iter()
-                .map(|i| {
-                    let placement = placements[i];
-                    let (left, width) = column_box(placement, day_width, MIN_COLUMN);
-                    let overlapped =
-                        placement.cols > 1 && day_width / (placement.cols as f32) < MIN_COLUMN;
+                .map(|(placement, i)| {
+                    let (left, width, overlapped) = match placement {
+                        Some(p) => {
+                            let placement = placements[p];
+                            let (left, width) = column_box(placement, layout_width, MIN_COLUMN);
+                            let overlapped = placement.cols > 1
+                                && layout_width / (placement.cols as f32) < MIN_COLUMN;
+                            (left, width, overlapped)
+                        }
+                        None => (0., layout_width, false),
+                    };
                     // Read-only events have no resize edge (CAL-22).
                     let ends_here = time::minutes_into(date, timed[i].end) <= 24 * 60
-                        && self.can_edit(&self.data.events[timed[i].event].id);
+                        && self.can_edit_ix(timed[i].event);
                     self.render_block(
                         *timed[i],
                         minutes[i],
                         ends_here,
-                        (
+                        BlockBox {
                             left,
                             width,
-                            placement.col + placement.span == placement.cols,
-                        ),
+                            day: day_width,
+                        },
                         overlapped,
-                        day_width,
+                        now,
+                        metrics,
                         &theme,
                         cx,
                     )
@@ -332,6 +510,18 @@ impl CalendarView {
                     MouseButton::Left,
                     cx.listener(|this, event, window, cx| this.press_grid(event, window, cx)),
                 )
+                // A faint line at now across the other days of the week.
+                .when(today_visible && !is_today, |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .top(px(now_top))
+                            .h(px(1.))
+                            .bg(theme.cal_now.alpha(0.3)),
+                    )
+                })
                 .children(blocks)
                 .children(self.render_drag_ghost(date, &theme))
                 .when(is_today, |d| {
@@ -340,7 +530,7 @@ impl CalendarView {
                             .absolute()
                             .left(px(-1.))
                             .right_0()
-                            .top(px(now_minutes as f32 / 60. * HOUR_HEIGHT - 1.))
+                            .top(px(now_top - 1.))
                             .h(px(2.))
                             .bg(theme.cal_now)
                             .child(
@@ -360,7 +550,7 @@ impl CalendarView {
             div()
                 .absolute()
                 .right(px(5.))
-                .top(px(now_minutes as f32 / 60. * HOUR_HEIGHT - 8.))
+                .top(px(now_top - 8.))
                 .h(px(16.))
                 .px(SPACE_XS)
                 .flex()
@@ -430,28 +620,30 @@ impl CalendarView {
     }
 
     /// A timed event in its day's column, `start`..`end` minutes into it,
-    /// at `left` and `width` across a day `day_width` wide (`last`: it
-    /// reaches the day's right edge). `overlapped` blocks are drawn opaque,
-    /// since their columns overlap.
+    /// at `place`. `overlapped` blocks are drawn opaque, since their
+    /// columns overlap.
     #[allow(clippy::too_many_arguments)]
     fn render_block(
         &self,
         occurrence: Occurrence,
         (start, end): (i64, i64),
         ends_here: bool,
-        (left, width, last): (f32, f32, bool),
+        place: BlockBox,
         overlapped: bool,
-        day_width: f32,
+        now: NaiveDateTime,
+        metrics: TextMetrics,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let BlockBox { left, width, day } = place;
         let event = &self.data.events[occurrence.event];
         let color = self.data.color_of(event);
         let selected = self.is_selected(&occurrence);
-        let past = occurrence.end <= now();
+        let past = occurrence.end <= now;
         let look = Look::of(event.my_status(&self.data.account));
         let height = ((end - start) as f32 / 60. * HOUR_HEIGHT - 2.).max(18.);
-        let compact = height < 34.;
+        // Two lines and the padding, at the text size in use.
+        let compact = height < metrics.line * 2. + 4.;
         // Narrow blocks give the title the room; the block's place already
         // says when it is.
         let narrow = width < 110.;
@@ -478,13 +670,22 @@ impl CalendarView {
         };
         let accent = theme.event_accent(color, past);
         let time = time_range_label(occurrence.start.time(), occurrence.end.time());
-        let title = event.display_title().to_string();
-        let tooltip: SharedString = format!("{title}\n{time}").into();
+        let title: SharedString = event.display_title().to_string().into();
+        let tooltip_text: SharedString = format!("{title}\n{time}").into();
+        // A meeting about to start or under way offers Join (ME-096).
+        let join = policy::video_link(event)
+            .filter(|_| {
+                now >= occurrence.start - Duration::minutes(JOIN_LEAD_MINUTES)
+                    && now < occurrence.end
+                    && look != Look::Declined
+                    && !compact
+                    && width >= 90.
+            })
+            .map(str::to_string);
 
         let start_label = compact_time_label(occurrence.start.time());
-        // Roughly what a line holds at this size: about 6.5pt a character.
-        let fits_time_beside =
-            !narrow && (title.chars().count() + start_label.len() + 1) as f32 * 6.5 + 16. <= width;
+        let fits_time_beside = !narrow
+            && (title.chars().count() + start_label.len() + 1) as f32 * metrics.char + 16. <= width;
         let content = if compact {
             div()
                 .flex()
@@ -499,7 +700,7 @@ impl CalendarView {
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(text)
                         .when(look == Look::Declined, |d| d.line_through())
-                        .child(title),
+                        .child(title.clone()),
                 )
                 // The time only when the title still fits beside it: the
                 // title goes first.
@@ -507,7 +708,7 @@ impl CalendarView {
                     d.child(div().flex_none().text_color(muted).child(start_label))
                 })
         } else {
-            let lines = ((height - 8.) / 15.).floor().max(1.) as usize;
+            let lines = ((height - 8.) / metrics.line).floor().max(1.) as usize;
             let show_time = lines >= 3 || (lines == 2 && !narrow);
             // Too narrow to wrap without breaking words: one line.
             let max_lines = if width < 80. {
@@ -526,11 +727,12 @@ impl CalendarView {
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(text)
-                        .line_height(relative(1.25))
+                        .line_height(LINE_UI)
                         .line_clamp(title_lines)
                         .text_ellipsis()
                         .when(look == Look::Declined, |d| d.line_through())
-                        .child(title),
+                        .when(join.is_some(), |d| d.pr(SPACE_2XL + SPACE_XL))
+                        .child(title.clone()),
                 )
                 .when(show_time, |d| {
                     d.child(div().truncate().text_color(muted).child(time))
@@ -544,7 +746,7 @@ impl CalendarView {
                                 .items_center()
                                 .gap(SPACE_XS)
                                 .text_color(muted)
-                                .child(icon(Icon::MapPin, px(11.), muted))
+                                .child(icon(Icon::MapPin, ICON_SM, muted))
                                 .child(div().truncate().child(event.location.clone())),
                         )
                     },
@@ -573,12 +775,14 @@ impl CalendarView {
         div()
             .absolute()
             .top(px(start as f32 / 60. * HOUR_HEIGHT + 1.))
-            .left(relative(left / day_width))
-            .w(relative(width / day_width))
+            .left(relative(left / day))
+            .w(relative(width / day))
             .h(px(height))
             .pl(SPACE_2XS)
-            .pr(px(if last { 6. } else { 1. }))
+            .pr(px(1.))
             .when(self.is_dragged(&occurrence), |d| d.opacity(0.35))
+            // Declined: behind the rest, faded.
+            .when(look == Look::Declined && !selected, |d| d.opacity(0.6))
             .child(
                 div()
                     .id((
@@ -590,6 +794,7 @@ impl CalendarView {
                     .role(gpui::Role::Button)
                     .aria_label(self.occurrence_label(&occurrence))
                     .aria_selected(selected)
+                    .when(selected, |d| d.aria_active_descendant())
                     .relative()
                     .size_full()
                     .overflow_hidden()
@@ -597,11 +802,10 @@ impl CalendarView {
                     .bg(fill)
                     .pl(SPACE_SM)
                     .pr(SPACE_XS)
-                    .py(px(if compact { 0. } else { 4. }))
+                    .py(if compact { px(0.) } else { SPACE_XS })
                     .when(compact, |d| d.flex().items_center())
                     .text_size(TEXT_SM)
-                    .line_height(relative(1.25))
-                    .cursor_pointer()
+                    .line_height(LINE_UI)
                     // Overlapping blocks share pixels: only the top one
                     // gets hover, tooltip and clicks.
                     .block_mouse_except_scroll()
@@ -616,9 +820,10 @@ impl CalendarView {
                         Look::Normal => d
                             .hover(move |s| s.bg(hover))
                             .when(cascaded, |d| d.border_1().border_color(theme.cal_ring)),
-                        Look::Pending | Look::Declined => {
-                            d.border_1().border_color(accent.alpha(0.7))
-                        }
+                        Look::Pending | Look::Declined => d
+                            .hover(move |s| s.bg(hover.alpha(0.5)))
+                            .border_1()
+                            .border_color(accent.alpha(0.7)),
                     })
                     .when(!selected, |d| {
                         d.child(
@@ -627,11 +832,37 @@ impl CalendarView {
                                 .left_0()
                                 .top_0()
                                 .bottom_0()
-                                .w(px(3.))
+                                .w(STRIPE_WIDTH)
                                 .bg(accent),
                         )
                     })
                     .child(content)
+                    .children(join.map(|link| {
+                        let label: SharedString = format!("Join {title}").into();
+                        div()
+                            .id(("event-join", key))
+                            .absolute()
+                            .top(SPACE_XS)
+                            .right(SPACE_XS)
+                            .h(CONTROL_XS)
+                            .px(SPACE_SM)
+                            .flex()
+                            .items_center()
+                            .gap(SPACE_XS)
+                            .rounded(RADIUS_SM)
+                            .bg(theme.accent)
+                            .text_color(theme.accent_text)
+                            .text_size(TEXT_XS)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .role(gpui::Role::Link)
+                            .aria_label(label)
+                            .cursor_pointer()
+                            .hover(|s| s.opacity(0.9))
+                            .child(icon(Icon::Video, ICON_SM, theme.accent_text))
+                            .child("Join")
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(move |_, _, cx| cx.open_url(&link))
+                    }))
                     .when(ends_here, |d| {
                         d.child(
                             div()
@@ -640,12 +871,20 @@ impl CalendarView {
                                 .left_0()
                                 .right_0()
                                 .bottom_0()
-                                .h(px(if compact { 4. } else { 6. }))
+                                .h(if compact { SPACE_XS } else { RESIZE_HANDLE })
                                 .cursor_ns_resize()
                                 .on_mouse_down(
                                     MouseButton::Left,
-                                    cx.listener(move |this, event, window, cx| {
+                                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                                         cx.stop_propagation();
+                                        if is_secondary(event) {
+                                            return this.event_menu(
+                                                occurrence,
+                                                event.position,
+                                                window,
+                                                cx,
+                                            );
+                                        }
                                         this.press_occurrence(occurrence, true, event, window, cx)
                                     }),
                                 ),
@@ -653,64 +892,73 @@ impl CalendarView {
                     })
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |this, event, window, cx| {
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                             cx.stop_propagation();
+                            if is_secondary(event) {
+                                return this.event_menu(occurrence, event.position, window, cx);
+                            }
                             this.press_occurrence(occurrence, false, event, window, cx)
                         }),
                     )
-                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)),
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.event_menu(occurrence, event.position, window, cx)
+                        }),
+                    )
+                    .tooltip(move |window, cx| tooltip(tooltip_text.clone()).build(window, cx)),
             )
             .into_any_element()
     }
 
     /// An all-day or multi-day event in the lane above the grid, over days
-    /// `start..end` of `days`.
+    /// `start..end` of `days` from `first_day`.
     #[allow(clippy::too_many_arguments)]
     fn render_bar(
         &self,
         occurrence: Occurrence,
-        start: i64,
-        end: i64,
+        (start, end): (i64, i64),
         days: usize,
+        first_day: NaiveDateTime,
         lane: usize,
+        now: NaiveDateTime,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let event = &self.data.events[occurrence.event];
         let color = self.data.color_of(event);
         let selected = self.is_selected(&occurrence);
-        let past = occurrence.end <= now();
-        let (fill, text) = if selected {
-            (
-                theme.event_selected_fill(color),
-                theme.on_fill(theme.event_selected_fill(color)),
-            )
-        } else {
-            (theme.event_fill(color, past), theme.event_text(color, past))
-        };
-        let hover = theme.event_fill_hover(color);
-        let first_day = time::midnight(self.visible_range().0);
+        let past = occurrence.end <= now;
+        let look = Look::of(event.my_status(&self.data.account));
+        let (fill, text, hover) = bar_colors(color, past, selected, theme);
+        let accent = theme.event_accent(color, past);
         let clipped_left = occurrence.start < first_day;
         let clipped_right = occurrence.end > first_day + Duration::days(days as i64);
         let time = (!event.all_day
             && occurrence.start.time().hour() + occurrence.start.minute() > 0)
             .then(|| compact_time_label(occurrence.start.time()));
+        // A timed event across days says when it ends on its last day.
+        let until = (!event.all_day && !clipped_right)
+            .then(|| format!("until {}", compact_time_label(occurrence.end.time())));
         let single_view = self.view == ViewKind::Day;
-        let read_only = !self.can_edit(&event.id);
+        let read_only = !self.can_edit_ix(occurrence.event);
 
         div()
             .absolute()
-            .top(px(4. + lane as f32 * LANE_HEIGHT))
+            .top(px(f32::from(SPACE_XS) + lane as f32 * LANE_HEIGHT))
             .left(relative(start as f32 / days as f32))
             .w(relative((end - start) as f32 / days as f32))
-            .h(px(LANE_HEIGHT - 3.))
-            .pl(px(if clipped_left { 0. } else { 2. }))
-            .pr(px(if clipped_right { 0. } else { 3. }))
+            .h(px(LANE_HEIGHT - LANE_GAP))
+            .pl(if clipped_left { px(0.) } else { SPACE_2XS })
+            .pr(if clipped_right { px(0.) } else { px(LANE_GAP) })
             .child(
                 div()
                     .id(("bar", occurrence_key(&occurrence, 0)))
                     .role(gpui::Role::Button)
                     .aria_label(self.occurrence_label(&occurrence))
+                    .aria_selected(selected)
+                    .when(selected, |d| d.aria_active_descendant())
                     .size_full()
                     .px(SPACE_SM)
                     .flex()
@@ -718,12 +966,20 @@ impl CalendarView {
                     .gap(SPACE_SM)
                     .overflow_hidden()
                     .rounded(RADIUS_SM)
-                    .when(clipped_left, |d| d.rounded_l(px(0.)))
-                    .when(clipped_right, |d| d.rounded_r(px(0.)))
-                    .bg(fill)
-                    .when(!selected, |d| d.hover(move |s| s.bg(hover)))
+                    .when(clipped_left, |d| d.rounded_l(px(0.)).pl(SPACE_XS))
+                    .when(clipped_right, |d| d.rounded_r(px(0.)).pr(SPACE_XS))
+                    .map(|d| {
+                        if selected {
+                            d.bg(fill)
+                        } else {
+                            look.bar(d, fill, accent).hover(move |s| s.bg(hover))
+                        }
+                    })
                     .text_size(TEXT_SM)
-                    .cursor_pointer()
+                    // It goes on before the days shown (ME-090).
+                    .when(clipped_left, |d| {
+                        d.child(icon(Icon::ChevronLeft, ICON_SM, text.alpha(0.75)))
+                    })
                     .when(single_view || !clipped_left, |d| {
                         d.children(
                             time.map(|time| {
@@ -733,26 +989,64 @@ impl CalendarView {
                     })
                     .child(
                         div()
+                            .flex_1()
                             .min_w_0()
                             .truncate()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(text)
+                            .when(look == Look::Declined, |d| d.line_through())
                             .child(event.display_title().to_string()),
+                    )
+                    .children(
+                        until.map(|until| {
+                            div().flex_none().text_color(text.alpha(0.75)).child(until)
+                        }),
+                    )
+                    // And after them.
+                    .when(clipped_right, |d| {
+                        d.child(icon(Icon::ChevronRight, ICON_SM, text.alpha(0.75)))
+                    })
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.event_menu(occurrence, event.position, window, cx)
+                        }),
                     )
                     .map(|d| {
                         if read_only {
                             d.on_mouse_down(
                                 MouseButton::Left,
-                                cx.listener(move |this, event, window, cx| {
+                                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                                     cx.stop_propagation();
+                                    if is_secondary(event) {
+                                        return this.event_menu(
+                                            occurrence,
+                                            event.position,
+                                            window,
+                                            cx,
+                                        );
+                                    }
                                     this.press_read_only(occurrence, event, window, cx)
                                 }),
                             )
                         } else {
-                            d.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.click_occurrence(occurrence, window, cx)
-                                }))
+                            d.on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    if is_secondary(event) {
+                                        this.event_menu(occurrence, event.position, window, cx);
+                                    }
+                                }),
+                            )
+                            .on_click(cx.listener(
+                                move |this, event: &gpui::ClickEvent, window, cx| {
+                                    if !event.is_right_click() && !event.modifiers().control {
+                                        this.click_occurrence(occurrence, window, cx)
+                                    }
+                                },
+                            ))
                         }
                     }),
             )

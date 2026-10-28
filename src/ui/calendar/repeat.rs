@@ -7,7 +7,7 @@ use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use crate::calendar::{Rule, recurrence::Freq, time};
 
 /// The weekday's place in its month: 1 to 4, or -1 (last) for a 5th.
-pub fn nth_weekday(date: NaiveDate) -> i8 {
+fn nth_weekday(date: NaiveDate) -> i8 {
     match date.day0() / 7 + 1 {
         5 => -1,
         n => n as i8,
@@ -21,14 +21,14 @@ fn weekly_on(day: Weekday) -> Rule {
     }
 }
 
-fn monthly_on_weekday(start: NaiveDate) -> Rule {
+pub(super) fn monthly_on_weekday(start: NaiveDate) -> Rule {
     Rule {
         by_day: vec![(Some(nth_weekday(start)), start.weekday())],
         ..Rule::monthly()
     }
 }
 
-fn monthly_on_date(start: NaiveDate) -> Rule {
+pub(super) fn monthly_on_date(start: NaiveDate) -> Rule {
     Rule {
         by_month_day: vec![start.day() as i8],
         ..Rule::monthly()
@@ -71,19 +71,22 @@ fn spelled_out(rule: &Rule, start: NaiveDate) -> Rule {
 }
 
 /// Whether `a` and `b` repeat alike, from `start`, whatever their ends.
-pub fn same_repeat(a: &Rule, b: &Rule, start: NaiveDate) -> bool {
+fn same_repeat(a: &Rule, b: &Rule, start: NaiveDate) -> bool {
     spelled_out(a, start).same_pattern(&spelled_out(b, start))
 }
 
-/// The preset matching `rule`, if one does (`0`: no rule).
-pub fn preset_index(rule: Option<&Rule>, start: NaiveDate) -> Option<usize> {
-    presets(start)
-        .iter()
-        .position(|(preset, _)| match (preset, rule) {
-            (None, None) => true,
-            (Some(p), Some(r)) => same_repeat(p, r, start),
-            _ => false,
-        })
+/// The preset in `presets` (from `presets(start)`) matching `rule`, if one
+/// does (`0`: no rule).
+pub fn preset_index(
+    presets: &[(Option<Rule>, String)],
+    rule: Option<&Rule>,
+    start: NaiveDate,
+) -> Option<usize> {
+    presets.iter().position(|(preset, _)| match (preset, rule) {
+        (None, None) => true,
+        (Some(p), Some(r)) => same_repeat(p, r, start),
+        _ => false,
+    })
 }
 
 /// Where a custom repeat ends.
@@ -184,12 +187,24 @@ impl RepeatDraft {
     }
 
     pub fn step_interval(&mut self, delta: i32) {
-        self.interval = (self.interval as i32 + delta).clamp(1, MAX_INTERVAL as i32) as u32;
+        self.set_interval(self.interval as i64 + delta as i64);
+    }
+
+    /// A typed or stepped interval, kept within 1…`MAX_INTERVAL`.
+    pub fn set_interval(&mut self, n: i64) {
+        self.interval = n.clamp(1, MAX_INTERVAL as i64) as u32;
     }
 
     pub fn step_count(&mut self, delta: i32) {
         if let RepeatEnd::After(n) = self.end {
-            self.end = RepeatEnd::After((n as i32 + delta).clamp(1, MAX_COUNT as i32) as u32);
+            self.set_count(n as i64 + delta as i64);
+        }
+    }
+
+    /// A typed or stepped count, kept within 1…`MAX_COUNT`.
+    pub fn set_count(&mut self, n: i64) {
+        if let RepeatEnd::After(_) = self.end {
+            self.end = RepeatEnd::After(n.clamp(1, MAX_COUNT as i64) as u32);
         }
     }
 
@@ -256,16 +271,44 @@ mod tests {
     #[test]
     fn the_rule_in_use_finds_its_preset() {
         let start = d(10, 27);
-        assert_eq!(preset_index(None, start), Some(0));
+        let list = presets(start);
+        assert_eq!(preset_index(&list, None, start), Some(0));
         // The placeholder data's "weekly" leaves the day to the start.
-        assert_eq!(preset_index(Some(&Rule::weekly()), start), Some(3));
-        assert_eq!(preset_index(Some(&Rule::monthly()), start), Some(5));
+        assert_eq!(preset_index(&list, Some(&Rule::weekly()), start), Some(3));
+        assert_eq!(preset_index(&list, Some(&Rule::monthly()), start), Some(5));
         let until = Rule {
             until: Some(time::midnight(d(12, 1))),
             ..Rule::daily()
         };
-        assert_eq!(preset_index(Some(&until), start), Some(1));
-        assert_eq!(preset_index(Some(&Rule::biweekly()), start), None);
+        assert_eq!(preset_index(&list, Some(&until), start), Some(1));
+        assert_eq!(preset_index(&list, Some(&Rule::biweekly()), start), None);
+    }
+
+    #[test]
+    fn the_monthly_choices_label_their_rules() {
+        let start = d(10, 27);
+        assert_eq!(
+            monthly_on_weekday(start).label(),
+            "Every month on the 4th Tue"
+        );
+        assert_eq!(monthly_on_date(start).label(), "Every month on day 27");
+    }
+
+    #[test]
+    fn typed_values_are_kept_in_bounds() {
+        let mut draft = RepeatDraft::new(None, d(10, 27));
+        draft.set_interval(0);
+        assert_eq!(draft.interval, 1);
+        draft.set_interval(500);
+        assert_eq!(draft.interval, MAX_INTERVAL);
+        // No count without "After".
+        draft.set_count(5);
+        assert_eq!(draft.end, RepeatEnd::Never);
+        draft.set_end_kind(2);
+        draft.set_count(10_000);
+        assert_eq!(draft.end, RepeatEnd::After(MAX_COUNT));
+        draft.step_count(-10);
+        assert_eq!(draft.end, RepeatEnd::After(MAX_COUNT - 10));
     }
 
     #[test]

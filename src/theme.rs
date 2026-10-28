@@ -44,7 +44,6 @@ pub struct Theme {
     /// `danger` and `warning` stay for fills, dots and badges.
     pub text_success: Hsla,
     pub text_danger: Hsla,
-    #[allow(dead_code)] // used by W2
     pub text_warning: Hsla,
     /// Links, in the accent's hue at 4.5:1.
     pub link: Hsla,

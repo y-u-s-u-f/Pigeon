@@ -38,6 +38,27 @@ pub fn scan_line(line: &str, runs: &mut Vec<Run>, mut pairs: Option<&mut Vec<Pai
     inline(line, body, flags, runs, &mut pairs);
 }
 
+/// The styles on at byte `at` of `line`, for the format bar: the inline
+/// flags of the text there (up to its end, so the caret just past bold
+/// text counts) and the line's kind.
+pub fn styles_at(line: &str, at: usize) -> (Flags, Option<LineKind>) {
+    let mut runs = Vec::new();
+    scan_line(line, &mut runs, None);
+    let flags = runs
+        .iter()
+        .filter(|(run, flags)| flags & MARKER == 0 && run.start < at && at <= run.end)
+        .fold(0, |all, (_, flags)| all | flags);
+    let kind = if quote_prefix(line).is_some() {
+        Some(LineKind::Quote)
+    } else {
+        list_prefix(line).map(|l| match l.number {
+            Some(_) => LineKind::Numbered,
+            None => LineKind::Bullet,
+        })
+    };
+    (flags & !(BULLET | QUOTE | HEADING), kind)
+}
+
 /// A list item's prefix: indentation length, where the marker ends (past its
 /// space), and the number for an ordered item with its delimiter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,10 +124,14 @@ fn is_rule(line: &str) -> bool {
     let Some(first) = chars.next() else {
         return false;
     };
-    matches!(first, '-' | '*' | '_') && {
-        let rest: Vec<char> = chars.collect();
-        rest.len() >= 2 && rest.iter().all(|&c| c == first)
+    if !matches!(first, '-' | '*' | '_') {
+        return false;
     }
+    let mut count = 0;
+    chars.all(|c| {
+        count += 1;
+        c == first
+    }) && count >= 2
 }
 
 /// Styles the line's block syntax; returns where its text starts and how it
@@ -424,6 +449,17 @@ pub enum Inline {
 }
 
 impl Inline {
+    /// The flag its runs carry.
+    pub fn flag(self) -> Flags {
+        match self {
+            Inline::Bold => BOLD,
+            Inline::Italic => ITALIC,
+            Inline::Underline => UNDERLINE,
+            Inline::Strike => STRIKE,
+            Inline::Code => CODE,
+        }
+    }
+
     fn markers(self) -> (&'static str, &'static str) {
         match self {
             Inline::Bold => ("**", "**"),
@@ -844,11 +880,13 @@ fn render(node: &markdown::mdast::Node, tight: bool, out: &mut String) {
                 out.push_str(&escape(&n.value));
             }
         }
-        Node::Link(n) => {
+        // Only web, mail and phone links; anything else is sent as its text.
+        Node::Link(n) if crate::html::is_safe_url(&n.url) => {
             out.push_str(&format!("<a href=\"{}\">", escape(&n.url)));
             render_children(&n.children, false, out);
             out.push_str("</a>");
         }
+        Node::Link(n) => render_children(&n.children, false, out),
         Node::Image(n) => out.push_str(&format!("<img alt=\"{}\">", escape(&n.alt))),
         Node::List(n) => {
             let tag = if n.ordered { "ol" } else { "ul" };
@@ -1161,5 +1199,34 @@ mod tests {
     fn html_renders_through_the_reader() {
         let doc = crate::html::parse(&to_html("Hi **there**\n\n- one\n- two"));
         assert_eq!(crate::html::plain_text(&doc), "Hi there\n\none\n\ntwo");
+    }
+
+    #[test]
+    fn styles_at_the_caret() {
+        let line = "- some **bold** text";
+        let bold = line.find("bold").unwrap();
+        assert_eq!(styles_at(line, bold + 2), (BOLD, Some(LineKind::Bullet)));
+        assert_eq!(styles_at(line, bold + 4).0, BOLD, "just past it");
+        assert_eq!(styles_at(line, 3), (0, Some(LineKind::Bullet)));
+        assert_eq!(styles_at("> 1. *x*", 7), (ITALIC, Some(LineKind::Quote)));
+        assert_eq!(styles_at("2. x", 4).1, Some(LineKind::Numbered));
+    }
+
+    #[test]
+    fn rules_need_three_of_one_mark() {
+        assert!(is_rule("---"));
+        assert!(is_rule("* * *"));
+        assert!(!is_rule("--"));
+        assert!(!is_rule("-*-"));
+        assert!(!is_rule("- item"));
+    }
+
+    #[test]
+    fn unsafe_links_go_as_text() {
+        assert_eq!(to_html("[a](javascript:alert(1))"), "<p>a</p>");
+        assert_eq!(
+            to_html("[call](tel:+123)"),
+            "<p><a href=\"tel:+123\">call</a></p>"
+        );
     }
 }

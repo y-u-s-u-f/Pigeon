@@ -30,7 +30,7 @@ use crate::{
 pub struct Palette {
     marker: Hsla,
     accent: Hsla,
-    quote: Hsla,
+    muted: Hsla,
     code_bg: Hsla,
 }
 
@@ -39,7 +39,7 @@ impl Palette {
         Self {
             marker: theme.text_faint,
             accent: theme.accent,
-            quote: theme.text_muted,
+            muted: theme.text_muted,
             code_bg: theme.chip_bg,
         }
     }
@@ -51,10 +51,11 @@ impl Palette {
             return style;
         }
         if flags & BULLET != 0 {
-            style.color = Some(self.accent);
+            style.color = Some(self.muted);
         }
+        // As the reader shows it.
         if flags & (BOLD | HEADING) != 0 {
-            style.font_weight = Some(FontWeight::BOLD);
+            style.font_weight = Some(FontWeight::SEMIBOLD);
         }
         if flags & ITALIC != 0 {
             style.font_style = Some(FontStyle::Italic);
@@ -76,7 +77,7 @@ impl Palette {
             style.color = Some(self.accent);
         }
         if flags & QUOTE != 0 {
-            style.color = Some(self.quote);
+            style.color = Some(self.muted);
         }
         if flags & CODE != 0 {
             style.background_color = Some(self.code_bg);

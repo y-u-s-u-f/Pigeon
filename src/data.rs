@@ -7,6 +7,10 @@ use gpui::{Hsla, Rgba};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::app::ComposeKind;
+use crate::backend::categories::Category;
+
+/// Gmail's label for Primary, which `Category` leaves implicit.
+const CATEGORY_PERSONAL: &str = "CATEGORY_PERSONAL";
 
 #[derive(Debug, Deserialize)]
 pub struct MailData {
@@ -110,7 +114,7 @@ impl ListVisibility {
     pub fn title(self) -> &'static str {
         match self {
             ListVisibility::Show => "Show",
-            ListVisibility::ShowIfUnread => "Show if unread",
+            ListVisibility::ShowIfUnread => "Show If Unread",
             ListVisibility::Hide => "Hide",
         }
     }
@@ -173,6 +177,16 @@ impl Folder {
             Folder::Archive | Folder::Spam | Folder::Trash => Some(Folder::Inbox),
             Folder::Sent | Folder::Drafts => None,
         }
+    }
+
+    /// What archive is called here (ME-027): "Not Spam" in Spam, "Move to
+    /// Inbox" from Archive and Trash.
+    pub fn archive_title(self) -> Option<&'static str> {
+        Some(match (self, self.archive_target()?) {
+            (Folder::Spam, _) => "Not Spam",
+            (_, Folder::Inbox) => "Move to Inbox",
+            _ => "Archive",
+        })
     }
 }
 
@@ -597,6 +611,22 @@ impl Account {
         out
     }
 
+    /// More than one address to send from (MC-067): `identities().len() > 1`
+    /// without building them.
+    pub fn has_several_identities(&self) -> bool {
+        let (mut usable, mut main) = (0, 0);
+        for s in self
+            .send_as
+            .iter()
+            .filter(|s| !s.pending && !s.email.is_empty())
+        {
+            usable += 1;
+            main += usize::from(s.email.eq_ignore_ascii_case(&self.email));
+        }
+        // The main address joins the list when no send-as entry is it.
+        usable + usize::from(main == 0) > 1
+    }
+
     /// The identity `email` names (ignoring case), else the default one.
     pub fn identity(&self, email: &str) -> SendAs {
         let all = self.identities();
@@ -654,6 +684,120 @@ impl Thread {
 
     pub fn has_attachments(&self) -> bool {
         self.messages.iter().any(|m| !m.attachments.is_empty())
+    }
+
+    /// The subject, or "(no subject)" for none (ME-021): views show the
+    /// placeholder faint and italic, where `has_subject` is false.
+    pub fn subject_or_placeholder(&self) -> &str {
+        if self.has_subject() {
+            &self.subject
+        } else {
+            "(no subject)"
+        }
+    }
+
+    pub fn has_subject(&self) -> bool {
+        !self.subject.trim().is_empty()
+    }
+
+    /// Who wrote, Gmail style (ME-011): "Ana, me, Bob"; first names past
+    /// two people, and "Ana … Cy, Dan" past three.
+    pub fn senders_line(&self, is_me: impl Fn(&Contact) -> bool) -> String {
+        let mut people: Vec<&Contact> = Vec::new();
+        for message in &self.messages {
+            let from = &message.from;
+            if !people
+                .iter()
+                .any(|p| p.email.eq_ignore_ascii_case(&from.email))
+            {
+                people.push(from);
+            }
+        }
+        let short = people.len() > 2;
+        let name = |c: &Contact| -> String {
+            if is_me(c) {
+                "me".into()
+            } else if short {
+                c.first_name().into()
+            } else {
+                c.display_name().into()
+            }
+        };
+        match people.as_slice() {
+            [] => String::new(),
+            [first, .., a, b] if people.len() > 3 => {
+                format!("{} … {}, {}", name(first), name(a), name(b))
+            }
+            _ => people
+                .iter()
+                .map(|c| name(c))
+                .collect::<Vec<_>>()
+                .join(", "),
+        }
+    }
+
+    /// Who the last message went to, for Sent and Drafts (ME-011): "To:
+    /// Ana, Bob +3".
+    pub fn recipients_line(&self) -> String {
+        let last = self.last_message();
+        let mut people: Vec<&Contact> = Vec::new();
+        for c in last.to.iter().chain(&last.cc).chain(&last.bcc) {
+            if !people
+                .iter()
+                .any(|p| p.email.eq_ignore_ascii_case(&c.email))
+            {
+                people.push(c);
+            }
+        }
+        let shown: Vec<&str> = people
+            .iter()
+            .take(2)
+            .map(|c| {
+                if people.len() > 1 {
+                    c.first_name()
+                } else {
+                    c.display_name()
+                }
+            })
+            .collect();
+        match people.len() {
+            0 => "(no recipients)".into(),
+            1 | 2 => format!("To: {}", shown.join(", ")),
+            n => format!("To: {} +{}", shown.join(", "), n - 2),
+        }
+    }
+
+    /// The conversation in Gmail on the web, in the account `email` is
+    /// (MB-061); none for one not in Gmail yet.
+    pub fn gmail_link(&self, email: &str) -> Option<String> {
+        if self.id.contains("-local-") || self.id.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "https://mail.google.com/mail/?authuser={}#all/{}",
+            url_escape(email),
+            self.id
+        ))
+    }
+
+    /// Move the thread's Inbox messages to a Gmail category (MB-062): the
+    /// labels Gmail is asked to add and take off, applied here too.
+    pub fn set_category(&mut self, category: Category) -> (Vec<String>, Vec<String>) {
+        let target = category.label_id().unwrap_or(CATEGORY_PERSONAL);
+        let remove: Vec<String> = Category::ALL
+            .iter()
+            .filter_map(|c| c.label_id())
+            .chain([CATEGORY_PERSONAL])
+            .filter(|l| *l != target)
+            .map(String::from)
+            .collect();
+        for message in &mut self.messages {
+            message.label_ids.retain(|l| !remove.contains(l));
+            if !message.label_ids.iter().any(|l| l == target) {
+                message.label_ids.push(target.into());
+            }
+        }
+        (vec![target.into()], remove)
     }
 
     /// Rebuild `search`; call after changing the thread's messages.
@@ -742,6 +886,15 @@ impl Contact {
         }
     }
 
+    /// "Ana" for Ana Lima; an address's part before the @.
+    pub fn first_name(&self) -> &str {
+        if self.name.trim().is_empty() {
+            self.email.split('@').next().unwrap_or(&self.email)
+        } else {
+            self.name.split_whitespace().next().unwrap_or(&self.name)
+        }
+    }
+
     pub fn initials(&self) -> String {
         let mut words = self.display_name().split_whitespace();
         let first = words.next().and_then(|w| w.chars().next());
@@ -795,17 +948,47 @@ fn strip_word_prefix<'a>(text: &'a str, prefix: &str) -> &'a str {
 }
 
 /// "9:12 AM" (or "09:12") today, "Yesterday", "Tue" this week, "Oct 3" this
-/// year, else "Oct 3, 2025".
+/// year, else "Oct 3, 2025"; "3 Oct" and "3 Oct 2025" where the region
+/// puts the day first (MA-043).
 pub fn list_date(date: &DateTime<FixedOffset>) -> String {
     let date = date.with_timezone(&Local);
     let now = Local::now();
     let days = (now.date_naive() - date.date_naive()).num_days();
+    let day_first = day_first();
     match days {
         0 => crate::calendar::time::time_label(date.time()),
         1 => "Yesterday".into(),
         2..=6 => date.format("%a").to_string(),
+        _ if date.year() == now.year() && day_first => date.format("%-d %b").to_string(),
         _ if date.year() == now.year() => date.format("%b %-d").to_string(),
+        _ if day_first => date.format("%-d %b %Y").to_string(),
         _ => date.format("%b %-d, %Y").to_string(),
+    }
+}
+
+/// Whether the region writes the day before the month ("3 Oct"), from
+/// the system's own short date pattern; read once (MA-043).
+pub fn day_first() -> bool {
+    static DAY_FIRST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DAY_FIRST.get_or_init(|| {
+        use objc2_foundation::{NSDateFormatter, NSLocale, NSString};
+        let locale = NSLocale::autoupdatingCurrentLocale();
+        NSDateFormatter::dateFormatFromTemplate_options_locale(
+            &NSString::from_str("MMMd"),
+            0,
+            Some(&locale),
+        )
+        .is_some_and(|pattern| day_first_pattern(&pattern.to_string()))
+    })
+}
+
+/// A date pattern ("d MMM", "MMM d") puts the day first. Quoted text is
+/// literal.
+fn day_first_pattern(pattern: &str) -> bool {
+    let unquoted: String = pattern.split('\'').step_by(2).collect();
+    match (unquoted.find('d'), unquoted.find(['M', 'L'])) {
+        (Some(day), Some(month)) => day < month,
+        _ => false,
     }
 }
 
@@ -819,15 +1002,32 @@ pub fn full_date(date: &DateTime<FixedOffset>) -> String {
     )
 }
 
+/// A query value for a URL: everything but unreserved characters and `@`
+/// percent-encoded.
+fn url_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~@".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// Sizes as Finder shows them: 1,000-based (MA-043).
 pub fn file_size(bytes: u64) -> String {
-    const KB: f64 = 1024.;
+    const K: f64 = 1000.;
     let b = bytes as f64;
-    if b < KB {
-        format!("{bytes} B")
-    } else if b < KB * KB {
-        format!("{:.0} KB", b / KB)
+    if bytes < 1000 {
+        format!("{bytes} bytes")
+    } else if b < K * K {
+        format!("{:.0} KB", b / K)
+    } else if b < K * K * K {
+        format!("{:.1} MB", b / (K * K))
     } else {
-        format!("{:.1} MB", b / (KB * KB))
+        format!("{:.2} GB", b / (K * K * K))
     }
 }
 
@@ -872,6 +1072,148 @@ mod tests {
         assert_eq!(account.sender(&account.identity("")).name, "Work Me");
         assert_eq!(account.sender(&account.identity("me@x.com")).name, "Me");
         assert!(account.is_me("WORK@x.com") && !account.is_me("ann@x.com"));
+    }
+
+    /// MC-067: the same answer as building the identities.
+    #[test]
+    fn several_identities_without_building_them() {
+        let send_as = |email: &str, pending: bool| SendAs {
+            email: email.into(),
+            pending,
+            ..Default::default()
+        };
+        let cases = [
+            vec![],
+            vec![send_as("me@x.com", false)],
+            vec![send_as("ME@x.com", false), send_as("new@x.com", true)],
+            vec![send_as("work@x.com", false)],
+            vec![send_as("me@x.com", false), send_as("work@x.com", false)],
+            vec![send_as("", false), send_as("me@x.com", false)],
+        ];
+        for send_as in cases {
+            let account = Account {
+                email: "me@x.com".into(),
+                send_as,
+                ..Default::default()
+            };
+            assert_eq!(
+                account.has_several_identities(),
+                account.identities().len() > 1,
+                "{:?}",
+                account.send_as
+            );
+        }
+    }
+
+    fn contact(name: &str, email: &str) -> Contact {
+        Contact {
+            name: name.into(),
+            email: email.into(),
+        }
+    }
+
+    fn thread_from(people: &[Contact]) -> Thread {
+        let messages = people
+            .iter()
+            .map(|from| Message::new(from.clone()))
+            .collect();
+        Thread::local("t".into(), "s".into(), Folder::Inbox, messages, None)
+    }
+
+    /// ME-011.
+    #[test]
+    fn sender_lines_read_like_gmail() {
+        let ana = contact("Ana Lima", "ana@x.com");
+        let me = contact("Me", "me@x.com");
+        let bob = contact("Bob Hart", "bob@x.com");
+        let cy = contact("", "cy@x.com");
+        let dan = contact("Dan Ode", "dan@x.com");
+        let is_me = |c: &Contact| c.email == "me@x.com";
+        let line = |people: &[Contact]| thread_from(people).senders_line(is_me);
+        assert_eq!(line(std::slice::from_ref(&ana)), "Ana Lima");
+        assert_eq!(
+            line(&[ana.clone(), me.clone(), ana.clone()]),
+            "Ana Lima, me"
+        );
+        assert_eq!(
+            line(&[ana.clone(), me.clone(), bob.clone()]),
+            "Ana, me, Bob"
+        );
+        assert_eq!(
+            line(&[
+                ana.clone(),
+                me.clone(),
+                bob.clone(),
+                cy.clone(),
+                dan.clone()
+            ]),
+            "Ana … cy, Dan"
+        );
+
+        let mut thread = thread_from(std::slice::from_ref(&me));
+        assert_eq!(thread.recipients_line(), "(no recipients)");
+        thread.messages[0].to = vec![ana.clone()];
+        assert_eq!(thread.recipients_line(), "To: Ana Lima");
+        thread.messages[0].cc = vec![bob, cy, dan, ana];
+        assert_eq!(thread.recipients_line(), "To: Ana, Bob +2");
+    }
+
+    #[test]
+    fn no_subject_placeholder() {
+        let mut thread = thread_from(&[contact("", "a@x.com")]);
+        thread.subject = "  ".into();
+        assert!(!thread.has_subject());
+        assert_eq!(thread.subject_or_placeholder(), "(no subject)");
+        thread.subject = "Hi".into();
+        assert_eq!(thread.subject_or_placeholder(), "Hi");
+    }
+
+    /// MB-061.
+    #[test]
+    fn gmail_links_carry_the_account() {
+        let mut thread = thread_from(&[contact("", "a@x.com")]);
+        thread.id = "18c2f".into();
+        assert_eq!(
+            thread.gmail_link("me+work@x.com").as_deref(),
+            Some("https://mail.google.com/mail/?authuser=me%2Bwork@x.com#all/18c2f")
+        );
+        thread.id = "sent-local-abc".into();
+        assert_eq!(thread.gmail_link("me@x.com"), None);
+    }
+
+    /// MB-062: one category label, the others off.
+    #[test]
+    fn moving_to_a_category_swaps_its_label() {
+        use crate::backend::categories::{category_of, in_category};
+        let mut thread = thread_from(&[contact("", "a@x.com"), contact("", "b@x.com")]);
+        thread.messages[0].label_ids = vec!["INBOX".into(), "CATEGORY_PROMOTIONS".into()];
+        thread.messages[1].label_ids = vec!["INBOX".into()];
+        let (add, remove) = thread.set_category(Category::Social);
+        assert_eq!(add, vec!["CATEGORY_SOCIAL".to_string()]);
+        assert!(remove.contains(&"CATEGORY_PROMOTIONS".to_string()));
+        assert!(remove.contains(&"CATEGORY_PERSONAL".to_string()));
+        assert!(in_category(&thread, Category::Social));
+        assert!(!in_category(&thread, Category::Promotions));
+        thread.set_category(Category::Primary);
+        assert!(
+            thread
+                .messages
+                .iter()
+                .all(|m| category_of(&m.label_ids) == Category::Primary)
+        );
+    }
+
+    /// MA-043.
+    #[test]
+    fn day_order_and_finder_sizes() {
+        assert!(day_first_pattern("d MMM"));
+        assert!(day_first_pattern("d. MMM"));
+        assert!(!day_first_pattern("MMM d"));
+        assert!(!day_first_pattern("'d'MMM d"));
+        assert_eq!(file_size(999), "999 bytes");
+        assert_eq!(file_size(1_500), "2 KB");
+        assert_eq!(file_size(1_500_000), "1.5 MB");
+        assert_eq!(file_size(2_340_000_000), "2.34 GB");
     }
 
     #[test]

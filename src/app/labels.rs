@@ -19,7 +19,10 @@ use crate::{
         labels::{self, COLORS, LabelEdit},
     },
     data::{Folder, Label, ListVisibility},
-    ui::command_palette::{CommandPalette, Leading, PaletteCommand, PaletteItem},
+    ui::{
+        command_palette::{CommandPalette, Leading, PaletteCommand, PaletteItem},
+        sidebar::MarkAllRead,
+    },
 };
 
 #[derive(Default)]
@@ -34,6 +37,9 @@ pub struct LabelsUi {
     /// The user's arrangement of the labels, by id (`labels::label_tree`);
     /// kept in memory.
     pub order: Vec<String>,
+    /// The label, by id, whose context menu is open (MB-017): its actions
+    /// apply to it rather than to the open label.
+    pub context_label: Option<String>,
     /// What the name being typed is for.
     prompt: Option<Prompt>,
 }
@@ -135,7 +141,11 @@ impl PigeonApp {
             )
     }
 
+    /// The label a context menu is open on, else the open label.
     fn current_label(&self) -> Option<usize> {
+        if let Some(id) = &self.labels_ui.context_label {
+            return self.data.labels.iter().position(|l| &l.id == id);
+        }
         match self.nav {
             Nav::Label(ix) => Some(ix),
             _ => None,
@@ -504,9 +514,7 @@ impl PigeonApp {
         if !self.labels_ui.folded.remove(&id) {
             self.labels_ui.folded.insert(id);
         }
-        let mut ids: Vec<String> = self.labels_ui.folded.iter().cloned().collect();
-        ids.sort();
-        self.backend.read(cx).set_collapsed_labels(&ids);
+        // Saved with the other settings, debounced (MC-048).
         cx.notify();
     }
 
@@ -536,7 +544,9 @@ impl PigeonApp {
         cx.notify();
     }
 
-    /// Right-click on a label in the sidebar: open it, then its actions.
+    /// Right-click on a label in the sidebar: its actions, leaving the
+    /// open view alone. The label is the context target until the menu
+    /// closes (MB-017).
     pub(crate) fn show_label_menu(
         &mut self,
         ix: usize,
@@ -544,8 +554,8 @@ impl PigeonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.set_nav(Nav::Label(ix), cx);
         let label = &self.data.labels[ix];
+        self.labels_ui.context_label = Some(label.id.clone());
         let mut list = NativeMenu::new();
         for v in ListVisibility::ALL {
             list = list.menu_with_check(
@@ -562,7 +572,14 @@ impl PigeonApp {
                 Box::new(SetLabelMessageVisibility(shown)),
             );
         }
-        let mut menu = NativeMenu::new()
+        let mut menu = NativeMenu::new();
+        // MB-010: only with something to mark.
+        if self.local_unread(Nav::Label(ix)) > 0 {
+            menu = menu
+                .menu("Mark All as Read", Box::new(MarkAllRead(Nav::Label(ix))))
+                .separator();
+        }
+        let mut menu = menu
             .menu("Rename…", Box::new(RenameLabel))
             .menu("Change Color…", Box::new(ChangeLabelColor))
             .submenu("In Label List", list)
@@ -585,6 +602,16 @@ impl PigeonApp {
             .menu("New Label…", Box::new(NewLabel))
             .menu("Delete Label…", Box::new(DeleteLabel))
             .show(position, window, cx);
+        // The menu dispatches its choice as it closes, ahead of this.
+        cx.spawn(async move |this, cx| {
+            this.update(cx, |this, cx| {
+                this.labels_ui.context_label = None;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
     }
 
     /// `l`: the labels as a tree, folded ones' children found by typing.

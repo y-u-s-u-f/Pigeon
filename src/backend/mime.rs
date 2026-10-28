@@ -42,11 +42,6 @@ pub fn inline_url(bytes: &[u8]) -> String {
     format!("cid:pigeon-{hex}")
 }
 
-/// Whether `src` is an inline image's address.
-pub fn is_cid(src: &str) -> bool {
-    src.get(..4).is_some_and(|s| s.eq_ignore_ascii_case("cid:"))
-}
-
 /// The message's images with a Content-ID, by that id (lower case).
 fn inline_parts(message: &mail_parser::Message) -> Vec<(String, InlineImage)> {
     let mut out: Vec<(String, InlineImage)> = Vec::new();
@@ -847,7 +842,7 @@ mod tests {
         );
         assert!(body.html.contains("cid:missing"));
         assert!(!body.html.contains("logo"));
-        assert!(is_cid(&image.url) && !is_cid("https://x"));
+        assert!(crate::html::is_cid(&image.url) && !crate::html::is_cid("https://x"));
     }
 
     #[test]

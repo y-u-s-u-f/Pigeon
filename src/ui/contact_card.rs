@@ -4,13 +4,19 @@
 
 use gpui::{
     Context, EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement, IntoElement,
-    MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement as _, Styled,
-    Window, actions, div, prelude::FluentBuilder as _, px,
+    MouseButton, ParentElement, Pixels, Point, Render, SharedString,
+    StatefulInteractiveElement as _, Styled, Window, actions, anchored, deferred, div,
+    prelude::FluentBuilder as _, px,
 };
 
-use super::{avatar, icon, keycap, keys_caps, label, overlay_shadow};
+use super::{
+    avatar,
+    controls::{popover_surface, sheet_surface},
+    icon, keycap, keys_caps, label,
+};
 use crate::ui::style::*;
 use crate::{
+    actions::SearchFromContact,
     assets::Icon,
     contacts::ContactCard,
     data::{Contact, list_date},
@@ -46,6 +52,9 @@ pub struct ContactCardView {
     /// The highlighted conversation.
     selected: usize,
     focus_handle: FocusHandle,
+    /// MB-069: where a click on a name opened it, in window coordinates.
+    /// The card then hangs there as a popover; from ⇧P or ⌘K it's centered.
+    anchor: Option<Point<Pixels>>,
 }
 
 impl EventEmitter<CardEvent> for ContactCardView {}
@@ -62,7 +71,26 @@ impl ContactCardView {
             card,
             selected: 0,
             focus_handle: cx.focus_handle(),
+            anchor: None,
         }
+    }
+
+    /// MB-069: hang the card at `position`, the click on a sender or guest,
+    /// with no backdrop; a click outside it closes it.
+    pub fn anchored_at(mut self, position: Point<Pixels>) -> Self {
+        self.anchor = Some(position);
+        self
+    }
+
+    /// Whether it hangs at a click, so the overlay draws no backdrop.
+    pub fn is_anchored(&self) -> bool {
+        self.anchor.is_some()
+    }
+
+    /// Who the card is about; for `SearchFromContact` ("from:" them),
+    /// which the app handles.
+    pub fn contact(&self) -> Contact {
+        self.card.contact()
     }
 
     fn select_next(&mut self, _: &SelectNext, _: &mut Window, cx: &mut Context<Self>) {
@@ -125,13 +153,13 @@ impl ContactCardView {
         id: &'static str,
         glyph: Icon,
         label: &'static str,
+        aria: SharedString,
         key: &'static str,
         theme: &Theme,
     ) -> gpui::Stateful<gpui::Div> {
-        div()
-            .id(id)
+        focusable_control(div().id(id), theme)
             .role(gpui::Role::Button)
-            .aria_label(label)
+            .aria_label(aria)
             .h(CONTROL_MD)
             .px(SPACE_MD)
             .flex()
@@ -139,8 +167,8 @@ impl ContactCardView {
             .gap(SPACE_SM)
             .rounded(RADIUS_MD)
             .bg(theme.chip_bg)
-            .cursor_pointer()
             .hover(|s| s.bg(theme.selected_bg))
+            .active(|s| s.bg(theme.selected_bg).opacity(0.8))
             .text_size(TEXT_SM)
             .font_weight(FontWeight::MEDIUM)
             .child(icon(glyph, ICON_SM, theme.icon))
@@ -199,13 +227,13 @@ impl Render for ContactCardView {
                 .role(gpui::Role::ListBoxOption)
                 .aria_label(format!("{subject}, {date}"))
                 .aria_selected(selected)
+                .when(selected, |d| d.aria_active_descendant())
                 .h(ROW_PALETTE)
                 .px(SPACE_MD)
                 .flex()
                 .items_center()
                 .gap(SPACE_MD)
                 .rounded(RADIUS_MD)
-                .cursor_pointer()
                 .when(selected, |d| d.bg(theme.selected_bg))
                 .child(icon(
                     Icon::Mail,
@@ -250,164 +278,212 @@ impl Render for ContactCardView {
                 .child(caps)
         };
 
-        div()
-            .id("contact-card")
-            .key_context(CONTACT_CARD)
-            .track_focus(&self.focus_handle)
-            .role(gpui::Role::Dialog)
-            .aria_label(format!("Contact: {name}"))
-            .on_action(cx.listener(Self::select_next))
-            .on_action(cx.listener(Self::select_prev))
-            .on_action(cx.listener(Self::confirm))
-            .on_action(cx.listener(Self::compose))
-            .on_action(cx.listener(Self::copy))
-            .on_action(cx.listener(Self::dismiss))
-            .w(px(WIDTH))
-            .max_w_full()
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .rounded(RADIUS_LG)
-            .bg(theme.overlay_bg)
-            .border_1()
-            .border_color(theme.overlay_border)
-            .shadow(overlay_shadow(&theme))
-            // Keep clicks inside from reaching the backdrop.
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                div()
-                    .p(SPACE_LG)
-                    .flex()
-                    .items_center()
-                    .gap(SPACE_MD)
-                    .child(avatar(
-                        contact.initials(),
-                        theme.avatar_color(&contact.email),
-                        AVATAR_LG,
+        let anchor = self.anchor;
+        let card = if anchor.is_some() {
+            popover_surface(&theme)
+        } else {
+            sheet_surface(&theme)
+        }
+        .id("contact-card")
+        .key_context(CONTACT_CARD)
+        .track_focus(&self.focus_handle)
+        .role(gpui::Role::Dialog)
+        .aria_label(format!("Contact: {name}"))
+        .on_action(cx.listener(Self::select_next))
+        .on_action(cx.listener(Self::select_prev))
+        .on_action(cx.listener(Self::confirm))
+        .on_action(cx.listener(Self::compose))
+        .on_action(cx.listener(Self::copy))
+        .on_action(cx.listener(Self::dismiss))
+        .w(px(WIDTH))
+        .max_w_full()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        // Keep clicks inside from reaching the backdrop.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .when(anchor.is_some(), |this| {
+            this.on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(CardEvent::Dismiss)))
+        })
+        .child(
+            div()
+                .p(SPACE_LG)
+                .flex()
+                .items_center()
+                .gap(SPACE_MD)
+                .child(avatar(
+                    contact.initials(),
+                    theme.avatar_color(&contact.email),
+                    AVATAR_LG,
+                    &theme,
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(SPACE_2XS)
+                        .child(
+                            div()
+                                .id("contact-name")
+                                .role(gpui::Role::Heading)
+                                .aria_label(name.clone())
+                                .truncate()
+                                .text_size(TEXT_TITLE2)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(name.clone()),
+                        )
+                        .when(!subtitle.is_empty(), |d| {
+                            d.child(
+                                div()
+                                    .truncate()
+                                    .text_size(TEXT_SM)
+                                    .text_color(theme.text_muted)
+                                    .child(subtitle),
+                            )
+                        }),
+                ),
+        )
+        .child(
+            div()
+                .px(SPACE_LG)
+                .pb(SPACE_MD)
+                .flex()
+                .flex_col()
+                .children(details),
+        )
+        .child(
+            div()
+                .px(SPACE_LG)
+                .pb(SPACE_LG)
+                .flex()
+                .gap(SPACE_SM)
+                .child(
+                    Self::action_button(
+                        "contact-compose",
+                        Icon::SquarePen,
+                        "Compose",
+                        format!("Write to {name}").into(),
+                        "c",
                         &theme,
-                    ))
-                    .child(
+                    )
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.compose(&ComposeTo, window, cx)),
+                    ),
+                )
+                .child(
+                    Self::action_button(
+                        "contact-copy",
+                        Icon::Copy,
+                        "Copy Address",
+                        "Copy Address".into(),
+                        "cmd-c",
+                        &theme,
+                    )
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.copy(&CopyAddress, window, cx)),
+                    ),
+                )
+                // ME-033: their mail in the list, as "from:" them.
+                .child(
+                    Self::action_button(
+                        "contact-search",
+                        Icon::Search,
+                        "Search Mail",
+                        format!("Search mail from {name}").into(),
+                        "s",
+                        &theme,
+                    )
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(SearchFromContact), cx)
+                    }),
+                ),
+        )
+        .child(
+            div()
+                .px(SPACE_LG)
+                .pt(SPACE_MD)
+                .pb(SPACE_XS)
+                .border_t_1()
+                .border_color(theme.border)
+                .text_size(TEXT_SM)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text_muted)
+                .child("Recent conversations"),
+        )
+        .child(
+            div()
+                .id("contact-threads")
+                .role(gpui::Role::ListBox)
+                .aria_label("Recent conversations")
+                .px(SPACE_SM)
+                .pb(SPACE_SM)
+                .flex()
+                .flex_col()
+                .children(threads)
+                .when(no_threads, |d| {
+                    // ME-001: with the next step.
+                    d.child(
                         div()
-                            .flex_1()
-                            .min_w_0()
+                            .min_h(ROW_PALETTE)
+                            .px(SPACE_MD)
                             .flex()
-                            .flex_col()
-                            .gap(SPACE_2XS)
+                            .items_center()
+                            .flex_wrap()
+                            .gap(SPACE_SM)
+                            .text_size(TEXT_BASE)
+                            .text_color(theme.text_faint)
+                            .child(label(
+                                "contact-no-threads",
+                                "No conversations in this Mac’s cache.",
+                            ))
                             .child(
                                 div()
-                                    .id("contact-name")
-                                    .role(gpui::Role::Heading)
-                                    .aria_label(name.clone())
-                                    .truncate()
-                                    .text_size(TEXT_TITLE2)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(name.clone()),
-                            )
-                            .when(!subtitle.is_empty(), |d| {
-                                d.child(
-                                    div()
-                                        .truncate()
-                                        .text_size(TEXT_SM)
-                                        .text_color(theme.text_muted)
-                                        .child(subtitle),
-                                )
-                            }),
-                    ),
-            )
-            .child(
-                div()
-                    .px(SPACE_LG)
-                    .pb(SPACE_MD)
-                    .flex()
-                    .flex_col()
-                    .children(details),
-            )
-            .child(
-                div()
-                    .px(SPACE_LG)
-                    .pb(SPACE_LG)
-                    .flex()
-                    .gap(SPACE_SM)
-                    .child(
-                        Self::action_button(
-                            "contact-compose",
-                            Icon::SquarePen,
-                            "Compose",
-                            "c",
-                            &theme,
-                        )
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.compose(&ComposeTo, window, cx)),
-                        ),
+                                    .flex()
+                                    .items_center()
+                                    .gap(SPACE_XS)
+                                    .text_size(TEXT_SM)
+                                    .child("Write to them")
+                                    .child(keys_caps("c", &theme)),
+                            ),
                     )
-                    .child(
-                        Self::action_button(
-                            "contact-copy",
-                            Icon::Copy,
-                            "Copy Address",
-                            "cmd-c",
-                            &theme,
-                        )
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.copy(&CopyAddress, window, cx)),
-                        ),
-                    ),
+                }),
+        )
+        .child(
+            div()
+                .py(SPACE_SM)
+                .px(SPACE_LG)
+                .flex()
+                .items_center()
+                .gap(SPACE_LG)
+                .border_t_1()
+                .border_color(theme.border)
+                .text_size(TEXT_SM)
+                .text_color(theme.text_faint)
+                .child(hint(
+                    "Navigate",
+                    div()
+                        .flex()
+                        .gap(SPACE_XS)
+                        .child(keycap("↑", &theme))
+                        .child(keycap("↓", &theme)),
+                ))
+                .child(hint("Open", keys_caps("enter", &theme)))
+                .child(hint("Close", keys_caps("escape", &theme))),
+        );
+        match anchor {
+            // Under the click, kept inside the window.
+            Some(position) => deferred(
+                anchored()
+                    .position(position)
+                    .offset(gpui::point(Pixels::ZERO, SPACE_XS))
+                    .snap_to_window_with_margin(SPACE_LG)
+                    .child(card),
             )
-            .child(
-                div()
-                    .px(SPACE_LG)
-                    .pt(SPACE_MD)
-                    .pb(SPACE_XS)
-                    .border_t_1()
-                    .border_color(theme.border)
-                    .text_size(TEXT_SM)
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_muted)
-                    .child("Recent conversations"),
-            )
-            .child(
-                div()
-                    .id("contact-threads")
-                    .role(gpui::Role::ListBox)
-                    .aria_label("Recent conversations")
-                    .px(SPACE_SM)
-                    .pb(SPACE_SM)
-                    .flex()
-                    .flex_col()
-                    .children(threads)
-                    .when(no_threads, |d| {
-                        d.child(
-                            label("contact-no-threads", "No conversations in this Mac’s cache")
-                                .h(ROW_PALETTE)
-                                .px(SPACE_MD)
-                                .flex()
-                                .items_center()
-                                .text_size(TEXT_BASE)
-                                .text_color(theme.text_faint),
-                        )
-                    }),
-            )
-            .child(
-                div()
-                    .py(SPACE_SM)
-                    .px(SPACE_LG)
-                    .flex()
-                    .items_center()
-                    .gap(SPACE_LG)
-                    .border_t_1()
-                    .border_color(theme.border)
-                    .text_size(TEXT_SM)
-                    .text_color(theme.text_faint)
-                    .child(hint(
-                        "Navigate",
-                        div()
-                            .flex()
-                            .gap(SPACE_XS)
-                            .child(keycap("↑", &theme))
-                            .child(keycap("↓", &theme)),
-                    ))
-                    .child(hint("Open", keys_caps("enter", &theme)))
-                    .child(hint("Close", keys_caps("escape", &theme))),
-            )
+            .with_priority(1)
+            .into_any_element(),
+            None => card.into_any_element(),
+        }
     }
 }

@@ -1,13 +1,14 @@
 //! W2: opening and saving attachments (ATT-4), a forward's files (ATT-7)
 //! and the original message (RDR-8). The files come from
 //! `backend::attachments`; the source shows in the reader
-//! (`ui::reader::Original`).
+//! (`ui::reader::Original`). Also the reader's menu actions: links, names
+//! and ⌥Tab through a message's links (MA-003, MB-010).
 
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
 use gpui::{
-    ClipboardItem, Context, Div, Stateful, Window, component::native_menu::NativeMenu, point,
-    prelude::*,
+    ClipboardItem, Context, Div, KeyDownEvent, PathPromptOptions, Stateful, Window,
+    component::native_menu::NativeMenu, point, prelude::*,
 };
 
 use super::{PigeonApp, ToastAction, ToastKind, toast::plain_error};
@@ -15,13 +16,31 @@ use crate::{
     actions::*,
     backend::attachments::{self, DEMO_NO_BYTES},
     data::{Attachment, file_size},
-    ui::reader::{Original, OriginalState},
+    native,
+    ui::{
+        html_view::{self, CopyText, OpenLink},
+        reader::{
+            MESSAGES_START, Original, OriginalState, PrefetchAttachmentAt, QuickLookAttachmentAt,
+            ReaderUi, RevealAttachmentAt, ShowContactFor,
+        },
+    },
 };
 
 /// What a save writes.
 enum Saving {
     File(PathBuf),
     Bytes(Arc<Vec<u8>>),
+}
+
+/// What to do with an attachment's file once it's here.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Use {
+    Open,
+    Save,
+    QuickLook,
+    Reveal,
+    /// Only fetch it, quietly: for a drag to Finder.
+    Fetch,
 }
 
 impl PigeonApp {
@@ -32,23 +51,58 @@ impl PigeonApp {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         root.on_action(cx.listener(|this, _: &OpenAttachment, window, cx| {
-            this.pick_attachment(false, window, cx)
+            this.pick_attachment(Use::Open, window, cx)
         }))
         .on_action(cx.listener(|this, _: &SaveAttachment, window, cx| {
-            this.pick_attachment(true, window, cx)
+            this.pick_attachment(Use::Save, window, cx)
         }))
-        .on_action(
-            cx.listener(|this, a: &OpenAttachmentAt, _, cx| this.open_attachment(a.0, a.1, cx)),
-        )
-        .on_action(
-            cx.listener(|this, a: &SaveAttachmentAt, _, cx| this.save_attachment(a.0, a.1, cx)),
-        )
+        .on_action(cx.listener(|this, _: &QuickLookAttachment, window, cx| {
+            this.pick_attachment(Use::QuickLook, window, cx)
+        }))
+        .on_action(cx.listener(|this, a: &OpenAttachmentAt, _, cx| {
+            this.use_attachment(a.0, a.1, Use::Open, cx)
+        }))
+        .on_action(cx.listener(|this, a: &SaveAttachmentAt, _, cx| {
+            this.use_attachment(a.0, a.1, Use::Save, cx)
+        }))
+        .on_action(cx.listener(|this, a: &QuickLookAttachmentAt, _, cx| {
+            this.use_attachment(a.0, a.1, Use::QuickLook, cx)
+        }))
+        .on_action(cx.listener(|this, a: &RevealAttachmentAt, _, cx| {
+            this.use_attachment(a.0, a.1, Use::Reveal, cx)
+        }))
+        .on_action(cx.listener(|this, a: &PrefetchAttachmentAt, _, cx| {
+            this.use_attachment(a.0, a.1, Use::Fetch, cx)
+        }))
+        .on_action(cx.listener(|this, _: &SaveAllAttachments, _, cx| this.save_all(cx)))
         .on_action(cx.listener(|this, _: &ShowOriginal, window, cx| this.show_original(window, cx)))
         .on_action(cx.listener(|this, _: &SaveOriginal, _, cx| this.save_original(cx)))
         .on_action(cx.listener(|this, _: &CopyOriginal, _, cx| this.copy_original(cx)))
         .on_action(
             cx.listener(|this, _: &CloseOriginal, window, cx| this.close_original(window, cx)),
         )
+        .on_action(cx.listener(|this, a: &ShowContactFor, window, cx| {
+            this.show_contact(a.0.clone(), a.1, window, cx)
+        }))
+        .on_action(|a: &OpenLink, _, cx| html_view::open_link(&a.0, cx))
+        .on_action(cx.listener(|this, a: &CopyText, _, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(a.0.to_string()));
+            this.show_toast(ToastKind::Done, "Copied", None, cx);
+        }))
+        .on_action(cx.listener(|this, _: &CycleMessageLinks, _, cx| this.cycle_links(cx)))
+        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+            // ↵ opens the link ⌥Tab is on.
+            let keys = &event.keystroke;
+            if keys.key == "enter"
+                && !keys.modifiers.modified()
+                && this.reader_focused
+                && this.focus_handle.is_focused(window)
+                && let Some(url) = this.focused_link(cx)
+            {
+                cx.stop_propagation();
+                html_view::open_link(&url, cx);
+            }
+        }))
     }
 
     /// The attachments the shortcuts act on, as (message, attachment):
@@ -76,9 +130,9 @@ impl PigeonApp {
         Some((message.id.clone(), message.attachments.get(a)?.clone()))
     }
 
-    /// Open or save the conversation's attachment, or with several, pick
-    /// one from a menu.
-    fn pick_attachment(&mut self, save: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// Use the conversation's attachment, or with several, pick one from a
+    /// menu under the first chip (MB-016).
+    fn pick_attachment(&mut self, what: Use, window: &mut Window, cx: &mut Context<Self>) {
         let targets = self.attachment_targets();
         match targets.as_slice() {
             [] => self.show_toast(
@@ -87,8 +141,7 @@ impl PigeonApp {
                 None,
                 cx,
             ),
-            [(m, a)] if save => self.save_attachment(*m, *a, cx),
-            [(m, a)] => self.open_attachment(*m, *a, cx),
+            [(m, a)] => self.use_attachment(*m, *a, what, cx),
             _ => {
                 let thread = &self.data.threads[self.selected.expect("has targets")];
                 let mut menu = NativeMenu::new();
@@ -96,121 +149,139 @@ impl PigeonApp {
                     let attachment = &thread.messages[m].attachments[a];
                     let label =
                         format!("{} — {}", attachment.name, file_size(attachment.size_bytes));
-                    let action: Box<dyn gpui::Action> = if save {
-                        Box::new(SaveAttachmentAt(m, a))
-                    } else {
-                        Box::new(OpenAttachmentAt(m, a))
+                    let action: Box<dyn gpui::Action> = match what {
+                        Use::Save => Box::new(SaveAttachmentAt(m, a)),
+                        Use::QuickLook => Box::new(QuickLookAttachmentAt(m, a)),
+                        _ => Box::new(OpenAttachmentAt(m, a)),
                     };
                     menu = menu.menu(label, action);
                 }
-                let size = window.viewport_size();
-                menu.show(point(size.width * 0.55, size.height * 0.3), window, cx);
+                let position = cx
+                    .default_global::<ReaderUi>()
+                    .attachment_anchor
+                    .get()
+                    .map(|b| b.bottom_left())
+                    .unwrap_or_else(|| {
+                        let size = window.viewport_size();
+                        point(size.width * 0.55, size.height * 0.3)
+                    });
+                menu.show(position, window, cx);
             }
         }
     }
 
-    /// The file for an attachment, then `then` with its path. A failure
-    /// offers to try again (`save` or open), while the conversation is
-    /// still the one selected.
-    fn with_attachment_file(
-        &mut self,
-        m: usize,
-        a: usize,
-        save: bool,
-        then: impl FnOnce(&mut Self, attachments::Ready, &mut Context<Self>) + 'static,
-        cx: &mut Context<Self>,
-    ) {
+    /// Esc in the reader: stop the open conversation's attachment
+    /// downloads (MA-067). Whether there were any.
+    pub(super) fn cancel_attachment_fetches(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(ix) = self.selected else {
+            return false;
+        };
+        let ids: HashSet<String> = self.data.threads[ix]
+            .messages
+            .iter()
+            .map(|m| m.id.clone())
+            .collect();
+        let ui = cx.default_global::<ReaderUi>();
+        let before = ui.fetching.len();
+        ui.fetching.retain(|(id, _), _| !ids.contains(id));
+        let cancelled = ui.fetching.len() < before;
+        if cancelled {
+            cx.notify();
+        }
+        cancelled
+    }
+
+    /// The file for an attachment, then `what` with it. Asking again while
+    /// it's on its way cancels it (MA-067); the chip pulses meanwhile. A
+    /// failure offers to try again, while the conversation is still the one
+    /// selected.
+    fn use_attachment(&mut self, m: usize, a: usize, what: Use, cx: &mut Context<Self>) {
         let Some((message_id, attachment)) = self.attachment_at(m, a) else {
             return;
         };
+        let key = (message_id.clone(), a);
+        let ui = cx.default_global::<ReaderUi>();
+        if ui.fetching.contains_key(&key) {
+            if what != Use::Fetch {
+                ui.fetching.remove(&key);
+                cx.notify();
+            }
+            return;
+        }
+        if what == Use::Fetch && ui.files.contains_key(&key) {
+            return;
+        }
         let thread_id = self.selected.map(|ix| self.data.threads[ix].id.clone());
-        let retry = ToastAction::run("Try Again", move |this, _, cx| {
-            if this.selected.map(|ix| &this.data.threads[ix].id) != thread_id.as_ref() {
-                return;
-            }
-            if save {
-                this.save_attachment(m, a, cx)
-            } else {
-                this.open_attachment(m, a, cx)
-            }
-        });
         let task = self
             .backend
             .update(cx, |b, cx| b.attachment_file(&message_id, &attachment, cx));
         let name = attachment.name.clone();
-        if !self.backend.read(cx).is_demo() {
-            self.show_toast(ToastKind::Working, format!("Getting “{name}”…"), None, cx);
-        }
-        cx.spawn(async move |this, cx| {
+        let fetch_key = key.clone();
+        let fetch = cx.spawn(async move |this, cx| {
             let result = task.await;
-            this.update(cx, |this, cx| match result {
-                Ok(ready) => {
-                    if this
-                        .toast
-                        .as_ref()
-                        .is_some_and(|t| t.kind == ToastKind::Working)
-                    {
-                        this.dismiss_toast(cx);
+            this.update(cx, |this, cx| {
+                let ui = cx.default_global::<ReaderUi>();
+                if let Some(task) = ui.fetching.remove(&fetch_key) {
+                    task.detach();
+                }
+                match result {
+                    Ok(ready) => {
+                        ui.files.insert(fetch_key, ready.clone());
+                        this.use_file(name, ready, what, cx);
                     }
-                    then(this, ready, cx)
+                    Err(_) if what == Use::Fetch => {}
+                    Err(e) if e.to_string() == DEMO_NO_BYTES => {
+                        this.show_toast(ToastKind::Info, DEMO_NO_BYTES, None, cx)
+                    }
+                    Err(e) => {
+                        let retry = ToastAction::run("Try Again", move |this, _, cx| {
+                            if this.selected.map(|ix| &this.data.threads[ix].id)
+                                == thread_id.as_ref()
+                            {
+                                this.use_attachment(m, a, what, cx)
+                            }
+                        });
+                        let message = plain_error(&format!("Couldn't get “{name}”"), &e);
+                        this.show_toast(ToastKind::Error, message, Some(retry), cx)
+                    }
                 }
-                Err(e) if e.to_string() == DEMO_NO_BYTES => {
-                    this.show_toast(ToastKind::Info, DEMO_NO_BYTES, None, cx)
-                }
-                Err(e) => {
-                    let message = plain_error(&format!("Couldn't get “{name}”"), &e);
-                    this.show_toast(ToastKind::Error, message, Some(retry), cx)
-                }
+                cx.notify();
             })
             .ok();
-        })
-        .detach();
+        });
+        cx.default_global::<ReaderUi>().fetching.insert(key, fetch);
+        cx.notify();
     }
 
-    /// Open with the default app; something that could run code is shown in
-    /// Finder instead (ATT-4).
-    pub(crate) fn open_attachment(&mut self, m: usize, a: usize, cx: &mut Context<Self>) {
-        let Some((_, attachment)) = self.attachment_at(m, a) else {
-            return;
-        };
-        let name = attachment.name;
-        self.with_attachment_file(
-            m,
-            a,
-            false,
-            move |this, ready, cx| {
-                if ready.executable {
-                    cx.reveal_path(&ready.path);
-                    this.show_toast(
-                        ToastKind::Info,
-                        format!("“{name}” could run code, so it's shown in Finder instead"),
-                        None,
-                        cx,
-                    );
-                } else {
-                    cx.open_with_system(&ready.path);
-                }
-            },
-            cx,
-        );
+    /// Something that could run code is never opened or previewed: Finder
+    /// shows it instead (ATT-4).
+    fn use_file(
+        &mut self,
+        name: String,
+        ready: attachments::Ready,
+        what: Use,
+        cx: &mut Context<Self>,
+    ) {
+        match what {
+            Use::Fetch => {}
+            Use::Save => self.save_as(name, Saving::File(ready.path), cx),
+            Use::Reveal => cx.reveal_path(&ready.path),
+            Use::Open | Use::QuickLook if ready.executable => {
+                cx.reveal_path(&ready.path);
+                self.show_toast(
+                    ToastKind::Info,
+                    format!("“{name}” could run code, so it's shown in Finder instead"),
+                    None,
+                    cx,
+                );
+            }
+            Use::Open => cx.open_with_system(&ready.path),
+            Use::QuickLook => native::quick_look(&ready.path),
+        }
     }
 
-    pub(crate) fn save_attachment(&mut self, m: usize, a: usize, cx: &mut Context<Self>) {
-        let Some((_, attachment)) = self.attachment_at(m, a) else {
-            return;
-        };
-        let name = attachment.name;
-        self.with_attachment_file(
-            m,
-            a,
-            true,
-            move |this, ready, cx| this.save_as(name, Saving::File(ready.path), cx),
-            cx,
-        );
-    }
-
-    /// The save panel, starting in Downloads; the file written is
-    /// quarantined like a download.
+    /// The save panel, starting where the last save went (MB-060), else in
+    /// Downloads; the file written is quarantined like a download.
     fn save_as(&mut self, name: String, what: Saving, cx: &mut Context<Self>) {
         let name = attachments::sanitize_name(&name);
         let write = move |dest: PathBuf| -> anyhow::Result<PathBuf> {
@@ -223,32 +294,44 @@ impl PigeonApp {
             attachments::quarantine(&dest);
             Ok(dest)
         };
-        let chosen: Chosen = match attachments::dev_save_dir() {
-            Some(dir) => {
-                std::fs::create_dir_all(&dir).ok();
-                let dest = attachments::unique_path(&dir, &name);
-                Box::pin(async move { Some(dest) })
-            }
-            None => {
-                let rx = cx.prompt_for_new_path(&attachments::downloads_dir(), Some(&name));
-                Box::pin(async move { rx.await.ok().and_then(Result::ok).flatten() })
-            }
-        };
+        let dev_dir = attachments::dev_save_dir();
+        let start = cx
+            .default_global::<ReaderUi>()
+            .save_dir
+            .clone()
+            .unwrap_or_else(attachments::downloads_dir);
+        let prompt = dev_dir
+            .is_none()
+            .then(|| cx.prompt_for_new_path(&start, Some(&name)));
         cx.spawn(async move |this, cx| {
-            let Some(dest) = chosen.await else {
-                return;
+            let dest = match (dev_dir, prompt) {
+                (Some(dir), _) => {
+                    std::fs::create_dir_all(&dir).ok();
+                    attachments::unique_path(&dir, &name)
+                }
+                (None, Some(prompt)) => match prompt.await.ok().and_then(Result::ok).flatten() {
+                    Some(dest) => dest,
+                    None => return,
+                },
+                (None, None) => return,
             };
             let written = cx
                 .background_executor()
                 .spawn(async move { write(dest) })
                 .await;
             this.update(cx, |this, cx| match written {
-                Ok(dest) => this.show_toast(
-                    ToastKind::Done,
-                    format!("Saved to {}", dest.display()),
-                    None,
-                    cx,
-                ),
+                Ok(dest) => {
+                    cx.default_global::<ReaderUi>().save_dir = dest.parent().map(PathBuf::from);
+                    let file = dest.file_name().unwrap_or_default().to_string_lossy();
+                    this.show_toast(
+                        ToastKind::Done,
+                        format!("Saved “{file}”"),
+                        Some(ToastAction::run("Show in Finder", move |_, _, cx| {
+                            cx.reveal_path(&dest)
+                        })),
+                        cx,
+                    )
+                }
                 Err(e) => {
                     this.show_error_toast(plain_error(&format!("Couldn't save “{name}”"), &e), cx)
                 }
@@ -256,6 +339,164 @@ impl PigeonApp {
             .ok();
         })
         .detach();
+    }
+
+    /// MB-059: every attachment the shortcuts act on, into a folder picked
+    /// once; names that are taken get a number.
+    fn save_all(&mut self, cx: &mut Context<Self>) {
+        let targets = self.attachment_targets();
+        if targets.is_empty() {
+            return self.show_toast(
+                ToastKind::Info,
+                "No attachments in this conversation",
+                None,
+                cx,
+            );
+        }
+        let files: Vec<_> = targets
+            .iter()
+            .filter_map(|&(m, a)| self.attachment_at(m, a))
+            .map(|(message_id, attachment)| {
+                let task = self
+                    .backend
+                    .update(cx, |b, cx| b.attachment_file(&message_id, &attachment, cx));
+                (attachment.name, task)
+            })
+            .collect();
+        let dev_dir = attachments::dev_save_dir();
+        let prompt = dev_dir.is_none().then(|| {
+            cx.prompt_for_paths(PathPromptOptions {
+                files: false,
+                directories: true,
+                multiple: false,
+                prompt: Some("Save All".into()),
+            })
+        });
+        cx.spawn(async move |this, cx| {
+            let dir = match (dev_dir, prompt) {
+                (Some(dir), _) => dir,
+                (None, Some(prompt)) => match prompt.await.ok().and_then(Result::ok).flatten() {
+                    Some(mut dirs) if !dirs.is_empty() => dirs.remove(0),
+                    _ => return,
+                },
+                (None, None) => return,
+            };
+            let mut saved = 0;
+            let mut failed: Option<String> = None;
+            for (name, task) in files {
+                let ready = match task.await {
+                    Ok(ready) => ready,
+                    Err(e) => {
+                        failed.get_or_insert(if e.to_string() == DEMO_NO_BYTES {
+                            DEMO_NO_BYTES.to_string()
+                        } else {
+                            plain_error(&format!("Couldn't get “{name}”"), &e)
+                        });
+                        continue;
+                    }
+                };
+                let dir = dir.clone();
+                let file = name.clone();
+                let written = cx
+                    .background_executor()
+                    .spawn(async move {
+                        std::fs::create_dir_all(&dir)?;
+                        let dest =
+                            attachments::unique_path(&dir, &attachments::sanitize_name(&file));
+                        std::fs::copy(&ready.path, &dest)?;
+                        attachments::quarantine(&dest);
+                        anyhow::Ok(())
+                    })
+                    .await;
+                match written {
+                    Ok(()) => saved += 1,
+                    Err(e) => {
+                        failed.get_or_insert(plain_error(&format!("Couldn't save “{name}”"), &e));
+                    }
+                }
+            }
+            this.update(cx, |this, cx| {
+                if saved > 0 {
+                    cx.default_global::<ReaderUi>().save_dir = Some(dir.clone());
+                }
+                match failed {
+                    Some(error) if saved == 0 => this.show_toast(
+                        if error == DEMO_NO_BYTES {
+                            ToastKind::Info
+                        } else {
+                            ToastKind::Error
+                        },
+                        error,
+                        None,
+                        cx,
+                    ),
+                    Some(error) => this.show_error_toast(error, cx),
+                    None => this.show_toast(
+                        ToastKind::Done,
+                        match saved {
+                            1 => "Saved 1 attachment".to_string(),
+                            n => format!("Saved {n} attachments"),
+                        },
+                        Some(ToastAction::run("Show in Finder", move |_, _, cx| {
+                            cx.reveal_path(&dir)
+                        })),
+                        cx,
+                    ),
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// ⌥Tab (MA-003): the focused message's next link, ringed; ↵ opens it.
+    /// Links in folded quoted text are skipped.
+    fn cycle_links(&mut self, cx: &mut Context<Self>) {
+        let Some(thread) = self.selected.map(|ix| &self.data.threads[ix]) else {
+            return;
+        };
+        let Some(last) = thread.messages.len().checked_sub(1) else {
+            return;
+        };
+        let m = self.focused_message.filter(|&m| m <= last).unwrap_or(last);
+        let message = &thread.messages[m];
+        let Some(doc) = self.html_cache.get(&message.id, message.html()) else {
+            return;
+        };
+        let thread_id = thread.id.clone();
+        let ui = cx.default_global::<ReaderUi>();
+        let end = match crate::html::trailing_quote_start(&doc) {
+            Some(start) if !ui.open_quotes.contains(&message.id) => start,
+            _ => doc.blocks.len(),
+        };
+        let count = crate::html::links(&doc.blocks[..end]).len();
+        if count == 0 {
+            ui.link = None;
+            return self.show_toast(ToastKind::Info, "No links in this message", None, cx);
+        }
+        let next = match &ui.link {
+            Some((t, lm, n)) if *t == thread_id && *lm == m => (n + 1) % count,
+            _ => 0,
+        };
+        let moved = !matches!(&ui.link, Some((t, lm, _)) if *t == thread_id && *lm == m);
+        ui.link = Some((thread_id, m, next));
+        self.focused_message = Some(m);
+        if moved {
+            self.reader_scroll.scroll_to_item(MESSAGES_START + m);
+        }
+        cx.notify();
+    }
+
+    /// The link ⌥Tab is on, while it's showing.
+    fn focused_link(&self, cx: &mut Context<Self>) -> Option<gpui::SharedString> {
+        let thread = &self.data.threads[self.selected?];
+        let (t, m, n) = cx.default_global::<ReaderUi>().link.clone()?;
+        if t != thread.id {
+            return None;
+        }
+        let message = thread.messages.get(m)?;
+        let doc = self.html_cache.get(&message.id, message.html())?;
+        crate::html::links(&doc.blocks).get(n).cloned()
     }
 
     /// The message the original is for: the focused one while the reader
@@ -295,12 +536,19 @@ impl PigeonApp {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = task.await;
-            this.update(cx, |this, cx| {
-                if let Some(original) = this.original.as_mut().filter(|o| o.message_id == id) {
-                    original.state = match result {
+            // Up to 1 MB to decode and split: off the main thread (MC-054).
+            let state = cx
+                .background_executor()
+                .spawn(async move {
+                    match result {
                         Ok(raw) => OriginalState::loaded(raw),
                         Err(e) => OriginalState::Failed(e.to_string().into()),
-                    };
+                    }
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if let Some(original) = this.original.as_mut().filter(|o| o.message_id == id) {
+                    original.state = state;
                     cx.notify();
                 }
             })
@@ -376,6 +624,3 @@ impl PigeonApp {
         .detach();
     }
 }
-
-/// Where a save goes, once the user has chosen.
-type Chosen = std::pin::Pin<Box<dyn std::future::Future<Output = Option<PathBuf>>>>;

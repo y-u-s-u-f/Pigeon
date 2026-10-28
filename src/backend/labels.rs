@@ -528,8 +528,6 @@ pub fn apply_local(store: &Store, account: &str, edit: &LabelEdit) -> Result<Com
     Ok(Committed::default())
 }
 
-const COLLAPSED_KEY: &str = "collapsed_labels";
-
 impl Backend {
     /// Change the user's labels (FOL-6, FOL-10). Demo at once; Google at
     /// the user's priority, refused offline. Either way `LabelsChanged`
@@ -574,25 +572,6 @@ impl Backend {
             && !done.threads.is_empty()
         {
             cx.emit(BackendEvent::ThreadsChanged(done.threads.clone()));
-        }
-    }
-
-    /// The labels whose children the sidebar and the picker fold away
-    /// (FOL-9), by id. Kept with the settings, so demo mode keeps them too.
-    pub fn collapsed_labels(&self) -> Vec<String> {
-        self.prefs
-            .load_settings()
-            .ok()
-            .and_then(|mut map| map.remove(COLLAPSED_KEY))
-            .and_then(|value| serde_json::from_value(value).ok())
-            .unwrap_or_default()
-    }
-
-    pub fn set_collapsed_labels(&self, ids: &[String]) {
-        let mut map = serde_json::Map::new();
-        map.insert(COLLAPSED_KEY.into(), serde_json::json!(ids));
-        if let Err(e) = self.prefs.save_settings(&map) {
-            eprintln!("Pigeon: couldn't save the folded labels: {e:#}");
         }
     }
 }

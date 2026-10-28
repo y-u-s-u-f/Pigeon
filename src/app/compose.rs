@@ -12,9 +12,14 @@ use crate::{
     html,
     ui::composer::{
         ATTACHMENT_LIMIT, ATTACHMENT_LIMIT_ERROR, Composer, ComposerEvent, DraftContent, Quoted,
-        REMOTE_SAVE_EVERY_MS, attachments_size, parse_address,
+        REMOTE_SAVE_EVERY_MS, attachments_size, parse_address, reply_attribution,
     },
 };
+
+/// How long a send may take before "Sending…" says it waits for a
+/// connection: its undo window, and a moment to go out.
+const SEND_PATIENCE: std::time::Duration =
+    crate::backend::UNDO_WINDOW.saturating_add(std::time::Duration::from_secs(3));
 
 /// What a Drafts thread holds, for the composer.
 fn draft_content(thread: &Thread) -> DraftContent {
@@ -127,6 +132,84 @@ fn reply_recipients(
     (to, cc)
 }
 
+/// A reply's or forward's recipients, subject, quote and files, answering
+/// `answered` in `thread`.
+fn reply_content(
+    kind: ComposeKind,
+    thread: &Thread,
+    answered: &Message,
+    is_me: impl Fn(&Contact) -> bool,
+) -> (DraftContent, Option<Quoted>) {
+    let (to, cc) = reply_recipients(kind, answered, is_me);
+
+    let subject = &thread.subject;
+    let lower = subject.to_lowercase();
+    let subject = match kind {
+        ComposeKind::Forward if lower.starts_with("fwd:") || lower.starts_with("fw:") => {
+            subject.clone()
+        }
+        ComposeKind::Forward => format!("Fwd: {subject}"),
+        _ if lower.starts_with("re:") => subject.clone(),
+        _ => format!("Re: {subject}"),
+    };
+
+    let quoted = match kind {
+        ComposeKind::Forward => {
+            let address = |c: &Contact| {
+                if c.name.is_empty() {
+                    c.email.clone()
+                } else {
+                    format!("{} <{}>", c.name, c.email)
+                }
+            };
+            let to = answered
+                .to
+                .iter()
+                .map(address)
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some(Quoted::new(
+                vec![
+                    ("From".into(), address(&answered.from)),
+                    ("Date".into(), full_date(&answered.date)),
+                    ("Subject".into(), thread.subject.clone()),
+                    ("To".into(), to),
+                ],
+                answered.html().to_string(),
+            ))
+        }
+        // A reply quotes what it answers, Gmail style (ME-009), when its
+        // text is here.
+        ComposeKind::Reply | ComposeKind::ReplyAll if !answered.html().is_empty() => {
+            Some(Quoted::new(
+                vec![(
+                    String::new(),
+                    reply_attribution(&full_date(&answered.date), &answered.from),
+                )],
+                answered.html().to_string(),
+            ))
+        }
+        _ => None,
+    };
+
+    // W2 (ATT-7): a forward carries the original's files, taken from it
+    // when it goes.
+    let attachments = match kind {
+        ComposeKind::Forward => forwarded_attachments(answered),
+        _ => Vec::new(),
+    };
+    let content = DraftContent {
+        to,
+        cc,
+        bcc: Vec::new(),
+        subject,
+        body: String::new(),
+        attachments,
+        ..Default::default()
+    };
+    (content, quoted)
+}
+
 /// W2 (ATT-7): `original`'s files, pointing back at it.
 fn forwarded_attachments(original: &Message) -> Vec<crate::data::Attachment> {
     original
@@ -196,6 +279,13 @@ impl PigeonApp {
             && let Some(ix) = self.selected
             && let Some(draft) = self.reply_draft_of(&self.data.threads[ix].id)
         {
+            // Loaded as a head (MA-072): its text, from the cache or Gmail.
+            self.ensure_bodies(draft, cx);
+            let thread = &self.data.threads[draft];
+            if !matches!(thread.last_message().body, Body::Loaded { .. }) {
+                let id = thread.id.clone();
+                self.backend.update(cx, |b, cx| b.fetch_body(&id, cx));
+            }
             self.open_draft(draft, true, window, cx);
             if let Some((composer, _)) = &self.composer {
                 composer.update(cx, |c, cx| c.focus_first(window, cx));
@@ -211,11 +301,13 @@ impl PigeonApp {
             (_, None) => return,
             (_, Some(thread)) if thread.folder == Folder::Drafts => return,
             (kind, Some(thread)) => {
-                let (mut content, quoted) = self.reply_content(kind, thread);
+                let answered = self.answered(thread);
+                let (mut content, quoted) =
+                    reply_content(kind, thread, answered, |c| self.data.is_me(c));
                 // W2 (ATT-7): cached files are held for the send.
                 self.backend
                     .read(cx)
-                    .hold_attachments(&thread.last_message().id, &mut content.attachments);
+                    .hold_attachments(&answered.id, &mut content.attachments);
                 // A forward starts a new thread, so it answers nothing.
                 let reply_to = (kind != ComposeKind::Forward).then(|| thread.id.clone());
                 (content, reply_to, quoted)
@@ -223,8 +315,8 @@ impl PigeonApp {
         };
         // W3: from the alias it answers, with its signature (MST-1, MST-2).
         let identities = self.data.account.identities();
-        let last = thread.map(|t| t.last_message());
-        content.from = pick_from(kind, last, &identities);
+        let answered = thread.map(|t| self.answered(t));
+        content.from = pick_from(kind, answered, &identities);
         content.signature = crate::settings::current(cx).signatures;
         self.open_composer(kind, content, reply_to, quoted, window, cx);
     }
@@ -255,7 +347,7 @@ impl PigeonApp {
             )
             .with_identities(identities)
         });
-        self.set_composer(composer.clone(), cx);
+        self.set_composer(composer.clone(), window, cx);
         composer.update(cx, |c, cx| {
             c.focus_first(window, cx);
             // W2 (ATT-7): a forward over the limit says so at once.
@@ -272,61 +364,14 @@ impl PigeonApp {
         cx.notify();
     }
 
-    pub(super) fn reply_content(
-        &self,
-        kind: ComposeKind,
-        thread: &Thread,
-    ) -> (DraftContent, Option<Quoted>) {
-        let last = thread.last_message();
-        let (to, cc) = reply_recipients(kind, last, |c| self.data.is_me(c));
-
-        let subject = &thread.subject;
-        let lower = subject.to_lowercase();
-        let subject = match kind {
-            ComposeKind::Forward if lower.starts_with("fwd:") || lower.starts_with("fw:") => {
-                subject.clone()
-            }
-            ComposeKind::Forward => format!("Fwd: {subject}"),
-            _ if lower.starts_with("re:") => subject.clone(),
-            _ => format!("Re: {subject}"),
-        };
-
-        let quoted = (kind == ComposeKind::Forward).then(|| {
-            let address = |c: &Contact| {
-                if c.name.is_empty() {
-                    c.email.clone()
-                } else {
-                    format!("{} <{}>", c.name, c.email)
-                }
-            };
-            let to = last.to.iter().map(address).collect::<Vec<_>>().join(", ");
-            Quoted::new(
-                vec![
-                    ("From".into(), address(&last.from)),
-                    ("Date".into(), full_date(&last.date)),
-                    ("Subject".into(), thread.subject.clone()),
-                    ("To".into(), to),
-                ],
-                last.html().to_string(),
-            )
-        });
-
-        // W2 (ATT-7): a forward carries the original's files, taken from it
-        // when it goes.
-        let attachments = match kind {
-            ComposeKind::Forward => forwarded_attachments(last),
-            _ => Vec::new(),
-        };
-        let content = DraftContent {
-            to,
-            cc,
-            bcc: Vec::new(),
-            subject,
-            body: String::new(),
-            attachments,
-            ..Default::default()
-        };
-        (content, quoted)
+    /// The message a reply or forward answers (ME-010): the focused one
+    /// while the reader has focus, else the newest; never a draft.
+    fn answered<'a>(&self, thread: &'a Thread) -> &'a Message {
+        self.focused_message
+            .filter(|_| self.reader_focused)
+            .and_then(|m| thread.messages.get(m))
+            .filter(|m| !m.label_ids.iter().any(|l| l == gmail::DRAFT))
+            .unwrap_or_else(|| thread.last_message())
     }
 
     /// The Drafts thread that answers the thread `id`, if there is one.
@@ -369,7 +414,7 @@ impl PigeonApp {
             composer.awaiting_body = awaiting_body;
             composer
         });
-        self.set_composer(composer, cx);
+        self.set_composer(composer, window, cx);
     }
 
     /// The open draft's text arrived from Gmail: show it, unless the user
@@ -386,13 +431,18 @@ impl PigeonApp {
         else {
             return;
         };
-        if !c.is_pristine(cx) {
-            return;
-        }
         let Some(thread) = self.data.thread_ix(&id).map(|ix| &self.data.threads[ix]) else {
             return;
         };
         if !matches!(thread.last_message().body, Body::Loaded { .. }) {
+            return;
+        }
+        // The text is in; it only replaces what's shown while untouched.
+        if !c.is_pristine(cx) {
+            composer.clone().update(cx, |c, cx| {
+                c.awaiting_body = false;
+                cx.notify();
+            });
             return;
         }
         let content = draft_content(thread);
@@ -414,19 +464,29 @@ impl PigeonApp {
         }
     }
 
-    pub(super) fn set_composer(&mut self, composer: Entity<Composer>, cx: &mut Context<Self>) {
+    pub(super) fn set_composer(
+        &mut self,
+        composer: Entity<Composer>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let reader_scroll = self.reader_scroll.clone();
         composer.update(cx, |composer, _| {
             composer.outer_scroll = Some(reader_scroll)
         });
-        let events = cx.subscribe(&composer, |this, composer, event, cx| match event {
-            ComposerEvent::Edited { at_end } => {
-                if *at_end && composer.read(cx).quoted.is_none() {
-                    this.reader_scroll.scroll_to_bottom();
+        let events = cx.subscribe_in(&composer, window, |this, composer, event, window, cx| {
+            match event {
+                ComposerEvent::Edited { at_end } => {
+                    if *at_end && !composer.read(cx).shows_quote() {
+                        this.reader_scroll.scroll_to_bottom();
+                    }
+                }
+                // W3 (DRF-5).
+                ComposerEvent::Autosave => this.save_draft(composer, false, cx),
+                ComposerEvent::ShowContact(contact, position) => {
+                    this.show_contact(contact.clone(), *position, window, cx)
                 }
             }
-            // W3 (DRF-5).
-            ComposerEvent::Autosave => this.save_draft(&composer, false, cx),
         });
         self.composer = Some((composer, events));
         cx.notify();
@@ -494,7 +554,7 @@ impl PigeonApp {
         let content = c.content(cx);
         // The quote is kept on the origin, so the body holds only the note
         // and the signature.
-        let html = c.draft_html(cx);
+        let html = c.draft_html(&content);
         let draft = self.outgoing(c, content.clone(), html);
         let id = c.draft_id.clone().unwrap_or_else(|| self.new_id("draft"));
         let now = chrono::Utc::now().timestamp_millis();
@@ -557,6 +617,13 @@ impl PigeonApp {
             return;
         };
         let composer = composer.clone();
+        // Not before its text is in (ME-007).
+        if composer.read(cx).is_loading(cx) {
+            composer.update(cx, |c, cx| {
+                c.set_attachment_error("The draft is still loading", cx)
+            });
+            return;
+        }
         if !composer.update(cx, |c, cx| c.validate(window, cx)) {
             return;
         }
@@ -575,7 +642,12 @@ impl PigeonApp {
             });
             return;
         }
-        let html = c.html(cx);
+        // No subject, or a forgotten file: asked once (ME-019).
+        if !composer.update(cx, |c, cx| c.confirm_send(&content, window, cx)) {
+            return;
+        }
+        let c = composer.read(cx);
+        let html = c.html(&content);
         let draft = self.outgoing(c, content, html);
         let message = draft.to_message(vec![gmail::SENT.into()]);
         let reply_to = c
@@ -640,6 +712,7 @@ impl PigeonApp {
         });
         self.close_composer(window, cx);
         self.sends.push(op);
+        self.refresh_queued_sends(cx);
         let undo = self.push_undo(
             "Send",
             UndoAction::Send {
@@ -657,6 +730,26 @@ impl PigeonApp {
             Some(ToastAction::Undo(undo)),
             cx,
         );
+        // Still queued once "Sending…" has gone: offline (MA-069).
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SEND_PATIENCE).await;
+            this.update(cx, |this, cx| {
+                let quiet = this
+                    .toast
+                    .as_ref()
+                    .is_none_or(|t| t.kind == ToastKind::Working);
+                if this.sends.contains(&op) && quiet {
+                    this.show_toast(
+                        ToastKind::Info,
+                        "Will send when Pigeon reconnects",
+                        None,
+                        cx,
+                    );
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// ⌘S: save the open draft to Drafts now, and keep writing.
@@ -739,8 +832,6 @@ impl PigeonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.set_mode(Mode::Mail, window, cx);
-        self.stash_composer(cx);
         let contacts = |list: &[String]| -> Vec<Contact> {
             list.iter()
                 .map(|a| {
@@ -751,17 +842,30 @@ impl PigeonApp {
                 })
                 .collect()
         };
-        let identities = self.data.account.identities();
         let content = DraftContent {
             to: contacts(&mailto.to),
             cc: contacts(&mailto.cc),
             bcc: contacts(&mailto.bcc),
             subject: mailto.subject,
             body: mailto.body,
-            from: pick_from(ComposeKind::New, None, &identities),
-            signature: crate::settings::current(cx).signatures,
             ..Default::default()
         };
+        self.compose_with(content, window, cx);
+    }
+
+    /// A new message saying `content`, from the default address with its
+    /// signature, focused at the first empty field.
+    pub(super) fn compose_with(
+        &mut self,
+        mut content: DraftContent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_mode(Mode::Mail, window, cx);
+        self.stash_composer(cx);
+        let identities = self.data.account.identities();
+        content.from = pick_from(ComposeKind::New, None, &identities);
+        content.signature = crate::settings::current(cx).signatures;
         self.open_composer(ComposeKind::New, content, None, None, window, cx);
     }
 
@@ -825,6 +929,7 @@ impl PigeonApp {
                     return;
                 }
                 self.sends.retain(|s| *s != op);
+                self.refresh_queued_sends(cx);
                 self.update_threads(|data| {
                     if let Some(ix) = data.thread_ix(&thread_id) {
                         if appended {
@@ -872,7 +977,7 @@ impl PigeonApp {
         }
         self.composer = None;
         composer.update(cx, |c, _| c.set_closed(false));
-        self.set_composer(composer.clone(), cx);
+        self.set_composer(composer.clone(), window, cx);
         self.reader_focused = self.composer_inline(cx);
         composer.update(cx, |c, cx| c.restore_focus(window, cx));
         // Reopening the thread can take focus back once the frame settles,

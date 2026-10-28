@@ -131,7 +131,6 @@ impl Store {
 
     /// Every stored thread without its bodies (`Body::NotLoaded`), for the
     /// first frame (MA-072): `load_threads` reads them on selection.
-    #[allow(dead_code)] // used by W2-SHELL
     pub fn load_all_thread_heads(&self, account: &str) -> anyhow::Result<Vec<Thread>> {
         load_threads_in(&self.conn(), account, Which::All, false)
     }

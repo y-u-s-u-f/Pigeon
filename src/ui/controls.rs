@@ -27,7 +27,6 @@ fn stop_mouse_down<E: InteractiveElement>(el: E) -> E {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // Primary and Quiet used by W2-CALP
 pub enum ButtonKind {
     /// A filled, neutral button.
     Plain,
@@ -92,7 +91,6 @@ pub fn push_button(
 }
 
 /// The event panel's footer buttons: Save or Done, and Discard.
-#[allow(dead_code)] // used by W2-CALP
 pub fn panel_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -446,7 +444,6 @@ pub fn slider(
 }
 
 /// A small toggle in a row of options (repeat days, reminders).
-#[allow(dead_code)] // used by W2-CALP
 pub fn toggle_chip(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -534,7 +531,6 @@ pub fn popover_surface(theme: &Theme) -> Div {
 
 /// The chrome of a sheet over the whole window: the palette, the shortcuts
 /// sheet, the contact card.
-#[allow(dead_code)] // used by W2-NAV
 pub fn sheet_surface(theme: &Theme) -> Div {
     div()
         .rounded(RADIUS_LG)
@@ -576,7 +572,6 @@ pub fn popup(content: impl IntoElement) -> Div {
 }
 
 /// Fill, text and hover colors of an all-day or multi-day bar.
-#[allow(dead_code)] // used by W2-CALG
 pub fn bar_colors(color: Hsla, past: bool, selected: bool, theme: &Theme) -> (Hsla, Hsla, Hsla) {
     let (fill, text) = if selected {
         let fill = theme.event_selected_fill(color);
@@ -588,7 +583,6 @@ pub fn bar_colors(color: Hsla, past: bool, selected: bool, theme: &Theme) -> (Hs
 }
 
 /// A contact in a suggestion list: avatar, name and address.
-#[allow(dead_code)] // used by W2-COMP, W2-CALP
 pub fn person_row(
     id: impl Into<ElementId>,
     contact: &Contact,
@@ -640,7 +634,6 @@ pub fn person_row(
 }
 
 /// An inline error under a field.
-#[allow(dead_code)] // used by W2-COMP
 pub fn error_line(text: impl Into<SharedString>, theme: &Theme) -> AnyElement {
     div()
         .flex()

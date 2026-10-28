@@ -2,13 +2,16 @@
 //! shows the bindings that are actually live. Typing filters it.
 
 use gpui::{
-    AnyElement, AsKeystroke as _, Context, FontWeight, InteractiveElement, IntoElement, KeyBinding,
-    MouseButton, ParentElement, StatefulInteractiveElement as _, Styled, Window,
-    component::input::Input, div, linear_color_stop, linear_gradient, prelude::FluentBuilder as _,
+    AnyElement, AsKeystroke as _, Context, FontWeight, Global, InteractiveElement, IntoElement,
+    KeyBinding, KeymapVersion, MouseButton, ParentElement, Pixels, StatefulInteractiveElement as _,
+    Styled, Window,
+    component::{input::Input, scroll::ScrollableElement as _},
+    div, linear_color_stop, linear_gradient,
+    prelude::FluentBuilder as _,
     px,
 };
 
-use super::{binding_caps, icon, keys_caps, overlay_shadow};
+use super::{binding_caps, controls::sheet_surface, icon, keys_caps, label};
 use crate::ui::style::*;
 use crate::{
     actions::{COMMANDS, Command, Group, HELP, Scope, lookup_contexts},
@@ -39,6 +42,53 @@ type HelpRow = (&'static Command, Vec<KeyBinding>);
 
 /// From this window width the sheet has three columns, below it two.
 const THREE_COLUMNS: f32 = 1200.;
+const WIDE: Pixels = px(1040.);
+const NARROW: Pixels = px(780.);
+/// A fixed height: the sheet keeps its size while filtering.
+const HEIGHT: Pixels = px(640.);
+const FILTER_WIDTH: Pixels = px(220.);
+
+/// MC-040: every command's live bindings in one scope, looked up once per
+/// keymap (a preset switch rebuilds it) instead of on every frame.
+struct HelpBindings {
+    version: KeymapVersion,
+    scope: Scope,
+    /// By index into `COMMANDS`, with what the filter searches: the name,
+    /// the group and the keys, with their spelled-out names (ME-082).
+    rows: Vec<(usize, Vec<KeyBinding>, String)>,
+}
+
+impl Global for HelpBindings {}
+
+/// "⇧⌘d shift cmd command d": what a filter for a binding can type.
+fn keys_text(binding: &KeyBinding) -> String {
+    let mut out = String::new();
+    for k in binding.keystrokes() {
+        let k = k.as_keystroke();
+        let m = &k.modifiers;
+        for (on, words) in [
+            (m.control, "⌃ ctrl control"),
+            (m.alt, "⌥ opt option alt"),
+            (m.shift, "⇧ shift"),
+            (m.platform, "⌘ cmd command"),
+        ] {
+            if on {
+                out.push_str(words);
+                out.push(' ');
+            }
+        }
+        out.push_str(&k.key);
+        out.push(' ');
+    }
+    out
+}
+
+/// Whether every word of `filter` (lowercase) is in `haystack`.
+fn matches_filter(haystack: &str, filter: &str) -> bool {
+    filter
+        .split_whitespace()
+        .all(|word| haystack.contains(word))
+}
 
 impl PigeonApp {
     pub(crate) fn render_shortcuts_help(
@@ -53,18 +103,46 @@ impl PigeonApp {
         };
         let filter = self.help_filter.read(cx).value().trim().to_lowercase();
 
+        let version = cx.key_bindings().borrow().version();
+        let fresh = cx
+            .try_global::<HelpBindings>()
+            .is_some_and(|b| b.version == version && b.scope == scope);
+        if !fresh {
+            let rows = COMMANDS
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| groups.contains(&c.group))
+                .filter_map(|(ix, command)| {
+                    let bindings = live_bindings(&*(command.action)(), scope, window);
+                    if bindings.is_empty() {
+                        return None;
+                    }
+                    let mut text = format!("{} {} ", command.name, command.group.title());
+                    for binding in &bindings {
+                        text.push_str(&keys_text(binding));
+                    }
+                    Some((ix, bindings, text.to_lowercase()))
+                })
+                .collect();
+            cx.set_global(HelpBindings {
+                version,
+                scope,
+                rows,
+            });
+        }
+        let cached = cx.global::<HelpBindings>();
+
         // Each group with its rows that match the filter; empty groups go.
         let groups: Vec<(Group, Vec<HelpRow>)> = groups
             .iter()
             .map(|&group| {
-                let rows = COMMANDS
+                let rows = cached
+                    .rows
                     .iter()
-                    .filter(|c| c.group == group)
-                    .filter(|c| filter.is_empty() || c.name.to_lowercase().contains(&filter))
-                    .filter_map(|command| {
-                        let bindings = live_bindings(&*(command.action)(), scope, window);
-                        (!bindings.is_empty()).then_some((command, bindings))
+                    .filter(|(ix, _, text)| {
+                        COMMANDS[*ix].group == group && matches_filter(text, &filter)
                     })
+                    .map(|(ix, bindings, _)| (&COMMANDS[*ix], bindings.clone()))
                     .collect::<Vec<_>>();
                 (group, rows)
             })
@@ -89,28 +167,24 @@ impl PigeonApp {
         }
         let empty = groups.is_empty();
 
-        div()
+        sheet_surface(&theme)
             .id("shortcuts-help")
             .key_context(HELP)
             .track_focus(&self.help_focus)
-            .w(px(if wide { 1040. } else { 780. }))
-            // A fixed height: the sheet keeps its size while filtering.
-            .h(px(640.))
+            .role(gpui::Role::Dialog)
+            .aria_label("Keyboard Shortcuts")
+            .w(if wide { WIDE } else { NARROW })
+            .h(HEIGHT)
             .max_w_full()
             .max_h_full()
             .flex()
             .flex_col()
             .overflow_hidden()
-            .rounded(RADIUS_LG)
-            .bg(theme.overlay_bg)
-            .border_1()
-            .border_color(theme.overlay_border)
-            .shadow(overlay_shadow(&theme))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
-                    .h(px(52.))
                     .flex_none()
+                    .py(SPACE_MD)
                     .px(SPACE_XL)
                     .flex()
                     .items_center()
@@ -119,13 +193,17 @@ impl PigeonApp {
                     .border_color(theme.border)
                     .child(
                         div()
+                            .id("shortcuts-title")
+                            .role(gpui::Role::Heading)
+                            .aria_level(1)
+                            .aria_label("Keyboard Shortcuts")
                             .text_size(TEXT_LG)
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Keyboard Shortcuts"),
                     )
                     .child(
                         div()
-                            .w(px(220.))
+                            .w(FILTER_WIDTH)
                             .h(CONTROL_MD)
                             .px(SPACE_SM)
                             .flex()
@@ -137,7 +215,10 @@ impl PigeonApp {
                             .child(icon(Icon::Search, ICON_SM, theme.text_faint))
                             .child(
                                 div().flex_1().min_w_0().child(
-                                    Input::new(&self.help_filter).appearance(false).px(px(0.)),
+                                    Input::new(&self.help_filter)
+                                        .appearance(false)
+                                        .cleanable(true)
+                                        .px(px(0.)),
                                 ),
                             ),
                     )
@@ -162,7 +243,6 @@ impl PigeonApp {
                         div()
                             .id("shortcuts-help-body")
                             .size_full()
-                            .overflow_y_scroll()
                             .px(SPACE_XL)
                             .pt(SPACE_LG)
                             .pb(SPACE_2XL)
@@ -170,12 +250,28 @@ impl PigeonApp {
                             .gap(SPACE_2XL)
                             .map(|this| {
                                 if empty {
+                                    // ME-001: what to try instead.
                                     this.justify_center().child(
                                         div()
                                             .py(SPACE_XL)
-                                            .text_size(TEXT_BASE)
-                                            .text_color(theme.text_faint)
-                                            .child("No shortcuts match"),
+                                            .flex()
+                                            .flex_col()
+                                            .items_center()
+                                            .gap(SPACE_XS)
+                                            .child(
+                                                label("help-empty", "No shortcuts match")
+                                                    .text_size(TEXT_BASE)
+                                                    .text_color(theme.text_muted),
+                                            )
+                                            .child(
+                                                label(
+                                                    "help-empty-hint",
+                                                    "Try a key like ⌘ or shift, or a group \
+                                                     like Navigation",
+                                                )
+                                                .text_size(TEXT_SM)
+                                                .text_color(theme.text_faint),
+                                            ),
                                     )
                                 } else {
                                     this.children(columns.into_iter().map(|groups| {
@@ -188,7 +284,8 @@ impl PigeonApp {
                                             .children(groups)
                                     }))
                                 }
-                            }),
+                            })
+                            .overflow_y_scrollbar(),
                     )
                     // More below: the last rows fade out. It lies over the
                     // bottom padding, so with nothing below it shows nothing.
@@ -210,7 +307,7 @@ impl PigeonApp {
 }
 
 fn render_group(group: Group, rows: &[HelpRow], theme: &Theme) -> AnyElement {
-    let rows = rows.iter().map(|(command, bindings)| {
+    let rows = rows.iter().enumerate().map(|(ix, (command, bindings))| {
         div()
             .h(ROW_SM)
             .flex()
@@ -223,7 +320,7 @@ fn render_group(group: Group, rows: &[HelpRow], theme: &Theme) -> AnyElement {
                     .truncate()
                     .text_size(TEXT_BASE)
                     .text_color(theme.text_muted)
-                    .child(command.name),
+                    .child(label(("help-row", ix), command.name)),
             )
             .children(bindings.iter().enumerate().flat_map(|(ix, binding)| {
                 let or = (ix > 0).then(|| {
@@ -243,11 +340,15 @@ fn render_group(group: Group, rows: &[HelpRow], theme: &Theme) -> AnyElement {
         .flex_col()
         .child(
             div()
+                .id(("help-group", group as usize))
+                .role(gpui::Role::Heading)
+                .aria_level(2)
+                .aria_label(group.title())
                 .pb(SPACE_SM)
                 .text_size(TEXT_XS)
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.text_faint)
-                .child(group.title().to_uppercase()),
+                .child(group.title()),
         )
         .children(rows)
         .into_any_element()

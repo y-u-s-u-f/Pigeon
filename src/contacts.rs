@@ -34,6 +34,8 @@ pub struct ContactBook {
     /// Each contact's place in the ranking, best first; `None` once it has
     /// left the book.
     rank: Vec<Option<usize>>,
+    /// Lowercased address to index, for `find` and `update`.
+    ix_of: HashMap<String, usize>,
     matcher: RefCell<Matcher>,
 }
 
@@ -57,20 +59,19 @@ impl ContactKey {
         Self { name, email, words }
     }
 
-    /// How well `query` (lowercased, trimmed) matches: 0 when the name or
-    /// address starts with it, 1 when every word of it starts a word of
-    /// theirs, 2 when it's anywhere in them.
-    fn tier(&self, query: &str) -> Option<u8> {
+    /// How well `query` (lowercased, trimmed, split into `terms`) matches:
+    /// 0 when the name or address starts with it, 1 when every term starts
+    /// a word of theirs, 2 when it's anywhere in them (`substring`: the
+    /// query is long enough for that).
+    fn tier(&self, query: &str, terms: &[&str], substring: bool) -> Option<u8> {
         if self.name.starts_with(query) || self.email.starts_with(query) {
             Some(0)
-        } else if query
-            .split_whitespace()
+        } else if terms
+            .iter()
             .all(|term| self.words.iter().any(|w| w.starts_with(term)))
         {
             Some(1)
-        } else if query.chars().count() >= MIN_SUBSTRING_QUERY
-            && (self.name.contains(query) || self.email.contains(query))
-        {
+        } else if substring && (self.name.contains(query) || self.email.contains(query)) {
             Some(2)
         } else {
             None
@@ -119,6 +120,7 @@ impl ContactBook {
             keys: Vec::new(),
             haystacks: Vec::new(),
             rank: Vec::new(),
+            ix_of: HashMap::new(),
             matcher: RefCell::new(Matcher::new(Config::DEFAULT)),
         };
         book.update(contacts);
@@ -133,19 +135,13 @@ impl ContactBook {
     /// index and take the new name and rank, new ones join, and those not
     /// listed are no longer suggested.
     pub fn update(&mut self, contacts: Vec<Contact>) {
-        let mut ix_of: HashMap<String, usize> = self
-            .contacts
-            .iter()
-            .enumerate()
-            .map(|(ix, c)| (c.email.to_lowercase(), ix))
-            .collect();
         let mut rank = vec![None; self.contacts.len()];
         let mut next = 0;
         for contact in contacts {
             if is_automated(&contact.email) {
                 continue;
             }
-            let ix = match ix_of.get(&contact.email.to_lowercase()) {
+            let ix = match self.ix_of.get(&contact.email.to_ascii_lowercase()) {
                 Some(&ix) => {
                     if rank[ix].is_some() {
                         continue;
@@ -158,7 +154,8 @@ impl ContactBook {
                     ix
                 }
                 None => {
-                    ix_of.insert(contact.email.to_lowercase(), self.contacts.len());
+                    self.ix_of
+                        .insert(contact.email.to_ascii_lowercase(), self.contacts.len());
                     self.keys.push(ContactKey::new(&contact));
                     self.haystacks.push(haystack(&contact));
                     self.contacts.push(contact);
@@ -177,11 +174,8 @@ impl ContactBook {
     }
 
     pub fn find(&self, email: &str) -> Option<&Contact> {
-        self.contacts
-            .iter()
-            .zip(&self.rank)
-            .find(|(c, rank)| rank.is_some() && c.email.eq_ignore_ascii_case(email))
-            .map(|(c, _)| c)
+        let &ix = self.ix_of.get(&email.to_ascii_lowercase())?;
+        self.rank[ix].map(|_| &self.contacts[ix])
     }
 
     /// The best matches for `query` that aren't `taken`, best first. Names
@@ -194,15 +188,22 @@ impl ContactBook {
         if query.is_empty() {
             return Vec::new();
         }
-        let mut found: Vec<(u8, usize)> = self
+        let terms: Vec<&str> = query.split_whitespace().collect();
+        let substring = query.chars().count() >= MIN_SUBSTRING_QUERY;
+        let mut found: Vec<(u8, Option<usize>, usize)> = self
             .keys
             .iter()
             .enumerate()
             .filter(|&(ix, _)| self.rank[ix].is_some())
-            .filter_map(|(ix, key)| Some((key.tier(&query)?, ix)))
-            .filter(|&(_, ix)| !taken(&self.contacts[ix]))
+            .filter_map(|(ix, key)| Some((key.tier(&query, &terms, substring)?, self.rank[ix], ix)))
+            .filter(|&(_, _, ix)| !taken(&self.contacts[ix]))
             .collect();
-        found.sort_by_key(|&(tier, ix)| (tier, self.rank[ix]));
+        if found.len() > MAX_SUGGESTIONS {
+            found.select_nth_unstable(MAX_SUGGESTIONS - 1);
+            found.truncate(MAX_SUGGESTIONS);
+        }
+        found.sort_unstable();
+        let mut found: Vec<(u8, usize)> = found.into_iter().map(|(t, _, ix)| (t, ix)).collect();
         if found.is_empty() && query.chars().count() >= MIN_FUZZY_QUERY {
             found = self.fuzzy(&query, &taken);
         }

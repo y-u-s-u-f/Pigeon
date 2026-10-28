@@ -7,10 +7,10 @@
 use std::{cell::Cell, ops::Range, rc::Rc};
 
 use gpui::{
-    AppContext as _, Context, Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable as _,
-    FontWeight, InteractiveElement, IntoElement, MouseButton, ParentElement, PathPromptOptions,
-    Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled, Subscription,
-    Task, Window, actions, anchored,
+    AppContext as _, ClipboardItem, Context, Entity, EventEmitter, ExternalPaths, FocusHandle,
+    Focusable as _, FontWeight, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    PathPromptOptions, Pixels, Rems, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled, Subscription, Task, Window, actions,
     base::{
         actions::{SelectDown, SelectUp},
         input::RopeExt as _,
@@ -18,17 +18,18 @@ use gpui::{
     component::{
         ActiveTheme as _,
         input::{
-            BufferPoint, Editor, EditorState, Input, InputEvent, InputState, MoveDown, MoveUp,
+            self, BufferPoint, Editor, EditorState, Input, InputEvent, InputState, MoveDown, MoveUp,
         },
+        native_menu::NativeMenu,
         scroll::ScrollableElement as _,
     },
-    deferred, div,
+    div,
     prelude::FluentBuilder as _,
-    px,
+    px, rems,
 };
 
 use super::{
-    attachment_icon, avatar, html_view, icon, keys_caps,
+    attachment_icon, avatar, controls, html_view, icon, keys_caps,
     rich_editor::{self, Palette},
 };
 use crate::ui::style::*;
@@ -77,6 +78,13 @@ actions!(
         FromNext,
         FromPrev,
         FromDismiss,
+        // A recipient chip's context menu (MB-024), on `menu_chip`.
+        CopyChipAddress,
+        ShowChipContact,
+        MoveChipToTo,
+        MoveChipToCc,
+        MoveChipToBcc,
+        RemoveChip,
     ]
 );
 
@@ -90,10 +98,16 @@ pub const REMOTE_SAVE_EVERY_MS: i64 = 30_000;
 pub enum SaveState {
     #[default]
     Idle,
-    /// Edited since the last save; it's saved when typing stops.
+    /// Edited since the last save; it's saved when typing stops. Says
+    /// nothing.
+    Dirty,
+    /// Between the autosave and the save landing.
     Saving,
     Saved,
 }
+
+/// How long "Saved 2:14 PM" stays before it fades.
+const SAVED_SHOWN: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// What a formatting button or shortcut does to the body's markdown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,6 +133,7 @@ impl Format {
             Icon::Strikethrough,
             "Strikethrough",
         ),
+        (Format::Inline(Inline::Code), Icon::Code, "Code"),
         (Format::Link, Icon::Link, "Link"),
         (Format::Lines(LineKind::Bullet), Icon::List, "Bulleted list"),
         (
@@ -127,9 +142,10 @@ impl Format {
             "Numbered list",
         ),
         (Format::Lines(LineKind::Quote), Icon::TextQuote, "Quote"),
-        (Format::Inline(Inline::Code), Icon::Code, "Code"),
         (Format::Clear, Icon::RemoveFormatting, "Clear formatting"),
     ];
+    /// The toolbar's groups end after these: text styles, link, lines.
+    const GROUP_ENDS: [usize; 3] = [4, 5, 8];
 
     fn action(self) -> Box<dyn gpui::Action> {
         match self {
@@ -228,6 +244,9 @@ pub enum ComposerEvent {
     Edited { at_end: bool },
     /// W3 (DRF-5): typing stopped; time to save.
     Autosave,
+    /// A chip's "Show Contact Card".
+    /// MB-069: at the right-click that asked for it.
+    ShowContact(Contact, Option<gpui::Point<Pixels>>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -274,6 +293,20 @@ pub struct Composer {
     pub dropped_files: Vec<String>,
     /// The problem, and the field it's shown under.
     error: Option<(Field, SharedString)>,
+    /// A missing subject or attachment was pointed out: sending again goes
+    /// ahead (ME-019). Any edit asks again.
+    send_confirmed: bool,
+    /// The chip ⌫ picked, as (field, chip): the next ⌫ removes it (MB-024).
+    selected_chip: Option<(usize, usize)>,
+    /// The chip a context menu is open on.
+    menu_chip: Option<(usize, usize)>,
+    /// Where that menu opened, for the contact card (MB-069).
+    menu_at: Option<gpui::Point<Pixels>>,
+    /// A reply's quote shows, past its "•••" (ME-009).
+    quote_open: bool,
+    /// The body's length and width when its rows were last checked, so the
+    /// next-frame check runs only after they change (MC-053).
+    rows_checked: (usize, Pixels),
     /// Scrolls the fields of a draft alone in the pane, above its send row.
     scroll: ScrollHandle,
     /// Scrolls a draft under its conversation: the conversation's.
@@ -310,6 +343,11 @@ pub struct Composer {
     /// What it said when last saved.
     last_saved: Option<DraftContent>,
     pub save_state: SaveState,
+    /// What the save status says, kept while it fades out, and whether it
+    /// shows; "Saved" hides `SAVED_SHOWN` after it lands.
+    save_label: SharedString,
+    save_shown: bool,
+    save_hide: Option<Task<()>>,
     save_task: Option<Task<()>>,
     pub remote_due: Option<i64>,
     /// Sent, discarded or closed: no more saves while typing.
@@ -363,7 +401,16 @@ impl Composer {
                 InputEvent::PressEnter {
                     secondary: false, ..
                 } => this.focus_field(Field::Body, window, cx),
-                InputEvent::Change => this.edited(cx),
+                InputEvent::Change => {
+                    if this
+                        .error
+                        .as_ref()
+                        .is_some_and(|(at, _)| *at == Field::Subject)
+                    {
+                        this.error = None;
+                    }
+                    this.edited(cx)
+                }
                 _ => {}
             }),
         );
@@ -393,16 +440,12 @@ impl Composer {
         }));
         subscriptions.push(cx.subscribe(&body, |this: &mut Self, body, event, cx| {
             if let InputEvent::Change = event {
-                // The body's height follows its rows.
-                let rows = body.read(cx).display_map().wrap_row_count();
-                if rows != this.body_rows {
-                    this.body_rows = rows;
-                    cx.notify();
-                }
+                // Render sizes the body to its rows.
+                cx.notify();
                 let body = body.read(cx);
                 let at_end = body.cursor() >= body.text().len();
                 // A growing draft alone in the pane keeps its end in view.
-                if at_end && !this.inline && this.quoted.is_none() {
+                if at_end && !this.inline && !this.shows_quote() {
                     this.scroll.scroll_to_bottom();
                 }
                 cx.emit(ComposerEvent::Edited { at_end });
@@ -430,6 +473,12 @@ impl Composer {
             attachments: content.attachments.clone(),
             dropped_files: Vec::new(),
             error: None,
+            send_confirmed: false,
+            selected_chip: None,
+            menu_chip: None,
+            menu_at: None,
+            quote_open: false,
+            rows_checked: (usize::MAX, px(0.)),
             scroll: ScrollHandle::new(),
             outer_scroll: None,
             body_caret,
@@ -449,6 +498,9 @@ impl Composer {
             revision: 0,
             last_saved: None,
             save_state: SaveState::Idle,
+            save_label: SharedString::default(),
+            save_shown: false,
+            save_hide: None,
             save_task: None,
             remote_due: None,
             closed: false,
@@ -581,7 +633,8 @@ impl Composer {
         if self.closed {
             return;
         }
-        self.save_state = SaveState::Saving;
+        self.send_confirmed = false;
+        self.set_save_state(SaveState::Dirty, cx);
         self.save_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(AUTOSAVE_DELAY).await;
             this.update(cx, |this, cx| {
@@ -591,18 +644,52 @@ impl Composer {
                 }
                 let saved = this.last_saved.as_ref().unwrap_or(&this.initial);
                 if this.unchanged_since(saved, cx) {
-                    if this.last_saved.is_none() {
-                        this.save_state = SaveState::Idle;
+                    let state = if this.last_saved.is_none() {
+                        SaveState::Idle
                     } else {
-                        this.save_state = SaveState::Saved;
-                    }
-                    cx.notify();
+                        SaveState::Saved
+                    };
+                    this.set_save_state(state, cx);
                 } else {
+                    this.set_save_state(SaveState::Saving, cx);
                     cx.emit(ComposerEvent::Autosave);
                 }
             })
             .ok();
         }));
+        cx.notify();
+    }
+
+    /// The save status follows `state`: "Saving…" shows, "Saved 2:14 PM"
+    /// shows for a moment, the others say nothing.
+    fn set_save_state(&mut self, state: SaveState, cx: &mut Context<Self>) {
+        let was = self.save_state;
+        self.save_state = state;
+        match state {
+            SaveState::Idle | SaveState::Dirty => {
+                self.save_shown = false;
+                self.save_hide = None;
+            }
+            SaveState::Saving => {
+                self.save_label = "Saving…".into();
+                self.save_shown = true;
+                self.save_hide = None;
+            }
+            SaveState::Saved if was == SaveState::Saved => {}
+            SaveState::Saved => {
+                let at = crate::calendar::time::time_label(chrono::Local::now().time());
+                self.save_label = format!("Saved {at}").into();
+                self.save_shown = true;
+                self.save_hide = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(SAVED_SHOWN).await;
+                    this.update(cx, |this, cx| {
+                        this.save_shown = false;
+                        cx.notify();
+                    })
+                    .ok();
+                }));
+            }
+        }
         cx.notify();
     }
 
@@ -617,7 +704,9 @@ impl Composer {
     /// Saved, saying `content`.
     pub fn mark_saved(&mut self, content: DraftContent, cx: &mut Context<Self>) {
         if self.save_task.is_none() {
-            self.save_state = SaveState::Saved;
+            // A fresh time, even over an earlier "Saved".
+            self.save_state = SaveState::Saving;
+            self.set_save_state(SaveState::Saved, cx);
         }
         self.last_saved = Some(content);
         cx.notify();
@@ -633,8 +722,8 @@ impl Composer {
     }
 
     /// The body with the signature under it: what a draft saves.
-    pub fn draft_html(&self, cx: &gpui::App) -> String {
-        let mut out = self.content(cx).body_html();
+    pub fn draft_html(&self, content: &DraftContent) -> String {
+        let mut out = content.body_html();
         if let Some(signature) = self.signature_html() {
             out.push_str(&crate::backend::mime::signature_block(signature));
         }
@@ -677,6 +766,21 @@ impl Composer {
             ..content
         };
         cx.notify();
+    }
+
+    /// What it's titled, here and in the reader's toolbar: what it is, and
+    /// "Draft" when it was opened from Drafts (saving doesn't change it).
+    pub fn title(&self) -> &'static str {
+        match (self.kind, self.opened_as_draft) {
+            (ComposeKind::New, false) => "New Message",
+            (ComposeKind::New, true) => "Draft",
+            (ComposeKind::Reply, false) => "Reply",
+            (ComposeKind::Reply, true) => "Reply (Draft)",
+            (ComposeKind::ReplyAll, false) => "Reply All",
+            (ComposeKind::ReplyAll, true) => "Reply All (Draft)",
+            (ComposeKind::Forward, false) => "Forward",
+            (ComposeKind::Forward, true) => "Forward (Draft)",
+        }
     }
 
     /// Whether the subject is a field of its own; replies keep the thread's.
@@ -838,8 +942,6 @@ impl Composer {
         }
     }
 
-    /// Nothing changed since it opened. Text still in a recipient field
-    /// counts as a change, even when it isn't an address yet.
     /// The files on disk it has or had (W2): for a discard to release
     /// their held copies.
     pub fn file_paths(&self) -> Vec<String> {
@@ -851,6 +953,8 @@ impl Composer {
             .collect()
     }
 
+    /// Nothing changed since it opened. Text still in a recipient field
+    /// counts as a change, even when it isn't an address yet.
     pub fn is_pristine(&self, cx: &gpui::App) -> bool {
         self.unchanged_since(&self.initial, cx)
     }
@@ -876,25 +980,63 @@ impl Composer {
             && now.signature == then.signature
     }
 
-    /// Whether one of the draft's fields has focus.
-    pub fn is_focused(&self, window: &Window, cx: &gpui::App) -> bool {
-        self.focused_field(window, cx).is_some()
-    }
-
-    /// The body as HTML, its signature under it, then the forwarded message
-    /// quoted.
-    pub fn html(&self, cx: &gpui::App) -> String {
-        let mut out = self.draft_html(cx);
+    /// The body as HTML, its signature under it, then the forwarded or
+    /// answered message quoted.
+    pub fn html(&self, content: &DraftContent) -> String {
+        let mut out = self.draft_html(content);
         if let Some(quoted) = &self.quoted {
-            out.push_str("<blockquote><p>---------- Forwarded message ----------");
-            for (label, value) in &quoted.header {
-                out.push_str(&format!("<br>{label}: {}", html::escape(value)));
-            }
-            out.push_str("</p>");
-            out.push_str(&quoted.html);
-            out.push_str("</blockquote>");
+            out.push_str(&quote_html(self.kind, quoted));
         }
         out
+    }
+
+    /// The quote shows in full: a forward's always, a reply's once its
+    /// "•••" is open.
+    pub fn shows_quote(&self) -> bool {
+        self.quoted.is_some() && (self.kind == ComposeKind::Forward || self.quote_open)
+    }
+
+    /// A Gmail draft whose text hasn't arrived yet (ME-007). Text the
+    /// draft opened with, or the user typed, counts as arrived.
+    pub fn is_loading(&self, cx: &gpui::App) -> bool {
+        self.awaiting_body && self.body.read(cx).text().len() == 0
+    }
+
+    /// Before sending a new message or a forward without a subject, or
+    /// one that mentions an attachment it doesn't have: says so once, and
+    /// false. Sending again goes ahead (ME-019).
+    pub fn confirm_send(
+        &mut self,
+        content: &DraftContent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.send_confirmed {
+            return true;
+        }
+        let warning = if self.edits_subject()
+            && matches!(self.kind, ComposeKind::New | ComposeKind::Forward)
+            && content.subject.is_empty()
+        {
+            Some((Field::Subject, "No subject. Send again to send it anyway."))
+        } else if content.attachments.is_empty() && mentions_attachment(&content.body) {
+            Some((
+                Field::Body,
+                "It mentions an attachment, but nothing is attached. Send again to send it anyway.",
+            ))
+        } else {
+            None
+        };
+        let Some((field, warning)) = warning else {
+            return true;
+        };
+        self.send_confirmed = true;
+        self.error = Some((field, warning.into()));
+        if field == Field::Subject {
+            self.focus_field(field, window, cx);
+        }
+        cx.notify();
+        false
     }
 
     // Formatting.
@@ -1047,6 +1189,7 @@ impl Composer {
         match event {
             InputEvent::Change => {
                 self.error = None;
+                self.selected_chip = None;
                 self.edited(cx);
                 let value = self.recipients[ix].input.read(cx).value();
                 if value.contains([',', ';']) {
@@ -1173,9 +1316,122 @@ impl Composer {
     }
 
     fn remove_chip(&mut self, ix: usize, chip: usize, cx: &mut Context<Self>) {
+        if chip >= self.recipients[ix].chips.len() {
+            return;
+        }
         self.recipients[ix].chips.remove(chip);
+        self.selected_chip = None;
         self.edited(cx);
         cx.notify();
+    }
+
+    /// A click on a chip picks it, so ⌫ removes it.
+    fn click_chip(
+        &mut self,
+        ix: usize,
+        chip: usize,
+        clicks: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_field(recipient_field(ix), window, cx);
+        let input = self.recipients[ix].input.clone();
+        // A double click takes it back into the field to edit.
+        if clicks >= 2 && input.read(cx).value().is_empty() {
+            let text = address_text(&self.recipients[ix].chips[chip]);
+            self.remove_chip(ix, chip, cx);
+            input.update(cx, |input, cx| input.set_value(text, window, cx));
+            return;
+        }
+        self.selected_chip = Some((ix, chip));
+        cx.notify();
+    }
+
+    /// Right-click on a chip: what can be done with that recipient.
+    fn chip_menu(
+        &mut self,
+        ix: usize,
+        chip: usize,
+        position: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // The menu's choice goes to the focused element: this field.
+        self.focus_field(recipient_field(ix), window, cx);
+        self.menu_chip = Some((ix, chip));
+        self.menu_at = Some(position);
+        let mut menu = NativeMenu::new()
+            .menu("Copy Address", Box::new(CopyChipAddress))
+            .menu("Show Contact Card", Box::new(ShowChipContact))
+            .separator();
+        for (to, label, action) in [
+            (
+                0,
+                "Move to To",
+                Box::new(MoveChipToTo) as Box<dyn gpui::Action>,
+            ),
+            (1, "Move to Cc", Box::new(MoveChipToCc)),
+            (2, "Move to Bcc", Box::new(MoveChipToBcc)),
+        ] {
+            if to != ix {
+                menu = menu.menu(label, action);
+            }
+        }
+        menu.separator()
+            .menu("Remove", Box::new(RemoveChip))
+            .show(position, window, cx);
+    }
+
+    fn menu_contact(&self) -> Option<Contact> {
+        let (ix, chip) = self.menu_chip?;
+        self.recipients[ix].chips.get(chip).cloned()
+    }
+
+    fn copy_chip_address(&mut self, _: &CopyChipAddress, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(contact) = self.menu_contact() {
+            cx.write_to_clipboard(ClipboardItem::new_string(contact.email));
+        }
+    }
+
+    fn show_chip_contact(&mut self, _: &ShowChipContact, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(contact) = self.menu_contact() {
+            cx.emit(ComposerEvent::ShowContact(contact, self.menu_at));
+        }
+    }
+
+    fn move_chip(&mut self, to: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((ix, chip)) = self.menu_chip.take() else {
+            return;
+        };
+        if ix == to || chip >= self.recipients[ix].chips.len() {
+            return;
+        }
+        let contact = self.recipients[ix].chips.remove(chip);
+        self.recipients[to].chips.push(contact);
+        self.selected_chip = None;
+        if to > 0 {
+            self.show_cc_bcc = true;
+        }
+        self.focus_field(recipient_field(to), window, cx);
+        self.edited(cx);
+    }
+
+    fn move_chip_to_to(&mut self, _: &MoveChipToTo, window: &mut Window, cx: &mut Context<Self>) {
+        self.move_chip(0, window, cx);
+    }
+
+    fn move_chip_to_cc(&mut self, _: &MoveChipToCc, window: &mut Window, cx: &mut Context<Self>) {
+        self.move_chip(1, window, cx);
+    }
+
+    fn move_chip_to_bcc(&mut self, _: &MoveChipToBcc, window: &mut Window, cx: &mut Context<Self>) {
+        self.move_chip(2, window, cx);
+    }
+
+    fn remove_menu_chip(&mut self, _: &RemoveChip, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some((ix, chip)) = self.menu_chip.take() {
+            self.remove_chip(ix, chip, cx);
+        }
     }
 
     fn focused_recipients(&self, window: &Window, cx: &gpui::App) -> Option<usize> {
@@ -1242,11 +1498,20 @@ impl Composer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The first ⌫ picks the last chip, the next removes it.
         match self.focused_recipients(window, cx) {
             Some(ix) if self.recipients[ix].input.read(cx).value().is_empty() => {
-                self.recipients[ix].chips.pop();
-                self.edited(cx);
-                cx.notify();
+                match self.selected_chip {
+                    Some((field, chip)) if field == ix => self.remove_chip(ix, chip, cx),
+                    _ => {
+                        self.selected_chip = self.recipients[ix]
+                            .chips
+                            .len()
+                            .checked_sub(1)
+                            .map(|last| (ix, last));
+                        cx.notify();
+                    }
+                }
             }
             _ => cx.propagate(),
         }
@@ -1261,6 +1526,10 @@ impl Composer {
         match self.focused_recipients(window, cx) {
             Some(ix) if !self.recipients[ix].suggestions.is_empty() => {
                 self.recipients[ix].suggestions.clear();
+                cx.notify();
+            }
+            Some(ix) if self.selected_chip.is_some_and(|(field, _)| field == ix) => {
+                self.selected_chip = None;
                 cx.notify();
             }
             _ => cx.propagate(),
@@ -1280,48 +1549,136 @@ impl Composer {
         let label = ["To", "Cc", "Bcc"][ix];
         let focused = field.input.focus_handle(cx).is_focused(window);
 
-        let chips = field.chips.iter().enumerate().map(|(chip_ix, contact)| {
-            let invalid = parse_address(&contact.email).is_none();
-            div()
-                .id(("chip", ix * 1000 + chip_ix))
+        // Out of focus, a long list shows its first few (MB-024).
+        let shown = if focused || field.chips.len() <= COLLAPSED_CHIPS + 1 {
+            field.chips.len()
+        } else {
+            COLLAPSED_CHIPS
+        };
+        let hidden = field.chips.len() - shown;
+        let chips = field
+            .chips
+            .iter()
+            .take(shown)
+            .enumerate()
+            .map(|(chip_ix, contact)| {
+                let invalid = parse_address(&contact.email).is_none();
+                let selected = self.selected_chip == Some((ix, chip_ix));
+                let name = contact.display_name().to_string();
+                let tip: SharedString = if invalid {
+                    format!("“{}” isn’t an email address", contact.email).into()
+                } else {
+                    contact.email.clone().into()
+                };
+                let label = if invalid {
+                    format!("{name}, not an email address")
+                } else if contact.name.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{name}, {}", contact.email)
+                };
+                let text = if selected {
+                    theme.accent_text
+                } else {
+                    theme.text
+                };
+                div()
+                    .id(("chip", ix * 1000 + chip_ix))
+                    .role(gpui::Role::Button)
+                    .aria_label(label)
+                    .aria_selected(selected)
+                    .h(CONTROL_SM)
+                    .pl(SPACE_XS)
+                    .pr(SPACE_XS)
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_XS)
+                    .rounded_full()
+                    .border_1()
+                    .text_color(text)
+                    .map(|el| match (selected, invalid) {
+                        (true, _) => el.bg(theme.accent).border_color(theme.accent),
+                        (false, true) => el.bg(theme.chip_bg).border_color(theme.danger),
+                        (false, false) => el.bg(theme.chip_bg).border_color(theme.border),
+                    })
+                    // An invalid one says so with a glyph, not only a color
+                    // (MA-024).
+                    .child(if invalid {
+                        div()
+                            .size(AVATAR_XS)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon(
+                                Icon::OctagonAlert,
+                                ICON_SM,
+                                if selected { text } else { theme.text_danger },
+                            ))
+                    } else {
+                        avatar(
+                            contact.initials(),
+                            theme.avatar_color(&contact.email),
+                            AVATAR_XS,
+                            theme,
+                        )
+                    })
+                    .child(
+                        div()
+                            .text_size(TEXT_SM)
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(name.clone()),
+                    )
+                    .child(
+                        super::icon_button_small(
+                            ("chip-remove", ix * 1000 + chip_ix),
+                            Icon::X,
+                            format!("Remove {name}"),
+                            theme,
+                        )
+                        // Inside the chip it looks small; it still takes a
+                        // full-size click.
+                        .m(-SPACE_XS)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.remove_chip(ix, chip_ix, cx)
+                        })),
+                    )
+                    .tooltip(move |window, cx| super::tooltip(tip.clone()).build(window, cx))
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                    .on_any_mouse_down(cx.listener(
+                        move |this, event: &gpui::MouseDownEvent, window, cx| {
+                            if super::is_secondary(event) {
+                                cx.stop_propagation();
+                                this.chip_menu(ix, chip_ix, event.position, window, cx);
+                            }
+                        },
+                    ))
+                    .on_click(
+                        cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                            if !event.modifiers().control {
+                                this.click_chip(ix, chip_ix, event.click_count(), window, cx);
+                            }
+                        }),
+                    )
+            });
+        let more = (hidden > 0).then(|| {
+            focusable_control(div().id(("more-chips", ix)), theme)
+                .role(gpui::Role::Button)
+                .aria_label(format!("Show {hidden} more recipients"))
                 .h(CONTROL_SM)
-                .pl(SPACE_XS)
-                .pr(SPACE_XS)
+                .px(SPACE_SM)
                 .flex()
                 .items_center()
-                .gap(SPACE_XS)
                 .rounded_full()
-                .bg(if invalid {
-                    theme.danger.alpha(0.16)
-                } else {
-                    theme.chip_bg
-                })
-                .border_1()
-                .border_color(if invalid { theme.danger } else { theme.border })
-                .child(avatar(
-                    contact.initials(),
-                    theme.avatar_color(&contact.email),
-                    AVATAR_XS,
-                    theme,
-                ))
-                .child(
-                    div()
-                        .text_size(TEXT_SM)
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(contact.display_name().to_string()),
-                )
-                .child(
-                    super::icon_button_small(
-                        ("chip-remove", ix * 1000 + chip_ix),
-                        Icon::X,
-                        format!("Remove {}", contact.display_name()),
-                        theme,
-                    )
-                    // Inside the chip it looks small; it still takes a
-                    // full-size click.
-                    .m(-SPACE_XS)
-                    .on_click(cx.listener(move |this, _, _, cx| this.remove_chip(ix, chip_ix, cx))),
-                )
+                .bg(theme.chip_bg)
+                .text_size(TEXT_SM)
+                .text_color(theme.text_muted)
+                .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
+                .active(|s| s.bg(theme.selected_bg))
+                .child(format!("+{hidden} more"))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.focus_field(recipient_field(ix), window, cx)
+                }))
         });
 
         let suggestions = (focused && !field.suggestions.is_empty()).then(|| {
@@ -1332,69 +1689,25 @@ impl Composer {
                 .map(|(row, &contact_ix)| {
                     let contact = self.book.borrow().contact(contact_ix).clone();
                     let highlighted = row == field.highlighted;
-                    div()
-                        .id(("suggestion", row))
-                        .py(SPACE_XS)
-                        .line_height(LINE_UI)
-                        .px(SPACE_SM)
-                        .flex()
-                        .items_center()
-                        .gap(SPACE_SM)
-                        .rounded(RADIUS_MD)
-                        .when(highlighted, |d| d.bg(theme.selected_bg))
-                        .hover(|d| d.bg(theme.hover_bg))
-                        .child(avatar(
-                            contact.initials(),
-                            theme.avatar_color(&contact.email),
-                            AVATAR_SM,
-                            theme,
-                        ))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_size(TEXT_BASE)
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child(contact.display_name().to_string()),
-                                )
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_size(TEXT_SM)
-                                        .text_color(theme.text_muted)
-                                        .child(contact.email.clone()),
-                                ),
-                        )
+                    controls::person_row(("suggestion", row), &contact, highlighted, theme)
+                        .when(highlighted, |d| d.aria_active_descendant())
                         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.commit_suggestion(ix, row, window, cx)
                         }))
                 });
-            // `anchored` is absolutely positioned: a zero-height box after
-            // the input puts it under the input rather than over it.
-            div().w_full().h(px(0.)).child(
-                deferred(
-                    anchored().snap_to_window_with_margin(px(8.)).child(
-                        div()
-                            .occlude()
-                            .mt(SPACE_SM)
-                            .w(px(320.))
-                            .p(SPACE_XS)
-                            .flex()
-                            .flex_col()
-                            .rounded(RADIUS_MD)
-                            .bg(theme.overlay_bg)
-                            .border_1()
-                            .border_color(theme.overlay_border)
-                            .shadow(super::popover_shadow(theme))
-                            .children(rows),
-                    ),
-                )
-                .with_priority(1),
+            controls::popup(
+                controls::popover_surface(theme)
+                    .id(("suggestions", ix))
+                    .role(gpui::Role::ListBox)
+                    .aria_label("Suggested contacts")
+                    .occlude()
+                    .mt(SPACE_SM)
+                    .w(SUGGESTIONS_WIDTH)
+                    .p(SPACE_XS)
+                    .flex()
+                    .flex_col()
+                    .children(rows),
             )
         });
 
@@ -1405,13 +1718,9 @@ impl Composer {
             .map(|(_, error)| {
                 div()
                     .pb(SPACE_SM)
-                    .flex()
-                    .items_center()
-                    .gap(SPACE_XS)
-                    .text_size(TEXT_SM)
-                    .text_color(theme.text_danger)
-                    .child(icon(Icon::OctagonAlert, ICON_SM, theme.text_danger))
-                    .child(error.clone())
+                    .ml(SPACE_XS)
+                    .pl(LABEL_WIDTH)
+                    .child(field_error(error.clone(), theme))
             });
 
         let row = div()
@@ -1429,10 +1738,11 @@ impl Composer {
                     .items_center()
                     .gap(SPACE_XS)
                     .children(chips)
+                    .children(more)
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(140.))
+                            .min_w(RECIPIENT_INPUT_MIN)
                             .h(CONTROL_MD)
                             .flex()
                             .flex_col()
@@ -1447,8 +1757,9 @@ impl Composer {
             )
             .when(ix == 0 && !self.show_cc_bcc, |this| {
                 this.child(
-                    div()
-                        .id("show-cc-bcc")
+                    focusable_control(div().id("show-cc-bcc"), theme)
+                        .role(gpui::Role::Button)
+                        .aria_label("Show Cc and Bcc")
                         .flex_none()
                         .h(CONTROL_MD)
                         .px(SPACE_SM)
@@ -1458,8 +1769,15 @@ impl Composer {
                         .text_size(TEXT_SM)
                         .text_color(theme.text_muted)
                         .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
+                        .active(|s| s.bg(theme.selected_bg))
                         .child("Cc Bcc")
-                        .on_click(|_, window, cx| window.dispatch_action(Box::new(ShowCcBcc), cx)),
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(|_, window, cx| window.dispatch_action(Box::new(ShowCcBcc), cx))
+                        .tooltip(|window, cx| {
+                            super::tooltip("Show Cc and Bcc")
+                                .action(&ShowCcBcc, None)
+                                .build(window, cx)
+                        }),
                 )
             });
         div()
@@ -1532,23 +1850,19 @@ impl Composer {
             .error
             .as_ref()
             .filter(|(at, _)| *at == Field::Body)
-            .map(|(_, error)| {
-                div()
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .gap(SPACE_XS)
-                    .text_size(TEXT_SM)
-                    .text_color(theme.text_danger)
-                    .child(icon(Icon::OctagonAlert, ICON_SM, theme.text_danger))
-                    .child(error.clone())
-            });
+            .map(|(_, error)| div().w_full().child(field_error(error.clone(), theme)));
         if self.attachments.is_empty() && error.is_none() {
             return None;
         }
         let chips = self.attachments.iter().enumerate().map(|(ix, attachment)| {
             div()
                 .id(("attachment", ix))
+                .role(gpui::Role::Group)
+                .aria_label(format!(
+                    "{}, {}",
+                    attachment.name,
+                    file_size(attachment.size_bytes)
+                ))
                 .h(CONTROL_LG)
                 .pl(SPACE_SM)
                 .pr(SPACE_XS)
@@ -1560,7 +1874,7 @@ impl Composer {
                 .child(attachment_icon(attachment, theme))
                 .child(
                     div()
-                        .max_w(px(220.))
+                        .max_w(ATTACHMENT_NAME_MAX)
                         .truncate()
                         .text_size(TEXT_SM)
                         .font_weight(FontWeight::MEDIUM)
@@ -1669,10 +1983,9 @@ impl Composer {
         window: &Window,
         theme: &Theme,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> gpui::AnyElement {
         // The editor scrolls on its own; sized to its rows, it grows like a
         // textarea and the draft scrolls instead.
-        const PADDING_Y: f32 = 8.;
         let min_rows = if self.inline { 5 } else { 14 };
         let rows = self.body_rows.max(min_rows);
         let line_height = self
@@ -1680,22 +1993,87 @@ impl Composer {
             .read(cx)
             .line_height()
             .unwrap_or_else(|| TEXT_MD.to_pixels(window.rem_size()) * 1.55);
-        let height = line_height * rows as f32 + px(PADDING_Y * 2.);
-        // Cancels the editor's own padding, so text lines up with the field
-        // labels.
-        div().pt(SPACE_SM).ml(px(-12.)).mr(px(-10.)).child(
-            Editor::new(&self.body)
-                .appearance(false)
-                .aria_label("Message body")
+        let height = line_height * rows as f32 + EDITOR_PADDING_Y * 2.;
+        // A Gmail draft whose text is on its way (ME-007).
+        if self.is_loading(cx) {
+            return div()
+                .pt(SPACE_SM)
                 .h(height)
-                .font_family(cx.theme().font_family.clone())
-                .text_size(TEXT_MD)
-                .line_height(LINE_READING)
-                .text_color(theme.text),
-        )
+                .child(
+                    super::live_text(
+                        "draft-loading",
+                        "Loading draft…",
+                        gpui::accesskit::Live::Polite,
+                    )
+                    .py(EDITOR_PADDING_Y)
+                    .text_size(TEXT_MD)
+                    .text_color(theme.text_faint),
+                )
+                .into_any_element();
+        }
+        let body = self.body.downgrade();
+        // Cancels the editor's own padding, so text lines up with the
+        // inputs above.
+        div()
+            .pt(SPACE_SM)
+            .ml(-EDITOR_INSET_LEFT)
+            .mr(-EDITOR_INSET_RIGHT)
+            .child(
+                Editor::new(&self.body)
+                    .appearance(false)
+                    .aria_label("Message body")
+                    .h(height)
+                    .font_family(cx.theme().font_family.clone())
+                    .text_size(TEXT_MD)
+                    .line_height(LINE_READING)
+                    .text_color(theme.text)
+                    // Prose items only, not the code editor's (MB-002).
+                    .context_menu(move |menu, _, cx| {
+                        let selected = body
+                            .upgrade()
+                            .is_some_and(|b| !b.read(cx).selected_range().is_empty());
+                        menu.menu_with_disabled("Cut", !selected, Box::new(input::Cut))
+                            .menu_with_disabled("Copy", !selected, Box::new(input::Copy))
+                            .menu("Paste", Box::new(input::Paste))
+                            .separator()
+                            .menu("Select All", Box::new(input::SelectAll))
+                            .separator()
+                            .menu("Bold", Box::new(FormatBold))
+                            .menu("Italic", Box::new(FormatItalic))
+                            .menu("Insert Link…", Box::new(InsertLink))
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// What's on at the body's caret: its inline styles and line kind
+    /// (MB-037).
+    fn caret_styles(&self, cx: &gpui::App) -> (markdown::Flags, Option<LineKind>) {
+        let body = self.body.read(cx);
+        let text = body.text();
+        let caret = body.cursor().min(text.len());
+        let row = text.offset_to_point(caret).row;
+        let start = text.line_start_offset(row);
+        let line = text.slice(start..text.line_end_offset(row)).to_string();
+        markdown::styles_at(&line, caret - start)
     }
 
     fn render_format_bar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let (flags, line) = self.caret_styles(cx);
+        let active = |format: Format| match format {
+            Format::Inline(kind) => flags & kind.flag() != 0,
+            Format::Link => flags & markdown::LINK != 0,
+            Format::Lines(kind) => line == Some(kind),
+            Format::Clear => false,
+        };
+        let divider = || {
+            div()
+                .flex_none()
+                .w(px(1.))
+                .h(ICON_LG)
+                .mx(SPACE_XS)
+                .bg(theme.border)
+        };
         div()
             .id("format-bar")
             .role(gpui::Role::Toolbar)
@@ -1703,39 +2081,46 @@ impl Composer {
             .flex()
             .items_center()
             .gap(SPACE_2XS)
-            .children(
-                Format::TOOLBAR
-                    .iter()
-                    .enumerate()
-                    .map(|(ix, &(format, glyph, name))| {
-                        let action = format.action();
-                        div()
-                            .id(("format", ix))
-                            .role(gpui::Role::Button)
-                            .aria_label(name)
-                            .size(HIT_TARGET)
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(RADIUS_SM)
-                            .hover(|s| s.bg(theme.hover_bg))
-                            .active(|s| s.bg(theme.selected_bg))
-                            .child(icon(glyph, ICON_MD, theme.icon))
-                            // Keeps the body's focus and selection.
-                            .on_mouse_down(MouseButton::Left, |_, window, _| {
-                                window.prevent_default()
-                            })
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.format(format, window, cx)
-                            }))
-                            .tooltip(move |window, cx| {
-                                super::tooltip(name)
-                                    .action(action.as_ref(), None)
-                                    .build(window, cx)
-                            })
-                    }),
-            )
+            .children(Format::TOOLBAR.iter().enumerate().flat_map(
+                |(ix, &(format, glyph, name))| {
+                    let action = format.action();
+                    let on = active(format);
+                    let toggles = format != Format::Clear;
+                    let button = focusable_control(div().id(("format", ix)), theme)
+                        .role(gpui::Role::Button)
+                        .aria_label(name)
+                        .when(toggles, |d| d.aria_toggled(on.into()))
+                        .size(HIT_TARGET)
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(RADIUS_SM)
+                        .when(on, |d| d.bg(theme.selected_bg))
+                        .hover(|s| s.bg(theme.hover_bg))
+                        .active(|s| s.bg(theme.selected_bg))
+                        .child(icon(
+                            glyph,
+                            ICON_MD,
+                            if on { theme.text } else { theme.icon },
+                        ))
+                        // Keeps the body's focus and selection.
+                        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.format(format, window, cx)),
+                        )
+                        .tooltip(move |window, cx| {
+                            super::tooltip(name)
+                                .action(action.as_ref(), None)
+                                .build(window, cx)
+                        })
+                        .into_any_element();
+                    let divider = Format::GROUP_ENDS
+                        .contains(&ix)
+                        .then(|| divider().into_any_element());
+                    std::iter::once(button).chain(divider)
+                },
+            ))
     }
 }
 
@@ -1764,18 +2149,18 @@ impl Composer {
                     .role(gpui::Role::ListBoxOption)
                     .aria_label(label(identity))
                     .aria_selected(chosen)
+                    .when(row == highlighted, |d| d.aria_active_descendant())
                     .py(SPACE_XS)
                     .line_height(LINE_UI)
                     .px(SPACE_SM)
                     .flex()
                     .items_center()
                     .gap(SPACE_SM)
-                    .rounded(RADIUS_MD)
+                    .rounded(RADIUS_SM)
                     .when(row == highlighted, |d| d.bg(theme.selected_bg))
                     .hover(|d| d.bg(theme.hover_bg))
-                    .child(div().w(ICON_LG).flex_none().when(chosen, |d| {
-                        d.child(icon(Icon::Check, ICON_MD, theme.accent))
-                    }))
+                    .active(|d| d.bg(theme.selected_bg))
+                    .child(controls::menu_check(chosen, theme))
                     .child(
                         div()
                             .min_w_0()
@@ -1806,28 +2191,18 @@ impl Composer {
                         this.picker_activate(&FromActivate, window, cx);
                     }))
             });
-            div().w_full().h(px(0.)).child(
-                deferred(
-                    anchored().snap_to_window_with_margin(px(8.)).child(
-                        div()
-                            .id("from-menu")
-                            .role(gpui::Role::ListBox)
-                            .aria_label("From addresses")
-                            .occlude()
-                            .mt(SPACE_SM)
-                            .w(px(360.))
-                            .p(SPACE_XS)
-                            .flex()
-                            .flex_col()
-                            .rounded(RADIUS_MD)
-                            .bg(theme.overlay_bg)
-                            .border_1()
-                            .border_color(theme.overlay_border)
-                            .shadow(super::popover_shadow(theme))
-                            .children(rows),
-                    ),
-                )
-                .with_priority(1),
+            controls::popup(
+                controls::popover_surface(theme)
+                    .id("from-menu")
+                    .role(gpui::Role::ListBox)
+                    .aria_label("From addresses")
+                    .occlude()
+                    .mt(SPACE_SM)
+                    .w(FROM_MENU_WIDTH)
+                    .p(SPACE_XS)
+                    .flex()
+                    .flex_col()
+                    .children(rows),
             )
         });
         let ring = focus_ring(theme);
@@ -1939,66 +2314,149 @@ impl Render for Composer {
         if self.from_menu.is_some() && !self.from_focus.is_focused(window) {
             self.from_menu = None;
         }
+        // A picked chip stays picked only while its field has focus.
+        if let Some((ix, _)) = self.selected_chip
+            && !self.recipients[ix]
+                .input
+                .focus_handle(cx)
+                .is_focused(window)
+        {
+            self.selected_chip = None;
+        }
         if self.pending.is_some() {
             cx.defer_in(window, Self::apply_pending);
         }
         self.palette.set(Palette::new(&theme));
-        self.body_rows = self.body.read(cx).display_map().wrap_row_count();
+        let body = self.body.read(cx);
+        self.body_rows = body.display_map().wrap_row_count();
+        let key = (
+            body.text().len(),
+            body.text_bounds().map_or(px(0.), |b| b.size.width),
+        );
         // How lines wrap is known once the body is laid out: grow then, if
-        // they wrapped differently.
-        cx.on_next_frame(window, |this, _, cx| {
-            if this.body.read(cx).display_map().wrap_row_count() != this.body_rows {
-                cx.notify();
-            }
-        });
+        // they wrapped differently. Only text or width changes that.
+        if key != self.rows_checked {
+            self.rows_checked = key;
+            cx.on_next_frame(window, |this, _, cx| {
+                if this.body.read(cx).display_map().wrap_row_count() != this.body_rows {
+                    cx.notify();
+                }
+            });
+        }
         let standalone = !self.inline;
         let signature = self.render_signature(&theme);
+        let save_opacity = crate::ui::motion::fade(
+            "save-status",
+            0.,
+            if self.save_shown { 1. } else { 0. },
+            window,
+            cx,
+        );
 
-        let title = match (self.kind, self.opened_as_draft) {
-            (_, true) => "Draft",
-            (ComposeKind::New, _) => "New Message",
-            (ComposeKind::Reply, _) => "Reply",
-            (ComposeKind::ReplyAll, _) => "Reply All",
-            (ComposeKind::Forward, _) => "Forward",
-        };
+        let title = self.title();
 
         let quoted = self.quoted.as_ref().map(|quoted| {
+            let forward = self.kind == ComposeKind::Forward;
+            let body = div()
+                .mt(SPACE_MD)
+                .text_size(TEXT_BASE)
+                .line_height(LINE_READING)
+                .text_color(theme.text_muted)
+                .child(html_view::render(&quoted.doc, &theme));
+            if forward {
+                return div()
+                    .mt(SPACE_LG)
+                    .pl(SPACE_LG)
+                    .border_l_2()
+                    .border_color(theme.border)
+                    .flex()
+                    .flex_col()
+                    .gap(SPACE_2XS)
+                    .text_size(TEXT_SM)
+                    .text_color(theme.text_muted)
+                    .child(
+                        div()
+                            .pb(SPACE_XS)
+                            .text_color(theme.text_faint)
+                            .child("Forwarded message"),
+                    )
+                    .children(quoted.header.iter().map(|(label, value)| {
+                        div()
+                            .flex()
+                            .gap(SPACE_SM)
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(theme.text_faint)
+                                    .child(label.clone()),
+                            )
+                            .child(div().min_w_0().truncate().child(value.clone()))
+                    }))
+                    .child(body)
+                    .into_any_element();
+            }
+            // A reply's quote, folded behind "•••" like Gmail (ME-009).
+            let open = self.quote_open;
+            let attribution = quoted
+                .header
+                .first()
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default();
             div()
-                .mt(SPACE_LG)
-                .pl(SPACE_LG)
-                .border_l_2()
-                .border_color(theme.border)
+                .mt(SPACE_SM)
                 .flex()
                 .flex_col()
-                .gap(SPACE_2XS)
-                .text_size(TEXT_SM)
-                .text_color(theme.text_muted)
+                .items_start()
                 .child(
-                    div()
-                        .pb(SPACE_XS)
-                        .text_color(theme.text_faint)
-                        .child("Forwarded message"),
-                )
-                .children(quoted.header.iter().map(|(label, value)| {
-                    div()
+                    focusable_control(div().id("toggle-quote"), &theme)
+                        .role(gpui::Role::Button)
+                        .aria_label(if open {
+                            "Hide quoted text"
+                        } else {
+                            "Show quoted text"
+                        })
+                        .aria_expanded(open)
+                        .h(CONTROL_XS)
+                        .px(SPACE_SM)
                         .flex()
-                        .gap(SPACE_SM)
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_color(theme.text_faint)
-                                .child(label.clone()),
-                        )
-                        .child(div().min_w_0().truncate().child(value.clone()))
-                }))
-                .child(
-                    div()
-                        .mt(SPACE_MD)
-                        .text_size(TEXT_BASE)
-                        .line_height(LINE_READING)
+                        .items_center()
+                        .rounded(RADIUS_SM)
+                        .bg(theme.chip_bg)
+                        .text_size(TEXT_SM)
                         .text_color(theme.text_muted)
-                        .child(html_view::render(&quoted.doc, &theme)),
+                        .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
+                        .active(|s| s.bg(theme.selected_bg))
+                        .child("•••")
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.quote_open = !this.quote_open;
+                            cx.notify();
+                        }))
+                        .tooltip(move |window, cx| {
+                            super::tooltip(if open {
+                                "Hide quoted text"
+                            } else {
+                                "Show quoted text"
+                            })
+                            .build(window, cx)
+                        }),
                 )
+                .when(open, |el| {
+                    el.child(
+                        div()
+                            .mt(SPACE_SM)
+                            .pl(SPACE_LG)
+                            .border_l_2()
+                            .border_color(theme.border)
+                            .flex()
+                            .flex_col()
+                            .text_size(TEXT_SM)
+                            .text_color(theme.text_faint)
+                            .child(attribution)
+                            .child(body),
+                    )
+                })
+                .into_any_element()
         });
 
         let hint = |keys: &str, label: &'static str| {
@@ -2015,8 +2473,7 @@ impl Render for Composer {
             .items_center()
             .gap(SPACE_MD)
             .child(
-                div()
-                    .id("send")
+                focusable_control(div().id("send"), &theme)
                     .role(gpui::Role::Button)
                     .aria_label("Send")
                     .h(CONTROL_LG)
@@ -2034,6 +2491,7 @@ impl Render for Composer {
                     .active(|s| s.opacity(0.8))
                     .child(icon(Icon::Send, ICON_MD, theme.accent_text))
                     .child("Send")
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(SendMessage), cx)),
             )
             .child(
@@ -2047,21 +2505,19 @@ impl Render for Composer {
                     .child(hint("escape", "Save draft")),
             )
             .child(div().flex_1())
-            // W3 (DRF-5).
-            .children(
-                match self.save_state {
-                    SaveState::Idle => None,
-                    SaveState::Saving => Some("Saving…"),
-                    SaveState::Saved => Some("Saved"),
-                }
-                .map(|status| {
-                    super::live_text("save-status", status, gpui::accesskit::Live::Polite)
-                        .text_size(TEXT_SM)
-                        .text_color(theme.text_faint)
-                }),
+            // W3 (DRF-5): fades in and out (ME-006).
+            .child(
+                super::live_text(
+                    "save-status",
+                    self.save_label.clone(),
+                    gpui::accesskit::Live::Polite,
+                )
+                .text_size(TEXT_SM)
+                .text_color(theme.text_faint)
+                .opacity(save_opacity),
             )
             .child(
-                super::style::focusable_control(div().id("attach"), &theme)
+                focusable_control(div().id("attach"), &theme)
                     .role(gpui::Role::Button)
                     .aria_label("Attach files")
                     .size(HIT_TARGET)
@@ -2147,11 +2603,32 @@ impl Render for Composer {
                                 .child(Input::new(&self.subject).appearance(false).px(px(0.))),
                         ),
                 )
+                .children(
+                    self.error
+                        .as_ref()
+                        .filter(|(at, _)| *at == Field::Subject)
+                        .map(|(_, error)| {
+                            div()
+                                .pb(SPACE_SM)
+                                .pt(SPACE_SM)
+                                .ml(SPACE_XS)
+                                .pl(LABEL_WIDTH)
+                                .child(field_error(error.clone(), &theme))
+                        }),
+                )
             })
-            .child(self.render_body(window, &theme, cx))
-            .children(signature)
-            .children(self.render_attachments(&theme, cx))
-            .children(quoted);
+            // Lined up with the inputs, past the labels (ME-005).
+            .child(
+                div()
+                    .ml(SPACE_XS)
+                    .pl(LABEL_WIDTH)
+                    .flex()
+                    .flex_col()
+                    .child(self.render_body(window, &theme, cx))
+                    .children(signature)
+                    .children(self.render_attachments(&theme, cx))
+                    .children(quoted),
+            );
 
         let drop_tint = theme.accent.alpha(0.06);
         let drop_ring = theme.accent;
@@ -2164,6 +2641,12 @@ impl Render for Composer {
             .on_action(cx.listener(Self::suggest_prev))
             .on_action(cx.listener(Self::remove_last_recipient))
             .on_action(cx.listener(Self::dismiss_suggestions))
+            .on_action(cx.listener(Self::copy_chip_address))
+            .on_action(cx.listener(Self::show_chip_contact))
+            .on_action(cx.listener(Self::move_chip_to_to))
+            .on_action(cx.listener(Self::move_chip_to_cc))
+            .on_action(cx.listener(Self::move_chip_to_bcc))
+            .on_action(cx.listener(Self::remove_menu_chip))
             .on_action(cx.listener(Self::body_enter))
             .on_action(cx.listener(Self::body_indent))
             .on_action(cx.listener(Self::body_outdent))
@@ -2239,15 +2722,46 @@ impl Render for Composer {
     }
 }
 
+/// Fits "Subject", so every field's input starts at the same x (ME-005).
+const LABEL_WIDTH: Rems = rems(3.5);
+/// Out of focus, a field with more chips shows this many and "+N more".
+const COLLAPSED_CHIPS: usize = 5;
+const SUGGESTIONS_WIDTH: Pixels = px(320.);
+const FROM_MENU_WIDTH: Pixels = px(360.);
+const RECIPIENT_INPUT_MIN: Pixels = px(140.);
+const ATTACHMENT_NAME_MAX: Pixels = px(220.);
+/// The editor's own inset, which the body cancels so its text lines up
+/// with the inputs above it.
+const EDITOR_INSET_LEFT: Pixels = px(12.);
+const EDITOR_INSET_RIGHT: Pixels = px(10.);
+const EDITOR_PADDING_Y: Pixels = px(8.);
+
+/// A field's name, right-aligned in a fixed column.
 fn field_label(label: &'static str, theme: &Theme) -> impl IntoElement {
     div()
         .flex_none()
+        .w(LABEL_WIDTH)
         .h(CONTROL_MD)
         .flex()
         .items_center()
+        .justify_end()
         .text_size(TEXT_SM)
         .text_color(theme.text_faint)
         .child(label)
+}
+
+/// A problem under a field: selectable, and read out when it shows.
+fn field_error(error: SharedString, theme: &Theme) -> impl IntoElement {
+    div()
+        .id("field-error")
+        .role(gpui::Role::Label)
+        .aria_value(error.clone())
+        .a11y_synthetic_children(|builder| {
+            builder
+                .parent_node()
+                .set_live(gpui::accesskit::Live::Assertive)
+        })
+        .child(controls::error_line(error, theme))
 }
 
 fn recipient_ix(field: Field) -> usize {
@@ -2278,6 +2792,62 @@ pub const ATTACHMENT_LIMIT_ERROR: &str = "Attachments are over Gmail’s 25 MB l
 
 pub fn attachments_size(attachments: &[Attachment]) -> u64 {
     attachments.iter().map(|a| a.size_bytes).sum()
+}
+
+/// The quote under a sent message: a forward's header block, or a reply's
+/// "On … wrote:" over the answered message, as Gmail sends them.
+fn quote_html(kind: ComposeKind, quoted: &Quoted) -> String {
+    let mut out = String::new();
+    if kind == ComposeKind::Forward {
+        out.push_str("<blockquote><p>---------- Forwarded message ----------");
+        for (label, value) in &quoted.header {
+            out.push_str(&format!("<br>{label}: {}", html::escape(value)));
+        }
+        out.push_str("</p>");
+        out.push_str(&quoted.html);
+        out.push_str("</blockquote>");
+    } else {
+        let attribution = quoted.header.first().map_or("", |(_, v)| v.as_str());
+        out.push_str(&format!(
+            "<div class=\"gmail_quote\"><div class=\"gmail_attr\">{}<br></div>\
+             <blockquote class=\"gmail_quote\" style=\"margin:0 0 0 .8ex;\
+             border-left:1px #ccc solid;padding-left:1ex\">",
+            html::escape(attribution)
+        ));
+        out.push_str(&quoted.html);
+        out.push_str("</blockquote></div>");
+    }
+    out
+}
+
+/// "On Sun, Oct 25, 9:12 AM, Ana Lima <ana@x.com> wrote:", a reply quote's
+/// one header line.
+pub fn reply_attribution(date: &str, from: &Contact) -> String {
+    if from.name.is_empty() {
+        format!("On {date}, {} wrote:", from.email)
+    } else {
+        format!("On {date}, {} <{}> wrote:", from.name, from.email)
+    }
+}
+
+/// Whether `body` says something is attached, outside quoted lines.
+fn mentions_attachment(body: &str) -> bool {
+    body.lines()
+        .filter(|line| !line.trim_start().starts_with('>'))
+        .flat_map(|line| line.split(|c: char| !c.is_alphanumeric()))
+        .any(|word| {
+            let word = word.to_lowercase();
+            word.starts_with("attach") || word == "enclosed"
+        })
+}
+
+/// A contact as typed in a field: "Name <a@b.c>" or the bare address.
+fn address_text(contact: &Contact) -> String {
+    if contact.name.is_empty() {
+        contact.email.clone()
+    } else {
+        format!("{} <{}>", contact.name, contact.email)
+    }
 }
 
 /// "Name <a@b.c>" or a bare address.
@@ -2326,5 +2896,28 @@ mod tests {
         assert_eq!(signature_for(&ids, "plain@x.com", true), None);
         // Taken off this draft.
         assert_eq!(signature_for(&ids, "work@x.com", false), None);
+    }
+
+    #[test]
+    fn attachment_words_outside_quotes() {
+        assert!(mentions_attachment("See the attached file"));
+        assert!(mentions_attachment("Attachment: notes"));
+        assert!(mentions_attachment("I've enclosed it."));
+        assert!(!mentions_attachment("> see attached\nThanks"));
+        assert!(!mentions_attachment("Lunch at noon?"));
+    }
+
+    #[test]
+    fn a_reply_quotes_gmail_style() {
+        let ana = Contact {
+            name: "Ana".into(),
+            email: "ana@x.com".into(),
+        };
+        let line = reply_attribution("Oct 25", &ana);
+        assert_eq!(line, "On Oct 25, Ana <ana@x.com> wrote:");
+        let quoted = Quoted::new(vec![(String::new(), line)], "<p>Hi</p>".into());
+        let out = quote_html(ComposeKind::Reply, &quoted);
+        assert!(out.starts_with("<div class=\"gmail_quote\"><div class=\"gmail_attr\">On Oct 25, Ana &lt;ana@x.com&gt; wrote:"));
+        assert!(out.ends_with("<p>Hi</p></blockquote></div>"));
     }
 }

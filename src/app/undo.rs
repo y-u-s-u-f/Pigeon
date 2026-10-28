@@ -57,7 +57,6 @@ pub enum UndoAction {
         remove: Vec<String>,
     },
     /// A calendar event moved or resized.
-    #[allow(dead_code)] // used by W2-CALG
     Retime(Retime),
 }
 

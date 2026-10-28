@@ -1,12 +1,17 @@
 //! The command palette: every command, folder and label, plus matching
 //! threads once there is a query, fuzzy-filtered as you type.
 
+use std::{collections::HashMap, sync::OnceLock};
+
 use gpui::{
     Action, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
     HighlightStyle, Hsla, InteractiveElement, IntoElement, KeyBinding, MouseButton, ParentElement,
-    Render, ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled, StyledText,
-    Subscription, UniformListScrollHandle, Window, actions,
-    component::input::{Input, InputEvent, InputState},
+    Pixels, Render, ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled,
+    StyledText, Subscription, UniformListScrollHandle, Window, actions,
+    component::{
+        input::{Input, InputEvent, InputState},
+        scroll::ScrollableElement as _,
+    },
     div,
     prelude::FluentBuilder as _,
     px, uniform_list,
@@ -16,10 +21,10 @@ use nucleo_matcher::{
     pattern::{AtomKind, CaseMatching, Normalization, Pattern},
 };
 
-use super::{binding_caps, icon, keycap, keys_caps, overlay_shadow};
+use super::{binding_caps, controls::sheet_surface, icon, keycap, keys_caps};
 use crate::ui::style::*;
 use crate::{
-    actions::PALETTE,
+    actions::{COMMANDS, PALETTE},
     app::{LabelCommand, Nav},
     assets::Icon,
     calendar::quick_add,
@@ -35,8 +40,10 @@ const WIDTH: f32 = 620.;
 const VISIBLE_ROWS: usize = 8;
 /// Thread results are capped so a broad query stays readable.
 const MAX_THREADS: usize = 30;
-/// `Match::entry` of the quick add row (CAL-39), which isn't an entry.
-const QUICK: usize = usize::MAX;
+/// The widest a title gets before its subtitle.
+const TITLE_MAX: Pixels = px(380.);
+/// A leading color dot.
+const DOT: Pixels = px(8.);
 
 #[derive(Clone, Copy)]
 pub enum PaletteCommand {
@@ -76,15 +83,72 @@ pub struct PaletteItem {
 
 struct Entry {
     item: PaletteItem,
-    /// Title and subtitle, separated by a space.
+    /// Title, subtitle and the command's other name, separated by spaces.
     haystack: Utf32String,
     title_chars: usize,
 }
 
-struct Match {
-    entry: usize,
-    /// Matched char indices into the haystack, sorted.
-    indices: Vec<u32>,
+/// ME-062: the palette's groups, in their order without a query.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Section {
+    Recent,
+    Commands,
+    Labels,
+    Calendars,
+    Conversations,
+    Events,
+}
+
+impl Section {
+    fn title(self) -> &'static str {
+        match self {
+            Section::Recent => "Recent",
+            Section::Commands => "Commands",
+            Section::Labels => "Labels",
+            Section::Calendars => "Calendars",
+            Section::Conversations => "Conversations",
+            Section::Events => "Events",
+        }
+    }
+
+    fn of(command: PaletteCommand) -> Self {
+        match command {
+            PaletteCommand::Nav(Nav::Label(_)) => Section::Labels,
+            PaletteCommand::ToggleCalendar(_) => Section::Calendars,
+            PaletteCommand::Thread(_) => Section::Conversations,
+            PaletteCommand::Event(_) => Section::Events,
+            PaletteCommand::Action(_)
+            | PaletteCommand::Nav(_)
+            | PaletteCommand::MoveTo(_)
+            | PaletteCommand::ToggleLabel(_)
+            | PaletteCommand::Label(_) => Section::Commands,
+        }
+    }
+}
+
+/// One row of the results.
+enum Row {
+    /// A section's title; arrows skip it.
+    Header(Section),
+    /// Quick add (CAL-39), or the prompt's "Create label “…”".
+    Quick,
+    Entry {
+        entry: usize,
+        /// Matched char indices into the haystack, sorted.
+        indices: Vec<u32>,
+    },
+}
+
+/// The name each command has in the shortcuts sheet, by action name, for
+/// commands whose palette title follows state ("Unstar" is found by "star").
+fn static_names() -> &'static HashMap<&'static str, &'static str> {
+    static NAMES: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    NAMES.get_or_init(|| {
+        COMMANDS
+            .iter()
+            .map(|c| ((c.action_name)(), c.name))
+            .collect()
+    })
 }
 
 pub enum PaletteEvent {
@@ -99,19 +163,22 @@ pub enum PaletteEvent {
 pub struct CommandPalette {
     input: Entity<InputState>,
     entries: Vec<Entry>,
-    matches: Vec<Match>,
+    rows: Vec<Row>,
     selected: usize,
     scroll: UniformListScrollHandle,
     matcher: Matcher,
     /// Shown when nothing matches.
     empty_text: SharedString,
-    /// The palette of every command offers quick add; lists to pick from
-    /// don't.
+    /// The palette of every command offers quick add and has sections;
+    /// lists to pick from don't.
     offers_quick_add: bool,
     /// The quick add row for the query: the text, its title and when.
     quick: Option<(String, SharedString, SharedString)>,
     /// W4b: a prompt for a name: what Enter does with it, and a hint.
     prompt: Option<(SharedString, SharedString)>,
+    /// How many of the first entries were used last, shown under "Recent"
+    /// while there is no query (ME-062).
+    recent: usize,
     _input_events: Subscription,
 }
 
@@ -154,6 +221,14 @@ impl CommandPalette {
                     haystack.push(' ');
                     haystack.push_str(subtitle);
                 }
+                // "Star / Unstar" finds "Unstar" by either word.
+                if let PaletteCommand::Action(action) = item.command
+                    && let Some(name) = static_names().get(action().name())
+                    && *name != item.title.as_ref()
+                {
+                    haystack.push(' ');
+                    haystack.push_str(name);
+                }
                 Entry {
                     title_chars: item.title.chars().count(),
                     haystack: haystack.into(),
@@ -165,7 +240,7 @@ impl CommandPalette {
         let mut this = Self {
             input,
             entries,
-            matches: Vec::new(),
+            rows: Vec::new(),
             selected: 0,
             scroll: UniformListScrollHandle::new(),
             matcher: Matcher::new(Config::DEFAULT),
@@ -173,10 +248,18 @@ impl CommandPalette {
             offers_quick_add,
             quick: None,
             prompt: None,
+            recent: 0,
             _input_events: input_events,
         };
         this.update_matches(cx);
         this
+    }
+
+    /// ME-062: the first `recent` items are the commands used last, listed
+    /// under "Recent" while there is no query.
+    pub fn set_recent(&mut self, recent: usize, cx: &mut Context<Self>) {
+        self.recent = recent;
+        self.update_matches(cx);
     }
 
     /// W4b: a field for a name rather than a list: Enter sends the text
@@ -209,7 +292,7 @@ impl CommandPalette {
         let pattern = |kind| Pattern::new(&query, CaseMatching::Ignore, Normalization::Smart, kind);
         let (fuzzy, substring) = (pattern(AtomKind::Fuzzy), pattern(AtomKind::Substring));
 
-        self.matches.clear();
+        self.rows.clear();
         self.quick = quick_add::command_text(&query)
             .filter(|text| self.offers_quick_add && !text.is_empty())
             .map(|text| {
@@ -241,76 +324,138 @@ impl CommandPalette {
             });
         }
         if self.quick.is_some() {
-            self.matches.push(Match {
-                entry: QUICK,
-                indices: Vec::new(),
-            });
+            self.rows.push(Row::Quick);
         }
+
+        // Kept entries with their section, in order.
+        let mut kept: Vec<(Section, usize)> = Vec::new();
         if fuzzy.atoms.is_empty() {
-            self.matches.extend(
+            kept.extend(
                 self.entries
                     .iter()
                     .enumerate()
                     .filter(|(_, e)| !e.item.search_only)
-                    .map(|(entry, _)| Match {
-                        entry,
-                        indices: Vec::new(),
+                    .map(|(ix, e)| {
+                        let recent =
+                            ix < self.recent && matches!(e.item.command, PaletteCommand::Action(_));
+                        let section = if recent {
+                            Section::Recent
+                        } else {
+                            Section::of(e.item.command)
+                        };
+                        (section, ix)
                     }),
             );
+            // Recents lead; the rest keep palette order within a section.
+            kept.sort_by_key(|(section, _)| *section);
         } else {
-            let mut scored = Vec::new();
+            // MC-039: rank by score alone; match positions only for the
+            // rows kept.
+            let mut scored: Vec<(u32, Section, usize)> = Vec::new();
             for (ix, entry) in self.entries.iter().enumerate() {
                 let pattern = if entry.item.search_only {
                     &substring
                 } else {
                     &fuzzy
                 };
-                let mut indices = Vec::new();
-                if let Some(score) =
-                    pattern.indices(entry.haystack.slice(..), &mut self.matcher, &mut indices)
-                {
-                    indices.sort_unstable();
-                    indices.dedup();
-                    scored.push((score, Match { entry: ix, indices }));
+                if let Some(score) = pattern.score(entry.haystack.slice(..), &mut self.matcher) {
+                    scored.push((score, Section::of(entry.item.command), ix));
                 }
             }
             // Stable, so ties keep palette order: commands before threads.
-            scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+            scored.sort_by_key(|(score, _, _)| std::cmp::Reverse(*score));
             let mut threads = 0;
-            for (_, m) in scored {
-                if self.entries[m.entry].item.search_only {
+            scored.retain(|&(_, _, ix)| {
+                if self.entries[ix].item.search_only {
                     threads += 1;
-                    if threads > MAX_THREADS {
-                        continue;
-                    }
+                    return threads <= MAX_THREADS;
                 }
-                self.matches.push(m);
+                true
+            });
+            // Sections in the order of their best match; within one, by
+            // score (ME-062).
+            let mut order: Vec<Section> = Vec::new();
+            for &(_, section, _) in &scored {
+                if !order.contains(&section) {
+                    order.push(section);
+                }
             }
+            kept.extend(scored.iter().map(|&(_, section, ix)| (section, ix)));
+            kept.sort_by_key(|(section, _)| order.iter().position(|s| s == section));
         }
 
-        self.selected = 0;
+        // Pick lists and prompts have no sections.
+        let sections = self.offers_quick_add;
+        let mut last = None;
+        for (section, entry) in kept {
+            if sections && last != Some(section) {
+                self.rows.push(Row::Header(section));
+                last = Some(section);
+            }
+            let mut indices = Vec::new();
+            if !fuzzy.atoms.is_empty() {
+                let e = &self.entries[entry];
+                let pattern = if e.item.search_only {
+                    &substring
+                } else {
+                    &fuzzy
+                };
+                pattern.indices(e.haystack.slice(..), &mut self.matcher, &mut indices);
+                indices.sort_unstable();
+                indices.dedup();
+            }
+            self.rows.push(Row::Entry { entry, indices });
+        }
+
+        self.selected = self.first_selectable().unwrap_or(0);
         self.scroll.scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
     }
 
+    fn selectable(&self, ix: usize) -> bool {
+        self.rows
+            .get(ix)
+            .is_some_and(|r| !matches!(r, Row::Header(_)))
+    }
+
+    fn first_selectable(&self) -> Option<usize> {
+        (0..self.rows.len()).find(|&ix| self.selectable(ix))
+    }
+
     fn select(&mut self, ix: usize, cx: &mut Context<Self>) {
-        if ix != self.selected {
+        if ix != self.selected && self.selectable(ix) {
             self.selected = ix;
-            self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
+            // The first row's header comes into view with it.
+            let first = self.first_selectable() == Some(ix);
+            self.scroll
+                .scroll_to_item(if first { 0 } else { ix }, ScrollStrategy::Nearest);
             cx.notify();
         }
     }
 
-    fn select_next(&mut self, _: &SelectNext, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.matches.is_empty() {
-            self.select((self.selected + 1) % self.matches.len(), cx);
+    /// The next selectable row `step` away, wrapping, skipping headers.
+    fn step(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let n = self.rows.len();
+        let next = (1..=n)
+            .map(|d| {
+                if forward {
+                    (self.selected + d) % n
+                } else {
+                    (self.selected + n - d % n) % n
+                }
+            })
+            .find(|&ix| self.selectable(ix));
+        if let Some(ix) = next {
+            self.select(ix, cx);
         }
     }
 
+    fn select_next(&mut self, _: &SelectNext, _: &mut Window, cx: &mut Context<Self>) {
+        self.step(true, cx);
+    }
+
     fn select_prev(&mut self, _: &SelectPrev, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(last) = self.matches.len().checked_sub(1) {
-            self.select(self.selected.checked_sub(1).unwrap_or(last), cx);
-        }
+        self.step(false, cx);
     }
 
     fn confirm(&mut self, _: &Confirm, _: &mut Window, cx: &mut Context<Self>) {
@@ -322,8 +467,8 @@ impl CommandPalette {
     }
 
     fn run(&mut self, ix: usize, cx: &mut Context<Self>) {
-        if let Some(m) = self.matches.get(ix) {
-            if m.entry == QUICK {
+        match self.rows.get(ix) {
+            Some(Row::Quick) => {
                 if let Some((text, _, _)) = &self.quick {
                     cx.emit(if self.prompt.is_some() {
                         PaletteEvent::Text(text.clone())
@@ -331,42 +476,85 @@ impl CommandPalette {
                         PaletteEvent::QuickAdd(text.clone())
                     });
                 }
-                return;
             }
-            cx.emit(PaletteEvent::Run(self.entries[m.entry].item.command));
+            Some(Row::Entry { entry, .. }) => {
+                cx.emit(PaletteEvent::Run(self.entries[*entry].item.command))
+            }
+            Some(Row::Header(_)) | None => {}
         }
     }
 
+    /// ME-076: what Enter does with the selected row.
+    fn enter_label(&self) -> Option<SharedString> {
+        Some(match self.rows.get(self.selected)? {
+            Row::Header(_) => return None,
+            Row::Quick => match &self.prompt {
+                Some((verb, _)) => verb
+                    .split(' ')
+                    .next()
+                    .unwrap_or("Create")
+                    .to_string()
+                    .into(),
+                None => "Create".into(),
+            },
+            Row::Entry { entry, .. } => match self.entries[*entry].item.command {
+                PaletteCommand::Nav(_) | PaletteCommand::Thread(_) | PaletteCommand::Event(_) => {
+                    "Open".into()
+                }
+                _ => "Run".into(),
+            },
+        })
+    }
+
     fn render_row(&self, ix: usize, theme: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let m = &self.matches[ix];
-        if m.entry == QUICK {
-            return self.render_quick_row(ix, theme, cx).into_any_element();
-        }
-        let entry = &self.entries[m.entry];
+        let (entry, indices) = match &self.rows[ix] {
+            Row::Quick => return self.render_quick_row(ix, theme, cx).into_any_element(),
+            Row::Header(section) => {
+                return div()
+                    .id(ix)
+                    .role(gpui::Role::Heading)
+                    .aria_level(2)
+                    .aria_label(section.title())
+                    .h(ROW_PALETTE)
+                    .px(SPACE_SM + SPACE_MD)
+                    .pb(SPACE_XS)
+                    .flex()
+                    .items_end()
+                    .text_size(TEXT_XS)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.text_faint)
+                    .child(section.title())
+                    .into_any_element();
+            }
+            Row::Entry { entry, indices } => (&self.entries[*entry], indices),
+        };
         let item = &entry.item;
         let selected = ix == self.selected;
+        // ME-079: color only, so titles don't shift as matches change.
         let highlight = HighlightStyle {
             color: Some(theme.match_text),
-            font_weight: Some(FontWeight::SEMIBOLD),
             ..Default::default()
         };
 
-        let title_hl = m
-            .indices
+        let title_hl = indices
             .iter()
             .map(|&i| i as usize)
             .filter(|&i| i < entry.title_chars);
-        let subtitle_hl = m
-            .indices
+        let subtitle_hl = indices
             .iter()
             .map(|&i| i as usize)
             .filter_map(|i| i.checked_sub(entry.title_chars + 1));
+        let label: SharedString = match &item.subtitle {
+            Some(subtitle) => format!("{}, {subtitle}", item.title).into(),
+            None => item.title.clone(),
+        };
 
         div()
             .id(ix)
             .role(gpui::Role::ListBoxOption)
-            .aria_label(item.title.clone())
+            .aria_label(label)
             .aria_selected(selected)
+            .when(selected, |this| this.aria_active_descendant())
             .h(ROW_PALETTE)
             .px(SPACE_SM)
             .child(
@@ -395,7 +583,7 @@ impl CommandPalette {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(div().size(px(8.)).rounded_full().bg(color))
+                            .child(div().size(DOT).rounded_full().bg(color))
                             .into_any_element(),
                         Leading::Nested(color, depth) => div()
                             .ml(SPACE_LG * depth as f32)
@@ -404,7 +592,7 @@ impl CommandPalette {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(div().size(px(8.)).rounded_full().bg(color))
+                            .child(div().size(DOT).rounded_full().bg(color))
                             .into_any_element(),
                     })
                     .child(
@@ -418,7 +606,7 @@ impl CommandPalette {
                             .child(
                                 div()
                                     .flex_none()
-                                    .max_w(px(380.))
+                                    .max_w(TITLE_MAX)
                                     .truncate()
                                     .text_size(TEXT_BASE)
                                     .text_color(theme.text)
@@ -458,6 +646,7 @@ impl CommandPalette {
             .role(gpui::Role::ListBoxOption)
             .aria_label(SharedString::from(format!("{title}, {when}")))
             .aria_selected(selected)
+            .when(selected, |this| this.aria_active_descendant())
             .h(ROW_PALETTE)
             .px(SPACE_SM)
             .child(
@@ -489,7 +678,7 @@ impl CommandPalette {
                             .child(
                                 div()
                                     .flex_none()
-                                    .max_w(px(380.))
+                                    .max_w(TITLE_MAX)
                                     .truncate()
                                     .text_size(TEXT_BASE)
                                     .text_color(theme.text)
@@ -530,9 +719,15 @@ fn highlighted(
 impl Render for CommandPalette {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
-        let rows = self.matches.len();
-        // In rems like the rows, so the list scales with the text.
-        let list_height = gpui::rems(ROW_PALETTE.0 * VISIBLE_ROWS as f32);
+        let rows = self.rows.len();
+        // In rems like the rows, so the list scales with the text. A prompt
+        // has one row at most (ME-077).
+        let visible = if self.prompt.is_some() {
+            1
+        } else {
+            VISIBLE_ROWS
+        };
+        let list_height = gpui::rems(ROW_PALETTE.0 * visible as f32);
 
         let results = if rows == 0 {
             div()
@@ -546,21 +741,45 @@ impl Render for CommandPalette {
                 .into_any_element()
         } else {
             let row_theme = theme.clone();
-            uniform_list(
-                "palette-results",
-                rows,
-                cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
-                    range
-                        .map(|ix| this.render_row(ix, &row_theme, cx).into_any_element())
-                        .collect::<Vec<_>>()
-                }),
-            )
-            .track_scroll(&self.scroll)
-            .h(list_height)
-            .into_any_element()
+            div()
+                .id("palette-results")
+                .role(gpui::Role::ListBox)
+                .aria_label("Results")
+                .relative()
+                .h(list_height)
+                .child(
+                    uniform_list(
+                        "palette-list",
+                        rows,
+                        cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
+                            range
+                                .map(|ix| this.render_row(ix, &row_theme, cx).into_any_element())
+                                .collect::<Vec<_>>()
+                        }),
+                    )
+                    .track_scroll(&self.scroll)
+                    .size_full(),
+                )
+                .vertical_scrollbar(&self.scroll)
+                .into_any_element()
         };
 
-        let hint = |label: &'static str, caps: gpui::Div| {
+        // ME-076: a count only for a query, of results alone.
+        let query = !self.input.read(cx).value().trim().is_empty();
+        let count = self
+            .rows
+            .iter()
+            .filter(|r| matches!(r, Row::Entry { .. }))
+            .count();
+        let count = (query && self.prompt.is_none()).then(|| {
+            format!(
+                "{} result{}",
+                super::status::thousands(count),
+                if count == 1 { "" } else { "s" }
+            )
+        });
+
+        let hint = |label: SharedString, caps: gpui::Div| {
             div()
                 .flex()
                 .items_center()
@@ -569,8 +788,11 @@ impl Render for CommandPalette {
                 .child(caps)
         };
 
-        div()
+        sheet_surface(&theme)
+            .id("command-palette")
             .key_context(PALETTE)
+            .role(gpui::Role::Dialog)
+            .aria_label("Command palette")
             .on_action(cx.listener(Self::select_next))
             .on_action(cx.listener(Self::select_prev))
             .on_action(cx.listener(Self::confirm))
@@ -580,16 +802,12 @@ impl Render for CommandPalette {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .rounded(RADIUS_LG)
-            .bg(theme.overlay_bg)
-            .border_1()
-            .border_color(theme.overlay_border)
-            .shadow(overlay_shadow(&theme))
             // Keep clicks inside from reaching the backdrop.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
-                    .h(px(54.))
+                    .min_h(CONTROL_LG)
+                    .py(SPACE_MD)
                     .px(SPACE_LG)
                     .flex()
                     .items_center()
@@ -616,18 +834,23 @@ impl Render for CommandPalette {
                     .border_color(theme.border)
                     .text_size(TEXT_SM)
                     .text_color(theme.text_faint)
-                    .child(hint(
-                        "Navigate",
-                        div()
-                            .flex()
-                            .gap(SPACE_XS)
-                            .child(keycap("↑", &theme))
-                            .child(keycap("↓", &theme)),
-                    ))
-                    .child(hint("Run", keys_caps("enter", &theme)))
-                    .child(hint("Close", keys_caps("escape", &theme)))
+                    .when(self.prompt.is_none(), |this| {
+                        this.child(hint(
+                            "Navigate".into(),
+                            div()
+                                .flex()
+                                .gap(SPACE_XS)
+                                .child(keycap("↑", &theme))
+                                .child(keycap("↓", &theme)),
+                        ))
+                    })
+                    .children(
+                        self.enter_label()
+                            .map(|label| hint(label, keys_caps("enter", &theme))),
+                    )
+                    .child(hint("Close".into(), keys_caps("escape", &theme)))
                     .child(div().flex_1())
-                    .child(format!("{rows} result{}", if rows == 1 { "" } else { "s" })),
+                    .children(count),
             )
     }
 }

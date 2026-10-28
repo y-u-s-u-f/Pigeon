@@ -3,15 +3,16 @@
 //! the field, a pick from its picker, or up and down). A new event waits
 //! for Save (⌘S); Discard, X or Escape drop it.
 
-use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime};
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime};
 use gpui::{
-    AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable as _, FontWeight, Hsla,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled, Subscription, Window, actions, anchored,
+    AnyElement, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable as _,
+    FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, ScrollHandle,
+    SharedString, StatefulInteractiveElement as _, Styled, Subscription, Window, actions,
     component::input::{Input, InputEvent, InputState, Textarea, TextareaState},
-    deferred, div,
+    component::scroll::ScrollableElement as _,
+    div,
     prelude::FluentBuilder as _,
-    px, relative,
+    px, rems,
 };
 
 use super::{
@@ -38,7 +39,12 @@ use crate::{
     ui::{
         HEADER_HEIGHT, avatar,
         composer::{RemoveLastRecipient, SuggestNext, SuggestPrev, parse_address},
-        icon, icon_button, keycap, popover_shadow, window_drag_area,
+        controls::{
+            self, ButtonKind, error_line, menu_check, panel_button, person_row, popover_surface,
+            popup, push_button, segmented, toggle_chip,
+        },
+        icon, icon_button, icon_button_small, keycap_on_accent, keys_caps, tooltip,
+        window_drag_area,
     },
 };
 
@@ -55,6 +61,127 @@ const SLOT_MINUTES: i64 = 15;
 
 /// The reminders "Add reminder" offers, in minutes before (CAL-33).
 const REMINDER_PRESETS: [u32; 10] = [0, 5, 10, 15, 30, 60, 120, 1440, 2880, 10080];
+
+/// The start and end time fields.
+const TIME_WIDTH: Pixels = px(92.);
+/// The repeat editor's number fields.
+const NUMBER_WIDTH: Pixels = px(48.);
+/// The Calendar and reminder menus, and the wider Repeat menu.
+const MENU_WIDTH: Pixels = px(220.);
+const REPEAT_MENU_WIDTH: Pixels = px(260.);
+/// The repeat's end date field.
+const UNTIL_WIDTH: Pixels = px(160.);
+/// Rows the time picker shows at once.
+const TIME_PICKER_ROWS: f32 = 8.;
+
+/// The last day an occurrence covers: an end at midnight belongs to the
+/// day before.
+fn last_day(start: NaiveDateTime, end: NaiveDateTime) -> NaiveDate {
+    (end - Duration::minutes(1)).date().max(start.date())
+}
+
+/// How many days after its start's a timed occurrence ends (ME-036).
+fn extra_days(start: NaiveDateTime, end: NaiveDateTime) -> i64 {
+    (last_day(start, end) - start.date()).num_days()
+}
+
+/// "+2 days" next to an end on a later day.
+fn extra_days_label(days: i64) -> String {
+    match days {
+        1 => "+1 day".into(),
+        n => format!("+{n} days"),
+    }
+}
+
+/// A typed end time: on the end's own day, a day later only if that would
+/// come before the start.
+fn end_at_time(start: NaiveDateTime, end: NaiveDateTime, at: NaiveTime) -> NaiveDateTime {
+    let new = last_day(start, end).and_time(at);
+    if new <= start {
+        new + Duration::days(1)
+    } else {
+        new
+    }
+}
+
+/// A picked or typed end date for a timed occurrence: the same end time on
+/// that day, never before the start.
+fn timed_end_on(start: NaiveDateTime, end: NaiveDateTime, date: NaiveDate) -> NaiveDateTime {
+    let into_day = end - time::midnight(last_day(start, end));
+    let new = time::midnight(date.max(start.date())) + into_day;
+    if new <= start {
+        new + Duration::days(1)
+    } else {
+        new
+    }
+}
+
+/// The choices of a time picker: for the start, every slot of its day; for
+/// the end, every slot after the start up to a day later, or every slot of
+/// the end's day once it's on a later one. Each end slot says how long that
+/// makes the event.
+fn time_slots(
+    field: Field,
+    start: NaiveDateTime,
+    end: NaiveDateTime,
+) -> Vec<(NaiveDateTime, Option<String>)> {
+    let day = |date: NaiveDate| {
+        (0..24 * 60 / SLOT_MINUTES)
+            .map(move |i| time::midnight(date) + Duration::minutes(i * SLOT_MINUTES))
+    };
+    if field == Field::StartTime {
+        return day(start.date()).map(|t| (t, None)).collect();
+    }
+    if extra_days(start, end) > 0 {
+        return day(last_day(start, end))
+            .filter(|&t| t > start)
+            .map(|t| (t, Some(duration_label(t - start))))
+            .collect();
+    }
+    (1..=24 * 60 / SLOT_MINUTES)
+        .map(|i| {
+            let length = Duration::minutes(i * SLOT_MINUTES);
+            (start + length, Some(duration_label(length)))
+        })
+        .collect()
+}
+
+/// Where a location opens (MB-046): its own web address, or Apple Maps.
+/// Nothing for an empty one or a video call, which Join opens.
+pub(crate) fn location_target(location: &str) -> Option<String> {
+    let location = location.trim();
+    if location.is_empty() || policy::find_video_link(location).is_some() {
+        return None;
+    }
+    let url = location.starts_with("https://") || location.starts_with("http://");
+    if url && !location.contains(char::is_whitespace) {
+        return Some(location.to_string());
+    }
+    Some(format!(
+        "https://maps.apple.com/?q={}",
+        crate::backend::auth::encode(location)
+    ))
+}
+
+/// Typed text in a date or time field that doesn't read as one yet, or
+/// what it reads as (MA-085).
+fn typed_hint(field: Field, text: &str, shown: &str) -> Option<Result<String, &'static str>> {
+    let text = text.trim();
+    if text.is_empty() || text == shown {
+        return None;
+    }
+    if field.is_date() {
+        Some(match parse_date(text, today()) {
+            Some(date) => Ok(date_label(date, today())),
+            None => Err("Not a date yet"),
+        })
+    } else {
+        Some(match parse_time(text) {
+            Some(t) => Ok(time_label(t)),
+            None => Err("Not a time yet"),
+        })
+    }
+}
 
 /// Indices into `calendars` in the order the event's calendar picker lists
 /// them: the ones the user can write to, then the greyed read-only ones,
@@ -103,8 +230,10 @@ pub enum Field {
     AllDay,
     /// The repeat menu (CAL-29).
     Repeat,
-    /// The custom repeat's end date.
+    /// The custom repeat's "every N", its end date, and its count.
+    RepeatInterval,
     RepeatUntil,
+    RepeatCount,
     Location,
     Video,
     Guests,
@@ -120,6 +249,30 @@ impl Field {
     fn is_time(self) -> bool {
         matches!(self, Field::StartTime | Field::EndTime)
     }
+
+    fn is_number(self) -> bool {
+        matches!(self, Field::RepeatInterval | Field::RepeatCount)
+    }
+
+    /// Every field that takes focus, for finding the focused one.
+    const ALL: [Field; 16] = [
+        Field::Calendar,
+        Field::Title,
+        Field::StartDate,
+        Field::StartTime,
+        Field::EndDate,
+        Field::EndTime,
+        Field::AllDay,
+        Field::Repeat,
+        Field::RepeatInterval,
+        Field::RepeatUntil,
+        Field::RepeatCount,
+        Field::Location,
+        Field::Video,
+        Field::Guests,
+        Field::Notes,
+        Field::Reminder,
+    ];
 }
 
 /// A panel edit to a repeating event waits for "This event", "This and
@@ -223,8 +376,16 @@ pub struct EventPanel {
     reminder_focus: FocusHandle,
     repeat_focus: FocusHandle,
     repeat_until: Entity<InputState>,
+    repeat_interval: Entity<InputState>,
+    repeat_count: Entity<InputState>,
     /// The custom repeat editor, while open.
     pub repeat_draft: Option<RepeatDraft>,
+    /// The time and length the event had before All day was turned on,
+    /// for turning it off again (ME-047).
+    timed: Option<(NaiveTime, Duration)>,
+    /// Typed guests that aren't addresses (MB-024).
+    guest_error: Option<String>,
+    body_scroll: ScrollHandle,
     /// The row of the open calendar or reminder menu that up, down and
     /// enter work on.
     menu_highlight: usize,
@@ -279,6 +440,8 @@ impl EventPanel {
         );
         let guests = input(Field::Guests, "Add guests", String::new());
         let repeat_until = input(Field::RepeatUntil, "Date", String::new());
+        let repeat_interval = input(Field::RepeatInterval, "1", String::new());
+        let repeat_count = input(Field::RepeatCount, "1", String::new());
         let notes = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(1, 24)
@@ -310,7 +473,12 @@ impl EventPanel {
             reminder_focus: cx.focus_handle(),
             repeat_focus: cx.focus_handle(),
             repeat_until,
+            repeat_interval,
+            repeat_count,
             repeat_draft: None,
+            timed: None,
+            guest_error: None,
+            body_scroll: ScrollHandle::new(),
             menu_highlight: 0,
             picker: None,
             picker_month: month_start(occurrence.date()),
@@ -336,6 +504,8 @@ impl EventPanel {
             Field::Video => &self.video,
             Field::Guests => &self.guests,
             Field::RepeatUntil => &self.repeat_until,
+            Field::RepeatInterval => &self.repeat_interval,
+            Field::RepeatCount => &self.repeat_count,
             Field::Notes | Field::Calendar | Field::AllDay | Field::Repeat | Field::Reminder => {
                 return None;
             }
@@ -353,47 +523,44 @@ impl EventPanel {
         }
     }
 
-    /// The fields in tab order: as they read, top to bottom.
-    fn fields(all_day: bool, editable: bool) -> &'static [Field] {
+    /// The fields in tab order: as they read, top to bottom. A timed event
+    /// ending on a later day shows its end date (ME-036); an open custom
+    /// repeat, its number and date fields.
+    fn fields(&self, event: &Event, editable: bool) -> Vec<Field> {
         if !editable {
-            &[Field::Calendar, Field::Title]
-        } else if all_day {
-            &[
-                Field::Calendar,
-                Field::Title,
-                Field::StartDate,
-                Field::EndDate,
-                Field::AllDay,
-                Field::Repeat,
-                Field::Location,
-                Field::Video,
-                Field::Guests,
-                Field::Notes,
-                Field::Reminder,
-            ]
-        } else {
-            &[
-                Field::Calendar,
-                Field::Title,
-                Field::StartDate,
-                Field::StartTime,
-                Field::EndTime,
-                Field::AllDay,
-                Field::Repeat,
-                Field::Location,
-                Field::Video,
-                Field::Guests,
-                Field::Notes,
-                Field::Reminder,
-            ]
+            return vec![Field::Calendar, Field::Title];
         }
+        let (start, end) = self.times(event);
+        let mut fields = vec![Field::Calendar, Field::Title, Field::StartDate];
+        if event.all_day {
+            fields.push(Field::EndDate);
+        } else if extra_days(start, end) > 0 {
+            fields.extend([Field::StartTime, Field::EndDate, Field::EndTime]);
+        } else {
+            fields.extend([Field::StartTime, Field::EndTime]);
+        }
+        fields.extend([Field::AllDay, Field::Repeat]);
+        if let Some(draft) = &self.repeat_draft {
+            fields.push(Field::RepeatInterval);
+            match draft.end {
+                RepeatEnd::On(_) => fields.push(Field::RepeatUntil),
+                RepeatEnd::After(_) => fields.push(Field::RepeatCount),
+                RepeatEnd::Never => {}
+            }
+        }
+        fields.extend([
+            Field::Location,
+            Field::Video,
+            Field::Guests,
+            Field::Notes,
+            Field::Reminder,
+        ]);
+        fields
     }
 
     fn focused_field(&self, window: &Window, cx: &gpui::App) -> Option<Field> {
-        Self::fields(false, true)
-            .iter()
-            .copied()
-            .chain([Field::EndDate])
+        Field::ALL
+            .into_iter()
             .find(|&f| self.focus_handle_of(f, cx).is_focused(window))
     }
 
@@ -418,14 +585,9 @@ impl EventPanel {
     fn sync_times(&mut self, event: &Event, window: &mut Window, cx: &mut Context<CalendarView>) {
         let (start, end) = self.times(event);
         let today = today();
-        let last_day = if event.all_day {
-            (end - Duration::days(1)).date().max(start.date())
-        } else {
-            end.date()
-        };
         let values = [
             (&self.start_date, date_label(start.date(), today)),
-            (&self.end_date, date_label(last_day, today)),
+            (&self.end_date, date_label(last_day(start, end), today)),
             (&self.start_time, time_label(start.time())),
             (&self.end_time, time_label(end.time())),
         ];
@@ -829,7 +991,14 @@ impl CalendarView {
                         let notes = panel.notes.read(cx).value().to_string();
                         self.edit_event(cx, |e| e.description = notes);
                     }
-                    Field::Guests => self.update_guest_suggestions(cx),
+                    Field::Guests => {
+                        if let Some(panel) = &mut self.panel {
+                            panel.guest_error = None;
+                        }
+                        self.update_guest_suggestions(cx)
+                    }
+                    // The hint under the field follows the typing.
+                    f if f.is_date() || f.is_time() => cx.notify(),
                     _ => {}
                 }
             }
@@ -842,13 +1011,13 @@ impl CalendarView {
                 }
                 let (start, end) = panel.times(event);
                 let shown = if field == Field::EndDate {
-                    end - Duration::days(1)
+                    last_day(start, end)
                 } else {
-                    start
+                    start.date()
                 };
                 if let Some(panel) = &mut self.panel {
                     panel.picker = Some(field);
-                    panel.picker_month = month_start(shown.date());
+                    panel.picker_month = month_start(shown);
                 }
                 self.scroll_time_picker();
                 cx.notify();
@@ -859,6 +1028,9 @@ impl CalendarView {
                 }
                 if field == Field::RepeatUntil {
                     self.commit_repeat_until(window, cx);
+                }
+                if field.is_number() {
+                    self.commit_number(field, window, cx);
                 }
                 if let Some(panel) = &mut self.panel {
                     if panel.picker == Some(field) {
@@ -875,6 +1047,7 @@ impl CalendarView {
             } => match field {
                 Field::Guests => self.commit_guest(window, cx),
                 Field::RepeatUntil => self.commit_repeat_until(window, cx),
+                f if f.is_number() => self.commit_number(f, window, cx),
                 f if f.is_date() || f.is_time() => {
                     self.commit_field(f, window, cx);
                     self.move_field(true, window, cx);
@@ -908,33 +1081,50 @@ impl CalendarView {
                 let start = date.and_time(start.time());
                 (start, start + duration)
             }),
-            Field::EndDate => parse_date(&text, today).map(|date| {
+            Field::EndDate if all_day => parse_date(&text, today).map(|date| {
                 let end = time::midnight(date + Duration::days(1));
                 (start, end.max(start + Duration::days(1)))
             }),
+            Field::EndDate => {
+                parse_date(&text, today).map(|date| (start, timed_end_on(start, end, date)))
+            }
             Field::StartTime if !all_day => parse_time(&text).map(|t| {
                 let start = start.date().and_time(t);
                 (start, start + duration)
             }),
-            Field::EndTime if !all_day => parse_time(&text).map(|t| {
-                let mut end = start.date().and_time(t);
-                if end <= start {
-                    end += Duration::days(1);
-                }
-                (start, end)
-            }),
+            // The end keeps its day (ME-036).
+            Field::EndTime if !all_day => {
+                parse_time(&text).map(|t| (start, end_at_time(start, end, t)))
+            }
             _ => None,
         };
         match change {
             Some((new_start, new_end)) if (new_start, new_end) != (start, end) => {
-                self.before_panel_edit();
-                self.retime_occurrence(&id, start, new_start, new_end, window, cx)
+                self.retime_from_panel(&id, (start, end), (new_start, new_end), window, cx)
             }
             _ => self.sync_panel_times(window, cx),
         }
     }
 
-    /// Up and down in a date field move a day; in a time field, a slot.
+    /// Every change of the panel's dates and times goes through here.
+    fn retime_from_panel(
+        &mut self,
+        id: &str,
+        before: (NaiveDateTime, NaiveDateTime),
+        after: (NaiveDateTime, NaiveDateTime),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.before_panel_edit();
+        self.retime_occurrence(id, before.0, after.0, after.1, window, cx);
+        // On the undo stack (MA-071); a series' change waits for its scope.
+        if !self.asking_scope() {
+            self.emit_retimed(id, before, after, cx);
+        }
+    }
+
+    /// Up and down in a date field move a day; in a time field, a slot; in
+    /// a number field, one.
     fn step_field(&mut self, delta: i64, window: &mut Window, cx: &mut Context<Self>) {
         let Some((panel, event)) = self.panel_event() else {
             return;
@@ -942,13 +1132,18 @@ impl CalendarView {
         let Some(field) = panel.focused_field(window, cx) else {
             return cx.propagate();
         };
+        if field.is_number() {
+            // Up is more.
+            return self.step_number(field, -delta as i32, window, cx);
+        }
         let (start, end) = panel.times(event);
         let id = event.id.clone();
         let day = Duration::days(delta);
         let slot = Duration::minutes(SLOT_MINUTES * delta);
         let (new_start, new_end) = match field {
             Field::StartDate => (start + day, end + day),
-            Field::EndDate => (start, (end + day).max(start + Duration::days(1))),
+            Field::EndDate if event.all_day => (start, (end + day).max(start + Duration::days(1))),
+            Field::EndDate => (start, timed_end_on(start, end, last_day(start, end) + day)),
             Field::StartTime => (start + slot, end + slot),
             Field::EndTime => (
                 start,
@@ -956,16 +1151,12 @@ impl CalendarView {
             ),
             _ => return cx.propagate(),
         };
-        self.before_panel_edit();
-        self.retime_occurrence(&id, start, new_start, new_end, window, cx);
+        self.retime_from_panel(&id, (start, end), (new_start, new_end), window, cx);
         if let Some(panel) = &mut self.panel {
-            panel.picker_month = month_start(
-                match field {
-                    Field::EndDate => new_end - Duration::days(1),
-                    _ => new_start,
-                }
-                .date(),
-            );
+            panel.picker_month = month_start(match field {
+                Field::EndDate => last_day(new_start, new_end),
+                _ => new_start.date(),
+            });
         }
         self.scroll_time_picker();
     }
@@ -982,7 +1173,7 @@ impl CalendarView {
         let Some((panel, event)) = self.panel_event() else {
             return;
         };
-        let fields = EventPanel::fields(event.all_day, self.access_of(event) == Access::Edit);
+        let fields = panel.fields(event, self.access_of(event) == Access::Edit);
         let current = panel
             .focused_field(window, cx)
             .and_then(|f| fields.iter().position(|&x| x == f));
@@ -1047,8 +1238,9 @@ impl CalendarView {
                 .unwrap_or(0),
             Menu::Repeat => {
                 let start = self.panel.as_ref().map_or(event.start, |p| p.occurrence);
-                repeat::preset_index(event.recurrence.as_ref(), start.date())
-                    .unwrap_or(repeat::presets(start.date()).len())
+                let presets = repeat::presets(start.date());
+                repeat::preset_index(&presets, event.recurrence.as_ref(), start.date())
+                    .unwrap_or(presets.len())
             }
             _ => 0,
         };
@@ -1198,14 +1390,20 @@ impl CalendarView {
             return;
         };
         let (start, end) = panel.times(event);
-        let ix = match panel.picker {
-            Some(Field::StartTime) => time::minutes_into(start.date(), start) / SLOT_MINUTES,
-            Some(Field::EndTime) => (end - start).num_minutes() / SLOT_MINUTES - 1,
+        let (field, current) = match panel.picker {
+            Some(Field::StartTime) => (Field::StartTime, start),
+            Some(Field::EndTime) => (Field::EndTime, end),
             _ => return,
         };
-        // Centered in the picker, which is 240 tall with 30 tall rows.
-        let y = (ix.max(0) as f32 * 30. + 4. + 15. - 120.).max(0.);
-        panel.picker_scroll.set_offset(gpui::point(px(0.), px(-y)));
+        let ix = time_slots(field, start, end)
+            .iter()
+            .position(|&(t, _)| t >= current)
+            .unwrap_or(0);
+        // Near the middle of the picker.
+        let above = (TIME_PICKER_ROWS / 2.) as usize - 1;
+        panel
+            .picker_scroll
+            .scroll_to_top_of_item(ix.saturating_sub(above));
     }
 
     fn set_date(
@@ -1220,15 +1418,16 @@ impl CalendarView {
         };
         let (start, end) = panel.times(event);
         let id = event.id.clone();
-        let (new_start, new_end) = if field == Field::EndDate {
+        let (new_start, new_end) = if field == Field::EndDate && event.all_day {
             let end = time::midnight(date + Duration::days(1));
             (start, end.max(start + Duration::days(1)))
+        } else if field == Field::EndDate {
+            (start, timed_end_on(start, end, date))
         } else {
             let shift = date - start.date();
             (start + shift, end + shift)
         };
-        self.before_panel_edit();
-        self.retime_occurrence(&id, start, new_start, new_end, window, cx);
+        self.retime_from_panel(&id, (start, end), (new_start, new_end), window, cx);
         window.focus(&self.focus_handle, cx);
     }
 
@@ -1249,8 +1448,7 @@ impl CalendarView {
         } else {
             (value, value + (end - start))
         };
-        self.before_panel_edit();
-        self.retime_occurrence(&id, start, new_start, new_end, window, cx);
+        self.retime_from_panel(&id, (start, end), (new_start, new_end), window, cx);
         window.focus(&self.focus_handle, cx);
     }
 
@@ -1266,16 +1464,25 @@ impl CalendarView {
         let (start, end) = panel.times(event);
         let id = event.id.clone();
         let all_day = !event.all_day;
+        // Off again: the time it had, else 9 AM for the usual length.
+        let timed = panel.timed.unwrap_or_else(|| {
+            (
+                NaiveTime::from_hms_opt(9, 0, 0).unwrap_or_default(),
+                Duration::minutes(self.event_minutes() as i64),
+            )
+        });
         let (new_start, new_end) = if all_day {
-            let last = (end - Duration::minutes(1)).date().max(start.date());
             (
                 time::midnight(start.date()),
-                time::midnight(last + Duration::days(1)),
+                time::midnight(last_day(start, end) + Duration::days(1)),
             )
         } else {
-            let start = time::at(start.date(), 9, 0);
-            (start, start + Duration::hours(1))
+            let start = start.date().and_time(timed.0);
+            (start, start + timed.1)
         };
+        if let Some(panel) = &mut self.panel {
+            panel.timed = all_day.then_some((start.time(), end - start));
+        }
         self.before_panel_edit();
         let before = self.event(&id).cloned();
         if let Some(event) = self.event_mut(&id) {
@@ -1347,16 +1554,57 @@ impl CalendarView {
         }
     }
 
-    /// The end date field shows the draft's.
+    /// The draft's fields show its interval, end date and count.
     fn sync_repeat_until(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(panel) = &self.panel else { return };
-        let Some(RepeatEnd::On(day)) = panel.repeat_draft.as_ref().map(|d| d.end) else {
+        let Some(draft) = &panel.repeat_draft else {
             return;
         };
-        let label = date_label(day, today());
-        let input = panel.repeat_until.clone();
-        if input.read(cx).value() != label {
-            input.update(cx, |input, cx| input.set_value(label, window, cx));
+        let mut values = vec![(panel.repeat_interval.clone(), draft.interval.to_string())];
+        match draft.end {
+            RepeatEnd::On(day) => {
+                values.push((panel.repeat_until.clone(), date_label(day, today())))
+            }
+            RepeatEnd::After(n) => values.push((panel.repeat_count.clone(), n.to_string())),
+            RepeatEnd::Never => {}
+        }
+        for (input, value) in values {
+            if input.read(cx).value() != value {
+                input.update(cx, |input, cx| input.set_value(value, window, cx));
+            }
+        }
+    }
+
+    /// A number typed into the repeat editor, kept in bounds; what isn't a
+    /// number is put back (MB-031).
+    fn commit_number(&mut self, field: Field, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = self.panel.as_ref().and_then(|p| p.input(field)) else {
+            return;
+        };
+        match input.read(cx).value().trim().parse::<i64>() {
+            Ok(n) if field == Field::RepeatInterval => {
+                self.edit_draft(window, cx, |d| d.set_interval(n))
+            }
+            Ok(n) => self.edit_draft(window, cx, |d| d.set_count(n)),
+            Err(_) => self.sync_repeat_until(window, cx),
+        }
+    }
+
+    /// −/+ and up/down on a number of the repeat editor; Shift-click steps
+    /// by ten.
+    fn step_number(
+        &mut self,
+        field: Field,
+        delta: i32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // What's typed counts first.
+        self.commit_number(field, window, cx);
+        if field == Field::RepeatInterval {
+            self.edit_draft(window, cx, |d| d.step_interval(delta));
+        } else {
+            self.edit_draft(window, cx, |d| d.step_count(delta));
         }
     }
 
@@ -1372,6 +1620,15 @@ impl CalendarView {
 
     fn apply_custom_repeat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_repeat_until(window, cx);
+        self.commit_number(Field::RepeatInterval, window, cx);
+        if self
+            .panel
+            .as_ref()
+            .and_then(|p| p.repeat_draft.as_ref())
+            .is_some_and(|d| matches!(d.end, RepeatEnd::After(_)))
+        {
+            self.commit_number(Field::RepeatCount, window, cx);
+        }
         let Some(draft) = self.panel.as_mut().and_then(|p| p.repeat_draft.take()) else {
             return;
         };
@@ -1564,6 +1821,58 @@ impl CalendarView {
         self.open_menu_from_key(Field::Reminder, window, cx);
     }
 
+    /// The event an action from the panel, the menu or ⌘K is about: the
+    /// panel's, else the selected one.
+    fn action_event(&self) -> Option<&Event> {
+        let id = match (&self.panel, &self.selected) {
+            (Some(panel), _) => &panel.event_id,
+            (None, Some(selected)) => &selected.event_id,
+            (None, None) => return None,
+        };
+        self.event(id)
+    }
+
+    /// The event in Google Calendar, its link (MB-061).
+    fn event_link(&self) -> Option<String> {
+        self.action_event()
+            .map(|e| e.html_link.trim().to_string())
+            .filter(|l| !l.is_empty())
+    }
+
+    /// Copy Link to Event (MB-061).
+    pub(crate) fn copy_link(&mut self, _: &CopyLink, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(link) = self.event_link() {
+            cx.write_to_clipboard(ClipboardItem::new_string(link));
+        }
+    }
+
+    /// Open in Google Calendar (MB-061).
+    pub(crate) fn open_in_google_calendar(
+        &mut self,
+        _: &OpenInGoogleCalendar,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(link) = self.event_link() {
+            cx.open_url(&link);
+        }
+    }
+
+    /// Open Location in Maps (MB-046).
+    pub(crate) fn open_location(
+        &mut self,
+        _: &OpenLocation,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(target) = self
+            .action_event()
+            .and_then(|e| location_target(&e.location))
+        {
+            cx.open_url(&target);
+        }
+    }
+
     // Guests.
 
     fn update_guest_suggestions(&mut self, cx: &mut Context<Self>) {
@@ -1608,27 +1917,46 @@ impl CalendarView {
         self.update_guest_suggestions(cx);
     }
 
-    /// Enter in the guest field: the highlighted suggestion, or the address
-    /// as typed. A typed address wins unless the user picked a suggestion.
+    /// Enter in the guest field: the highlighted suggestion, or the
+    /// addresses as typed, split on commas as in the composer. A typed
+    /// address wins unless the user picked a suggestion. What isn't an
+    /// address stays in the field, with an error under it (MB-024).
     fn commit_guest(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(panel) = &self.panel else { return };
         let text = panel.guests.read(cx).value().trim().to_string();
         if text.is_empty() {
             return;
         }
-        let contact = match panel.suggestions.get(panel.highlighted) {
-            Some(&ix) if panel.navigated || !text.contains('@') => {
-                Some(self.book.borrow().contact(ix).clone())
+        if let Some(&ix) = panel.suggestions.get(panel.highlighted)
+            && (panel.navigated || !text.contains('@'))
+        {
+            let contact = self.book.borrow().contact(ix).clone();
+            return self.add_guest(contact, window, cx);
+        }
+        let mut invalid = Vec::new();
+        let mut added = Vec::new();
+        for part in text.split([',', ';', '\n']).map(str::trim) {
+            if part.is_empty() {
+                continue;
             }
-            _ => self
-                .book
-                .borrow()
-                .find(&text)
-                .cloned()
-                .or_else(|| parse_address(&text)),
-        };
-        if let Some(contact) = contact {
+            let found = self.book.borrow().find(part).cloned();
+            match found.or_else(|| parse_address(part)) {
+                Some(contact) => added.push(contact),
+                None => invalid.push(part.to_string()),
+            }
+        }
+        for contact in added {
             self.add_guest(contact, window, cx);
+        }
+        if let Some(first) = invalid.first() {
+            let error = format!("“{first}” isn't an email address");
+            if let Some(panel) = &mut self.panel {
+                let guests = panel.guests.clone();
+                let rest = invalid.join(", ");
+                guests.update(cx, |input, cx| input.set_value(rest, window, cx));
+                panel.guest_error = Some(error);
+            }
+            cx.notify();
         }
     }
 
@@ -1695,8 +2023,9 @@ impl CalendarView {
         let event = self.event(&panel.event_id)?;
         let color = self.data.color_of(event);
         let accent = theme.event_accent(color, false);
-        let access = self.access_of(event);
-        let editable = access == Access::Edit;
+        // Worked out once for every row below (MC-058).
+        let editable = self.access_of(event) == Access::Edit;
+        let join = policy::video_link(event).map(str::to_string);
         // Why the fields don't take typing (CAL-22).
         let read_only_note = self.refusal_of(event).map(|why| {
             div()
@@ -1708,6 +2037,7 @@ impl CalendarView {
                 .text_color(theme.text_muted)
                 .child(why)
         });
+        let has_link = !event.html_link.trim().is_empty();
 
         let header = window_drag_area(div().id("event-panel-header"))
             .h(HEADER_HEIGHT)
@@ -1719,6 +2049,23 @@ impl CalendarView {
             .pr(SPACE_MD)
             .child(self.render_calendar_picker(event, &theme, window, cx))
             .child(div().flex_1())
+            // The event in Google Calendar (MB-061).
+            .when(has_link && !is_new, |d| {
+                d.child(icon_button(
+                    "event-copy-link",
+                    Icon::Link,
+                    "Copy link to event",
+                    Box::new(CopyLink),
+                    &theme,
+                ))
+                .child(icon_button(
+                    "event-open-google",
+                    Icon::Calendar,
+                    "Open in Google Calendar",
+                    Box::new(OpenInGoogleCalendar),
+                    &theme,
+                ))
+            })
             .child(icon_button(
                 "event-close",
                 Icon::X,
@@ -1742,22 +2089,17 @@ impl CalendarView {
                     .child(
                         div()
                             .mt(SPACE_XS)
-                            .w(px(4.))
-                            .h(px(24.))
+                            .w(SPACE_XS)
+                            .h(CONTROL_SM)
                             .flex_none()
                             .rounded_full()
                             .bg(accent),
                     )
                     .child(
-                        div().flex_1().min_w_0().child(
-                            Input::new(&panel.title)
-                                .readonly(!editable)
-                                .appearance(false)
-                                .px(px(0.))
-                                .h(px(32.))
-                                .text_size(TEXT_XL)
-                                .font_weight(FontWeight::SEMIBOLD),
-                        ),
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(self.render_panel_title(panel, editable, &theme, window, cx)),
                     ),
             )
             .children(
@@ -1770,15 +2112,12 @@ impl CalendarView {
                             .items_start()
                             .gap(SPACE_SM)
                             .text_size(TEXT_SM)
-                            .line_height(relative(1.5))
+                            .line_height(LINE_UI)
                             .text_color(theme.text_muted)
                             .child(
-                                div()
+                                icon(Icon::Repeat, ICON_SM, theme.text_faint)
                                     .flex_none()
-                                    .h(px(18.))
-                                    .flex()
-                                    .items_center()
-                                    .child(icon(Icon::Repeat, px(13.), theme.text_faint)),
+                                    .mt(SPACE_2XS),
                             )
                             .child(div().flex_1().min_w_0().child(line))
                     }),
@@ -1816,32 +2155,40 @@ impl CalendarView {
 
         // Without a way to change them, empty ones aren't shown.
         let sections = [
-            self.render_place(panel, event, &theme, window, cx),
-            self.render_guests(panel, event, &theme, window, cx),
-            self.render_notes(panel, event, &theme, window, cx),
+            self.render_place(panel, event, editable, join, &theme, window, cx),
+            self.render_guests(panel, event, editable, &theme, window, cx),
+            self.render_notes(panel, event, editable, &theme, window, cx),
         ]
         .into_iter()
         .flatten()
         .flat_map(|s| [divider(&theme).into_any_element(), s]);
 
         let body = div()
-            .id("event-panel-body")
+            .relative()
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
-            .pb(SPACE_XL)
-            .child(title)
-            .child(divider(&theme))
-            .child(self.render_when(panel, event, &theme, window, cx))
-            .when(self.can_repeat(event), |d| {
-                d.child(self.render_repeat(panel, event, &theme, window, cx))
-            })
-            .children(sections)
-            .child(divider(&theme))
-            .child(self.render_options(event, &theme, window, cx))
-            // A new event has Discard instead.
-            .when(!is_new, |d| d.child(self.render_delete(event, &theme, cx)));
+            .child(
+                div()
+                    .id("event-panel-body")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&panel.body_scroll)
+                    .pb(SPACE_XL)
+                    .child(title)
+                    .child(divider(&theme))
+                    .child(self.render_when(panel, event, editable, &theme, window, cx))
+                    .when(self.can_repeat(event), |d| {
+                        d.child(self.render_repeat(panel, event, &theme, window, cx))
+                    })
+                    .children(sections)
+                    .child(divider(&theme))
+                    .child(self.render_options(event, editable, &theme, window, cx))
+                    // A new event has Discard instead.
+                    .when(!is_new, |d| d.child(self.render_delete(event, &theme, cx))),
+            )
+            .vertical_scrollbar(&panel.body_scroll);
 
+        let footer = self.render_footer(event, is_new, editable, &theme, window, cx);
         div()
             .key_context(EVENT_PANEL)
             .on_action(cx.listener(Self::next_field))
@@ -1854,6 +2201,9 @@ impl CalendarView {
             .on_action(cx.listener(Self::activate))
             .on_action(cx.listener(Self::menu_next))
             .on_action(cx.listener(Self::menu_prev))
+            .id("event-panel")
+            .role(gpui::Role::Complementary)
+            .aria_label("Event")
             .relative()
             .w(px(PANEL_WIDTH))
             .h_full()
@@ -1865,23 +2215,157 @@ impl CalendarView {
             .border_color(theme.border)
             .child(header)
             .child(body)
-            .when(is_new || editable, |d| {
-                d.child(self.render_footer(is_new, self.panel_dirty(), &theme, window))
-            })
+            .children(footer)
             .into_any_element()
             .into()
     }
 
-    /// Save and Discard for a new event; Done for one whose edits already
-    /// went as they were made, with Discard once there's something to take
+    /// The title: the field while it's being edited, else the whole title
+    /// wrapped, up to four lines (ME-037). A click edits it.
+    fn render_panel_title(
+        &self,
+        panel: &EventPanel,
+        editable: bool,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if editable && panel.is_focused(Field::Title, window, cx) {
+            return Input::new(&panel.title)
+                .appearance(false)
+                .px(px(0.))
+                .h(CONTROL_LG)
+                .text_size(TEXT_TITLE2)
+                .font_weight(FontWeight::SEMIBOLD)
+                .into_any_element();
+        }
+        let text = panel.title.read(cx).value().trim().to_string();
+        let empty = text.is_empty();
+        let shown = match (empty, editable) {
+            (false, _) => text,
+            (true, true) => "Add title".to_string(),
+            (true, false) => "Untitled event".to_string(),
+        };
+        let input = panel.title.clone();
+        div()
+            .id("event-title")
+            .role(gpui::Role::Heading)
+            .aria_level(2)
+            .aria_label(shown.clone())
+            .min_h(CONTROL_LG)
+            .py(SPACE_XS)
+            .text_size(TEXT_TITLE2)
+            .line_height(LINE_UI)
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(if empty { theme.text_faint } else { theme.text })
+            .line_clamp(4)
+            .child(shown)
+            .when(editable, |d| {
+                d.cursor_text().on_click(move |_, window, cx| {
+                    input.update(cx, |input, cx| input.focus(window, cx))
+                })
+            })
+            .into_any_element()
+    }
+
+    /// The footer: the user's answer to an invite (ME-035), then Save and
+    /// Discard for a new event, or Done for one whose edits already went
+    /// as they were made, with Discard once there's something to take
     /// back.
     fn render_footer(
         &self,
+        event: &Event,
         is_new: bool,
-        dirty: bool,
+        editable: bool,
         theme: &Theme,
-        window: &Window,
-    ) -> impl IntoElement {
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let rsvp = event
+            .my_status(&self.data.account)
+            .filter(|_| !is_new)
+            .map(|status| self.render_rsvp(event, status, theme, window, cx));
+        let buttons =
+            (is_new || editable).then(|| self.render_footer_buttons(is_new, theme, window));
+        if rsvp.is_none() && buttons.is_none() {
+            return None;
+        }
+        Some(
+            div()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .border_t_1()
+                .border_color(theme.border)
+                .children(rsvp)
+                .children(buttons)
+                .into_any_element(),
+        )
+    }
+
+    /// "Going?" Yes, Maybe or No; highlighted until answered.
+    fn render_rsvp(
+        &self,
+        event: &Event,
+        status: RsvpStatus,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        const ANSWERS: [RsvpStatus; 3] = [
+            RsvpStatus::Accepted,
+            RsvpStatus::Tentative,
+            RsvpStatus::Declined,
+        ];
+        let unanswered = status == RsvpStatus::NeedsAction;
+        // None chosen while unanswered: the thumb sits past the end, clipped.
+        let selected = ANSWERS
+            .iter()
+            .position(|&s| s == status)
+            .unwrap_or(ANSWERS.len());
+        let id = event.id.clone();
+        let view = cx.entity().downgrade();
+        let control = segmented(
+            SharedString::from(format!("rsvp-{}", event.id)),
+            "Going?",
+            &["Yes", "Maybe", "No"],
+            selected,
+            theme,
+            window,
+            cx,
+            move |ix, _, cx| {
+                view.update(cx, |this, cx| this.set_rsvp(&id, ANSWERS[ix], cx))
+                    .ok();
+            },
+        )
+        .overflow_hidden()
+        .tooltip(|window, cx| tooltip("Yes ⇧Y, Maybe ⇧M, No ⇧N").build(window, cx));
+        div()
+            .px(SPACE_LG)
+            .py(SPACE_SM)
+            .flex()
+            .items_center()
+            .gap(SPACE_SM)
+            .when(unanswered, |d| d.bg(theme.selected_bg))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(TEXT_BASE)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(if unanswered {
+                        theme.text
+                    } else {
+                        theme.text_muted
+                    })
+                    .child("Going?"),
+            )
+            .child(control)
+            .into_any_element()
+    }
+
+    fn render_footer_buttons(&self, is_new: bool, theme: &Theme, window: &Window) -> AnyElement {
         // The preset decides Discard's keys (⇧⌘D or ⇧⌘⌫).
         let discard_keys = crate::ui::shortcuts_help::live_bindings(
             &DiscardEventChanges,
@@ -1890,45 +2374,17 @@ impl CalendarView {
         )
         .first()
         .map(|binding| crate::ui::binding_caps(binding, theme));
-        let button = |id: &'static str, label: &'static str, primary: bool| {
-            focusable_control(div().id(id), theme)
-                .role(gpui::Role::Button)
-                .aria_label(label)
-                .h(HIT_TARGET)
-                .px(SPACE_MD)
-                .flex()
-                .items_center()
-                .gap(SPACE_SM)
-                .rounded(RADIUS_MD)
-                .text_size(TEXT_SM)
-                .font_weight(FontWeight::MEDIUM)
-                .map(|d| {
-                    if primary {
-                        d.bg(theme.accent)
-                            .text_color(theme.accent_text)
-                            .hover(|s| s.opacity(0.9))
-                    } else {
-                        d.text_color(theme.text_muted)
-                            .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
-                    }
-                })
-                .child(label)
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        };
         let (label, note) = if is_new {
             ("Save", "Not saved yet")
         } else {
             ("Done", "Changes save as you make them")
         };
         div()
-            .flex_none()
             .px(SPACE_LG)
             .py(SPACE_SM)
             .flex()
             .items_center()
             .gap(SPACE_SM)
-            .border_t_1()
-            .border_color(theme.border)
             .child(
                 div()
                     .flex_1()
@@ -1940,14 +2396,14 @@ impl CalendarView {
             )
             .when(is_new, |d| {
                 d.child(
-                    button("event-discard", "Discard", false)
-                        .child(keycap("esc", theme))
+                    panel_button("event-discard", "Discard", false, theme)
+                        .child(keys_caps("escape", theme))
                         .on_click(|_, window, cx| window.dispatch_action(Box::new(CloseEvent), cx)),
                 )
             })
-            .when(!is_new && dirty, |d| {
+            .when(!is_new && self.panel_dirty(), |d| {
                 d.child(
-                    button("event-discard", "Discard", false)
+                    panel_button("event-discard", "Discard", false, theme)
                         .children(discard_keys)
                         .on_click(|_, window, cx| {
                             window.dispatch_action(Box::new(DiscardEventChanges), cx)
@@ -1955,15 +2411,11 @@ impl CalendarView {
                 )
             })
             .child(
-                button("event-save", label, true)
-                    .child(
-                        div()
-                            .text_size(TEXT_XS)
-                            .text_color(theme.accent_text.alpha(0.75))
-                            .child("⌘S"),
-                    )
+                panel_button("event-save", label, true, theme)
+                    .child(keycap_on_accent("⌘S", theme))
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(SaveEvent), cx)),
             )
+            .into_any_element()
     }
 
     /// "Repeats every week", or for an occurrence, the series it belongs
@@ -2000,19 +2452,20 @@ impl CalendarView {
                 .gap(SPACE_SM)
                 .rounded(RADIUS_MD)
                 .border_1()
-                .border_color(theme.danger.alpha(0.35))
+                .border_color(theme.border)
                 .child(
                     div()
                         .flex()
                         .items_center()
+                        .gap(SPACE_SM)
                         .child(
                             div()
                                 .flex_1()
                                 .text_size(TEXT_BASE)
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child("Delete repeating event"),
+                                .child("Delete this repeating event?"),
                         )
-                        .child(keycap("esc", theme)),
+                        .child(keys_caps("escape", theme)),
                 )
                 .child(self.render_prompt_choices(prompt.kind, theme, cx))
                 .into_any_element();
@@ -2022,12 +2475,12 @@ impl CalendarView {
             Access::ReadOnly => return div().into_any_element(),
             Access::Edit if is_organizer(event, self.me()) => {
                 if event.is_series() {
-                    "Delete event…"
+                    "Delete Event…"
                 } else {
-                    "Delete event"
+                    "Delete Event"
                 }
             }
-            _ => "Decline and remove",
+            _ => "Decline and Remove",
         };
         div()
             .px(SPACE_XL)
@@ -2036,25 +2489,21 @@ impl CalendarView {
                 focusable_control(div().id("event-delete-button"), theme)
                     .role(gpui::Role::Button)
                     .aria_label(label)
-                    .h(HIT_TARGET)
+                    .h(CONTROL_MD)
                     .px(SPACE_MD)
                     .flex()
                     .items_center()
                     .gap(SPACE_SM)
                     .rounded(RADIUS_MD)
-                    .text_size(TEXT_BASE)
+                    .text_size(TEXT_SM)
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_danger)
-                    .hover(|s| s.bg(theme.danger.alpha(0.1)))
-                    .child(icon(Icon::Trash, px(15.), theme.text_danger))
+                    .hover(|s| s.bg(theme.hover_bg))
+                    .active(|s| s.bg(theme.selected_bg))
+                    .child(icon(Icon::Trash, ICON_MD, theme.text_danger))
                     .child(label)
                     .child(div().flex_1())
-                    .child(
-                        div()
-                            .text_size(TEXT_XS)
-                            .text_color(theme.text_danger)
-                            .child("⌫"),
-                    )
+                    .child(keys_caps("backspace", theme))
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(DeleteEvent), cx)),
             )
             .into_any_element()
@@ -2077,29 +2526,37 @@ impl CalendarView {
                 .enumerate()
                 .map(|(ix, calendar)| {
                     let current = calendar.id == event.calendar;
-                    let writable = calendar.writable();
-                    menu_row(("calendar-choice", ix), ix == highlight, theme)
-                        .role(gpui::Role::MenuItem)
-                        .aria_label(calendar.name.clone())
-                        .when(!writable, |d| d.text_color(theme.text_disabled))
-                        .child(div().size(px(10.)).rounded_full().bg(calendar.color))
-                        .child(div().flex_1().child(calendar.name.clone()))
-                        .when(current, |d| {
-                            d.child(icon(Icon::Check, px(14.), theme.accent))
-                        })
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.choose_menu_row(Menu::EventCalendar, ix, window, cx)
-                        }))
+                    controls::menu_row(
+                        ("calendar-choice", ix),
+                        calendar.name.clone(),
+                        current,
+                        ix == highlight,
+                        theme,
+                    )
+                    .when(!calendar.writable(), |d| d.text_color(theme.text_disabled))
+                    .when(ix == highlight, |d| d.aria_active_descendant())
+                    .child(menu_check(current, theme))
+                    .child(div().size(SPACE_SM).rounded_full().bg(calendar.color))
+                    .child(div().flex_1().truncate().child(calendar.name.clone()))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.choose_menu_row(Menu::EventCalendar, ix, window, cx)
+                    }))
                 });
-            dropdown(px(34.), px(210.), theme).children(rows)
+            controls::dropdown("event-calendar-menu", "Calendar", MENU_WIDTH, theme)
+                .mt(SPACE_XS)
+                .children(rows)
         });
         let focus = self.panel.as_ref().map(|p| p.calendar_focus.clone());
+        let movable = self.can_move(event);
+        let name = self.calendar_name(event);
         div()
+            .min_w_0()
             .child(
                 control(div().id("event-calendar"), focus, theme)
-                    .h(px(28.))
-                    .pl(SPACE_SM)
-                    .pr(SPACE_SM)
+                    .role(gpui::Role::ComboBox)
+                    .aria_label(format!("Calendar: {name}"))
+                    .h(CONTROL_MD)
+                    .px(SPACE_SM)
                     .flex()
                     .items_center()
                     .gap(SPACE_SM)
@@ -2108,21 +2565,22 @@ impl CalendarView {
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_muted)
                     .when(open, |d| d.bg(theme.selected_bg))
-                    .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
-                    .child(div().size(px(10.)).rounded_full().bg(color))
-                    .child(self.calendar_name(event))
-                    .when(self.can_move(event), |d| {
-                        d.child(icon(Icon::ChevronDown, px(13.), theme.text_faint))
+                    .when(movable, |d| {
+                        d.hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
+                            .active(|s| s.bg(theme.selected_bg))
                     })
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(div().flex_none().size(SPACE_SM).rounded_full().bg(color))
+                    .child(div().min_w_0().truncate().child(name))
+                    .when(movable, |d| {
+                        d.child(icon(Icon::ChevronDown, ICON_SM, theme.text_faint))
+                    })
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.click_control_menu(Menu::EventCalendar, cx)
                     })),
             )
             .when(open, |d| d.child(self.menu_backdrop(window, cx)))
-            .children(menu.map(|m| {
-                deferred(anchored().snap_to_window_with_margin(px(8.)).child(m)).with_priority(2)
-            }))
+            .children(menu.map(popup))
             .into_any_element()
     }
 
@@ -2130,16 +2588,28 @@ impl CalendarView {
         &self,
         panel: &EventPanel,
         event: &Event,
+        editable: bool,
         theme: &Theme,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (start, end) = panel.times(event);
+        let today = today();
+        let days = extra_days(start, end);
+        // Set in another zone than this Mac's: times show at this Mac's
+        // (ME-095).
+        let zone = event.foreign_zone().filter(|_| !event.all_day).map(|z| {
+            div()
+                .px(SPACE_SM)
+                .pt(SPACE_2XS)
+                .text_size(TEXT_SM)
+                .text_color(theme.text_faint)
+                .child(format!("Set in {z}"))
+        });
         // Nothing to change: the times as plain text.
-        if self.access_of(event) != Access::Edit {
-            let today = today();
+        if !editable {
+            let last = last_day(start, end);
             let (day, detail) = if event.all_day {
-                let last = (end - Duration::days(1)).date().max(start.date());
                 let day = if last == start.date() {
                     date_label(last, today)
                 } else {
@@ -2150,9 +2620,7 @@ impl CalendarView {
                     )
                 };
                 (day, "All day".to_string())
-            } else if end.date() == start.date()
-                || end == time::midnight(start.date() + Duration::days(1))
-            {
+            } else if days == 0 {
                 (
                     date_label(start.date(), today),
                     format!(
@@ -2185,78 +2653,101 @@ impl CalendarView {
                             .font_weight(FontWeight::MEDIUM)
                             .child(day),
                     )
-                    .child(
-                        plain_box()
-                            .h(px(28.))
-                            .text_size(TEXT_BASE)
-                            .text_color(theme.text_muted)
-                            .child(detail),
-                    ),
+                    .child(plain_text(&detail, theme.text_muted))
+                    .children(zone),
             )
             .into_any_element();
         }
-        let field = |f: Field, width: Option<f32>, cx: &mut Context<Self>| {
+        let field = |f: Field, width: Option<Pixels>, window: &Window, cx: &mut Context<Self>| {
             self.render_date_time_field(panel, event, f, width, theme, window, cx)
         };
-        let dash = || div().flex_none().text_color(theme.text_faint).child("–");
-        let rows = if event.all_day {
+        let dash = || {
             div()
+                .flex_none()
+                .h(ROW_SM)
                 .flex()
                 .items_center()
-                .gap(SPACE_XS)
-                .child(field(Field::StartDate, None, cx))
+                .text_color(theme.text_faint)
+                .child("–")
+        };
+        let faint = |text: String| {
+            div()
+                .flex_none()
+                .h(ROW_SM)
+                .flex()
+                .items_center()
+                .text_size(TEXT_SM)
+                .text_color(theme.text_faint)
+                .child(text)
+        };
+        let row = || div().flex().items_start().gap(SPACE_XS);
+        let rows = if event.all_day {
+            row()
+                .child(field(Field::StartDate, None, window, cx))
                 .child(dash())
-                .child(field(Field::EndDate, None, cx))
+                .child(field(Field::EndDate, None, window, cx))
+        } else if days > 0 {
+            // It ends on a later day: each end with its own date (ME-036).
+            div()
+                .flex()
+                .flex_col()
+                .gap(SPACE_2XS)
+                .child(
+                    row()
+                        .child(field(Field::StartDate, None, window, cx))
+                        .child(field(Field::StartTime, Some(TIME_WIDTH), window, cx)),
+                )
+                .child(
+                    row()
+                        .child(field(Field::EndDate, None, window, cx))
+                        .child(field(Field::EndTime, Some(TIME_WIDTH), window, cx)),
+                )
+                .child(
+                    faint(format!(
+                        "{} · {}",
+                        extra_days_label(days),
+                        duration_label(end - start)
+                    ))
+                    .px(SPACE_SM),
+                )
         } else {
             div()
                 .flex()
                 .flex_col()
                 .gap(SPACE_2XS)
-                .child(field(Field::StartDate, None, cx))
+                .child(field(Field::StartDate, None, window, cx))
                 .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(SPACE_XS)
-                        .child(field(Field::StartTime, Some(92.), cx))
+                    row()
+                        .child(field(Field::StartTime, Some(TIME_WIDTH), window, cx))
                         .child(dash())
-                        .child(field(Field::EndTime, Some(92.), cx))
-                        .child(
-                            div()
-                                .ml(SPACE_SM)
-                                .text_size(TEXT_SM)
-                                .text_color(theme.text_faint)
-                                .child(
-                                    if end.date() != start.date()
-                                        && end != time::midnight(start.date() + Duration::days(1))
-                                    {
-                                        format!("{} · next day", duration_label(end - start))
-                                    } else {
-                                        duration_label(end - start)
-                                    },
-                                ),
-                        ),
+                        .child(field(Field::EndTime, Some(TIME_WIDTH), window, cx))
+                        .child(faint(duration_label(end - start)).ml(SPACE_SM)),
                 )
         };
         let all_day = event.all_day;
+        // A checkbox, as in Calendar (MB-Q9).
         let toggle = control(
             div().id("all-day"),
             Some(panel.all_day_focus.clone()),
             theme,
         )
-        .mt(SPACE_SM)
+        .role(gpui::Role::CheckBox)
+        .aria_label("All day")
+        .aria_toggled(toggled(all_day))
+        .mt(SPACE_XS)
         .px(SPACE_SM)
-        .h(px(26.))
-        .w_auto()
+        .h(CONTROL_MD)
         .flex()
         .items_center()
         .gap(SPACE_SM)
         .rounded(RADIUS_MD)
         .text_size(TEXT_SM)
-        .text_color(theme.text_muted)
+        .text_color(theme.text)
         .hover(|s| s.bg(theme.hover_bg))
-        .child(switch(all_day, theme))
+        .active(|s| s.bg(theme.selected_bg))
+        .child(check_box(all_day, theme))
         .child("All day")
+        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(cx.listener(|this, _, window, cx| this.toggle_all_day(window, cx)));
         section(
             Icon::Clock,
@@ -2265,32 +2756,62 @@ impl CalendarView {
                 .flex()
                 .flex_col()
                 .child(rows)
+                .children(zone)
                 .child(div().flex().child(toggle)),
         )
         .into_any_element()
     }
 
-    /// A date or time field, with its picker under it while focused.
+    /// A date or time field, with what's typed read back under it, and
+    /// its picker while focused.
     #[allow(clippy::too_many_arguments)]
     fn render_date_time_field(
         &self,
         panel: &EventPanel,
         event: &Event,
         field: Field,
-        width: Option<f32>,
+        width: Option<Pixels>,
         theme: &Theme,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let input = panel.input(field).expect("date and time fields are inputs");
         let focused = panel.is_focused(field, window, cx);
+        let (start, end) = panel.times(event);
+        let today = today();
+        let shown = match field {
+            Field::StartDate => date_label(start.date(), today),
+            Field::EndDate => date_label(last_day(start, end), today),
+            Field::StartTime => time_label(start.time()),
+            _ => time_label(end.time()),
+        };
+        let typed = input.read(cx).value().to_string();
+        let hint = focused.then(|| typed_hint(field, &typed, &shown)).flatten();
+        let invalid = matches!(hint, Some(Err(_)));
+        let hint = hint.and_then(|hint| {
+            let (text, color) = match hint {
+                Err(text) => (text.to_string(), theme.text_danger),
+                Ok(preview) if preview != typed.trim() => (preview, theme.text_muted),
+                Ok(_) => return None,
+            };
+            Some(
+                div()
+                    .id(("typed-hint", field as usize))
+                    .role(gpui::Role::Status)
+                    .aria_label(text.clone())
+                    .px(SPACE_SM)
+                    .whitespace_nowrap()
+                    .text_size(TEXT_XS)
+                    .text_color(color)
+                    .child(text),
+            )
+        });
         let picker = (focused && panel.picker == Some(field)).then(|| {
-            let content = if field.is_date() {
+            popup(if field.is_date() {
                 self.render_date_picker(panel, event, field, theme, cx)
             } else {
                 self.render_time_picker(panel, event, field, theme, cx)
-            };
-            below(content)
+            })
         });
         div()
             .key_context(if field.is_date() {
@@ -2301,20 +2822,20 @@ impl CalendarView {
             .flex()
             .flex_col()
             .map(|d| match width {
-                Some(w) => d.w(px(w)).flex_none(),
+                Some(w) => d.w(w).flex_none(),
                 None => d.flex_1().min_w_0(),
             })
             .child(
-                field_box(focused, theme).child(
+                field_box(focused, invalid, theme).child(
                     Input::new(input)
-                        .readonly(self.access_of(event) != Access::Edit)
                         .appearance(false)
                         .px(px(0.))
-                        .h(px(28.))
+                        .h(CONTROL_MD)
                         .text_size(TEXT_BASE)
                         .font_weight(FontWeight::MEDIUM),
                 ),
             )
+            .children(hint)
             .children(picker)
             .into_any_element()
     }
@@ -2328,25 +2849,27 @@ impl CalendarView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (start, end) = panel.times(event);
-        let chosen = if field == Field::EndDate {
-            (end - Duration::days(1)).date()
-        } else {
-            start.date()
-        };
+        let (first, last) = (start.date(), last_day(start, end));
+        let chosen = if field == Field::EndDate { last } else { first };
         let month = panel.picker_month;
         let grid_start = week_start(month);
         let today = today();
-        let nav = |id: &'static str, glyph: Icon, months: i32| {
+        let nav = |id: &'static str, glyph: Icon, label: &'static str, months: i32| {
             div()
                 .id(id)
+                .role(gpui::Role::Button)
+                .aria_label(label)
                 .size(HIT_TARGET)
                 .flex()
                 .items_center()
                 .justify_center()
                 .rounded(RADIUS_SM)
                 .hover(|s| s.bg(theme.hover_bg))
-                .child(icon(glyph, px(14.), theme.icon))
-                .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                .active(|s| s.bg(theme.selected_bg))
+                .child(icon(glyph, ICON_MD, theme.icon))
+                .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                    window.prevent_default()
+                })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if let Some(panel) = &mut this.panel {
                         panel.picker_month = add_months(panel.picker_month, months);
@@ -2356,7 +2879,7 @@ impl CalendarView {
         };
         let weekdays = time::weekday_letters().map(|d| {
             div()
-                .w(px(32.))
+                .w(CONTROL_LG)
                 .flex()
                 .justify_center()
                 .text_size(TEXT_XS)
@@ -2369,9 +2892,15 @@ impl CalendarView {
                 let date = grid_start + Duration::days(w * 7 + d);
                 let is_chosen = date == chosen;
                 let in_month = date.month() == month.month();
+                // The end can't come before the start (ME-091).
+                let disabled = field == Field::EndDate && date < first;
+                let in_range = date > first && date < last;
                 div()
                     .id(("picker-day", date.num_days_from_ce() as usize))
-                    .size(px(32.))
+                    .role(gpui::Role::Button)
+                    .aria_label(date.format("%A, %B %-d, %Y").to_string())
+                    .aria_selected(is_chosen)
+                    .size(CONTROL_LG)
                     .flex()
                     .items_center()
                     .justify_center()
@@ -2382,6 +2911,8 @@ impl CalendarView {
                             d.bg(theme.accent)
                                 .text_color(theme.accent_text)
                                 .font_weight(FontWeight::SEMIBOLD)
+                        } else if disabled {
+                            d.text_color(theme.text_disabled)
                         } else {
                             d.text_color(if date == today {
                                 theme.accent
@@ -2390,27 +2921,30 @@ impl CalendarView {
                             } else {
                                 theme.text_faint
                             })
+                            .when(in_range, |d| d.bg(theme.selected_bg))
                             .when(date == today, |d| d.font_weight(FontWeight::SEMIBOLD))
                             .hover(|s| s.bg(theme.hover_bg))
+                            .active(|s| s.bg(theme.selected_bg))
                         }
                     })
                     .child(date.day().to_string())
-                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.set_date(field, date, window, cx)
-                    }))
+                    .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                        window.prevent_default()
+                    })
+                    .when(!disabled, |d| {
+                        d.on_click(cx.listener(move |this, _, window, cx| {
+                            this.set_date(field, date, window, cx)
+                        }))
+                    })
             }))
         });
-        div()
+        popover_surface(theme)
             .occlude()
             .mt(SPACE_XS)
             .p(SPACE_MD)
-            .rounded(RADIUS_LG)
-            .bg(theme.overlay_bg)
-            .border_1()
-            .border_color(theme.overlay_border)
-            .shadow(popover_shadow(theme))
-            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+            .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                window.prevent_default()
+            })
             .child(
                 div()
                     .pb(SPACE_SM)
@@ -2424,8 +2958,8 @@ impl CalendarView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(month.format("%B %Y").to_string()),
                     )
-                    .child(nav("picker-prev", Icon::ChevronLeft, -1))
-                    .child(nav("picker-next", Icon::ChevronRight, 1)),
+                    .child(nav("picker-prev", Icon::ChevronLeft, "Previous month", -1))
+                    .child(nav("picker-next", Icon::ChevronRight, "Next month", 1)),
             )
             .child(div().flex().pb(SPACE_2XS).children(weekdays))
             .children(weeks)
@@ -2441,76 +2975,71 @@ impl CalendarView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (start, end) = panel.times(event);
-        // Start: every slot of the day. End: every slot after the start, up
-        // to a day later, each with how long that makes the event.
-        let slots: Vec<(NaiveDateTime, Option<String>)> = if field == Field::StartTime {
-            (0..24 * 60 / SLOT_MINUTES)
-                .map(|i| {
-                    (
-                        time::midnight(start.date()) + Duration::minutes(i * SLOT_MINUTES),
-                        None,
-                    )
-                })
-                .collect()
-        } else {
-            (1..=24 * 60 / SLOT_MINUTES)
-                .map(|i| {
-                    let length = Duration::minutes(i * SLOT_MINUTES);
-                    (start + length, Some(duration_label(length)))
-                })
-                .collect()
-        };
         let current = if field == Field::StartTime {
             start
         } else {
             end
         };
-        let rows = slots.into_iter().enumerate().map(|(ix, (value, length))| {
-            let chosen = value == current;
-            div()
-                .id(("time-slot", ix))
-                .h(px(30.))
-                .flex_none()
-                .px(SPACE_MD)
-                .flex()
-                .items_center()
-                .gap(SPACE_SM)
-                .rounded(RADIUS_SM)
-                .text_size(TEXT_BASE)
-                .map(|d| {
-                    if chosen {
-                        d.bg(theme.selected_bg).font_weight(FontWeight::SEMIBOLD)
-                    } else {
-                        d.hover(|s| s.bg(theme.hover_bg))
-                    }
-                })
-                .child(time_label(value.time()))
-                .children(length.map(|l| {
+        let rows =
+            time_slots(field, start, end)
+                .into_iter()
+                .enumerate()
+                .map(|(ix, (value, length))| {
+                    let chosen = value == current;
+                    let label = time_label(value.time());
                     div()
-                        .text_size(TEXT_SM)
-                        .text_color(theme.text_faint)
-                        .child(l)
-                }))
-                .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-                .on_click(
-                    cx.listener(move |this, _, window, cx| this.set_time(field, value, window, cx)),
-                )
-        });
-        div()
+                        .id(("time-slot", ix))
+                        .role(gpui::Role::MenuItemRadio)
+                        .aria_label(label.clone())
+                        .aria_toggled(toggled(chosen))
+                        .h(ROW_SM)
+                        .flex_none()
+                        .px(SPACE_MD)
+                        .flex()
+                        .items_center()
+                        .gap(SPACE_SM)
+                        .rounded(RADIUS_SM)
+                        .text_size(TEXT_BASE)
+                        .map(|d| {
+                            if chosen {
+                                d.bg(theme.selected_bg).font_weight(FontWeight::SEMIBOLD)
+                            } else {
+                                d.hover(|s| s.bg(theme.hover_bg))
+                                    .active(|s| s.bg(theme.selected_bg))
+                            }
+                        })
+                        .child(label)
+                        .children(length.map(|l| {
+                            div()
+                                .text_size(TEXT_SM)
+                                .text_color(theme.text_faint)
+                                .child(l)
+                        }))
+                        .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                            window.prevent_default()
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.set_time(field, value, window, cx)
+                        }))
+                });
+        popover_surface(theme)
             .occlude()
             .mt(SPACE_XS)
-            .w(px(if field == Field::EndTime { 190. } else { 140. }))
-            .rounded(RADIUS_MD)
-            .bg(theme.overlay_bg)
-            .border_1()
-            .border_color(theme.overlay_border)
-            .shadow(popover_shadow(theme))
+            .w(px(if field == Field::EndTime { 200. } else { 140. }))
             .overflow_hidden()
-            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+            .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                window.prevent_default()
+            })
             .child(
                 div()
                     .id("time-picker")
-                    .h(px(240.))
+                    .role(gpui::Role::Menu)
+                    .aria_label(if field == Field::EndTime {
+                        "End time"
+                    } else {
+                        "Start time"
+                    })
+                    .h(rems(ROW_SM.0 * TIME_PICKER_ROWS))
                     .p(SPACE_XS)
                     .overflow_y_scroll()
                     .track_scroll(&panel.picker_scroll)
@@ -2521,22 +3050,42 @@ impl CalendarView {
             .into_any_element()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_place(
         &self,
         panel: &EventPanel,
         event: &Event,
+        editable: bool,
+        join: Option<String>,
         theme: &Theme,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let link = event.video_link.clone();
-        // Also a link in the location or notes.
-        let join = policy::video_link(event).map(str::to_string);
-        let editable = self.access_of(event) == Access::Edit;
-        // Nothing to change: what's there as text, a link that opens, Join.
+        let target = location_target(&event.location);
+        // Nothing to change: what's there as text, links that open, Join.
         if !editable {
-            let location = (!event.location.is_empty())
-                .then(|| section(Icon::MapPin, theme, plain_text(&event.location, theme.text)));
+            let location = (!event.location.is_empty()).then(|| {
+                let content = match target.clone() {
+                    // Every place opens in Maps (MB-046, MB-Q18).
+                    Some(target) => plain_box().h_auto().py(SPACE_XS).child(
+                        div()
+                            .id("location-link")
+                            .role(gpui::Role::Link)
+                            .aria_label(format!("Open {} in Maps", event.location))
+                            .min_w_0()
+                            .text_size(TEXT_BASE)
+                            .line_height(LINE_UI)
+                            .text_color(theme.link)
+                            .cursor_pointer()
+                            .hover(|s| s.underline())
+                            .child(event.location.clone())
+                            .on_click(move |_, _, cx| cx.open_url(&target)),
+                    ),
+                    None => plain_text(&event.location, theme.text),
+                };
+                section(Icon::MapPin, theme, content)
+            });
             let has_location = location.is_some();
             let video = (!link.is_empty() || join.is_some()).then(|| {
                 let open = link.clone();
@@ -2556,9 +3105,9 @@ impl CalendarView {
                                     .min_w_0()
                                     .truncate()
                                     .text_size(TEXT_BASE)
-                                    .text_color(theme.accent)
+                                    .text_color(theme.link)
                                     .cursor_pointer()
-                                    .hover(|s| s.opacity(0.8))
+                                    .hover(|s| s.underline())
                                     .child(link.clone())
                                     .on_click(move |_, _, cx| cx.open_url(&open)),
                             )
@@ -2585,9 +3134,26 @@ impl CalendarView {
             .child(section(
                 Icon::MapPin,
                 theme,
-                field_box(panel.is_focused(Field::Location, window, cx), theme)
-                    .text_size(TEXT_BASE)
-                    .child(field_input(&panel.location, false)),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_XS)
+                    .child(
+                        field_box(panel.is_focused(Field::Location, window, cx), false, theme)
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(TEXT_BASE)
+                            .child(field_input(&panel.location, false)),
+                    )
+                    // Every place opens in Maps (MB-046, MB-Q18).
+                    .when(target.is_some(), |d| {
+                        d.child(
+                            icon_button_small("open-location", Icon::MapPin, "Open in Maps", theme)
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(OpenLocation), cx)
+                                }),
+                        )
+                    }),
             ))
             .child(
                 section(
@@ -2600,7 +3166,7 @@ impl CalendarView {
                         .child({
                             let focused = panel.is_focused(Field::Video, window, cx);
                             let input = panel.video.clone();
-                            field_box(focused, theme)
+                            field_box(focused, false, theme)
                                 .flex_1()
                                 .min_w_0()
                                 .text_size(TEXT_BASE)
@@ -2613,6 +3179,8 @@ impl CalendarView {
                                         d.child(
                                             div()
                                                 .id("video-link")
+                                                .role(gpui::Role::TextInput)
+                                                .aria_label(format!("Video call link: {link}"))
                                                 .flex_1()
                                                 .min_w_0()
                                                 .truncate()
@@ -2642,11 +3210,12 @@ impl CalendarView {
         &self,
         panel: &EventPanel,
         event: &Event,
+        editable: bool,
         theme: &Theme,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if self.access_of(event) != Access::Edit {
+        if !editable {
             return (!event.description.is_empty()).then(|| {
                 section(
                     Icon::Text,
@@ -2663,17 +3232,16 @@ impl CalendarView {
             section(
                 Icon::Text,
                 theme,
-                field_box(panel.is_focused(Field::Notes, window, cx), theme)
+                field_box(panel.is_focused(Field::Notes, window, cx), false, theme)
                     .h_auto()
-                    .min_h(px(30.))
                     .py(SPACE_XS)
                     .px(px(0.))
                     .child(
                         div()
                             .w_full()
                             .text_size(TEXT_BASE)
-                            .line_height(relative(1.5))
-                            .mx(px(-2.))
+                            .line_height(LINE_READING)
+                            .mx(-SPACE_2XS)
                             .my(-inset)
                             .child(
                                 Textarea::new(&panel.notes)
@@ -2690,17 +3258,19 @@ impl CalendarView {
         &self,
         panel: &EventPanel,
         event: &Event,
+        editable: bool,
         theme: &Theme,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let account = &self.data.account;
         let is_me = |email: &str| account.is_me(email);
-        let editable = self.access_of(event) == Access::Edit;
         let organizer_attends = event
             .attendees
             .iter()
             .any(|a| a.email.eq_ignore_ascii_case(&event.organizer.email));
+        // The ✕s show while the panel has keyboard focus too (MA-047).
+        let panel_focused = panel.focused_field(window, cx).is_some();
 
         let person = |id: (&'static str, usize),
                       contact: &Contact,
@@ -2718,22 +3288,31 @@ impl CalendarView {
                 .or_else(|| status.map(|s| status_text(s).to_string()))
                 .unwrap_or_default();
             let shown = contact.clone();
+            let address = contact.email.clone();
             div()
                 .id(id)
                 .group("guest")
                 .role(gpui::Role::Button)
-                .aria_label(format!("Show contact: {name}"))
-                .h(px(40.))
+                .aria_label(if detail.is_empty() {
+                    format!("{name}, show contact")
+                } else {
+                    format!("{name}, {detail}, show contact")
+                })
+                .min_h(ROW_SM)
+                .py(SPACE_XS)
                 .px(SPACE_SM)
                 .flex()
                 .items_center()
                 .gap(SPACE_SM)
                 .rounded(RADIUS_MD)
-                .cursor_pointer()
                 .hover(|s| s.bg(theme.hover_bg))
+                .active(|s| s.bg(theme.selected_bg))
+                // The address, as on a recipient chip (MB-024).
+                .tooltip(move |window, cx| tooltip(address.clone()).build(window, cx))
                 // W6: the guest's contact card (CON-5).
-                .on_click(cx.listener(move |_, _, _, cx| {
-                    cx.emit(CalendarEvent::ShowContact(shown.clone()))
+                .on_click(cx.listener(move |_, event: &gpui::ClickEvent, _, cx| {
+                    let at = (!event.is_keyboard()).then(|| event.position());
+                    cx.emit(CalendarEvent::ShowContact(shown.clone(), at))
                 }))
                 .child(
                     div()
@@ -2742,7 +3321,7 @@ impl CalendarView {
                         .child(avatar(
                             contact.initials(),
                             theme.avatar_color(&contact.email),
-                            px(28.),
+                            AVATAR_SM,
                             theme,
                         ))
                         .children(status.map(|s| status_badge(s, theme))),
@@ -2758,7 +3337,7 @@ impl CalendarView {
                                 .truncate()
                                 .text_size(TEXT_BASE)
                                 .font_weight(FontWeight::MEDIUM)
-                                .child(name),
+                                .child(name.clone()),
                         )
                         .child(
                             div()
@@ -2769,21 +3348,19 @@ impl CalendarView {
                         ),
                 )
                 .children(removable.map(|ix| {
-                    div()
-                        .id(("guest-remove", ix))
-                        .size(HIT_TARGET)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_full()
-                        .opacity(0.)
-                        .group_hover("guest", |s| s.opacity(1.))
-                        .hover(|s| s.bg(theme.selected_bg))
-                        .child(icon(Icon::X, px(12.), theme.text_faint))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.remove_guest(ix, cx)
-                        }))
+                    icon_button_small(
+                        ("guest-remove", ix),
+                        Icon::X,
+                        format!("Remove {name}"),
+                        theme,
+                    )
+                    .when(!panel_focused, |d| {
+                        d.opacity(0.).group_hover("guest", |s| s.opacity(1.))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.remove_guest(ix, cx)
+                    }))
                 }))
         };
 
@@ -2839,10 +3416,10 @@ impl CalendarView {
                 if count == 1 { "person" } else { "people" }
             )];
             if yes > 0 {
-                parts.push(format!("{yes} yes"));
+                parts.push(format!("{yes} going"));
             }
             if awaiting > 0 {
-                parts.push(format!("{awaiting} awaiting"));
+                parts.push(format!("{awaiting} awaiting reply"));
             }
             div()
                 .px(SPACE_SM)
@@ -2857,61 +3434,28 @@ impl CalendarView {
         let suggestions = (focused && !panel.suggestions.is_empty()).then(|| {
             let rows = panel.suggestions.iter().enumerate().map(|(row, &ix)| {
                 let contact = self.book.borrow().contact(ix).clone();
-                div()
-                    .id(("guest-suggestion", row))
-                    .h(px(40.))
-                    .px(SPACE_SM)
-                    .flex()
-                    .items_center()
-                    .gap(SPACE_SM)
-                    .rounded(RADIUS_MD)
-                    .when(row == panel.highlighted, |d| d.bg(theme.selected_bg))
-                    .hover(|d| d.bg(theme.hover_bg))
-                    .child(avatar(
-                        contact.initials(),
-                        theme.avatar_color(&contact.email),
-                        px(26.),
-                        theme,
-                    ))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(TEXT_BASE)
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(contact.display_name().to_string()),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(TEXT_SM)
-                                    .text_color(theme.text_muted)
-                                    .child(contact.email.clone()),
-                            ),
-                    )
-                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                let highlighted = row == panel.highlighted;
+                person_row(("guest-suggestion", row), &contact, highlighted, theme)
+                    .when(highlighted, |d| d.aria_active_descendant())
+                    .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                        window.prevent_default()
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         let contact = this.book.borrow().contact(ix).clone();
                         this.add_guest(contact, window, cx);
                     }))
             });
-            below(
-                div()
+            popup(
+                popover_surface(theme)
+                    .id("guest-suggestions")
+                    .role(gpui::Role::ListBox)
+                    .aria_label("Suggested guests")
                     .occlude()
                     .mt(SPACE_XS)
                     .w(px(300.))
                     .p(SPACE_XS)
                     .flex()
                     .flex_col()
-                    .rounded(RADIUS_MD)
-                    .bg(theme.overlay_bg)
-                    .border_1()
-                    .border_color(theme.overlay_border)
-                    .shadow(popover_shadow(theme))
                     .children(rows),
             )
         });
@@ -2924,7 +3468,7 @@ impl CalendarView {
                 .flex_col()
                 .child(
                     div()
-                        .mx(px(-8.))
+                        .mx(-SPACE_SM)
                         .flex()
                         .flex_col()
                         .children(summary)
@@ -2937,10 +3481,13 @@ impl CalendarView {
                             .flex()
                             .flex_col()
                             .child(
-                                field_box(focused, theme)
+                                field_box(focused, panel.guest_error.is_some(), theme)
                                     .text_size(TEXT_BASE)
                                     .child(field_input(&panel.guests, false)),
                             )
+                            .children(panel.guest_error.clone().map(|e| {
+                                div().px(SPACE_SM).pt(SPACE_2XS).child(error_line(e, theme))
+                            }))
                             .children(suggestions),
                     )
                 }),
@@ -2953,11 +3500,11 @@ impl CalendarView {
     fn render_reminders(
         &self,
         event: &Event,
+        editable: bool,
         theme: &Theme,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        let editable = self.access_of(event) == Access::Edit;
         let reminders = self.reminders_of(event);
         let uses_default = event.reminder_use_default;
         let open = self.menu == Some(Menu::Reminder);
@@ -2972,95 +3519,98 @@ impl CalendarView {
                         ReminderChoice::CalendarDefault => "Calendar default".to_string(),
                         ReminderChoice::Add(minutes) => reminder_label(minutes),
                     };
-                    menu_row(("reminder", ix), ix == highlight, theme)
-                        .role(gpui::Role::MenuItem)
-                        .aria_label(label.clone())
-                        .child(div().flex_1().child(label))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.choose_menu_row(Menu::Reminder, ix, window, cx)
-                        }))
+                    controls::menu_row(
+                        ("reminder", ix),
+                        label.clone(),
+                        false,
+                        ix == highlight,
+                        theme,
+                    )
+                    .role(gpui::Role::MenuItem)
+                    .when(ix == highlight, |d| d.aria_active_descendant())
+                    .child(menu_check(false, theme))
+                    .child(div().flex_1().child(label))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.choose_menu_row(Menu::Reminder, ix, window, cx)
+                    }))
                 });
-            deferred(
-                anchored()
-                    .snap_to_window_with_margin(px(8.))
-                    .child(dropdown(px(32.), px(200.), theme).children(rows)),
+            popup(
+                controls::dropdown("reminder-menu", "Add reminder", MENU_WIDTH, theme)
+                    .mt(SPACE_XS)
+                    .children(rows),
             )
-            .with_priority(2)
         });
-        let rows = reminders.iter().copied().enumerate().map(|(ix, reminder)| {
-            let label = reminder_label(reminder.minutes);
-            let email = reminder.method == ReminderMethod::Email;
-            div()
-                .h(px(30.))
-                .flex()
-                .items_center()
-                .gap(SPACE_SM)
-                .text_size(TEXT_BASE)
-                .child(div().flex_1().min_w_0().truncate().child(label.clone()))
-                .when(uses_default, |d| {
-                    d.child(
-                        div()
-                            .text_size(TEXT_SM)
-                            .text_color(theme.text_faint)
-                            .child("Default"),
-                    )
-                })
-                .map(|d| {
-                    if !editable {
-                        return d.child(
-                            div()
-                                .text_size(TEXT_SM)
-                                .text_color(theme.text_muted)
-                                .child(if email { "Email" } else { "Notification" }),
-                        );
-                    }
-                    d.child(
-                        chip(
-                            ("reminder-method", ix),
-                            if email { "Email" } else { "Notification" },
-                            false,
-                            theme,
-                        )
-                        .aria_label(if email {
-                            format!("{label} by email; switch to notification")
-                        } else {
-                            format!("{label} as a notification; switch to email")
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.change_reminders(cx, |list| {
-                                if let Some(r) = list.get_mut(ix) {
-                                    r.method = if email {
-                                        ReminderMethod::Popup
-                                    } else {
-                                        ReminderMethod::Email
-                                    };
-                                }
-                            })
-                        })),
-                    )
-                    .child(
-                        div()
-                            .id(("reminder-remove", ix))
-                            .role(gpui::Role::Button)
-                            .aria_label(format!("Remove reminder {label}"))
-                            .size(px(24.))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(RADIUS_SM)
-                            .hover(|s| s.bg(theme.hover_bg))
-                            .child(icon(Icon::X, px(13.), theme.text_faint))
-                            .on_click(cx.listener(move |this, _, _, cx| {
+        let view = cx.entity().downgrade();
+        let rows = reminders
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(ix, reminder)| {
+                let label = reminder_label(reminder.minutes);
+                let email = reminder.method == ReminderMethod::Email;
+                let method = if !editable {
+                    div()
+                        .text_size(TEXT_SM)
+                        .text_color(theme.text_muted)
+                        .child(if email { "Email" } else { "Alert" })
+                        .into_any_element()
+                } else {
+                    // Alert or Email, as a choice (MB-030).
+                    let view = view.clone();
+                    segmented(
+                        ("reminder-method", ix),
+                        format!("{label}: how"),
+                        &["Alert", "Email"],
+                        usize::from(email),
+                        theme,
+                        window,
+                        cx,
+                        move |choice, _, cx| {
+                            view.update(cx, |this, cx| {
                                 this.change_reminders(cx, |list| {
-                                    if ix < list.len() {
-                                        list.remove(ix);
+                                    if let Some(r) = list.get_mut(ix) {
+                                        r.method = if choice == 1 {
+                                            ReminderMethod::Email
+                                        } else {
+                                            ReminderMethod::Popup
+                                        };
                                     }
                                 })
-                            })),
+                            })
+                            .ok();
+                        },
                     )
-                })
-        });
+                    .into_any_element()
+                };
+                div()
+                    .min_h(ROW_SM)
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_SM)
+                    .text_size(TEXT_BASE)
+                    .child(div().flex_1().min_w_0().truncate().child(label.clone()))
+                    .child(method)
+                    .when(editable, |d| {
+                        d.child(
+                            icon_button_small(
+                                ("reminder-remove", ix),
+                                Icon::X,
+                                format!("Remove reminder {label}"),
+                                theme,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.change_reminders(cx, |list| {
+                                        if ix < list.len() {
+                                            list.remove(ix);
+                                        }
+                                    })
+                                },
+                            )),
+                        )
+                    })
+            })
+            .collect::<Vec<_>>();
         let can_add = editable && reminders.len() < MAX_REMINDERS;
         section(
             Icon::Bell,
@@ -3068,11 +3618,21 @@ impl CalendarView {
             div()
                 .flex()
                 .flex_col()
+                // The calendar's, until one changes.
+                .when(uses_default && !reminders.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .pt(SPACE_XS)
+                            .text_size(TEXT_SM)
+                            .text_color(theme.text_faint)
+                            .child("Calendar default"),
+                    )
+                })
                 .children(rows)
                 .when(reminders.is_empty(), |d| {
                     d.child(
                         div()
-                            .h(px(30.))
+                            .h(ROW_SM)
                             .flex()
                             .items_center()
                             .text_size(TEXT_BASE)
@@ -3089,15 +3649,17 @@ impl CalendarView {
                     d.child(
                         div()
                             .flex()
+                            .flex_col()
+                            .items_start()
                             .child(
                                 control(
                                     div().id("reminder"),
                                     self.panel.as_ref().map(|p| p.reminder_focus.clone()),
                                     theme,
                                 )
-                                .role(gpui::Role::Button)
+                                .role(gpui::Role::ComboBox)
                                 .aria_label("Add reminder")
-                                .h(px(28.))
+                                .h(CONTROL_MD)
                                 .px(SPACE_SM)
                                 .flex()
                                 .items_center()
@@ -3107,8 +3669,9 @@ impl CalendarView {
                                 .text_color(theme.text_muted)
                                 .when(open, |d| d.bg(theme.selected_bg))
                                 .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
-                                .child(icon(Icon::Plus, px(13.), theme.text_faint))
-                                .child("Add reminder")
+                                .active(|s| s.bg(theme.selected_bg))
+                                .child(icon(Icon::Plus, ICON_SM, theme.text_faint))
+                                .child("Add Reminder")
                                 .on_click(cx.listener(
                                     |this, _, _, cx| this.click_control_menu(Menu::Reminder, cx),
                                 )),
@@ -3126,14 +3689,14 @@ impl CalendarView {
         panel: &EventPanel,
         event: &Event,
         theme: &Theme,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let open = self.menu == Some(Menu::Repeat);
         let start = panel.occurrence.date();
         let presets = repeat::presets(start);
-        let custom_ix = presets.len();
-        let current = repeat::preset_index(event.recurrence.as_ref(), start).unwrap_or(custom_ix);
+        let current = repeat::preset_index(&presets, event.recurrence.as_ref(), start)
+            .unwrap_or(presets.len());
         let highlight = panel.menu_highlight;
         let label = event
             .recurrence
@@ -3146,28 +3709,30 @@ impl CalendarView {
                 .chain(["Custom…".to_string()])
                 .enumerate()
                 .map(|(ix, label)| {
-                    menu_row(("repeat-choice", ix), ix == highlight, theme)
-                        .role(gpui::Role::MenuItem)
-                        .aria_label(label.clone())
-                        .child(div().flex_1().child(label))
-                        .when(ix == current, |d| {
-                            d.child(icon(Icon::Check, px(14.), theme.accent))
-                        })
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.choose_menu_row(Menu::Repeat, ix, window, cx)
-                        }))
+                    controls::menu_row(
+                        ("repeat-choice", ix),
+                        label.clone(),
+                        ix == current,
+                        ix == highlight,
+                        theme,
+                    )
+                    .when(ix == highlight, |d| d.aria_active_descendant())
+                    .child(menu_check(ix == current, theme))
+                    .child(div().flex_1().child(label))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.choose_menu_row(Menu::Repeat, ix, window, cx)
+                    }))
                 });
-            deferred(
-                anchored()
-                    .snap_to_window_with_margin(px(8.))
-                    .child(dropdown(px(32.), px(260.), theme).children(rows)),
+            popup(
+                controls::dropdown("repeat-menu", "Repeat", REPEAT_MENU_WIDTH, theme)
+                    .mt(SPACE_XS)
+                    .children(rows),
             )
-            .with_priority(2)
         });
         let button = control(div().id("repeat"), Some(panel.repeat_focus.clone()), theme)
-            .role(gpui::Role::Button)
+            .role(gpui::Role::ComboBox)
             .aria_label(format!("Repeat: {label}"))
-            .h(px(28.))
+            .h(CONTROL_MD)
             .min_w_0()
             .px(SPACE_SM)
             .flex()
@@ -3177,9 +3742,14 @@ impl CalendarView {
             .text_size(TEXT_BASE)
             .when(open, |d| d.bg(theme.selected_bg))
             .hover(|s| s.bg(theme.hover_bg))
+            .active(|s| s.bg(theme.selected_bg))
             .child(div().min_w_0().truncate().child(label))
-            .child(icon(Icon::ChevronDown, px(13.), theme.text_faint))
+            .child(icon(Icon::ChevronDown, ICON_SM, theme.text_faint))
             .on_click(cx.listener(|this, _, _, cx| this.click_control_menu(Menu::Repeat, cx)));
+        let draft = panel
+            .repeat_draft
+            .as_ref()
+            .map(|draft| self.render_repeat_draft(panel, draft, theme, window, cx));
         section(
             Icon::Repeat,
             theme,
@@ -3189,20 +3759,86 @@ impl CalendarView {
                 .child(
                     div()
                         .flex()
+                        .flex_col()
+                        .items_start()
                         .min_w_0()
                         .child(button)
                         .when(open, |d| d.child(self.menu_backdrop(window, cx)))
                         .children(menu),
                 )
-                .children(
-                    panel
-                        .repeat_draft
-                        .as_ref()
-                        .map(|draft| self.render_repeat_draft(panel, draft, theme, window, cx)),
-                ),
+                .children(draft),
         )
         .pt(px(0.))
         .into_any_element()
+    }
+
+    /// A number of the repeat editor: −, the value to type over, +
+    /// (MB-031). Shift-click steps by ten; up and down step by one.
+    fn number_stepper(
+        &self,
+        panel: &EventPanel,
+        field: Field,
+        (can_down, can_up): (bool, bool),
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let input = panel.input(field).expect("number fields are inputs");
+        let label = if field == Field::RepeatInterval {
+            "Repeat every"
+        } else {
+            "Number of times"
+        };
+        let step = |id: &'static str, glyph: Icon, name: &'static str, sign: i32, enabled: bool| {
+            icon_button_small(id, glyph, name, theme)
+                .when(!enabled, |d| d.opacity(0.4))
+                .when(enabled, |d| {
+                    d.on_click(
+                        cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                            let by = if event.modifiers().shift { 10 } else { 1 };
+                            this.step_number(field, sign * by, window, cx)
+                        }),
+                    )
+                })
+        };
+        // Up and down step it, as in a time field.
+        div()
+            .id(("number-stepper", field as usize))
+            .key_context(TIME_FIELD)
+            .role(gpui::Role::Group)
+            .aria_label(label)
+            .flex()
+            .items_center()
+            .child(step(
+                if field == Field::RepeatInterval {
+                    "repeat-fewer"
+                } else {
+                    "repeat-count-down"
+                },
+                Icon::Minus,
+                "Decrease",
+                -1,
+                can_down,
+            ))
+            .child(
+                field_box(panel.is_focused(field, window, cx), false, theme)
+                    .w(NUMBER_WIDTH)
+                    .flex_none()
+                    .text_size(TEXT_BASE)
+                    .font_features(tabular_figures())
+                    .child(field_input(input, false)),
+            )
+            .child(step(
+                if field == Field::RepeatInterval {
+                    "repeat-more"
+                } else {
+                    "repeat-count-up"
+                },
+                Icon::Plus,
+                "Increase",
+                1,
+                can_up,
+            ))
     }
 
     /// The custom repeat editor: every N units, on which days, and until.
@@ -3211,215 +3847,192 @@ impl CalendarView {
         panel: &EventPanel,
         draft: &RepeatDraft,
         theme: &Theme,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let muted = |text: &'static str| {
             div()
+                .flex_none()
                 .text_size(TEXT_SM)
                 .text_color(theme.text_muted)
                 .child(text)
         };
-        let plural = draft.interval != 1;
-        let units = [
-            (Freq::Daily, "day"),
-            (Freq::Weekly, "week"),
-            (Freq::Monthly, "month"),
-            (Freq::Yearly, "year"),
-        ];
+        let view = cx.entity().downgrade();
+        // Each choice edits the draft.
+        let pick = |f: fn(&mut RepeatDraft, usize)| {
+            let view = view.clone();
+            move |ix: usize, window: &mut Window, cx: &mut gpui::App| {
+                view.update(cx, |this, cx| this.edit_draft(window, cx, |d| f(d, ix)))
+                    .ok();
+            }
+        };
+        const UNITS: [Freq; 4] = [Freq::Daily, Freq::Weekly, Freq::Monthly, Freq::Yearly];
+        let unit_labels: &[&'static str] = if draft.interval == 1 {
+            &["Day", "Week", "Month", "Year"]
+        } else {
+            &["Days", "Weeks", "Months", "Years"]
+        };
         let every = div()
             .flex()
-            .flex_wrap()
-            .items_center()
+            .flex_col()
             .gap(SPACE_XS)
-            .child(muted("Every"))
-            .child(
-                step_button(
-                    "repeat-fewer",
-                    Icon::Minus,
-                    "Fewer",
-                    draft.interval > 1,
-                    theme,
-                )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.edit_draft(window, cx, |d| d.step_interval(-1))
-                })),
-            )
             .child(
                 div()
-                    .min_w(SPACE_XL)
                     .flex()
-                    .justify_center()
-                    .text_size(TEXT_BASE)
-                    .child(draft.interval.to_string()),
+                    .items_center()
+                    .gap(SPACE_XS)
+                    .child(muted("Every"))
+                    .child(self.number_stepper(
+                        panel,
+                        Field::RepeatInterval,
+                        (draft.interval > 1, draft.interval < repeat::MAX_INTERVAL),
+                        theme,
+                        window,
+                        cx,
+                    )),
             )
-            .child(
-                step_button(
-                    "repeat-more",
-                    Icon::Plus,
-                    "More",
-                    draft.interval < repeat::MAX_INTERVAL,
-                    theme,
-                )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.edit_draft(window, cx, |d| d.step_interval(1))
-                })),
-            )
-            .children(units.into_iter().enumerate().map(|(ix, (freq, unit))| {
-                let label = if plural {
-                    format!("{unit}s")
-                } else {
-                    unit.to_string()
-                };
-                chip(("repeat-unit", ix), label, draft.freq == freq, theme).on_click(cx.listener(
-                    move |this, _, window, cx| this.edit_draft(window, cx, |d| d.freq = freq),
-                ))
-            }));
+            .child(segmented(
+                "repeat-unit",
+                "Repeat unit",
+                unit_labels,
+                UNITS.iter().position(|&f| f == draft.freq).unwrap_or(1),
+                theme,
+                window,
+                cx,
+                pick(|d, ix| d.freq = UNITS[ix]),
+            ));
         let first = time::first_weekday().num_days_from_monday();
-        let days = (draft.freq == Freq::Weekly).then(|| {
-            div().flex().gap(SPACE_2XS).children(
-                time::weekday_letters()
-                    .into_iter()
-                    .enumerate()
-                    .map(|(ix, letter)| {
-                        let day = chrono::Weekday::try_from(((first + ix as u32) % 7) as u8)
-                            .unwrap_or(chrono::Weekday::Mon);
-                        chip(("repeat-day", ix), letter, draft.days.contains(&day), theme)
-                            .w(px(28.))
+        // Seven equal checkboxes (MB-030).
+        let days =
+            (draft.freq == Freq::Weekly).then(|| {
+                div()
+                    .id("repeat-days")
+                    .role(gpui::Role::Group)
+                    .aria_label("On")
+                    .flex()
+                    .gap(SPACE_2XS)
+                    .children(time::weekday_letters().into_iter().enumerate().map(
+                        |(ix, letter)| {
+                            let day = chrono::Weekday::try_from(((first + ix as u32) % 7) as u8)
+                                .unwrap_or(chrono::Weekday::Mon);
+                            toggle_chip(
+                                ("repeat-day", ix),
+                                letter,
+                                draft.days.contains(&day),
+                                theme,
+                            )
+                            .role(gpui::Role::CheckBox)
+                            .aria_label(weekday_name(day))
+                            .flex_1()
                             .justify_center()
-                            .aria_label(format!("{day:?}"))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.edit_draft(window, cx, |d| d.toggle_day(day))
-                            }))
-                    }),
-            )
-        });
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.edit_draft(window, cx, |d| d.toggle_day(day))
+                                },
+                            ))
+                        },
+                    ))
+            });
+        // "On day 27" or "On the 4th Tue", from the rules themselves.
         let monthly = (draft.freq == Freq::Monthly).then(|| {
-            let presets = repeat::presets(draft.start);
-            let on = |ix: usize| presets[ix].1.trim_start_matches("Every month ").to_string();
+            let choice = |rule: Rule| {
+                let label = rule.label();
+                let label = label.trim_start_matches("Every month ").to_string();
+                let mut chars = label.chars();
+                chars
+                    .next()
+                    .map(|c| c.to_uppercase().chain(chars).collect::<String>())
+                    .unwrap_or_default()
+            };
+            let options = [
+                (false, choice(repeat::monthly_on_date(draft.start))),
+                (true, choice(repeat::monthly_on_weekday(draft.start))),
+            ];
             div()
+                .id("repeat-monthly")
+                .role(gpui::Role::RadioGroup)
+                .aria_label("Monthly on")
                 .flex()
                 .flex_wrap()
                 .gap(SPACE_XS)
-                .child(
-                    chip("repeat-by-date", on(5), !draft.by_weekday, theme).on_click(cx.listener(
-                        |this, _, window, cx| this.edit_draft(window, cx, |d| d.by_weekday = false),
-                    )),
-                )
-                .child(
-                    chip("repeat-by-weekday", on(4), draft.by_weekday, theme).on_click(
-                        cx.listener(|this, _, window, cx| {
-                            this.edit_draft(window, cx, |d| d.by_weekday = true)
-                        }),
-                    ),
-                )
+                .children(options.into_iter().map(|(by_weekday, label)| {
+                    toggle_chip(
+                        ("repeat-monthly", usize::from(by_weekday)),
+                        label,
+                        draft.by_weekday == by_weekday,
+                        theme,
+                    )
+                    .role(gpui::Role::RadioButton)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.edit_draft(window, cx, |d| d.by_weekday = by_weekday)
+                    }))
+                }))
         });
-        let end_kind = draft.end_kind();
         let ends = div()
             .flex()
-            .flex_wrap()
             .items_center()
-            .gap(SPACE_XS)
+            .gap(SPACE_SM)
             .child(muted("Ends"))
-            .children(
-                ["Never", "On", "After"]
-                    .into_iter()
-                    .enumerate()
-                    .map(|(ix, label)| {
-                        chip(("repeat-end", ix), label, end_kind == ix, theme).on_click(
-                            cx.listener(move |this, _, window, cx| {
-                                this.edit_draft(window, cx, |d| d.set_end_kind(ix))
-                            }),
-                        )
-                    }),
-            );
+            .child(segmented(
+                "repeat-end",
+                "Ends",
+                &["Never", "On Date", "After"],
+                draft.end_kind(),
+                theme,
+                window,
+                cx,
+                pick(|d, ix| d.set_end_kind(ix)),
+            ));
         let end_detail = match draft.end {
             RepeatEnd::Never => None,
             RepeatEnd::On(_) => Some(
-                field_box(panel.is_focused(Field::RepeatUntil, window, cx), theme)
-                    .w(px(160.))
-                    .text_size(TEXT_BASE)
-                    .child(field_input(&panel.repeat_until, false))
-                    .into_any_element(),
+                field_box(
+                    panel.is_focused(Field::RepeatUntil, window, cx),
+                    false,
+                    theme,
+                )
+                .w(UNTIL_WIDTH)
+                .text_size(TEXT_BASE)
+                .child(field_input(&panel.repeat_until, false))
+                .into_any_element(),
             ),
             RepeatEnd::After(n) => Some(
                 div()
                     .flex()
                     .items_center()
                     .gap(SPACE_XS)
-                    .child(
-                        step_button(
-                            "repeat-count-down",
-                            Icon::Minus,
-                            "Fewer times",
-                            n > 1,
-                            theme,
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.edit_draft(window, cx, |d| d.step_count(-1))
-                        })),
-                    )
-                    .child(div().text_size(TEXT_BASE).child(if n == 1 {
-                        "once".into()
-                    } else {
-                        format!("{n} times")
-                    }))
-                    .child(
-                        step_button(
-                            "repeat-count-up",
-                            Icon::Plus,
-                            "More times",
-                            n < repeat::MAX_COUNT,
-                            theme,
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.edit_draft(window, cx, |d| d.step_count(1))
-                        })),
-                    )
+                    .child(self.number_stepper(
+                        panel,
+                        Field::RepeatCount,
+                        (n > 1, n < repeat::MAX_COUNT),
+                        theme,
+                        window,
+                        cx,
+                    ))
+                    .child(muted(if n == 1 { "time" } else { "times" }))
                     .into_any_element(),
             ),
         };
+        // Cancel first, the default last (MB-027); "Apply", not a second
+        // "Done" (ME-098).
         let buttons = div()
             .flex()
+            .justify_end()
             .gap(SPACE_XS)
             .child(
-                focusable_control(div().id("repeat-done"), theme)
-                    .role(gpui::Role::Button)
-                    .aria_label("Done")
-                    .h(px(28.))
-                    .px(SPACE_MD)
-                    .flex()
-                    .items_center()
-                    .rounded(RADIUS_MD)
-                    .bg(theme.accent)
-                    .text_color(theme.accent_text)
-                    .text_size(TEXT_SM)
-                    .font_weight(FontWeight::MEDIUM)
-                    .hover(|s| s.opacity(0.9))
-                    .child("Done")
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.apply_custom_repeat(window, cx)),
-                    ),
-            )
-            .child(
-                focusable_control(div().id("repeat-cancel"), theme)
-                    .role(gpui::Role::Button)
-                    .aria_label("Cancel")
-                    .h(px(28.))
-                    .px(SPACE_MD)
-                    .flex()
-                    .items_center()
-                    .rounded(RADIUS_MD)
-                    .text_size(TEXT_SM)
-                    .text_color(theme.text_muted)
-                    .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
-                    .child("Cancel")
-                    .on_click(cx.listener(|this, _, _, cx| {
+                push_button("repeat-cancel", "Cancel", ButtonKind::Quiet, theme).on_click(
+                    cx.listener(|this, _, _, cx| {
                         if let Some(panel) = &mut this.panel {
                             panel.repeat_draft = None;
                         }
                         cx.notify();
-                    })),
+                    }),
+                ),
+            )
+            .child(
+                push_button("repeat-apply", "Apply", ButtonKind::Primary, theme).on_click(
+                    cx.listener(|this, _, window, cx| this.apply_custom_repeat(window, cx)),
+                ),
             );
         enter(
             "repeat-draft",
@@ -3451,27 +4064,35 @@ impl CalendarView {
         .into_any_element()
     }
 
-    /// Reminder, busy or free, and the user's answer to an invite.
+    /// Reminders, and busy or free.
     fn render_options(
         &self,
         event: &Event,
+        editable: bool,
         theme: &Theme,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let reminder = self.render_reminders(event, theme, window, cx);
+        let reminder = self.render_reminders(event, editable, theme, window, cx);
 
         let busy = event.busy;
-        let availability = if self.access_of(event) == Access::Edit {
+        let availability = if editable {
+            let view = cx.entity().downgrade();
             section(
                 Icon::Briefcase,
                 theme,
                 div().flex().child(segmented(
-                    [("Busy", busy), ("Free", !busy)],
                     "busy",
+                    "Show as",
+                    &["Busy", "Free"],
+                    usize::from(!busy),
                     theme,
+                    window,
                     cx,
-                    |this, ix, cx| this.edit_event(cx, |e| e.busy = ix == 0),
+                    move |ix, _, cx| {
+                        view.update(cx, |this, cx| this.edit_event(cx, |e| e.busy = ix == 0))
+                            .ok();
+                    },
                 )),
             )
         } else {
@@ -3482,49 +4103,32 @@ impl CalendarView {
             )
         };
 
-        let rsvp = event.my_status(&self.data.account).map(|status| {
-            let id = event.id.clone();
-            section(
-                Icon::Check,
-                theme,
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(SPACE_SM)
-                    .child(
-                        div()
-                            .text_size(TEXT_BASE)
-                            .text_color(theme.text_muted)
-                            .child("Going?"),
-                    )
-                    .child(segmented(
-                        [
-                            ("Yes", status == RsvpStatus::Accepted),
-                            ("Maybe", status == RsvpStatus::Tentative),
-                            ("No", status == RsvpStatus::Declined),
-                        ],
-                        "rsvp",
-                        theme,
-                        cx,
-                        move |this, ix, cx| {
-                            let status = [
-                                RsvpStatus::Accepted,
-                                RsvpStatus::Tentative,
-                                RsvpStatus::Declined,
-                            ][ix];
-                            this.set_rsvp(&id, status, cx)
-                        },
-                    )),
-            )
-        });
-
         div()
             .flex()
             .flex_col()
-            .children(rsvp)
             .child(reminder)
             .child(availability.pt(px(0.)))
             .into_any_element()
+    }
+}
+
+fn toggled(on: bool) -> gpui::Toggled {
+    if on {
+        gpui::Toggled::True
+    } else {
+        gpui::Toggled::False
+    }
+}
+
+fn weekday_name(day: chrono::Weekday) -> &'static str {
+    match day {
+        chrono::Weekday::Mon => "Monday",
+        chrono::Weekday::Tue => "Tuesday",
+        chrono::Weekday::Wed => "Wednesday",
+        chrono::Weekday::Thu => "Thursday",
+        chrono::Weekday::Fri => "Friday",
+        chrono::Weekday::Sat => "Saturday",
+        chrono::Weekday::Sun => "Sunday",
     }
 }
 
@@ -3537,13 +4141,13 @@ fn section(glyph: Icon, theme: &Theme, content: impl IntoElement) -> gpui::Div {
         .gap(SPACE_SM)
         .child(
             div()
-                .w(px(18.))
-                .h(px(30.))
+                .w(ICON_XL)
+                .h(ROW_SM)
                 .flex_none()
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(icon(glyph, px(16.), theme.text_faint)),
+                .child(icon(glyph, ICON_LG, theme.text_faint)),
         )
         .child(div().flex_1().min_w_0().flex().flex_col().child(content))
 }
@@ -3552,7 +4156,7 @@ fn section(glyph: Icon, theme: &Theme, content: impl IntoElement) -> gpui::Div {
 /// hover or focus.
 fn plain_box() -> gpui::Div {
     div()
-        .h(px(30.))
+        .min_h(ROW_SM)
         .px(SPACE_SM)
         .flex()
         .items_center()
@@ -3560,39 +4164,26 @@ fn plain_box() -> gpui::Div {
         .border_color(gpui::transparent_black())
 }
 
-/// Text in a row of the panel that can't be changed; it wraps.
+/// Text in a row of the panel that can't be changed; it wraps, and can be
+/// selected.
 fn plain_text(text: &str, color: Hsla) -> gpui::Div {
-    plain_box().h_auto().min_h(px(30.)).py(SPACE_XS).child(
+    plain_box().py(SPACE_XS).child(
         div()
             .min_w_0()
             .text_size(TEXT_BASE)
-            .line_height(relative(1.5))
+            .line_height(LINE_READING)
             .text_color(color)
             .child(text.to_string()),
     )
 }
 
-/// "Join", for the event's video call.
+/// "Join", for the event's video call (ME-096).
 fn join_button(join: String, theme: &Theme) -> impl IntoElement {
     let service = crate::app::today::video_service(&join);
-    div()
-        .id("join-call")
-        .role(gpui::Role::Button)
+    let tip = format!("Join {service} (⌘J)");
+    push_button("join-call", "Join", ButtonKind::Primary, theme)
         .aria_label(format!("Join {service}"))
-        .flex_none()
-        .h(px(28.))
-        .px(SPACE_MD)
-        .flex()
-        .items_center()
-        .gap(SPACE_SM)
-        .rounded(RADIUS_MD)
-        .bg(theme.accent)
-        .text_color(theme.accent_text)
-        .text_size(TEXT_SM)
-        .font_weight(FontWeight::SEMIBOLD)
-        .hover(|s| s.opacity(0.9))
-        .child(icon(Icon::Video, px(14.), theme.accent_text))
-        .child("Join")
+        .tooltip(move |window, cx| tooltip(tip.clone()).build(window, cx))
         .on_click(move |_, _, cx| cx.open_url(&join))
 }
 
@@ -3608,18 +4199,21 @@ fn divider(theme: &Theme) -> impl IntoElement {
     div().mx(SPACE_XL).my(SPACE_SM).h(px(1.)).bg(theme.border)
 }
 
-/// The box around an editable field: plain text until hovered or focused.
-fn field_box(focused: bool, theme: &Theme) -> gpui::Div {
+/// The box around an editable field: plain text until hovered or focused;
+/// red while what's typed can't be read.
+fn field_box(focused: bool, invalid: bool, theme: &Theme) -> gpui::Div {
     div()
-        .h(px(30.))
+        .min_h(ROW_SM)
         .px(SPACE_SM)
         .flex()
         .items_center()
         .rounded(RADIUS_MD)
         .border_1()
         .map(|d| {
-            if focused {
-                d.bg(theme.search_bg).border_color(theme.accent.alpha(0.55))
+            if invalid {
+                d.bg(theme.search_bg).border_color(theme.danger)
+            } else if focused {
+                d.bg(theme.search_bg).border_color(theme.accent)
             } else {
                 d.border_color(gpui::transparent_black())
                     .hover(|s| s.bg(theme.hover_bg))
@@ -3627,234 +4221,64 @@ fn field_box(focused: bool, theme: &Theme) -> gpui::Div {
         })
 }
 
-/// A popup under the element before it: a zero-height anchor in the flow,
-/// so the popup starts where the next sibling would.
-fn below(content: impl IntoElement) -> impl IntoElement {
-    div().w_full().h(px(0.)).child(
-        deferred(anchored().snap_to_window_with_margin(px(8.)).child(content)).with_priority(2),
-    )
-}
-
-fn dropdown(top: gpui::Pixels, width: gpui::Pixels, theme: &Theme) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id("dropdown")
-        .occlude()
-        .mt(top)
-        .w(width)
-        .p(SPACE_XS)
-        .flex()
-        .flex_col()
-        .rounded(RADIUS_MD)
-        .bg(theme.overlay_bg)
-        .border_1()
-        .border_color(theme.overlay_border)
-        .shadow(popover_shadow(theme))
-}
-
-fn menu_row(
-    id: (&'static str, usize),
-    highlighted: bool,
-    theme: &Theme,
-) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .h(px(30.))
-        .px(SPACE_MD)
-        .flex()
-        .items_center()
-        .gap(SPACE_SM)
-        .rounded(RADIUS_MD)
-        .text_size(TEXT_BASE)
-        .when(highlighted, |d| d.bg(theme.selected_bg))
-        .hover(|s| s.bg(theme.hover_bg))
-}
-
 /// A button of the panel that takes focus: tab reaches it, enter and space
-/// work it (see `activate`), and a ring shows it has focus from the keys.
+/// work it (see `activate`), and the focus ring shows it has focus from
+/// the keys.
 fn control(
     el: gpui::Stateful<gpui::Div>,
     focus: Option<FocusHandle>,
     theme: &Theme,
 ) -> gpui::Stateful<gpui::Div> {
-    let ring = theme.accent.alpha(0.7);
+    let ring = focus_ring(theme);
     el.key_context(PANEL_CONTROL)
-        .border_1()
-        .border_color(gpui::transparent_black())
         .when_some(focus, |d, focus| d.track_focus(&focus))
-        .focus_visible(move |s| s.border_color(ring))
+        .focus_visible(move |s| s.shadow(ring))
 }
 
-/// A small toggle in the repeat and reminder rows.
-fn chip(
-    id: impl Into<gpui::ElementId>,
-    label: impl Into<SharedString>,
-    active: bool,
-    theme: &Theme,
-) -> gpui::Stateful<gpui::Div> {
-    let label = label.into();
+/// The box of a checkbox.
+fn check_box(on: bool, theme: &Theme) -> gpui::Div {
     div()
-        .id(id)
-        .role(gpui::Role::Button)
-        .aria_label(label.clone())
-        .h(px(24.))
-        .px(SPACE_SM)
-        .flex()
-        .items_center()
-        .rounded(RADIUS_SM)
-        .text_size(TEXT_SM)
-        .font_weight(FontWeight::MEDIUM)
-        .map(|d| {
-            if active {
-                d.bg(theme.accent).text_color(theme.accent_text)
-            } else {
-                d.bg(theme.chip_bg)
-                    .text_color(theme.text_muted)
-                    .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
-            }
-        })
-        .child(label)
-}
-
-/// A − or + button; does nothing at its bound.
-fn step_button(
-    id: &'static str,
-    glyph: Icon,
-    label: &'static str,
-    enabled: bool,
-    theme: &Theme,
-) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .role(gpui::Role::Button)
-        .aria_label(label)
-        .size(px(24.))
+        .flex_none()
+        .size(ICON_LG)
         .flex()
         .items_center()
         .justify_center()
-        .rounded(RADIUS_SM)
-        .bg(theme.chip_bg)
-        .when(enabled, |d| d.hover(|s| s.bg(theme.hover_bg)))
-        .child(icon(
-            glyph,
-            px(13.),
-            if enabled {
-                theme.text_muted
+        .rounded(RADIUS_SM / 2.)
+        .map(|d| {
+            if on {
+                d.bg(theme.switch_on).child(icon(
+                    Icon::Check,
+                    ICON_SM,
+                    theme.on_fill(theme.switch_on),
+                ))
             } else {
-                theme.text_disabled
-            },
-        ))
+                d.bg(theme.control_track)
+                    .border_1()
+                    .border_color(theme.border)
+            }
+        })
 }
 
 /// "Add Google Meet", "Adding…", or "Retry" after Google said no (CAL-34).
 fn meet_button(state: MeetState, theme: &Theme, cx: &mut Context<CalendarView>) -> AnyElement {
-    let (label, aria, color) = match state {
-        MeetState::Offer => ("Add Meet", "Add Google Meet", theme.text),
-        MeetState::Adding => ("Adding Meet…", "Adding Google Meet", theme.text_faint),
+    let (label, aria, kind) = match state {
+        MeetState::Offer => ("Add Meet", "Add Google Meet", ButtonKind::Plain),
+        MeetState::Adding => ("Adding Meet…", "Adding Google Meet", ButtonKind::Quiet),
         MeetState::Failed => (
             "Retry Meet",
             "Couldn't add Google Meet. Try again",
-            theme.text_danger,
+            ButtonKind::Danger,
         ),
     };
-    let busy = state == MeetState::Adding;
-    div()
-        .id("add-meet")
-        .role(gpui::Role::Button)
+    push_button("add-meet", label, kind, theme)
         .aria_label(aria)
-        .flex_none()
-        .h(px(28.))
-        .px(SPACE_MD)
-        .flex()
-        .items_center()
-        .gap(SPACE_SM)
-        .rounded(RADIUS_MD)
-        .bg(theme.chip_bg)
-        .text_color(color)
-        .text_size(TEXT_SM)
-        .font_weight(FontWeight::MEDIUM)
-        .child(icon(Icon::Video, px(14.), color))
-        .child(label)
-        .when(!busy, |d| {
-            d.hover(|s| s.bg(theme.hover_bg))
-                .on_click(cx.listener(|this, _, window, cx| this.add_meet(window, cx)))
+        .when(state == MeetState::Adding, |d| {
+            d.text_color(theme.text_faint)
+        })
+        .when(state != MeetState::Adding, |d| {
+            d.on_click(cx.listener(|this, _, window, cx| this.add_meet(window, cx)))
         })
         .into_any_element()
-}
-
-fn switch(on: bool, theme: &Theme) -> impl IntoElement {
-    div()
-        .w(px(28.))
-        .h(px(16.))
-        .flex_none()
-        .p(SPACE_2XS)
-        .flex()
-        .rounded_full()
-        .bg(if on { theme.accent } else { theme.selected_bg })
-        .when(on, |d| d.justify_end())
-        .child(
-            div()
-                .size(px(12.))
-                .rounded_full()
-                .bg(gpui::white())
-                .shadow(vec![gpui::BoxShadow {
-                    color: gpui::black().alpha(0.25),
-                    offset: gpui::point(px(0.), px(1.)),
-                    blur_radius: px(2.),
-                    spread_radius: px(0.),
-                    inset: false,
-                }]),
-        )
-}
-
-/// A small segmented control; `on_pick` gets the index clicked.
-fn segmented<const N: usize>(
-    options: [(&'static str, bool); N],
-    id: &'static str,
-    theme: &Theme,
-    cx: &mut Context<CalendarView>,
-    on_pick: impl Fn(&mut CalendarView, usize, &mut Context<CalendarView>) + Clone + 'static,
-) -> impl IntoElement {
-    div()
-        .flex()
-        .p(SPACE_2XS)
-        .gap(SPACE_2XS)
-        .rounded(RADIUS_MD)
-        .bg(theme.chip_bg)
-        .children(
-            options
-                .into_iter()
-                .enumerate()
-                .map(|(ix, (label, active))| {
-                    let on_pick = on_pick.clone();
-                    div()
-                        .id((id, ix))
-                        .h(px(24.))
-                        .px(SPACE_MD)
-                        .flex()
-                        .items_center()
-                        .rounded(RADIUS_SM)
-                        .text_size(TEXT_SM)
-                        .font_weight(FontWeight::MEDIUM)
-                        .map(|d| {
-                            if active {
-                                d.bg(theme.overlay_bg).text_color(theme.text).shadow(vec![
-                                    gpui::BoxShadow {
-                                        color: theme.overlay_shadow.alpha(0.18),
-                                        offset: gpui::point(px(0.), px(1.)),
-                                        blur_radius: px(2.),
-                                        spread_radius: px(0.),
-                                        inset: false,
-                                    },
-                                ])
-                            } else {
-                                d.text_color(theme.text_muted)
-                                    .hover(|s| s.text_color(theme.text))
-                            }
-                        })
-                        .child(label)
-                        .on_click(cx.listener(move |this, _, _, cx| on_pick(this, ix, cx)))
-                }),
-        )
 }
 
 fn status_text(status: RsvpStatus) -> &'static str {
@@ -3875,7 +4299,8 @@ fn status_color(status: RsvpStatus, theme: &Theme) -> Hsla {
     }
 }
 
-/// The answer, as a small badge on the guest's avatar.
+/// The answer, as a small badge on the guest's avatar; the row says it in
+/// words too.
 fn status_badge(status: RsvpStatus, theme: &Theme) -> impl IntoElement {
     let glyph = match status {
         RsvpStatus::Accepted => Icon::Check,
@@ -3883,23 +4308,20 @@ fn status_badge(status: RsvpStatus, theme: &Theme) -> impl IntoElement {
         RsvpStatus::Declined => Icon::X,
         RsvpStatus::NeedsAction => Icon::Minus,
     };
+    let fill = status_color(status, theme);
     div()
         .absolute()
-        .right(px(-5.))
-        .bottom(px(-5.))
-        .size(px(14.))
+        .right(-SPACE_XS)
+        .bottom(-SPACE_XS)
+        .size(ICON_LG)
         .flex()
         .items_center()
         .justify_center()
         .rounded_full()
-        .bg(status_color(status, theme))
+        .bg(fill)
         .border_2()
         .border_color(theme.overlay_bg)
-        .child(icon(
-            glyph,
-            px(8.),
-            theme.on_fill(status_color(status, theme)),
-        ))
+        .child(icon(glyph, ICON_SM, theme.on_fill(fill)))
 }
 
 #[cfg(test)]
@@ -4001,6 +4423,98 @@ mod tests {
         ];
         assert_eq!(picker_order(&calendars), [1, 3, 0, 2, 4]);
         assert!(picker_order(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_new_end_time_keeps_the_end_day() {
+        let start = day(2);
+        // Mon 9 AM – Wed 5 PM: 5 PM → 6 PM stays on Wednesday (ME-036).
+        let end = at(NaiveDate::from_ymd_opt(2026, 11, 4).unwrap(), 17, 0);
+        let six = NaiveTime::from_hms_opt(18, 0, 0).unwrap();
+        assert_eq!(
+            end_at_time(start, end, six),
+            at(NaiveDate::from_ymd_opt(2026, 11, 4).unwrap(), 18, 0)
+        );
+        assert_eq!(extra_days(start, end), 2);
+        assert_eq!(extra_days_label(2), "+2 days");
+        // Same day, an end before the start: the next day.
+        let ten = at(start.date(), 10, 0);
+        let eight = NaiveTime::from_hms_opt(8, 0, 0).unwrap();
+        assert_eq!(end_at_time(start, ten, eight), at(day(3).date(), 8, 0));
+        // Until midnight is still the start's day.
+        let midnight = time::midnight(day(3).date());
+        assert_eq!(extra_days(start, midnight), 0);
+        assert_eq!(end_at_time(start, midnight, six), at(start.date(), 18, 0));
+    }
+
+    #[test]
+    fn a_new_end_date_keeps_the_end_time() {
+        let start = day(2);
+        let end = at(day(4).date(), 17, 0);
+        assert_eq!(
+            timed_end_on(start, end, day(6).date()),
+            at(day(6).date(), 17, 0)
+        );
+        // Not before the start: on its day, or the day after.
+        assert_eq!(
+            timed_end_on(start, end, day(1).date()),
+            at(day(2).date(), 17, 0)
+        );
+        let early = at(day(4).date(), 8, 0);
+        assert_eq!(
+            timed_end_on(start, early, day(2).date()),
+            at(day(3).date(), 8, 0)
+        );
+        // An end at midnight stays at the end of the picked day.
+        let midnight = time::midnight(day(3).date());
+        assert_eq!(
+            timed_end_on(start, midnight, day(5).date()),
+            time::midnight(day(6).date())
+        );
+    }
+
+    #[test]
+    fn the_end_picker_lists_the_end_day_once_it_is_later() {
+        let start = day(2);
+        let slots = time_slots(Field::EndTime, start, at(day(2).date(), 10, 0));
+        assert_eq!(slots[0].0, at(day(2).date(), 9, 15));
+        let slots = time_slots(Field::EndTime, start, at(day(4).date(), 17, 0));
+        assert_eq!(slots[0].0, time::midnight(day(4).date()));
+        assert!(slots.iter().any(|&(t, _)| t == at(day(4).date(), 17, 0)));
+    }
+
+    #[test]
+    fn locations_open_in_maps_or_as_links() {
+        assert_eq!(location_target("  "), None);
+        assert_eq!(
+            location_target("https://meet.google.com/abc-defg-hij"),
+            None
+        );
+        assert_eq!(
+            location_target("https://example.com/room"),
+            Some("https://example.com/room".into())
+        );
+        assert_eq!(
+            location_target("Café Rouge, 1 High St"),
+            Some("https://maps.apple.com/?q=Caf%C3%A9%20Rouge%2C%201%20High%20St".into())
+        );
+    }
+
+    #[test]
+    fn typed_dates_and_times_read_back() {
+        assert_eq!(
+            typed_hint(Field::StartTime, "25:00", "9:00 AM"),
+            Some(Err("Not a time yet"))
+        );
+        assert_eq!(typed_hint(Field::StartTime, "9:00 AM", "9:00 AM"), None);
+        assert!(matches!(
+            typed_hint(Field::EndTime, "3pm", "9:00 AM"),
+            Some(Ok(_))
+        ));
+        assert_eq!(
+            typed_hint(Field::StartDate, "tomorow", "Today"),
+            Some(Err("Not a date yet"))
+        );
     }
 
     #[test]

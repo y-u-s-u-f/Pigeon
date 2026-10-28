@@ -36,7 +36,7 @@ use crate::{
             self, BulletedList, ClearFormatting, FormatBold, FormatCode, FormatItalic,
             FormatStrikethrough, FormatUnderline, InsertLink, NumberedList, QuoteLines,
         },
-        contact_card, menu_bar, settings as settings_page,
+        contact_card, menu_bar, onboarding, settings as settings_page,
     },
 };
 
@@ -333,6 +333,8 @@ fn shared_bindings() -> Vec<KeyBinding> {
     const LIST: &str = "Mailbox && !Reader && !Input && !Control";
     const TABBING: &str = "Mailbox && !Input && !Composer";
     const READING: &str = "Mailbox && Reader && !Input";
+    // Space presses a focused control instead (W2-R04).
+    const READING_TEXT: &str = "Mailbox && Reader && !Input && !Control";
     const PALETTE_INPUT: &str = "CommandPalette > Input";
     const COMPOSER_INPUT: &str = "Composer > Input";
     const RECIPIENTS_INPUT: &str = "Recipients > Input";
@@ -345,6 +347,9 @@ fn shared_bindings() -> Vec<KeyBinding> {
     const SET_INPUT: &str = "SettingsSearch > Input";
     const MENU_BAR: &str = menu_bar::MENU_BAR;
     const CARD: &str = contact_card::CONTACT_CARD;
+    // Return on a focused button presses it (W2-R05, W2-R16).
+    const CARD_LIST: &str = "ContactCard && !Control";
+    const ONBOARDING_KEYS: &str = "Onboarding && !Control";
     const HELP_INPUT: &str = "ShortcutsHelp > Input";
     const CAL_INPUT: &str = "Calendar > Input";
     const CAL_TABBING: &str = "Calendar && !Input && !EventPanel";
@@ -373,6 +378,10 @@ fn shared_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("alt-cmd-n", NewEvent, Some(CONTEXT)),
         KeyBinding::new("cmd-n", NewEvent, Some(CALENDAR)),
         KeyBinding::new("cmd-f", ToggleSearch, Some(MAILBOX)),
+        // In Calendar, Find searches the events (MA-081); ⌥⌘F is Mail's
+        // mailbox search.
+        KeyBinding::new("cmd-f", ToggleSearch, Some(CALENDAR)),
+        KeyBinding::new("alt-cmd-f", ToggleSearch, Some(CONTEXT)),
         KeyBinding::new("tab", FocusNextControl, Some(TABBING)),
         KeyBinding::new("shift-tab", FocusPrevControl, Some(TABBING)),
         KeyBinding::new("escape", FocusPanes, Some(CONTROL)),
@@ -399,9 +408,9 @@ fn shared_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("down", ScrollReaderDown, Some(READING)),
         KeyBinding::new("up", ScrollReaderUp, Some(READING)),
         KeyBinding::new("pagedown", PageDown, Some(READING)),
-        KeyBinding::new("space", PageDown, Some(READING)),
+        KeyBinding::new("space", PageDown, Some(READING_TEXT)),
         KeyBinding::new("pageup", PageUp, Some(READING)),
-        KeyBinding::new("shift-space", PageUp, Some(READING)),
+        KeyBinding::new("shift-space", PageUp, Some(READING_TEXT)),
         KeyBinding::new("cmd-up", ScrollToTop, Some(READING)),
         KeyBinding::new("home", ScrollToTop, Some(READING)),
         KeyBinding::new("cmd-down", ScrollToBottom, Some(READING)),
@@ -686,16 +695,18 @@ fn shared_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("j", contact_card::SelectNext, Some(CARD)),
         KeyBinding::new("up", contact_card::SelectPrev, Some(CARD)),
         KeyBinding::new("k", contact_card::SelectPrev, Some(CARD)),
-        KeyBinding::new("enter", contact_card::Confirm, Some(CARD)),
+        KeyBinding::new("enter", contact_card::Confirm, Some(CARD_LIST)),
         KeyBinding::new("c", contact_card::ComposeTo, Some(CARD)),
         KeyBinding::new("cmd-c", contact_card::CopyAddress, Some(CARD)),
         KeyBinding::new("s", SearchFromContact, Some(CARD)),
         KeyBinding::new("escape", contact_card::Dismiss, Some(CARD)),
         KeyBinding::new("cmd-.", contact_card::Dismiss, Some(CARD)),
         KeyBinding::new("cmd-w", contact_card::Dismiss, Some(CARD)),
-        // The sign-in screen (MC-089); its ↵ and D wait for its handlers,
-        // which know whether a sign-in is under way.
+        // The sign-in screen (MC-089); its handlers ignore ↩ and D while a
+        // sign-in is under way.
         KeyBinding::new("escape", CancelSignIn, Some(ONBOARDING)),
+        KeyBinding::new("enter", onboarding::Confirm, Some(ONBOARDING_KEYS)),
+        KeyBinding::new("d", onboarding::TryDemo, Some(ONBOARDING_KEYS)),
     ]
 }
 
@@ -792,6 +803,8 @@ pub struct Command {
     pub group: Group,
     pub icon: Icon,
     pub action: fn() -> Box<dyn Action>,
+    /// The action's name, without building it (MC-047).
+    pub action_name: fn() -> &'static str,
     /// Shown in the shortcuts overlay but not offered in the palette.
     pub help_only: bool,
     /// Offered in the palette in Mail too, though its group is Calendar's.
@@ -910,12 +923,15 @@ pub enum When {
     /// The event panel is open.
     EventOpen,
     /// The selected event is an invitation the user can answer (ME-034).
-    #[allow(dead_code)] // the RSVP rows, once W2-CALP handles them
     CalendarInvite,
     /// Signed in with Google.
     SignedIn,
     /// Neither signed in nor on the demo data.
     SignedOut,
+    /// Signed out, or on demo data picked on the sign-in screen (ME-050).
+    CanSignIn,
+    /// Signed in, or on demo data picked on the sign-in screen (ME-050).
+    CanSignOut,
     /// Never: the row waits for its handler, which a later wave adds
     /// (polish plan, W2/W3). Its owner swaps in the real gate.
     Pending,
@@ -928,6 +944,7 @@ macro_rules! commands {
             group: Group::$group,
             icon: Icon::$icon,
             action: || Box::new($action $(($arg))?),
+            action_name: <$action as Action>::name_for_type,
             help_only: commands!(@help $($flag)?),
             global: commands!(@global $($flag)?),
             when: commands!(@when $($when)?),
@@ -974,7 +991,7 @@ pub const COMMANDS: &[Command] = commands! {
     Conversation: "Mark as Unread", MailUnread, MarkUnread if Thread;
     Conversation: "Mark as Read", MailOpen, MarkRead if Thread;
     Conversation: "Move to…", FolderInput, MoveTo if Thread;
-    Conversation: "Move to Category…", FolderInput, MoveToCategory if Pending;
+    Conversation: "Move to Category…", FolderInput, MoveToCategory if Thread;
     Conversation: "Label…", Tag, ApplyLabel if Thread;
     Selection: "Select / Deselect Conversation", Check, ToggleSelected if Thread => Selected;
     Selection: "Select All Conversations", Check, SelectAllThreads;
@@ -990,9 +1007,9 @@ pub const COMMANDS: &[Command] = commands! {
     Navigation: "Next Message in Conversation", ChevronDown, NextMessage if Messages;
     Navigation: "Previous Message in Conversation", ChevronUp, PrevMessage if Messages;
     Conversation: "Select Message Text", Text, SelectMessageText if Thread;
-    Conversation: "Retry Loading Message", Repeat, RetryLoadingMessage if Thread;
+    Conversation: "Retry Loading Message", RefreshCw, RetryLoadingMessage if Thread;
     Conversation: "Load Images", Image, LoadImages if Thread;
-    Conversation: "Open in Gmail", Mail, OpenInGmail if Pending;
+    Conversation: "Open in Gmail", Mail, OpenInGmail if Thread;
     Navigation: "Scroll Conversation Down", ChevronDown, ScrollReaderDown, help_only;
     Navigation: "Scroll Conversation Up", ChevronUp, ScrollReaderUp, help_only;
     Navigation: "Page Down", ChevronDown, PageDown, help_only;
@@ -1001,8 +1018,9 @@ pub const COMMANDS: &[Command] = commands! {
     Navigation: "Scroll to Bottom", ChevronDown, ScrollToBottom, help_only;
     Navigation: "Next Link in Message", Link, CycleMessageLinks, help_only;
     Navigation: "Search Mail", Search, ToggleSearch;
+    CalendarNavigation: "Search Events", Search, ToggleSearch;
     Navigation: "Clear Search", X, CloseSearch if Searching;
-    Navigation: "Clear Recent Searches", X, ClearRecentSearches if Pending;
+    Navigation: "Clear Recent Searches", X, ClearRecentSearches if Searching;
     Navigation: "Compact / Comfortable List", Rows, ToggleDensity => CompactList;
     Navigation: "Load Older Conversations", ChevronDown, LoadOlderConversations;
     GoTo: "Go to Inbox", Inbox, GoToInbox;
@@ -1019,16 +1037,16 @@ pub const COMMANDS: &[Command] = commands! {
     CalendarEvents: "New Event", Plus, NewEvent, global;
     // W5.
     CalendarEvents: "New Event from Text…", Plus, NewEventFromText, global;
-    CalendarEvents: "Join Meeting", Video, JoinEvent if Pending;
-    CalendarEvents: "Accept Invitation", Check, AcceptEvent if Pending;
-    CalendarEvents: "Reply Maybe", Calendar, MaybeEvent if Pending;
-    CalendarEvents: "Decline Invitation", X, DeclineEvent if Pending;
+    CalendarEvents: "Join Meeting", Video, JoinEvent if Event;
+    CalendarEvents: "Accept Invitation", Check, AcceptEvent if CalendarInvite;
+    CalendarEvents: "Reply Maybe", Calendar, MaybeEvent if CalendarInvite;
+    CalendarEvents: "Decline Invitation", X, DeclineEvent if CalendarInvite;
     CalendarEvents: "Add Google Meet", Video, AddGoogleMeet if Event;
     CalendarEvents: "Repeat…", Repeat, SetRepeat if Event;
     CalendarEvents: "Add Reminder…", Bell, AddReminder if Event;
-    CalendarEvents: "Open Location in Maps", MapPin, OpenLocation if Pending;
-    CalendarEvents: "Copy Link to Event", Copy, CopyLink if Pending;
-    CalendarEvents: "Open in Google Calendar", Calendar, OpenInGoogleCalendar if Pending;
+    CalendarEvents: "Open Location in Maps", MapPin, OpenLocation if Event;
+    CalendarEvents: "Copy Link to Event", Copy, CopyLink if Event;
+    CalendarEvents: "Open in Google Calendar", Calendar, OpenInGoogleCalendar if Event;
     CalendarEvents: "Open Event", Calendar, OpenEvent if Event;
     CalendarEvents: "Delete Event", Trash, DeleteEvent if Event;
     CalendarEvents: "Save Event", Check, SaveEvent if EventOpen;
@@ -1056,8 +1074,8 @@ pub const COMMANDS: &[Command] = commands! {
     App: "Keyboard Shortcuts", Keyboard, ToggleShortcutsHelp;
     App: "Settings…", Settings, OpenSettings;
     App: "Sync Now", RefreshCw, SyncNow if SignedIn;
-    App: "Sign In with Google", LogIn, SignIn if SignedOut;
-    App: "Sign Out", LogOut, SignOut if SignedIn;
+    App: "Sign In with Google", LogIn, SignIn if CanSignIn;
+    App: "Sign Out", LogOut, SignOut if CanSignOut;
     App: "Use Demo Data", Layers, UseDemoData if SignedOut;
     App: "Quit Pigeon", LogOut, Quit;
     // ME-060: the menus' window and text commands, and Settings' sections.
@@ -1085,9 +1103,9 @@ pub const COMMANDS: &[Command] = commands! {
     App: "Turn Open at Login On / Off", Settings, ToggleOpenAtLogin => OpenAtLogin;
     // W2: attachments and the original message.
     Conversation: "Open Attachment", Paperclip, OpenAttachment if Thread;
-    Conversation: "Quick Look Attachment", Paperclip, QuickLookAttachment if Pending;
+    Conversation: "Quick Look Attachment", Paperclip, QuickLookAttachment if Thread;
     Conversation: "Save Attachment…", Download, SaveAttachment if Thread;
-    Conversation: "Save All Attachments…", Download, SaveAllAttachments if Pending;
+    Conversation: "Save All Attachments…", Download, SaveAllAttachments if Thread;
     Conversation: "Show Original", Code, ShowOriginal if Thread;
     Conversation: "Save Message as .eml…", Download, SaveOriginal if Thread;
     Conversation: "Copy Original", Copy, CopyOriginal, help_only;

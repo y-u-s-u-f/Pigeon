@@ -11,9 +11,9 @@ use std::cell::RefCell;
 
 use chrono::NaiveDateTime;
 use gpui::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, Global, Task, TitlebarOptions,
-    WeakEntity, Window, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowOptions,
-    point, px, size,
+    AnyWindowHandle, App, AppContext as _, Bounds, Context, DisplayId, Entity, Global, Pixels,
+    Size, Task, TitlebarOptions, WeakEntity, Window, WindowAppearance, WindowBackgroundAppearance,
+    WindowBounds, WindowOptions, point, px, size,
 };
 
 use super::{Mode, PigeonApp, RAIL_WIDTH};
@@ -22,7 +22,7 @@ use crate::{
     backend::{self, Backend, BackendEvent},
     logging, native,
     notify::{self, NoticeTarget},
-    settings::{self, Appearance, Saved, TimeFormat},
+    settings::{self, Appearance, Saved, TimeFormat, WindowFrame},
     theme::{Display, Theme},
 };
 
@@ -404,14 +404,86 @@ fn show_now(what: Show, cx: &mut App) -> Result<(), Show> {
     }
 }
 
+/// The smallest the main window gets.
+const WINDOW_MIN: Size<Pixels> = size(px(900.), px(560.));
+/// How much of a saved frame must still be on a display to reopen there.
+const WINDOW_ON_SCREEN: Pixels = px(100.);
+
+/// The window's frame now, to save (MA-034).
+pub fn window_frame(window: &Window, cx: &App) -> WindowFrame {
+    let (bounds, full_screen) = match window.window_bounds() {
+        WindowBounds::Windowed(b) | WindowBounds::Maximized(b) => (b, false),
+        WindowBounds::Fullscreen(b) => (b, true),
+    };
+    WindowFrame {
+        x: bounds.origin.x.into(),
+        y: bounds.origin.y.into(),
+        width: bounds.size.width.into(),
+        height: bounds.size.height.into(),
+        full_screen,
+        display: window
+            .display(cx)
+            .and_then(|d| d.uuid().ok())
+            .map(|uuid| uuid.to_string()),
+    }
+}
+
+/// The saved frame on its display, or the main one, fitted inside it;
+/// none when too little of it would show there.
+fn restored_frame(frame: &WindowFrame, cx: &App) -> Option<(WindowBounds, DisplayId)> {
+    let display = cx
+        .displays()
+        .into_iter()
+        .find(|d| {
+            frame.display.is_some() && d.uuid().ok().map(|uuid| uuid.to_string()) == frame.display
+        })
+        .or_else(|| cx.primary_display())?;
+    let bounds = fit_frame(frame, display.bounds().size)?;
+    let bounds = if frame.full_screen {
+        WindowBounds::Fullscreen(bounds)
+    } else {
+        WindowBounds::Windowed(bounds)
+    };
+    Some((bounds, display.id()))
+}
+
+/// `frame`, relative to a display `area` big, moved and shrunk to fit it;
+/// none when less than `WINDOW_ON_SCREEN` of it overlaps it each way.
+fn fit_frame(frame: &WindowFrame, area: Size<Pixels>) -> Option<Bounds<Pixels>> {
+    let saved = Bounds::new(
+        point(px(frame.x), px(frame.y)),
+        size(px(frame.width), px(frame.height)),
+    );
+    let overlap = saved.intersect(&Bounds::new(point(px(0.), px(0.)), area));
+    if overlap.size.width < WINDOW_ON_SCREEN || overlap.size.height < WINDOW_ON_SCREEN {
+        return None;
+    }
+    let width = saved.size.width.max(WINDOW_MIN.width).min(area.width);
+    let height = saved.size.height.max(WINDOW_MIN.height).min(area.height);
+    let x = saved.origin.x.min(area.width - width).max(px(0.));
+    let y = saved.origin.y.min(area.height - height).max(px(0.));
+    Some(Bounds::new(point(x, y), size(width, height)))
+}
+
 fn window_options(cx: &mut App) -> WindowOptions {
-    let bounds = Bounds::centered(None, size(px(1360.), px(860.)), cx);
+    // MA-034: where it was left, else centered on the main display.
+    let restored = settings::current(cx)
+        .window
+        .and_then(|frame| restored_frame(&frame, cx));
+    let (window_bounds, display_id) = match restored {
+        Some((bounds, display)) => (bounds, Some(display)),
+        None => (
+            WindowBounds::Windowed(Bounds::centered(None, size(px(1360.), px(860.)), cx)),
+            None,
+        ),
+    };
     // The traffic lights (60pt wide on macOS 26) sit centered in the rail,
     // level with the middle of the pane headers.
     let lights_x = (RAIL_WIDTH - px(60.)) / 2.;
     WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        window_min_size: Some(size(px(900.), px(560.))),
+        window_bounds: Some(window_bounds),
+        display_id,
+        window_min_size: Some(WINDOW_MIN),
         titlebar: Some(TitlebarOptions {
             title: Some("Pigeon".into()),
             appears_transparent: true,
@@ -519,10 +591,9 @@ fn on_backend_event(backend: Entity<Backend>, event: &BackendEvent, cx: &mut App
                 ));
                 return;
             }
-            let open = frontmost_thread(cx);
             let new: Vec<_> = new
                 .iter()
-                .filter(|m| Some(&m.thread_id) != open.as_ref())
+                .filter(|m| !in_view(&m.thread_id, cx))
                 .cloned()
                 .collect();
             notify::notify_new_mail(&new, cx);
@@ -543,18 +614,37 @@ fn on_backend_event(backend: Entity<Backend>, event: &BackendEvent, cx: &mut App
     }
 }
 
-/// The conversation open in the main window while it's frontmost: no
-/// notification for that one.
-fn frontmost_thread(cx: &App) -> Option<String> {
-    let main = cx.global::<Shell>().main.clone()?;
+/// Whether the main window is frontmost on Mail and its view shows the
+/// thread: no notification for it there (MB-004). Elsewhere, or with the
+/// window in the background or closed, one shows.
+fn in_view(thread_id: &str, cx: &App) -> bool {
+    let Some(main) = cx.global::<Shell>().main.clone() else {
+        return false;
+    };
     if cx.active_window() != Some(main.window) {
-        return None;
+        return false;
     }
-    let app = main.app.upgrade()?;
+    let Some(app) = main.app.upgrade() else {
+        return false;
+    };
     let app = app.read(cx);
-    (app.mode == Mode::Mail && !app.settings_page.open)
-        .then(|| app.selected.map(|ix| app.data.threads[ix].id.clone()))
-        .flatten()
+    if app.mode != Mode::Mail || app.settings_page.open {
+        return false;
+    }
+    match app.data.thread_ix(thread_id) {
+        Some(ix) => {
+            app.selected == Some(ix)
+                || app.rows.contains(&super::Row::Thread(ix))
+                || app.nav_contains(app.nav, &app.data.threads[ix])
+        }
+        // Not in the window's list yet: as the store has it.
+        None => app
+            .backend
+            .read(cx)
+            .load_threads(&[thread_id.to_string()])
+            .first()
+            .is_some_and(|t| app.nav_contains(app.nav, t)),
+    }
 }
 
 /// NTF-2: Primary's unread count on the Dock icon.
@@ -652,6 +742,53 @@ mod tests {
             ["a@x.com", "b@y.com"]
         );
         assert!(Mailto::parse("https://x.com").is_none());
+    }
+
+    /// MA-034: a saved frame comes back where it was, fitted to its display,
+    /// or not at all when it would be (nearly) off screen.
+    #[test]
+    fn saved_frames_fit_their_display() {
+        let frame = |x: f32, y: f32, width: f32, height: f32| WindowFrame {
+            x,
+            y,
+            width,
+            height,
+            full_screen: false,
+            display: None,
+        };
+        let area = size(px(1440.), px(900.));
+        let fit = |f: WindowFrame| {
+            fit_frame(&f, area).map(|b| {
+                (
+                    f32::from(b.origin.x),
+                    f32::from(b.origin.y),
+                    f32::from(b.size.width),
+                    f32::from(b.size.height),
+                )
+            })
+        };
+        assert_eq!(
+            fit(frame(40., 30., 1200., 800.)),
+            Some((40., 30., 1200., 800.))
+        );
+        // Partly off the right edge: moved in.
+        assert_eq!(
+            fit(frame(1000., 100., 1200., 700.)),
+            Some((240., 100., 1200., 700.))
+        );
+        // Bigger than the display: shrunk to it; smaller than the minimum:
+        // grown to it.
+        assert_eq!(
+            fit(frame(0., 0., 3000., 2000.)),
+            Some((0., 0., 1440., 900.))
+        );
+        assert_eq!(
+            fit(frame(10., 10., 400., 300.)),
+            Some((10., 10., 900., 560.))
+        );
+        // On a display that's gone, or barely on this one.
+        assert_eq!(fit(frame(2000., 100., 1200., 800.)), None);
+        assert_eq!(fit(frame(1400., 100., 1200., 800.)), None);
     }
 
     /// W3 (LNK-3): RFC 6068's fields and its edge cases.

@@ -4,7 +4,7 @@
 use chrono::{Datelike, Duration, NaiveDate};
 use gpui::{
     AnyElement, Context, FontWeight, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    StatefulInteractiveElement as _, Styled, div, prelude::FluentBuilder as _, px,
+    StatefulInteractiveElement as _, Styled, div, prelude::FluentBuilder as _,
 };
 
 use super::{CalendarView, today};
@@ -34,7 +34,7 @@ impl CalendarView {
         let first = week_start(month);
         let today = today();
         let typed = (self.menu == Some(super::Menu::GoToDate))
-            .then(|| self.typed_date(cx))
+            .then(|| self.typed_date())
             .flatten();
 
         let nav = |nav_id: &'static str, glyph: Icon, label: &'static str, months: i32| {
@@ -48,7 +48,7 @@ impl CalendarView {
                 .justify_center()
                 .rounded(RADIUS_SM)
                 .hover(|s| s.bg(theme.hover_bg))
-                .child(icon(glyph, px(14.), theme.icon))
+                .child(icon(glyph, ICON_MD, theme.icon))
                 .on_mouse_down(MouseButton::Left, |_, window, cx| {
                     window.prevent_default();
                     cx.stop_propagation();
@@ -80,7 +80,7 @@ impl CalendarView {
                 div()
                     .id((id, date.num_days_from_ce() as usize))
                     .role(gpui::Role::Button)
-                    .aria_label(date.format("%A, %B %-d, %Y").to_string())
+                    .aria_label(super::header::full_date(date))
                     .aria_selected(chosen)
                     .size(HIT_TARGET)
                     .flex()
@@ -106,7 +106,6 @@ impl CalendarView {
                         }
                     })
                     .child(date.day().to_string())
-                    .cursor_pointer()
                     .on_mouse_down(MouseButton::Left, |_, window, cx| {
                         window.prevent_default();
                         cx.stop_propagation();

@@ -35,12 +35,16 @@ use std::{cell::Cell, rc::Rc, time::Duration as StdDuration};
 
 use chrono::{Duration, Local, NaiveDate, NaiveDateTime};
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, AppContext as _, Bounds, Context, Entity,
-    EventEmitter, FocusHandle, FontWeight, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
-    Styled, Subscription, Task, Window, actions, anchored,
-    component::input::{InputEvent, InputState},
-    deferred, div, ease_out_quint, point,
+    AnyElement, AppContext as _, Bounds, Context, Entity, EventEmitter, FocusHandle, FontWeight,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Point, Render,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled, Subscription, Task,
+    Window, actions, anchored,
+    base::spring,
+    component::{
+        input::{InputEvent, InputState},
+        native_menu::NativeMenu,
+    },
+    deferred, div, point,
     prelude::FluentBuilder as _,
     px,
 };
@@ -49,18 +53,23 @@ use self::{drag::GridDrag, event_panel::EventPanel};
 use crate::ui::style::*;
 use crate::{
     actions::*,
+    app::Retime,
     backend::{
         Backend, BackendEvent, CalOp, OpId, SendUpdates,
         calendar::{Access, access, asks_guests, has_guests, instance_id, is_organizer, refusal},
     },
     calendar::{
         CalendarData, Event, GoogleSettings, Occurrence, RsvpStatus, SeriesScope, occurrences,
-        quick_add,
+        policy, quick_add,
         time::{self, LocalZone, add_months, month_grid, next_half_hour, week_start},
     },
     contacts::SharedContactBook,
     theme::Theme,
-    ui::{keycap, popover_shadow},
+    ui::{
+        controls::{ButtonKind, popover_surface, push_button},
+        keys_caps,
+        motion::{Rise, SPRING_EXIT, SPRING_PANE},
+    },
 };
 
 actions!(
@@ -81,8 +90,10 @@ pub const HOUR_HEIGHT: f32 = 50.;
 /// The narrowest the grid and header get beside a docked event panel; in a
 /// narrower window the panel floats over the grid instead.
 const GRID_MIN_BESIDE_PANEL: f32 = 680.;
-/// The hour the grids open scrolled to.
+/// The hour the grids open scrolled to, away from today.
 const FIRST_VISIBLE_HOUR: f32 = 7.5;
+/// With today on screen, how far above now the grids open.
+const NOW_LEAD_HOURS: f32 = 2.;
 /// How far next and previous event look past the period shown.
 const SEARCH_DAYS: i64 = 62;
 /// How long edits and answers to an invite settle before they go.
@@ -138,25 +149,36 @@ pub enum PromptKind {
 }
 
 impl PromptKind {
-    /// The question and the answers offered, first one taken by enter.
-    fn choices(self) -> (&'static str, &'static [(SeriesScope, &'static str)]) {
+    /// The question asked.
+    pub(crate) fn question(self) -> &'static str {
         match self {
-            PromptKind::Delete => (
-                "Delete repeating event",
-                &[
-                    (SeriesScope::This, "This event"),
-                    (SeriesScope::Following, "This and following"),
-                    (SeriesScope::All, "All events"),
-                ],
-            ),
-            PromptKind::Move { .. } => (
-                "Move repeating event",
-                &[
-                    (SeriesScope::This, "This event"),
-                    (SeriesScope::Following, "This and following"),
-                    (SeriesScope::All, "All events"),
-                ],
-            ),
+            PromptKind::Delete => "Delete this repeating event?",
+            PromptKind::Move { .. } => "Move this repeating event?",
+        }
+    }
+
+    /// The answers offered, the first one taken by enter. Deletes say what
+    /// they delete (MB-028).
+    fn choices(self) -> &'static [(SeriesScope, &'static str)] {
+        match self {
+            PromptKind::Delete => &[
+                (SeriesScope::This, "Delete This Event"),
+                (SeriesScope::Following, "Delete This and Following"),
+                (SeriesScope::All, "Delete All Events"),
+            ],
+            PromptKind::Move { .. } => &[
+                (SeriesScope::This, "This Event"),
+                (SeriesScope::Following, "This and Following"),
+                (SeriesScope::All, "All Events"),
+            ],
+        }
+    }
+
+    /// How the default answer and the others look.
+    fn tones(self) -> (ButtonKind, ButtonKind) {
+        match self {
+            PromptKind::Delete => (ButtonKind::Destructive, ButtonKind::Danger),
+            PromptKind::Move { .. } => (ButtonKind::Primary, ButtonKind::Plain),
         }
     }
 }
@@ -283,7 +305,7 @@ fn discarded_message(event: &Event) -> String {
 
 const GUEST_CHOICES: &[(SendUpdates, &str)] = &[
     (SendUpdates::All, "Send"),
-    (SendUpdates::None, "Don't send"),
+    (SendUpdates::None, "Don't Send"),
 ];
 
 /// The op with `send` as its `sendUpdates`.
@@ -350,6 +372,28 @@ pub struct Removal {
     op: Option<OpId>,
 }
 
+impl Removal {
+    /// What Undo calls it: "Undo Delete Event", or "Undo Change Event" for
+    /// a "This and following" change, which adds a series.
+    pub fn undo_title(&self) -> &'static str {
+        if self.added.is_empty() {
+            "Delete Event"
+        } else {
+            "Change Event"
+        }
+    }
+}
+
+/// An event moved or resized, for the app's undo stack (MA-071). Emitted
+/// beside `CalendarEvent`, so the app subscribes to it on its own.
+pub struct Retimed {
+    /// "Move Event" or "Resize Event".
+    pub title: &'static str,
+    pub retime: Retime,
+}
+
+impl EventEmitter<Retimed> for CalendarView {}
+
 pub enum CalendarEvent {
     /// A delete or a series split: the app shows a toast that can undo it.
     Undoable {
@@ -360,7 +404,8 @@ pub enum CalendarEvent {
     /// refused; the toast says why (CAL-22).
     Refused(String),
     /// W6: a guest was clicked: their contact card (CON-5).
-    ShowContact(crate::data::Contact),
+    /// MB-069: at the click on the guest.
+    ShowContact(crate::data::Contact, Option<Point<Pixels>>),
     /// A new event was discarded: the app shows a toast that brings it back.
     Discarded {
         message: String,
@@ -401,7 +446,7 @@ pub struct CalendarView {
     /// panel opened on it: what Discard puts back. After "This event" or
     /// "This and following" it's the new event as it was before the change.
     discard_base: Option<(Event, NaiveDateTime)>,
-    /// The panel sliding shut, drawn until its animation ends.
+    /// The panel sliding shut, drawn until its width spring reaches 0.
     closing_panel: Option<EventPanel>,
     /// The panel sliding shut showed a new event, so it keeps its buttons.
     closing_was_new: bool,
@@ -435,7 +480,20 @@ pub struct CalendarView {
     pending_rsvp: Option<(String, RsvpStatus)>,
     _rsvp_timer: Option<Task<()>>,
     pub guest_prompt: Option<GuestPrompt>,
+    /// Guest questions asked while one was open: each waits its turn
+    /// rather than answering the open one (MB-041).
+    queued_guest_prompts: Vec<GuestPrompt>,
     pub leave_prompt: Option<LeavePrompt>,
+    /// The all-day lane shows every lane, not the first few (ME-040).
+    all_day_expanded: bool,
+    /// The date the go-to-date field reads as, kept as it's typed
+    /// (MC-056).
+    typed: Option<NaiveDate>,
+    /// The header's view switch: ←/→ change the view while it has focus.
+    view_switch_focus: FocusHandle,
+    /// The calendars button: arrows move through its open menu (ME-045).
+    calendars_focus: FocusHandle,
+    calendars_highlight: Option<usize>,
     /// The user's Google Calendar settings (CAL-41).
     pub google: GoogleSettings,
     pub prefs: CalendarPrefs,
@@ -445,7 +503,6 @@ pub struct CalendarView {
     /// Repaints every half minute so the current-time line moves.
     /// Reminders are app-wide (`app::today`).
     _tick: Task<()>,
-    _closing: Option<Task<()>>,
     _autoscroll: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -540,17 +597,22 @@ impl CalendarView {
             pending_rsvp: None,
             _rsvp_timer: None,
             guest_prompt: None,
+            queued_guest_prompts: Vec::new(),
             leave_prompt: None,
+            all_day_expanded: false,
+            typed: None,
+            view_switch_focus: cx.focus_handle().tab_stop(true),
+            calendars_focus: cx.focus_handle().tab_stop(true),
+            calendars_highlight: None,
             google,
             prefs: CalendarPrefs::default(),
             meet_requests: Default::default(),
             _tick: tick,
-            _closing: None,
             _autoscroll: None,
             _subscriptions: vec![date_events, backend_events],
         };
         this.apply_display();
-        this.scroll_to_morning();
+        this.scroll_to_start();
         this
     }
 
@@ -606,9 +668,19 @@ impl CalendarView {
         }
     }
 
-    fn scroll_to_morning(&self) {
+    /// Where the grid opens: a little before now when today is on screen
+    /// (ME-043), else at the morning. The grid clamps it at the bottom.
+    fn scroll_to_start(&self) {
+        let (from, to) = self.visible_range();
+        let today = today();
+        let hour = if (from..to).contains(&today) {
+            let now = time::minutes_into(today, now()) as f32 / 60.;
+            (now - NOW_LEAD_HOURS).max(0.)
+        } else {
+            FIRST_VISIBLE_HOUR
+        };
         self.grid_scroll
-            .set_offset(point(px(0.), px(-FIRST_VISIBLE_HOUR * HOUR_HEIGHT)));
+            .set_offset(point(px(0.), px(-hour * HOUR_HEIGHT)));
     }
 
     /// Scroll the time grid so `[start, end)` minutes into the day show.
@@ -640,7 +712,7 @@ impl CalendarView {
             let from_month = self.view == ViewKind::Month;
             self.view = view;
             if from_month {
-                self.scroll_to_morning();
+                self.scroll_to_start();
             }
         }
         cx.notify();
@@ -1147,18 +1219,9 @@ impl CalendarView {
     pub fn close_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.closing_was_new = self.panel_is_new();
         self.leave_panel(window, cx);
-        // Slides shut, unless its event just went.
+        // Slides shut, unless its event just went; render drops it once
+        // the width spring is at 0.
         self.closing_panel = self.panel.take();
-        if self.closing_panel.is_some() {
-            self._closing = Some(cx.spawn(async |this, cx| {
-                cx.background_executor().timer(MOTION_PANE).await;
-                this.update(cx, |this, cx| {
-                    this.closing_panel = None;
-                    cx.notify();
-                })
-                .ok();
-            }));
-        }
         self.menu = None;
         if self
             .prompt
@@ -1187,7 +1250,11 @@ impl CalendarView {
                 .panel
                 .as_ref()
                 .is_some_and(|p| p.event_id == id && p.edit_scope.asking())
-            || self.guest_prompt.as_ref().is_some_and(|p| p.event_id == id)
+            || self
+                .guest_prompt
+                .iter()
+                .chain(&self.queued_guest_prompts)
+                .any(|p| p.event_id == id)
     }
 
     /// Hand the backend a change.
@@ -1207,6 +1274,14 @@ impl CalendarView {
 
     pub fn can_edit(&self, id: &str) -> bool {
         self.event(id)
+            .is_some_and(|e| self.access_of(e) == Access::Edit)
+    }
+
+    /// `can_edit` for the event at `ix`, without finding it by id.
+    pub fn can_edit_ix(&self, ix: usize) -> bool {
+        self.data
+            .events
+            .get(ix)
             .is_some_and(|e| self.access_of(e) == Access::Edit)
     }
 
@@ -1372,22 +1447,13 @@ impl CalendarView {
     }
 
     /// Ask about emailing the guests. A question still open (about an
-    /// earlier change) is answered "Don't send".
+    /// earlier change) keeps it; this one waits for its turn (MB-041).
     fn ask_guests(&mut self, prompt: GuestPrompt, cx: &mut Context<Self>) {
-        match self.guest_prompt.take().map(|p| p.kind) {
-            Some(GuestAsk::Save { ops, .. }) => {
-                for op in ops {
-                    self.queue(op, cx);
-                }
-            }
-            Some(GuestAsk::Split {
-                ops,
-                removal,
-                message,
-            }) => self.commit_split(ops, removal, message, SendUpdates::None, cx),
-            _ => {}
+        if self.guest_prompt.is_some() {
+            self.queued_guest_prompts.push(prompt);
+        } else {
+            self.guest_prompt = Some(prompt);
         }
-        self.guest_prompt = Some(prompt);
         cx.notify();
     }
 
@@ -1401,6 +1467,9 @@ impl CalendarView {
         let Some(prompt) = self.guest_prompt.take() else {
             return;
         };
+        if !self.queued_guest_prompts.is_empty() {
+            self.guest_prompt = Some(self.queued_guest_prompts.remove(0));
+        }
         let id = prompt.event_id.clone();
         match (prompt.kind, send) {
             (GuestAsk::Save { ops, .. }, Some(send)) => {
@@ -1569,11 +1638,10 @@ impl CalendarView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let end =
-            end.max(start + Duration::minutes(if self.is_all_day(id) { 24 * 60 } else { 15 }));
         let Some(before) = self.event(id).cloned() else {
             return;
         };
+        let end = end.max(start + Duration::minutes(if before.all_day { 24 * 60 } else { 15 }));
         if self.access_of(&before) != Access::Edit {
             if (start, end) != (occurrence, occurrence + (before.end - before.start)) {
                 self.refuse(id, cx);
@@ -1606,6 +1674,32 @@ impl CalendarView {
             self.sync_panel_times(window, cx);
         }
         cx.notify();
+    }
+
+    /// Offer Undo for a move or resize from `before` to `after` (MA-071).
+    pub(crate) fn emit_retimed(
+        &self,
+        id: &str,
+        before: (NaiveDateTime, NaiveDateTime),
+        after: (NaiveDateTime, NaiveDateTime),
+        cx: &mut Context<Self>,
+    ) {
+        if before == after || !self.can_edit(id) {
+            return;
+        }
+        let title = if before.0 == after.0 {
+            "Resize Event"
+        } else {
+            "Move Event"
+        };
+        cx.emit(Retimed {
+            title,
+            retime: Retime {
+                event_id: id.to_string(),
+                before,
+                after,
+            },
+        });
     }
 
     /// Take one occurrence of a series out into an event of its own, at
@@ -1743,10 +1837,6 @@ impl CalendarView {
         });
     }
 
-    fn is_all_day(&self, id: &str) -> bool {
-        self.event(id).is_some_and(|e| e.all_day)
-    }
-
     /// Answer an invite for the user: their own attendee entry takes
     /// `status`. Does nothing when they aren't invited.
     pub fn set_rsvp(&mut self, id: &str, status: RsvpStatus, cx: &mut Context<Self>) {
@@ -1773,6 +1863,144 @@ impl CalendarView {
         if let Some((id, status)) = self.pending_rsvp.take() {
             self.queue(CalOp::Rsvp { id, status }, cx);
         }
+    }
+
+    /// What the event shortcuts act on: the selected occurrence, else the
+    /// one the panel shows.
+    fn target(&self) -> Option<(String, NaiveDateTime)> {
+        self.selected
+            .as_ref()
+            .map(|s| (s.event_id.clone(), s.start))
+            .or_else(|| {
+                self.panel
+                    .as_ref()
+                    .map(|p| (p.event_id.clone(), p.occurrence))
+            })
+    }
+
+    /// ⇧Y, ⇧M, ⇧N: answer the selected invite (ME-034).
+    fn answer_selected(&mut self, status: RsvpStatus, cx: &mut Context<Self>) {
+        let Some((id, _)) = self.target() else {
+            return cx.propagate();
+        };
+        if self
+            .event(&id)
+            .is_none_or(|e| e.my_status(&self.data.account).is_none())
+        {
+            return cx.propagate();
+        }
+        self.set_rsvp(&id, status, cx);
+    }
+
+    fn accept_event(&mut self, _: &AcceptEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.answer_selected(RsvpStatus::Accepted, cx);
+    }
+
+    fn maybe_event(&mut self, _: &MaybeEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.answer_selected(RsvpStatus::Tentative, cx);
+    }
+
+    fn decline_event(&mut self, _: &DeclineEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.answer_selected(RsvpStatus::Declined, cx);
+    }
+
+    /// ⌘J: join the selected event's video call (ME-096).
+    fn join_event(&mut self, _: &JoinEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let Some((id, _)) = self.target() else {
+            return cx.propagate();
+        };
+        match self.event(&id).and_then(policy::video_link) {
+            Some(link) => cx.open_url(link),
+            None => cx.emit(CalendarEvent::Refused(
+                "This event has no video call to join".into(),
+            )),
+        }
+    }
+
+    /// Right-click on an event (MB-010): it's selected, and a menu offers
+    /// what can be done with it.
+    pub(crate) fn event_menu(
+        &mut self,
+        occurrence: Occurrence,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_grid(window, cx);
+        let selection = self.selection_of(&occurrence);
+        if self.ask_to_leave(Leave::Click(selection.clone()), cx) {
+            return;
+        }
+        if self.panel.is_some() {
+            self.click_selection(selection, window, cx);
+        } else {
+            self.select_day_in_view(selection.start.date());
+            self.selected = Some(selection);
+        }
+        cx.notify();
+        let Some(event) = self.data.events.get(occurrence.event) else {
+            return;
+        };
+        let access = self.access_of(event);
+        let mut menu = NativeMenu::new().menu("Open", Box::new(OpenEvent));
+        if let Some(status) = event.my_status(&self.data.account) {
+            menu = menu
+                .separator()
+                .menu_with_check(
+                    "Accept",
+                    status == RsvpStatus::Accepted,
+                    Box::new(AcceptEvent),
+                )
+                .menu_with_check(
+                    "Maybe",
+                    status == RsvpStatus::Tentative,
+                    Box::new(MaybeEvent),
+                )
+                .menu_with_check(
+                    "Decline",
+                    status == RsvpStatus::Declined,
+                    Box::new(DeclineEvent),
+                );
+        }
+        let video = policy::video_link(event).is_some();
+        let located = !event.location.trim().is_empty();
+        if video || located {
+            menu = menu.separator();
+        }
+        if video {
+            menu = menu.menu("Join Meeting", Box::new(JoinEvent));
+        }
+        if located {
+            menu = menu.menu("Open Location in Maps", Box::new(OpenLocation));
+        }
+        if !event.html_link.trim().is_empty() {
+            menu = menu
+                .separator()
+                .menu("Copy Link to Event", Box::new(CopyLink))
+                .menu("Open in Google Calendar", Box::new(OpenInGoogleCalendar));
+        }
+        if access == Access::Edit {
+            menu = menu.separator();
+            if !video {
+                menu = menu.menu("Add Google Meet", Box::new(AddGoogleMeet));
+            }
+            menu = menu
+                .menu("Repeat…", Box::new(SetRepeat))
+                .menu("Add Reminder…", Box::new(AddReminder));
+        }
+        if access != Access::ReadOnly {
+            let delete = if is_organizer(event, self.me()) {
+                if event.is_series() {
+                    "Delete…"
+                } else {
+                    "Delete"
+                }
+            } else {
+                "Decline and Remove"
+            };
+            menu = menu.separator().menu(delete, Box::new(DeleteEvent));
+        }
+        menu.show(position, window, cx);
     }
 
     /// Delete an event outright: a series goes with every occurrence.
@@ -2149,8 +2377,13 @@ impl CalendarView {
                 let id = match split {
                     Some(new_id) => new_id,
                     None => {
+                        let length = self.event(id).map(|e| e.duration());
                         self.retime_occurrence(id, prompt.occurrence, start, end, window, cx);
                         self.flush_edit(cx);
+                        if let Some(length) = length {
+                            let before = (prompt.occurrence, prompt.occurrence + length);
+                            self.emit_retimed(id, before, (start, end), cx);
+                        }
                         id.to_string()
                     }
                 };
@@ -2182,6 +2415,7 @@ impl CalendarView {
     pub fn apply_saved(&mut self, saved: &crate::settings::Saved) {
         if let Some(date) = saved.calendar_date {
             self.anchor = date;
+            self.scroll_to_start();
         }
         self.prefs = CalendarPrefs {
             event_minutes: saved.event_minutes,
@@ -2254,7 +2488,31 @@ impl CalendarView {
 
     // Action handlers.
 
+    /// The prompt not shown in the panel, if any: over the grid.
+    fn floating_prompt(&self) -> Option<&SeriesPrompt> {
+        self.prompt.as_ref().filter(|p| {
+            !(p.kind == PromptKind::Delete
+                && self
+                    .panel
+                    .as_ref()
+                    .is_some_and(|panel| panel.event_id == p.event_id))
+        })
+    }
+
+    /// A question is up, dimming the calendar: only its answers, Enter and
+    /// Escape do anything (MB-041). A drop's move question stays inline.
+    fn modal(&self) -> bool {
+        self.leave_prompt.is_some()
+            || self.guest_prompt.is_some()
+            || self
+                .floating_prompt()
+                .is_some_and(|p| p.kind == PromptKind::Delete)
+    }
+
     fn show_day(&mut self, _: &ShowDayView, _: &mut Window, cx: &mut Context<Self>) {
+        if self.modal() {
+            return;
+        }
         if let Some(selected) = &self.selected
             && self.view != ViewKind::Day
         {
@@ -2268,14 +2526,37 @@ impl CalendarView {
     }
 
     fn show_week(&mut self, _: &ShowWeekView, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_view(ViewKind::Week, cx);
+        if !self.modal() {
+            self.set_view(ViewKind::Week, cx);
+        }
     }
 
     fn show_month(&mut self, _: &ShowMonthView, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_view(ViewKind::Month, cx);
+        if !self.modal() {
+            self.set_view(ViewKind::Month, cx);
+        }
+    }
+
+    /// ←/→ on the focused view switch: the view beside (MA-005).
+    fn step_view(&mut self, forward: bool, window: &Window, cx: &mut Context<Self>) -> bool {
+        if !self.view_switch_focus.is_focused(window) {
+            return false;
+        }
+        let views = [ViewKind::Day, ViewKind::Week, ViewKind::Month];
+        let at = views.iter().position(|&v| v == self.view).unwrap_or(1);
+        let next = if forward {
+            (at + 1).min(2)
+        } else {
+            at.saturating_sub(1)
+        };
+        self.set_view(views[next], cx);
+        true
     }
 
     fn go_to_today(&mut self, _: &GoToToday, _: &mut Window, cx: &mut Context<Self>) {
+        if self.modal() {
+            return;
+        }
         self.anchor = today();
         self.mini_month = None;
         if self.view != ViewKind::Month {
@@ -2286,31 +2567,45 @@ impl CalendarView {
     }
 
     fn next_period(&mut self, _: &NextPeriod, _: &mut Window, cx: &mut Context<Self>) {
-        self.step(true, cx);
+        if !self.modal() {
+            self.step(true, cx);
+        }
     }
 
     fn prev_period(&mut self, _: &PrevPeriod, _: &mut Window, cx: &mut Context<Self>) {
-        self.step(false, cx);
+        if !self.modal() {
+            self.step(false, cx);
+        }
     }
 
     fn next_day(&mut self, _: &NextDay, window: &mut Window, cx: &mut Context<Self>) {
-        self.step_day(1, window, cx);
+        if !self.modal() && !self.step_view(true, window, cx) {
+            self.step_day(1, window, cx);
+        }
     }
 
     fn prev_day(&mut self, _: &PrevDay, window: &mut Window, cx: &mut Context<Self>) {
-        self.step_day(-1, window, cx);
+        if !self.modal() && !self.step_view(false, window, cx) {
+            self.step_day(-1, window, cx);
+        }
     }
 
     fn select_next(&mut self, _: &SelectNextEvent, window: &mut Window, cx: &mut Context<Self>) {
-        self.select_adjacent(true, window, cx);
+        if !self.modal() {
+            self.select_adjacent(true, window, cx);
+        }
     }
 
     fn select_prev(&mut self, _: &SelectPrevEvent, window: &mut Window, cx: &mut Context<Self>) {
-        self.select_adjacent(false, window, cx);
+        if !self.modal() {
+            self.select_adjacent(false, window, cx);
+        }
     }
 
     fn toggle_go_to_date(&mut self, _: &GoToDate, window: &mut Window, cx: &mut Context<Self>) {
-        self.toggle_date_picker(window, cx);
+        if !self.modal() {
+            self.toggle_date_picker(window, cx);
+        }
     }
 
     pub fn toggle_date_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2320,6 +2615,7 @@ impl CalendarView {
         } else {
             self.menu = Some(Menu::GoToDate);
             self.mini_month = None;
+            self.typed = None;
             let input = self.date_input.clone();
             input.update(cx, |input, cx| {
                 input.set_value("", window, cx);
@@ -2339,11 +2635,12 @@ impl CalendarView {
         match event {
             // The month under the field follows what's typed.
             InputEvent::Change => {
-                self.mini_month = self.typed_date(cx).map(time::month_start);
+                self.typed = time::parse_date(self.date_input.read(cx).value().as_ref(), today());
+                self.mini_month = self.typed.map(time::month_start);
                 cx.notify();
             }
             InputEvent::PressEnter { .. } => {
-                if let Some(date) = self.typed_date(cx) {
+                if let Some(date) = self.typed {
                     self.go_to_date(date, window, cx);
                 }
             }
@@ -2352,8 +2649,8 @@ impl CalendarView {
     }
 
     /// The date typed in the go-to-date field, if it reads as one.
-    pub fn typed_date(&self, cx: &gpui::App) -> Option<NaiveDate> {
-        time::parse_date(self.date_input.read(cx).value().as_ref(), today())
+    pub fn typed_date(&self) -> Option<NaiveDate> {
+        self.typed
     }
 
     fn toggle_week_numbers(
@@ -2369,6 +2666,9 @@ impl CalendarView {
     /// `c`: an hour from the next half hour today, or from 9 on another
     /// selected day.
     pub(crate) fn new_event(&mut self, _: &NewEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal() {
+            return;
+        }
         let today = today();
         let day = self.anchor;
         let start = if day == today {
@@ -2383,6 +2683,11 @@ impl CalendarView {
     /// Enter: answers an open prompt with its first choice, or opens the
     /// selected event.
     fn open_selected(&mut self, _: &OpenEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // A focused button (the header's, a prompt's) takes Enter itself
+        // (MA-005).
+        if !self.focus_handle.is_focused(window) {
+            return cx.propagate();
+        }
         if self.leave_prompt.is_some() {
             return self.answer_leave(Some(LeaveChoice::Save), window, cx);
         }
@@ -2401,16 +2706,10 @@ impl CalendarView {
     }
 
     fn delete_selected(&mut self, _: &DeleteEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let target = self
-            .selected
-            .as_ref()
-            .map(|s| (s.event_id.clone(), s.start))
-            .or_else(|| {
-                self.panel
-                    .as_ref()
-                    .map(|p| (p.event_id.clone(), p.occurrence))
-            });
-        let Some((id, start)) = target else {
+        if self.modal() {
+            return;
+        }
+        let Some((id, start)) = self.target() else {
             return;
         };
         if self
@@ -2434,6 +2733,13 @@ impl CalendarView {
         if self.cancel_drag(cx) {
             return;
         }
+        // From a focused header button, back to the grid (MA-005).
+        let in_header = self.view_switch_focus.is_focused(window)
+            || (self.calendars_focus.is_focused(window) && self.menu.is_none());
+        if in_header && !self.modal() {
+            window.focus(&self.focus_handle, cx);
+            return cx.notify();
+        }
         if self.leave_prompt.is_some() {
             self.answer_leave(None, window, cx);
         } else if self.guest_prompt.is_some() {
@@ -2443,6 +2749,9 @@ impl CalendarView {
         } else if let Some(menu) = self.menu.take() {
             if menu == Menu::GoToDate {
                 window.focus(&self.focus_handle, cx);
+            }
+            if menu == Menu::Calendars {
+                window.focus(&self.calendars_focus, cx);
             }
             cx.notify();
         } else if self.dismiss_panel_popup(cx) {
@@ -2470,8 +2779,96 @@ impl CalendarView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.modal() {
+            return;
+        }
         self.toggle_menu(Menu::Calendars, cx);
-        window.focus(&self.focus_handle, cx);
+        // Arrows and Space work its rows from the button (ME-045).
+        if self.menu == Some(Menu::Calendars) {
+            self.calendars_highlight = Some(0);
+            window.focus(&self.calendars_focus, cx);
+        } else {
+            window.focus(&self.focus_handle, cx);
+        }
+    }
+
+    /// The calendars in the menu's order: the user's own, then the others.
+    pub(crate) fn calendars_menu_order(&self) -> Vec<usize> {
+        let calendars = &self.data.calendars;
+        let owner = |ix: &usize| calendars[*ix].access_role == crate::calendar::AccessRole::Owner;
+        let (mut mine, others): (Vec<usize>, Vec<usize>) = (0..calendars.len()).partition(owner);
+        mine.extend(others);
+        mine
+    }
+
+    fn calendars_menu_step(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.menu != Some(Menu::Calendars) {
+            self.toggle_menu(Menu::Calendars, cx);
+            self.calendars_highlight = Some(0);
+            return;
+        }
+        let count = self.data.calendars.len().max(1) as isize;
+        let at = self.calendars_highlight.map_or(-1, |h| h as isize);
+        let next = if at < 0 && delta < 0 {
+            count - 1
+        } else {
+            (at + delta).rem_euclid(count)
+        };
+        self.calendars_highlight = Some(next as usize);
+        cx.notify();
+    }
+
+    fn calendars_menu_next(
+        &mut self,
+        _: &event_panel::MenuNext,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.calendars_menu_step(1, cx);
+    }
+
+    fn calendars_menu_prev(
+        &mut self,
+        _: &event_panel::MenuPrev,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.calendars_menu_step(-1, cx);
+    }
+
+    /// Enter or Space on the calendars button: open the menu, or show or
+    /// hide the highlighted calendar.
+    fn calendars_menu_activate(
+        &mut self,
+        _: &event_panel::Activate,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.menu != Some(Menu::Calendars) {
+            self.toggle_menu(Menu::Calendars, cx);
+            self.calendars_highlight = Some(0);
+            return;
+        }
+        let order = self.calendars_menu_order();
+        if let Some(&ix) = self.calendars_highlight.and_then(|h| order.get(h)) {
+            self.toggle_calendar(ix, cx);
+        }
+    }
+
+    /// ⌥-click on a calendar: show only it; again, show them all.
+    pub(crate) fn show_only_calendar(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let only = self
+            .data
+            .calendars
+            .iter()
+            .enumerate()
+            .all(|(i, c)| c.visible == (i == ix));
+        for i in 0..self.data.calendars.len() {
+            let wanted = only || i == ix;
+            if self.data.calendars[i].visible != wanted {
+                self.toggle_calendar(i, cx);
+            }
+        }
     }
 
     pub fn toggle_menu(&mut self, menu: Menu, cx: &mut Context<Self>) {
@@ -2484,7 +2881,7 @@ impl CalendarView {
     }
 
     /// A click on the grid takes focus back from the panel's fields.
-    fn focus_grid(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn focus_grid(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.focus_handle.is_focused(window) {
             window.focus(&self.focus_handle, cx);
         }
@@ -2549,16 +2946,33 @@ impl CalendarView {
         center > width - event_panel::PANEL_WIDTH
     }
 
-    /// What VoiceOver reads for an occurrence: title, day and time.
+    /// What VoiceOver reads for an occurrence: title, day and time, its
+    /// calendar and the user's answer (MA-048).
     pub fn occurrence_label(&self, occurrence: &Occurrence) -> String {
         let event = &self.data.events[occurrence.event];
         let day = time::date_label(occurrence.start.date(), today());
-        if event.all_day {
-            format!("{}, {day}, all day", event.display_title())
+        let when = if event.all_day {
+            "all day".to_string()
         } else {
-            let times = time::time_range_label(occurrence.start.time(), occurrence.end.time());
-            format!("{}, {day}, {times}", event.display_title())
+            time::time_range_label(occurrence.start.time(), occurrence.end.time())
+        };
+        let mut label = format!("{}, {day}, {when}", event.display_title());
+        let calendar = self.calendar_name(event);
+        if !calendar.is_empty() {
+            label.push_str(", ");
+            label.push_str(&calendar);
         }
+        let answer = match event.my_status(&self.data.account) {
+            Some(RsvpStatus::NeedsAction) => Some("not answered"),
+            Some(RsvpStatus::Tentative) => Some("maybe"),
+            Some(RsvpStatus::Declined) => Some("declined"),
+            _ => None,
+        };
+        if let Some(answer) = answer {
+            label.push_str(", ");
+            label.push_str(answer);
+        }
+        label
     }
 
     pub fn calendar_name(&self, event: &Event) -> SharedString {
@@ -2570,10 +2984,14 @@ impl CalendarView {
 
     fn render_body(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let occurrences = self.visible_occurrences();
+        // One clock for the whole frame (MC-059).
+        let now = now();
         match self.view {
-            ViewKind::Day => self.render_day(&occurrences, window, cx),
-            ViewKind::Week => self.render_time_grid(self.grid_days(), &occurrences, window, cx),
-            ViewKind::Month => self.render_month(&occurrences, window, cx),
+            ViewKind::Day => self.render_day(&occurrences, now, window, cx),
+            ViewKind::Week => {
+                self.render_time_grid(self.grid_days(), &occurrences, now, window, cx)
+            }
+            ViewKind::Month => self.render_month(&occurrences, now, window, cx),
         }
     }
 
@@ -2584,11 +3002,18 @@ impl CalendarView {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        self.render_scope_buttons(kind.choices().1, true, theme, cx, Self::answer_prompt)
+        self.render_choices(
+            kind.choices(),
+            true,
+            kind.tones(),
+            theme,
+            cx,
+            Self::answer_prompt,
+        )
     }
 
     /// A row of buttons, one per choice; the first is the default (which
-    /// enter takes, with `enter_hint`).
+    /// enter takes, with `enter_hint`), drawn last (MB-027).
     pub(crate) fn render_scope_buttons<T: Copy + 'static>(
         &self,
         choices: &'static [(T, &'static str)],
@@ -2597,84 +3022,85 @@ impl CalendarView {
         cx: &mut Context<Self>,
         pick: fn(&mut Self, T, &mut Window, &mut Context<Self>),
     ) -> gpui::Div {
+        let tones = (ButtonKind::Primary, ButtonKind::Plain);
+        self.render_choices(choices, enter_hint, tones, theme, cx, pick)
+    }
+
+    /// `render_scope_buttons`, with how the default and the other choices
+    /// look: a delete's are red (MB-028).
+    fn render_choices<T: Copy + 'static>(
+        &self,
+        choices: &'static [(T, &'static str)],
+        enter_hint: bool,
+        (default, other): (ButtonKind, ButtonKind),
+        theme: &Theme,
+        cx: &mut Context<Self>,
+        pick: fn(&mut Self, T, &mut Window, &mut Context<Self>),
+    ) -> gpui::Div {
         div()
             .flex()
             .flex_wrap()
             .items_center()
+            .justify_end()
             .gap(SPACE_XS)
-            .children(choices.iter().enumerate().map(|(ix, &(scope, label))| {
-                let first = ix == 0;
-                focusable_control(div().id(("prompt-choice", ix)), theme)
-                    .role(gpui::Role::Button)
-                    .aria_label(label)
-                    .h(HIT_TARGET)
-                    .px(SPACE_MD)
-                    .flex()
-                    .items_center()
-                    .gap(SPACE_SM)
-                    .rounded(RADIUS_MD)
-                    .text_size(TEXT_SM)
-                    .font_weight(FontWeight::MEDIUM)
-                    .map(|d| {
-                        if first {
-                            d.bg(theme.accent)
-                                .text_color(theme.accent_text)
-                                .hover(|s| s.opacity(0.9))
-                        } else {
-                            d.bg(theme.chip_bg)
-                                .text_color(theme.text)
-                                .hover(|s| s.bg(theme.hover_bg))
-                        }
-                    })
-                    .child(label)
-                    .when(first && enter_hint, |d| {
-                        d.child(
-                            div()
-                                .text_size(TEXT_XS)
-                                .text_color(theme.accent_text.alpha(0.75))
-                                .child("↵"),
-                        )
-                    })
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |this, _, window, cx| pick(this, scope, window, cx)))
-            }))
+            .children(
+                choices
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .map(|(ix, &(choice, label))| {
+                        let first = ix == 0;
+                        let kind = if first { default } else { other };
+                        push_button(("prompt-choice", ix), label, kind, theme)
+                            .when(first && enter_hint, |d| d.child(enter_cap(kind, theme)))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                pick(this, choice, window, cx)
+                            }))
+                    }),
+            )
     }
 
-    /// The prompt over the bottom of the grid, when the panel isn't the
-    /// place for it.
-    fn render_floating_prompt(
+    /// A drop's "Move this repeating event?" over the bottom of the grid;
+    /// a delete's asks over the whole calendar.
+    fn render_series_prompt(
         &self,
         prompt: &SeriesPrompt,
         theme: &Theme,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let (question, _) = prompt.kind.choices();
+    ) -> gpui::Stateful<gpui::Div> {
         let title = self
             .event(&prompt.event_id)
             .map(|e| e.display_title().to_string())
             .unwrap_or_default();
         let buttons = self.render_prompt_choices(prompt.kind, theme, cx);
-        self.render_prompt_card(question, title, buttons, theme, cx, |this, _, cx| {
-            this.prompt = None;
-            cx.notify();
-        })
+        self.render_prompt_card(
+            prompt.kind.question(),
+            title,
+            buttons,
+            theme,
+            cx,
+            |this, _, cx| {
+                this.prompt = None;
+                cx.notify();
+            },
+        )
     }
 
-    /// "Save this event?" over the bottom of the grid, before leaving a new
-    /// event that isn't saved yet.
+    /// "Save this event?", before leaving a new event that isn't saved yet.
     fn render_leave_prompt(
         &self,
         prompt: &LeavePrompt,
         theme: &Theme,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> gpui::Stateful<gpui::Div> {
         let title = self
             .event(&prompt.event_id)
             .map(|e| e.display_title().to_string())
             .unwrap_or_default();
-        let buttons = self.render_scope_buttons(
+        let buttons = self.render_choices(
             LEAVE_CHOICES,
             true,
+            (ButtonKind::Primary, ButtonKind::Danger),
             theme,
             cx,
             |this, choice, window, cx| this.answer_leave(Some(choice), window, cx),
@@ -2689,13 +3115,13 @@ impl CalendarView {
         )
     }
 
-    /// "Send updates to guests?" over the bottom of the grid (CAL-13).
+    /// "Send updates to guests?" (CAL-13).
     fn render_guest_prompt(
         &self,
         prompt: &GuestPrompt,
         theme: &Theme,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> gpui::Stateful<gpui::Div> {
         let title = self
             .event(&prompt.event_id)
             .map(|e| e.display_title().to_string())
@@ -2714,8 +3140,8 @@ impl CalendarView {
         )
     }
 
-    /// A question card over the bottom of the grid: the question, the
-    /// event's title, the answers and Cancel.
+    /// A question card: the question, the event's title, then Cancel and
+    /// the answers, the default last.
     fn render_prompt_card(
         &self,
         question: &'static str,
@@ -2724,77 +3150,71 @@ impl CalendarView {
         theme: &Theme,
         cx: &mut Context<Self>,
         cancel: fn(&mut Self, &mut Window, &mut Context<Self>),
-    ) -> AnyElement {
-        div()
-            .absolute()
-            .bottom(SPACE_XL)
-            .left_0()
-            .right_0()
+    ) -> gpui::Stateful<gpui::Div> {
+        popover_surface(theme)
+            .id("prompt-card")
+            .occlude()
+            .role(gpui::Role::AlertDialog)
+            .aria_label(question)
+            .w_full()
+            .max_w(PROMPT_WIDTH)
+            .p(SPACE_LG)
             .flex()
-            .justify_center()
-            .child(enter(
-                "series-prompt",
+            .flex_col()
+            .gap(SPACE_MD)
+            .child(
                 div()
-                    .id("series-prompt-card")
-                    .occlude()
-                    .role(gpui::Role::Dialog)
-                    .aria_label(question)
-                    .max_w(px(560.))
-                    .mx(SPACE_LG)
-                    .p(SPACE_SM)
-                    .pl(SPACE_LG)
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(SPACE_2XS)
+                    .child(
+                        crate::ui::label("prompt-question", question)
+                            .role(gpui::Role::Heading)
+                            .text_size(TEXT_BASE)
+                            .font_weight(FontWeight::SEMIBOLD),
+                    )
+                    .when(!title.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .truncate()
+                                .text_size(TEXT_SM)
+                                .text_color(theme.text_muted)
+                                .child(title),
+                        )
+                    }),
+            )
+            .child(
+                div()
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .gap(SPACE_MD)
-                    .rounded(RADIUS_LG)
-                    .bg(theme.overlay_bg)
-                    .border_1()
-                    .border_color(theme.overlay_border)
-                    .shadow(popover_shadow(theme))
+                    .justify_end()
+                    .gap(SPACE_XS)
                     .child(
-                        div()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_size(TEXT_BASE)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(question),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(TEXT_SM)
-                                    .text_color(theme.text_muted)
-                                    .child(title),
-                            ),
-                    )
-                    .child(buttons)
-                    .child(
-                        div()
-                            .id("prompt-cancel")
-                            .role(gpui::Role::Button)
-                            .aria_label("Cancel")
-                            .h(HIT_TARGET)
-                            .px(SPACE_SM)
-                            .flex()
-                            .items_center()
-                            .gap(SPACE_XS)
-                            .rounded(RADIUS_MD)
-                            .text_size(TEXT_SM)
-                            .text_color(theme.text_muted)
-                            .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
-                            .child("Cancel")
-                            .child(keycap("esc", theme))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        push_button("prompt-cancel", "Cancel", ButtonKind::Plain, theme)
+                            .child(keys_caps("escape", theme))
                             .on_click(
                                 cx.listener(move |this, _, window, cx| cancel(this, window, cx)),
                             ),
-                    ),
-            ))
-            .into_any_element()
+                    )
+                    .child(buttons),
+            )
+    }
+}
+
+/// The widest a prompt card gets.
+const PROMPT_WIDTH: Pixels = px(480.);
+
+/// The ↩ on a default button, in its text color.
+fn enter_cap(kind: ButtonKind, theme: &Theme) -> gpui::Div {
+    match kind {
+        ButtonKind::Primary => crate::ui::keycap_on_accent("↩", theme),
+        ButtonKind::Destructive => div()
+            .text_size(TEXT_XS)
+            .text_color(theme.danger_text.alpha(0.8))
+            .child("↩"),
+        _ => crate::ui::keycap("↩", theme),
     }
 }
 
@@ -2805,6 +3225,19 @@ impl Render for CalendarView {
             self.reload_panel(window, cx);
         }
         let open = self.panel.is_some();
+        // One value-held spring for the panel's width: reversing mid-slide
+        // turns back from where it is, and coming back to Calendar doesn't
+        // replay it (MD-001).
+        let shown = spring(
+            ("event-panel", "shown"),
+            if open { 1f32 } else { 0. },
+            if open { SPRING_PANE } else { SPRING_EXIT },
+            window,
+            cx,
+        );
+        if !open && shown <= 0.001 {
+            self.closing_panel = None;
+        }
         let panel = match (&self.panel, &self.closing_panel) {
             (Some(panel), _) => self.render_panel(panel, self.panel_is_new(), window, cx),
             (None, Some(panel)) => self.render_panel(panel, self.closing_was_new, window, cx),
@@ -2812,19 +3245,34 @@ impl Render for CalendarView {
         };
         let docked = self.panel_docked(window);
         let on_left = !docked && self.panel_on_left(window);
-        // In the panel when it shows the event; over the grid otherwise.
-        let floating_prompt = self.prompt.as_ref().filter(|p| {
-            !(p.kind == PromptKind::Delete
-                && self
-                    .panel
-                    .as_ref()
-                    .is_some_and(|panel| panel.event_id == p.event_id))
-        });
-        let floating_prompt = match (&self.leave_prompt, &self.guest_prompt) {
+        // Questions dim the calendar and ask near the top (MB-041); a
+        // drop's move question stays over the bottom of the grid.
+        let modal_card = match (&self.leave_prompt, &self.guest_prompt) {
             (Some(p), _) => Some(self.render_leave_prompt(p, &theme, cx)),
             (None, Some(p)) => Some(self.render_guest_prompt(p, &theme, cx)),
-            (None, None) => floating_prompt.map(|p| self.render_floating_prompt(p, &theme, cx)),
+            (None, None) => self
+                .floating_prompt()
+                .filter(|p| p.kind == PromptKind::Delete)
+                .map(|p| self.render_series_prompt(p, &theme, cx)),
         };
+        let move_prompt = self
+            .floating_prompt()
+            .filter(|p| matches!(p.kind, PromptKind::Move { .. }))
+            .map(|p| {
+                div()
+                    .absolute()
+                    .bottom(SPACE_XL)
+                    .left_0()
+                    .right_0()
+                    .px(SPACE_LG)
+                    .flex()
+                    .justify_center()
+                    .child(crate::ui::motion::enter(
+                        "move-prompt",
+                        Rise::Up,
+                        self.render_series_prompt(p, &theme, cx),
+                    ))
+            });
         div()
             .id("calendar")
             .key_context(CALENDAR)
@@ -2851,6 +3299,14 @@ impl Render for CalendarView {
             .on_action(cx.listener(Self::add_google_meet))
             .on_action(cx.listener(Self::set_repeat))
             .on_action(cx.listener(Self::add_reminder))
+            .on_action(cx.listener(Self::accept_event))
+            .on_action(cx.listener(Self::maybe_event))
+            .on_action(cx.listener(Self::decline_event))
+            .on_action(cx.listener(Self::join_event))
+            // The panel's, from the grid and ⌘K too (W2-CALP).
+            .on_action(cx.listener(Self::copy_link))
+            .on_action(cx.listener(Self::open_in_google_calendar))
+            .on_action(cx.listener(Self::open_location))
             .relative()
             .flex_1()
             .min_w_0()
@@ -2877,7 +3333,7 @@ impl Render for CalendarView {
                             )
                             .child(self.render_body(window, cx)),
                     )
-                    .children(floating_prompt),
+                    .children(move_prompt),
             )
             .when_some(panel, |this, panel| {
                 // Slides open from the edge, and shut into it.
@@ -2887,6 +3343,7 @@ impl Render for CalendarView {
                         .h_full()
                         .flex_none()
                         .overflow_hidden()
+                        .w(px(width * shown.clamp(0., 1.)))
                         .when(!docked, |d| {
                             // Opaque, so the grid doesn't show through.
                             d.absolute()
@@ -2898,23 +3355,28 @@ impl Render for CalendarView {
                                         d.right_0()
                                     }
                                 })
-                                .occlude()
+                                // Shutting, it no longer takes the mouse.
+                                .when(open, |d| d.occlude())
                                 .bg(theme.overlay_bg)
                                 .shadow(crate::ui::popover_shadow(&theme))
                         })
-                        .child(panel)
-                        .with_animation(
-                            if open {
-                                "event-panel-open"
-                            } else {
-                                "event-panel-close"
-                            },
-                            Animation::new(MOTION_PANE).with_easing(ease_out_quint()),
-                            move |el, delta| {
-                                let shown = if open { delta } else { 1. - delta };
-                                el.w(px(width * shown))
-                            },
-                        ),
+                        .child(panel),
+                )
+            })
+            .when_some(modal_card, |this, card| {
+                this.child(
+                    div()
+                        .id("prompt-backdrop")
+                        .absolute()
+                        .inset_0()
+                        .occlude()
+                        .bg(theme.backdrop)
+                        .px(SPACE_LG)
+                        .pt(crate::ui::HEADER_HEIGHT + SPACE_LG)
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .child(crate::ui::motion::enter("prompt-modal", Rise::Down, card)),
                 )
             })
             .when(self.drag.is_some(), |this| {

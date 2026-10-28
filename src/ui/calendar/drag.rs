@@ -6,8 +6,10 @@
 //! takes the mouse, so moves and the release reach the calendar wherever
 //! they happen. The grid repaints only when the snapped times change. A
 //! press that never moves past a few pixels is a click: on an event it
-//! selects and opens it, on empty space it does nothing. A double click on
-//! empty space makes a 30-minute event. Escape cancels a drag. Events the
+//! selects and opens it, on empty space it clears the selection and closes
+//! the panel (ME-049). A double click on empty space makes an event of the
+//! default length; in the all-day lane or a Month day, an all-day event
+//! (ME-044). Escape cancels a drag. Events the
 //! user can't change (CAL-22) don't move, here or in the all-day lane and
 //! the Month view (`press_read_only`); pressing them is a click. A move
 //! or resize goes to Google at once (CAL-21).
@@ -107,11 +109,12 @@ impl CalendarView {
         if width <= 0. || self.view == ViewKind::Month {
             return None;
         }
-        let days = self.grid_days();
+        let (from, to) = self.visible_range();
+        let days = (to - from).num_days().max(1);
         let x = f32::from(position.x - bounds.origin.x) / width;
-        let col = ((x * days.len() as f32).floor() as i64).clamp(0, days.len() as i64 - 1);
+        let col = ((x * days as f32).floor() as i64).clamp(0, days - 1);
         let minutes = f32::from(position.y - bounds.origin.y) / HOUR_HEIGHT * 60.;
-        Some((days[col as usize], minutes))
+        Some((from + Duration::days(col), minutes))
     }
 
     fn begin_drag(&mut self, kind: DragKind, origin: Point<Pixels>, cx: &mut Context<Self>) {
@@ -131,6 +134,15 @@ impl CalendarView {
             refused: false,
         });
         self.prompt = None;
+        cx.notify();
+    }
+
+    /// Scroll the grid while a drag rests near its edge; started once the
+    /// press becomes a drag, never in Month (MC-060).
+    fn start_autoscroll(&mut self, cx: &mut Context<Self>) {
+        if self.view == ViewKind::Month {
+            return;
+        }
         self._autoscroll = Some(cx.spawn(async |this, cx| {
             loop {
                 cx.background_executor().timer(AUTOSCROLL_TICK).await;
@@ -140,7 +152,6 @@ impl CalendarView {
                 }
             }
         }));
-        cx.notify();
     }
 
     /// While a drag rests near the top or bottom of the grid, scroll it,
@@ -192,15 +203,55 @@ impl CalendarView {
             return;
         };
         if event.click_count == 2 {
+            // The default length, as `c` makes (ME-047).
+            let length = (self.event_minutes() as i64).clamp(SNAP_MINUTES, DAY_MINUTES);
             let slot = ((minutes / 30.).floor() as i64 * 30).clamp(0, DAY_MINUTES - 30);
             let start = time::midnight(day) + Duration::minutes(slot);
             self.drag = None;
-            self.create_event(start, start + Duration::minutes(30), false, window, cx);
+            self.create_event(start, start + Duration::minutes(length), false, window, cx);
             return;
         }
         let slot = floor_snap(minutes).clamp(0, DAY_MINUTES - SNAP_MINUTES);
         let anchor = time::midnight(day) + Duration::minutes(slot);
         self.begin_drag(DragKind::Create { anchor }, event.position, cx);
+    }
+
+    /// A press on a day's empty space in the all-day lane or the Month
+    /// view: a double click makes an all-day event there (ME-044), a click
+    /// is `click_empty`.
+    pub(crate) fn press_day(
+        &mut self,
+        date: NaiveDate,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_grid(window, cx);
+        if event.click_count == 2 {
+            let start = time::midnight(date);
+            self.create_event(start, start + Duration::days(1), true, window, cx);
+        } else {
+            self.click_empty(window, cx);
+        }
+    }
+
+    /// A click on empty space: the selection clears and a saved panel
+    /// closes; an unsaved new event asks first (ME-049). A change waiting
+    /// for its scope is taken back, as with Escape.
+    pub(crate) fn click_empty(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.asking_scope() {
+            return self.close_panel(window, cx);
+        }
+        if self.ask_to_leave(super::Leave::Close, cx) {
+            return;
+        }
+        self.selected = None;
+        if self.panel_is_new() {
+            self.discard_new_event(window, cx);
+        } else if self.panel.is_some() {
+            self.close_panel(window, cx);
+        }
+        cx.notify();
     }
 
     /// A press on an event, or on its bottom edge with `resize`.
@@ -281,15 +332,16 @@ impl CalendarView {
         // Events the user can't change stay put, saying why once; the press
         // is a click.
         if let Some(occurrence) = drag.occurrence()
-            && let Some(event) = self.data.events.get(occurrence.event)
-            && !self.can_edit(&event.id)
+            && !self.can_edit_ix(occurrence.event)
         {
-            if !drag.refused {
-                let id = event.id.clone();
+            if !drag.refused
+                && let Some(id) = self.data.events.get(occurrence.event).map(|e| e.id.clone())
+            {
                 if let Some(drag) = &mut self.drag {
                     drag.refused = true;
                 }
                 self.refuse(&id, cx);
+                cx.notify();
             }
             return;
         }
@@ -321,10 +373,14 @@ impl CalendarView {
             }
         };
         let drag = self.drag.as_mut().expect("checked above");
-        if !drag.active || (start, end) != (drag.start, drag.end) {
+        let starting = !drag.active;
+        if starting || (start, end) != (drag.start, drag.end) {
             drag.active = true;
             drag.start = start;
             drag.end = end;
+            if starting {
+                self.start_autoscroll(cx);
+            }
             cx.notify();
         }
     }
@@ -337,13 +393,7 @@ impl CalendarView {
             (DragKind::Create { .. }, true) => {
                 self.create_event(drag.start, drag.end, false, window, cx);
             }
-            // A click away from a change waiting for its scope: as Escape,
-            // it's taken back and the panel closes.
-            (DragKind::Create { .. }, false) => {
-                if self.asking_scope() {
-                    self.close_panel(window, cx);
-                }
-            }
+            (DragKind::Create { .. }, false) => self.click_empty(window, cx),
             (DragKind::Move { occurrence, .. } | DragKind::Resize { occurrence, .. }, false) => {
                 self.click_occurrence(occurrence, window, cx)
             }
@@ -369,6 +419,8 @@ impl CalendarView {
                     self.retime_occurrence(&id, occurrence.start, drag.start, drag.end, window, cx);
                     // Drags go at once.
                     self.flush_edit(cx);
+                    let before = (occurrence.start, occurrence.end);
+                    self.emit_retimed(&id, before, (drag.start, drag.end), cx);
                 }
                 // The panel, when open, follows the selection.
                 if self.panel.is_some() {
@@ -420,7 +472,7 @@ impl CalendarView {
     /// The layer over the window that takes the mouse during a drag.
     pub(crate) fn render_drag_layer(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let size = window.viewport_size();
-        let kind = self.drag.as_ref().map(|d| (d.kind, d.active));
+        let kind = self.drag.as_ref().map(|d| (d.kind, d.refused));
         deferred(
             anchored().position(point(px(0.), px(0.))).child(
                 div()
@@ -428,10 +480,11 @@ impl CalendarView {
                     .occlude()
                     .w(size.width)
                     .h(size.height)
+                    // The arrow, as in Calendar.app; resize keeps its arrows,
+                    // and an event that can't move says so (MA-084).
                     .map(|d| match kind {
+                        Some((_, true)) => d.cursor_not_allowed(),
                         Some((DragKind::Resize { .. }, _)) => d.cursor_ns_resize(),
-                        Some((DragKind::Move { .. }, true)) => d.cursor_grabbing(),
-                        Some((DragKind::Move { .. }, false)) => d.cursor_pointer(),
                         _ => d.cursor_default(),
                     })
                     .on_mouse_move(cx.listener(Self::drag_to))

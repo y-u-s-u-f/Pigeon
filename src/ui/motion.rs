@@ -29,12 +29,10 @@ const fn policy(response_ms: u64, damping_ratio: f32, epsilon: f32) -> Spring {
 }
 
 /// Panes and widths, height reveals, chevron rotation. No overshoot.
-#[allow(dead_code)] // used by W4-MAIL, W4-CAL
 pub const SPRING_PANE: Spring = policy(240, 1., 0.002);
 /// Anything arriving: overlays, toasts, cards, the segmented thumb.
 pub const SPRING_POP: Spring = policy(200, 0.825, 0.002);
 /// Anything leaving. Shorter than the arrival, never overshoots.
-#[allow(dead_code)] // used by W4-MAIL, W4-CAL, W4-MISC
 pub const SPRING_EXIT: Spring = policy(160, 1., 0.002);
 /// Switch knobs, in pixels.
 pub const SPRING_CONTROL: Spring = policy(200, 0.7, 0.1);
@@ -66,7 +64,7 @@ pub const LOADING_DELAY: Duration = Duration::from_millis(300);
 /// bottom (toasts, prompts), down for things hanging under a control or the
 /// top edge (popovers, menus, the palette), none for inline content.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // Up and None used by W2 and W4
+#[allow(dead_code)] // None used by W4
 pub enum Rise {
     Up,
     Down,

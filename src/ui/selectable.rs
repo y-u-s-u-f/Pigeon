@@ -6,9 +6,9 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, Bounds, CursorStyle, Element, ElementId, GlobalElementId, Hitbox,
-    HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, SharedString,
-    StyledText, Subscription, TextLayout, Window,
+    A11ySubtreeBuilder, AnyElement, App, Bounds, CursorStyle, Element, ElementId, GlobalElementId,
+    Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, Role,
+    SharedString, StyledText, Subscription, TextLayout, Window, accesskit,
     base::{TextSelectionHandle, TextSelectionRegistration, TextSelectionRun},
     fill,
 };
@@ -28,6 +28,18 @@ pub struct Selectable {
     order: u64,
     color: Hsla,
     all: Option<OnClear>,
+    a11y: A11y,
+    /// The text's links, as (range, URL), for VoiceOver (MA-003).
+    links: Vec<(std::ops::Range<usize>, SharedString)>,
+}
+
+/// What VoiceOver reads the text as (MA-001).
+#[derive(Clone, Copy)]
+enum A11y {
+    Text,
+    Heading(usize),
+    /// A parent already says it.
+    Silent,
 }
 
 impl Selectable {
@@ -46,6 +58,8 @@ impl Selectable {
             order: ORDER_BASE,
             color: gpui::transparent_black(),
             all: None,
+            a11y: A11y::Text,
+            links: Vec::new(),
         }
     }
 
@@ -66,6 +80,24 @@ impl Selectable {
     /// The selection's background.
     pub fn color(mut self, color: Hsla) -> Self {
         self.color = color;
+        self
+    }
+
+    /// Read as a heading of `level` (1 to 6).
+    pub fn heading(mut self, level: usize) -> Self {
+        self.a11y = A11y::Heading(level);
+        self
+    }
+
+    /// Left out of the accessibility tree, where a parent reads the same.
+    pub fn silent(mut self) -> Self {
+        self.a11y = A11y::Silent;
+        self
+    }
+
+    /// The text's links, each read as a link inside it.
+    pub fn links(mut self, links: Vec<(std::ops::Range<usize>, SharedString)>) -> Self {
+        self.links = links;
         self
     }
 
@@ -127,6 +159,40 @@ impl Element for Selectable {
 
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
         None
+    }
+
+    fn a11y_role(&self) -> Option<Role> {
+        match self.a11y {
+            // Linked text is an `InteractiveText`, which reads the text
+            // itself; this holds its links.
+            A11y::Text if !self.links.is_empty() => Some(Role::Paragraph),
+            A11y::Text => Some(Role::Label),
+            A11y::Heading(_) => Some(Role::Heading),
+            A11y::Silent => None,
+        }
+    }
+
+    fn write_a11y_info(&self, node: &mut accesskit::Node) {
+        match self.a11y {
+            A11y::Heading(level) => {
+                node.set_label(self.text.to_string());
+                node.set_level(level);
+            }
+            A11y::Text if self.links.is_empty() => node.set_value(self.text.to_string()),
+            _ => {}
+        }
+    }
+
+    fn a11y_synthetic_children(&mut self, _: &mut Hitbox, builder: &mut A11ySubtreeBuilder) {
+        for (ix, (range, url)) in self.links.iter().enumerate() {
+            let mut link = accesskit::Node::new(Role::Link);
+            if let Some(text) = self.text.get(range.clone()) {
+                link.set_label(text.to_string());
+            }
+            link.set_url(url.to_string());
+            let id = builder.synthetic_node_id(ix);
+            builder.push_child(id, link);
+        }
     }
 
     fn request_layout(

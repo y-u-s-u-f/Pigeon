@@ -731,7 +731,9 @@ fn commit_demo(store: &Store, account: &str, op: &Op) -> (outbox::Outcome, Vec<B
 
 impl Backend {
     /// Demo if `PIGEON_DEMO=1`, else Google if `accounts.json` names an
-    /// account whose refresh token is in the Keychain, else SignedOut.
+    /// account, else SignedOut. The account's refresh token comes from the
+    /// Keychain after, off the main thread, so the window doesn't wait on
+    /// it (MA-072); without one, it's SignedOut then.
     pub fn open(cx: &mut App) -> Entity<Backend> {
         let prefs = Store::open(&data_dir().join("pigeon.sqlite")).unwrap_or_else(|e| {
             eprintln!("Pigeon: settings won't be kept: {e:#}");
@@ -741,19 +743,69 @@ impl Backend {
         let (source, session) = if demo_requested() {
             (Source::Demo, None)
         } else {
-            match auth::signed_in(&data_dir(), &*tokens) {
-                Some(session) => (Source::Google, Some(session)),
+            match auth::load_accounts(&data_dir()).into_iter().next() {
+                Some(record) => (Source::Google, Some((record, None))),
                 None => (Source::SignedOut, None),
             }
         };
-        cx.new(|cx| Backend::new(source, prefs, tokens, session, cx))
+        let backend = cx.new(|cx| Backend::new(source, prefs, tokens, session, cx));
+        if source == Source::Google {
+            backend.update(cx, |b, cx| b.read_token(cx));
+        }
+        backend
     }
 
+    /// The refresh token from the Keychain, in the background (MA-072).
+    fn read_token(&mut self, cx: &mut Context<Self>) {
+        let Some(email) = self.record.as_ref().map(|r| r.email.clone()) else {
+            return;
+        };
+        let tokens = self.tokens.clone();
+        self._sign_in = Some(cx.spawn(async move |this, cx| {
+            let token = cx
+                .background_executor()
+                .spawn(async move { tokens.get(&email) })
+                .await;
+            this.update(cx, |this, cx| this.token_read(token, cx)).ok();
+        }));
+    }
+
+    fn token_read(&mut self, token: anyhow::Result<Option<Secret>>, cx: &mut Context<Self>) {
+        if self.source != Source::Google || self.google.is_some() {
+            return;
+        }
+        let token = match token {
+            Ok(Some(token)) => token,
+            Ok(None) => {
+                crate::logging::info("auth: no refresh token in the Keychain; signed out");
+                self.switch(Source::SignedOut, None, cx);
+                return cx.emit(BackendEvent::SignedOut);
+            }
+            Err(e) => {
+                eprintln!("Pigeon: {e:#}");
+                self.switch(Source::SignedOut, None, cx);
+                return cx.emit(BackendEvent::SignedOut);
+            }
+        };
+        // No client: the cache shows, and the status says sign in again.
+        let Ok(client) = ClientConfig::load(&data_dir()) else {
+            return;
+        };
+        self.google = Some(Google::new(client, token));
+        self.check_profile(cx);
+        if let Some(transport) = self.transport() {
+            self.start_mail_sync(transport, cx);
+        }
+        self.schedule(cx);
+    }
+
+    /// `session`'s token is `None` while it's still being read
+    /// (`read_token`).
     fn new(
         source: Source,
         prefs: Store,
         tokens: Arc<dyn TokenStore>,
-        session: Option<(AccountRecord, Secret)>,
+        session: Option<(AccountRecord, Option<Secret>)>,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut record = None;
@@ -776,7 +828,7 @@ impl Backend {
                 // and signing in again says what's missing.
                 let status = match ClientConfig::load(&data_dir()) {
                     Ok(client) => {
-                        google = Some(Google::new(client, refresh_token));
+                        google = refresh_token.map(|token| Google::new(client, token));
                         SyncStatus::Syncing { done: 0, total: 0 }
                     }
                     Err(e) => {
@@ -844,6 +896,7 @@ impl Backend {
         if let Some(cancel) = &self.sign_in_cancel {
             cancel.store(true, Ordering::Relaxed);
         }
+        let session = session.map(|(record, token)| (record, Some(token)));
         *self = Self::new(source, self.prefs.clone(), self.tokens.clone(), session, cx);
     }
 
@@ -875,29 +928,11 @@ impl Backend {
 
     // Reads, from the store: fast and local.
 
-    /// Everything for the mail panes, newest first. At startup.
-    pub fn load_mail(&self) -> MailData {
-        let mut data = MailData {
-            account: self.account.clone().unwrap_or_default(),
-            labels: self.load_labels(),
-            threads: self
-                .store
-                .load_all_threads(self.email())
-                .unwrap_or_else(|e| {
-                    eprintln!("Pigeon: couldn't read mail from the store: {e:#}");
-                    Vec::new()
-                }),
-        };
-        // Changes queued at the last quit show as made (PER-2).
-        self.outbox.overlay(&mut data.threads);
-        data.sort_threads();
-        data
-    }
-
-    /// `load_mail` without the messages' bodies (`Body::NotLoaded`), for a
-    /// first frame that doesn't wait on them (MA-072). On selection,
-    /// `load_threads` reads the stored bodies; `fetch_body` the rest.
-    #[allow(dead_code)] // used by W2-SHELL
+    /// Everything for the mail panes, newest first, without the messages'
+    /// bodies (`Body::NotLoaded`), so the first frame doesn't wait on them
+    /// (MA-072). Changes queued at the last quit show as made (PER-2). On
+    /// selection, `load_threads` reads the stored bodies; `fetch_body` the
+    /// rest.
     pub fn load_mail_heads(&self) -> MailData {
         let mut data = MailData {
             account: self.account.clone().unwrap_or_default(),
@@ -917,7 +952,6 @@ impl Backend {
 
     /// The threads with a send still queued (offline, or in its undo
     /// window), by thread id: "Waiting to send" (MA-069).
-    #[allow(dead_code)] // used by W2-COMP
     pub fn queued_sends(&self) -> std::collections::HashSet<String> {
         self.outbox.queued_sends()
     }
@@ -950,6 +984,11 @@ impl Backend {
                     Vec::new()
                 }),
         }
+    }
+
+    /// The calendars alone, without their events (MC-010).
+    pub fn load_calendars(&self) -> Vec<crate::calendar::Calendar> {
+        self.store.load_calendars(self.email()).unwrap_or_default()
     }
 
     /// Events with calendar changes still queued (`Outbox::queued_events`).
@@ -1565,13 +1604,29 @@ impl Backend {
         cx.emit(BackendEvent::Status(self.status.clone()));
     }
 
-    /// From the sign-in screen: the placeholder data, until relaunch.
+    /// From the sign-in screen: the placeholder data, until Sign In or
+    /// Sign Out goes back to it (ME-050).
     pub fn use_demo(&mut self, cx: &mut Context<Self>) {
         if self.source == Source::Demo {
             return;
         }
         self.switch(Source::Demo, None, cx);
         cx.emit(BackendEvent::SignedIn);
+    }
+
+    /// The demo data chosen on the sign-in screen, not by `PIGEON_DEMO`:
+    /// it can go back there (ME-050).
+    pub fn demo_by_choice(&self) -> bool {
+        self.source == Source::Demo && !demo_requested()
+    }
+
+    /// Back to the sign-in screen from demo data chosen there (ME-050).
+    pub fn leave_demo(&mut self, cx: &mut Context<Self>) {
+        if !self.demo_by_choice() {
+            return;
+        }
+        self.switch(Source::SignedOut, None, cx);
+        cx.emit(BackendEvent::SignedOut);
     }
 
     /// Revoke the grant, delete the Keychain item, the `accounts.json`

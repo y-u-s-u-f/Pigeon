@@ -127,6 +127,50 @@ pub struct Saved {
     pub glass: u8,
     /// Which ⌘ shortcuts the keymap uses (MA-038).
     pub keymap: KeymapPreset,
+    /// Labels whose sublabels are folded away, by id (FOL-9, MC-048).
+    pub collapsed_labels: Vec<String>,
+    /// The main window's frame and display as last left (MA-034).
+    pub window: Option<WindowFrame>,
+    /// Mail or Calendar, and the mail view, as last left (MA-034).
+    pub calendar_open: bool,
+    pub nav: SavedNav,
+    /// The ⌘K and ? tip was used or dismissed (MA-094).
+    pub seen_tip: bool,
+    /// Palette commands by last use, most recent first, by action name
+    /// (ME-062); at most `RECENT_COMMANDS`.
+    pub recent_commands: Vec<String>,
+}
+
+/// How many recent palette commands are kept (ME-062).
+pub const RECENT_COMMANDS: usize = 20;
+
+/// The main window's frame (MA-034), relative to its display, which is
+/// known by its uuid.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WindowFrame {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub full_screen: bool,
+    pub display: Option<String>,
+}
+
+/// The mail view to open on (MA-034); a label by id, so it survives
+/// label changes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SavedNav {
+    Folder(crate::data::Folder),
+    Starred,
+    Label(String),
+    Category(crate::backend::categories::Category),
+}
+
+impl Default for SavedNav {
+    fn default() -> Self {
+        SavedNav::Folder(crate::data::Folder::Inbox)
+    }
 }
 
 /// The keyboard shortcuts preset (MA-038, MA-089). Single-key shortcuts are
@@ -248,6 +292,12 @@ impl Default for Saved {
             signatures: true,
             glass: 0,
             keymap: KeymapPreset::Gmail,
+            collapsed_labels: Vec::new(),
+            window: None,
+            calendar_open: false,
+            nav: SavedNav::default(),
+            seen_tip: false,
+            recent_commands: Vec::new(),
         }
     }
 }
@@ -709,6 +759,19 @@ mod tests {
             default_calendar: Some("team@group.calendar.google.com".into()),
             glass: 60,
             keymap: KeymapPreset::AppleMail,
+            collapsed_labels: vec!["Label_1".into()],
+            window: Some(WindowFrame {
+                x: 40.,
+                y: 30.,
+                width: 1200.,
+                height: 800.,
+                full_screen: false,
+                display: Some("uuid".into()),
+            }),
+            calendar_open: true,
+            nav: SavedNav::Label("Label_2".into()),
+            seen_tip: true,
+            recent_commands: vec!["pigeon::Archive".into()],
             ..Saved::default()
         };
         assert_eq!(Saved::from_map(saved.to_map()), saved);

@@ -1,34 +1,185 @@
 //! The reading pane: toolbar, subject, and the thread as a conversation.
 
-use std::{rc::Rc, sync::Arc};
+use std::{
+    cell::Cell,
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    rc::Rc,
+    sync::Arc,
+};
 
+use chrono::{DateTime, FixedOffset, Local};
 use gpui::{
-    AnyElement, Context, ElementId, FocusHandle, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, UniformListScrollHandle,
-    Window, base::TextSelection, component::scroll::ScrollableElement as _, div,
-    prelude::FluentBuilder as _, px, uniform_list,
+    Animation, AnimationExt as _, AnyElement, App, AppContext as _, Bounds, Context, ElementId,
+    FocusHandle, FontWeight, InteractiveElement, IntoElement, ParentElement, Pixels, Render,
+    SharedString, StatefulInteractiveElement, Styled, Task, UniformListScrollHandle, Window,
+    base::TextSelection, canvas, component::native_menu::NativeMenu,
+    component::scroll::ScrollableElement as _, div, prelude::FluentBuilder as _, px, relative,
+    uniform_list,
 };
 
 use super::{
-    HEADER_HEIGHT, avatar, empty_state, html_view, icon, icon_button, icon_button_tinted,
-    label_chip,
+    HEADER_HEIGHT, avatar,
+    controls::{ButtonKind, push_button},
+    html_view, icon, icon_button, icon_button_tinted,
     selectable::{ORDER_BASE, OnClear, Selectable},
     window_drag_area,
 };
 use crate::ui::style::*;
 use crate::{
     actions::*,
-    app::PigeonApp,
+    app::{Nav, PigeonApp, Row},
     assets::Icon,
-    data::{Body, Contact, Folder, Message, Thread, file_size, full_date},
+    backend::attachments::Ready,
+    data::{Body, Contact, Folder, Message, Thread, file_size, full_date, list_date},
     html::Document,
     settings::RemoteImages,
     theme::Theme,
 };
 
 /// Children of the conversation's scroll view before its first message: the
-/// subject and the line under it.
+/// subject and the line under it. Every message stays a child, folded or
+/// not, so `MESSAGES_START + ix` is always message `ix`.
 pub const MESSAGES_START: usize = 2;
+
+/// The widest the conversation gets, for a readable line (MA-061).
+const READER_MAX: Pixels = px(760.);
+/// A reader narrower than this drops the body's indent.
+const NARROW: Pixels = px(520.);
+
+/// The reader's state that outlives a frame but isn't the app's data: what
+/// the user opened, ⌥Tab's link, and attachment files on their way.
+#[derive(Default)]
+pub struct ReaderUi {
+    /// ⌥Tab's link (MA-003): thread id, message, and the link's place in
+    /// `html::links`.
+    pub(crate) link: Option<(String, usize, usize)>,
+    /// Threads whose "N more messages" the user opened (ME-008).
+    pub(crate) open_folds: HashSet<String>,
+    /// Messages whose quoted history is shown (ME-003).
+    pub(crate) open_quotes: HashSet<String>,
+    /// Messages whose whole recipient list is shown (ME-012).
+    pub(crate) open_recipients: HashSet<String>,
+    /// Attachments being fetched, by (message id, attachment), with the
+    /// fetch; dropping it cancels (MA-067).
+    pub(crate) fetching: HashMap<(String, usize), Task<()>>,
+    /// Attachment files fetched this session, for dragging out (MA-086).
+    pub(crate) files: HashMap<(String, usize), Ready>,
+    /// Where the last save went (MB-060).
+    pub(crate) save_dir: Option<PathBuf>,
+    /// Where the toolbar's "…" and the first attachment chip were drawn,
+    /// for the menus they open (MB-016).
+    pub(crate) more_anchor: Rc<Cell<Option<Bounds<Pixels>>>>,
+    pub(crate) attachment_anchor: Rc<Cell<Option<Bounds<Pixels>>>>,
+}
+
+impl gpui::Global for ReaderUi {}
+
+/// Quick Look one attachment of the selected conversation, by message and
+/// attachment index (MB-044): Space on its chip, and its menu.
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(namespace = pigeon, no_json)]
+pub struct QuickLookAttachmentAt(pub usize, pub usize);
+
+/// Show one attachment's file in Finder; from its menu.
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(namespace = pigeon, no_json)]
+pub struct RevealAttachmentAt(pub usize, pub usize);
+
+/// Fetch one attachment's file without opening it: a drag to Finder needs
+/// it on disk (MA-086).
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(namespace = pigeon, no_json)]
+pub struct PrefetchAttachmentAt(pub usize, pub usize);
+
+/// Show a contact's card; from a name's menu.
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(namespace = pigeon, no_json)]
+pub struct ShowContactFor(pub Contact, pub Option<gpui::Point<Pixels>>);
+
+/// What a message's place in the conversation shows (ME-008).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Slot {
+    Show,
+    /// The first of `n` folded messages: an "n more messages" row.
+    Fold(usize),
+    /// Folded behind the row above.
+    Hidden,
+}
+
+/// Over four messages, the ones between the first and the last two fold
+/// into "N more" rows, but not those `keep` shows; a run of one stays.
+fn fold_slots(len: usize, keep: impl Fn(usize) -> bool) -> Vec<Slot> {
+    let mut slots = vec![Slot::Show; len];
+    if len <= 4 {
+        return slots;
+    }
+    let mut ix = 1;
+    while ix < len - 2 {
+        if keep(ix) {
+            ix += 1;
+            continue;
+        }
+        let run = (ix..len - 2).take_while(|&i| !keep(i)).count();
+        if run > 1 {
+            slots[ix] = Slot::Fold(run);
+            slots[ix + 1..ix + run].fill(Slot::Hidden);
+        }
+        ix += run;
+    }
+    slots
+}
+
+/// "just now", "5 min ago" or "3 hr ago", for a date under a day old.
+fn relative_age(date: &DateTime<FixedOffset>, now: DateTime<Local>) -> Option<String> {
+    let minutes = (now - date.with_timezone(&Local)).num_minutes();
+    match minutes {
+        ..0 => None,
+        0 => Some("just now".into()),
+        1..60 => Some(format!("{minutes} min ago")),
+        60..1440 => Some(format!("{} hr ago", minutes / 60)),
+        _ => None,
+    }
+}
+
+/// A label's own name, without the labels it's nested under.
+fn leaf(name: &str) -> &str {
+    name.rsplit('/').next().unwrap_or(name)
+}
+
+/// Records where an element was drawn, for a menu to open under it.
+fn anchor(cell: &Rc<Cell<Option<Bounds<Pixels>>>>) -> impl IntoElement {
+    let cell = cell.clone();
+    canvas(move |bounds, _, _| cell.set(Some(bounds)), |_, _, _, _| {})
+        .absolute()
+        .size_full()
+}
+
+/// What an attachment chip drags (MA-086); also its picture while dragged.
+#[derive(Clone)]
+pub struct DraggedAttachment {
+    message_id: String,
+    message: usize,
+    attachment: usize,
+    name: SharedString,
+}
+
+impl Render for DraggedAttachment {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::of(cx);
+        div()
+            .h(CONTROL_LG)
+            .px(SPACE_MD)
+            .flex()
+            .items_center()
+            .rounded(RADIUS_MD)
+            .bg(theme.chip_bg)
+            .text_size(TEXT_SM)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme.text)
+            .child(self.name.clone())
+    }
+}
 
 impl PigeonApp {
     pub(crate) fn render_reader(
@@ -70,7 +221,14 @@ impl PigeonApp {
                 // The draft scrolls itself, above its send row.
                 Some(composer) => this
                     .child(self.render_compose_toolbar(&composer, &theme, cx))
-                    .child(div().flex_1().min_h_0().child(composer)),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .w_full()
+                            .max_w(READER_MAX)
+                            .child(composer),
+                    ),
                 None if !self.checked.is_empty() => this
                     .child(window_drag_area(div().id("reader-toolbar")).h(HEADER_HEIGHT))
                     .child(self.render_bulk_summary(&theme, window)),
@@ -80,15 +238,56 @@ impl PigeonApp {
                 None => this
                     .child(self.render_toolbar(thread, &theme, cx))
                     .child(match thread {
-                        Some(thread) => self.render_conversation(thread, &theme, cx),
-                        None => empty_state(
-                            Icon::Mail,
-                            "No conversation selected",
-                            Some("Pick a thread from the list to read it here"),
-                            &theme,
-                        ),
+                        Some(thread) => self.render_conversation(thread, &theme, window, cx),
+                        None => self.render_no_conversation(&theme),
                     }),
             })
+    }
+
+    /// The reader with nothing selected: how to pick something, or calm
+    /// when the list has nothing to pick (ME-001, ME-030).
+    fn render_no_conversation(&self, theme: &Theme) -> AnyElement {
+        let any = self.rows.iter().any(|row| matches!(row, Row::Thread(_)));
+        div()
+            .id("no-conversation")
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(SPACE_SM)
+            .line_height(LINE_UI)
+            .child(icon(Icon::Mail, ICON_HERO, theme.text_faint))
+            .child(
+                super::label(
+                    "empty-title",
+                    if any {
+                        "No conversation selected"
+                    } else {
+                        "Nothing to read here"
+                    },
+                )
+                .text_size(TEXT_BASE)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text_muted),
+            )
+            .when(any, |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(SPACE_XS)
+                        .text_size(TEXT_SM)
+                        .text_color(theme.text_faint)
+                        .child(super::keys_caps("j", theme))
+                        .child(super::keys_caps("k", theme))
+                        .child(super::label("empty-move", "to move"))
+                        .child(div().mx(SPACE_XS).child("·"))
+                        .child(super::keys_caps("enter", theme))
+                        .child(super::label("empty-open", "to open")),
+                )
+            })
+            .into_any_element()
     }
 
     fn render_compose_toolbar(
@@ -97,16 +296,7 @@ impl PigeonApp {
         theme: &Theme,
         cx: &Context<Self>,
     ) -> impl IntoElement {
-        let composer = composer.read(cx);
-        let title = if composer.draft_id.is_some() {
-            "Draft"
-        } else {
-            match composer.kind {
-                crate::app::ComposeKind::Forward => "Forward",
-                crate::app::ComposeKind::New => "New Message",
-                _ => "Reply",
-            }
-        };
+        let title = composer.read(cx).title();
         window_drag_area(div().id("compose-toolbar"))
             .h(HEADER_HEIGHT)
             .flex_none()
@@ -116,12 +306,19 @@ impl PigeonApp {
             .pl(SPACE_XL)
             .pr(SPACE_MD)
             .child(
-                div()
+                super::label("compose-title", title)
+                    .role(gpui::Role::Heading)
+                    .aria_level(1)
                     .text_size(TEXT_LG)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(title),
+                    .font_weight(FontWeight::SEMIBOLD),
             )
             .child(div().flex_1())
+            // The bottom row scrolls away with a long draft (MA-064).
+            .child(
+                push_button("compose-send", "Send", ButtonKind::Primary, theme)
+                    .mr(SPACE_SM)
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(SendMessage), cx)),
+            )
             .child(icon_button(
                 "compose-discard",
                 Icon::Trash,
@@ -156,8 +353,7 @@ impl PigeonApp {
         let Some(thread) = thread else {
             return header;
         };
-
-        let separator = || div().w(px(1.)).h(px(16.)).mx(SPACE_SM).bg(theme.border);
+        let more_anchor = cx.default_global::<ReaderUi>().more_anchor.clone();
 
         header
             .when_some(thread.folder.archive_target(), |this, target| {
@@ -168,11 +364,7 @@ impl PigeonApp {
                     } else {
                         Icon::Archive
                     },
-                    if target == Folder::Inbox {
-                        "Move to Inbox"
-                    } else {
-                        "Archive"
-                    },
+                    thread.folder.archive_title().unwrap_or("Archive"),
                     Box::new(Archive),
                     theme,
                 ))
@@ -228,12 +420,20 @@ impl PigeonApp {
                     theme,
                 )
             })
-            .child(more_button(theme).on_click(cx.listener(
-                |this, event: &gpui::ClickEvent, window, cx| {
-                    this.show_thread_menu(event.position(), false, window, cx)
-                },
-            )))
+            .child(
+                more_button(theme)
+                    .relative()
+                    .child(anchor(&more_anchor))
+                    .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
+                        // Under the button, however it was pressed (MB-016).
+                        let Some(bounds) = more_anchor.get() else {
+                            return;
+                        };
+                        this.show_thread_menu(bounds.bottom_left(), false, window, cx)
+                    })),
+            )
             .child(div().flex_1())
+            // Reply, Reply All and Forward are one group (MB-020).
             .child(icon_button(
                 "reply",
                 Icon::Reply,
@@ -248,7 +448,6 @@ impl PigeonApp {
                 Box::new(ReplyAll),
                 theme,
             ))
-            .child(separator())
             .child(icon_button(
                 "forward",
                 Icon::Forward,
@@ -262,64 +461,111 @@ impl PigeonApp {
         &self,
         thread: &Thread,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let chips = thread
             .labels
             .iter()
-            .filter_map(|id| self.data.label(id))
-            .map(|label| label_chip(label, theme));
+            .filter_map(|id| self.data.labels.iter().position(|l| l.id == *id))
+            .map(|ix| self.render_label_chip(ix, theme, cx))
+            .collect::<Vec<_>>();
         let last = thread.messages.len() - 1;
+        let layout = self.pane_layout(window.viewport_size().width);
+        let narrow =
+            window.viewport_size().width - crate::app::RAIL_WIDTH - layout.sidebar - layout.list
+                < NARROW;
+        let active = window.is_window_active();
+        let fold_open = cx
+            .default_global::<ReaderUi>()
+            .open_folds
+            .contains(&thread.id);
+        let slots = fold_slots(thread.messages.len(), |ix| {
+            fold_open || self.expanded_messages.contains(&ix) || self.focused_message == Some(ix)
+        });
 
         // Each message is a child of the scroll view, so `n` and `p` can
         // scroll to it; together they read as one card.
-        let messages = thread.messages.iter().enumerate().map(|(ix, message)| {
-            let focused = self.reader_focused && self.focused_message == Some(ix);
-            let body = if ix == last || self.expanded_messages.contains(&ix) {
-                self.render_message(ix, message, ix != last, theme, cx)
-            } else {
-                self.render_collapsed_message(ix, message, theme, cx)
-            };
-            // Keyed by thread, so the text inside keeps no selection state
-            // from another conversation.
-            div()
-                .id(ElementId::NamedInteger(thread.id.clone().into(), ix as u64))
-                .role(gpui::Role::Article)
-                .aria_label(format!(
-                    "{}, {}: {}",
-                    self.contact_name(&message.from),
-                    full_date(&message.date),
-                    message.snippet
-                ))
-                .relative()
-                .bg(theme.card_bg)
-                .border_x_1()
-                .border_t_1()
-                .border_color(theme.border)
-                .when(ix == 0, |d| d.rounded_t(RADIUS_LG))
-                .when(ix == last, |d| d.border_b_1().rounded_b(RADIUS_LG))
-                .when(focused, |d| d.bg(theme.card_focused_bg))
-                .child(body)
-                .when(focused, |d| {
-                    d.child(
-                        div()
-                            .absolute()
-                            .left(px(-1.))
-                            .top(px(10.))
-                            .bottom(px(10.))
-                            .w(px(3.))
-                            .rounded_r(RADIUS_SM)
-                            .bg(theme.accent),
-                    )
-                })
-        });
-        let messages = messages.collect::<Vec<_>>();
+        let messages = thread
+            .messages
+            .iter()
+            .enumerate()
+            .map(|(ix, message)| {
+                // Keyed by thread, so the text inside keeps no selection
+                // state from another conversation.
+                let id = ElementId::NamedInteger(thread.id.clone().into(), ix as u64);
+                let card = || {
+                    div()
+                        .id(id.clone())
+                        .w_full()
+                        .max_w(READER_MAX)
+                        .relative()
+                        .bg(theme.card_bg)
+                        .border_x_1()
+                        .border_t_1()
+                        .border_color(theme.border)
+                        .when(ix == 0, |d| d.rounded_t(RADIUS_LG))
+                        .when(ix == last, |d| d.border_b_1().rounded_b(RADIUS_LG))
+                };
+                match slots[ix] {
+                    Slot::Hidden => div().id(id.clone()).into_any_element(),
+                    Slot::Fold(n) => card()
+                        .child(self.render_fold_row(&thread.id, n, theme, cx))
+                        .into_any_element(),
+                    Slot::Show => {
+                        let focused = self.reader_focused && self.focused_message == Some(ix);
+                        let body = if ix == last || self.expanded_messages.contains(&ix) {
+                            self.render_message(thread, ix, message, ix != last, narrow, theme, cx)
+                        } else {
+                            self.render_collapsed_message(ix, message, last, theme, cx)
+                        };
+                        card()
+                            .role(gpui::Role::Article)
+                            .aria_label(format!(
+                                "{}, {}",
+                                self.contact_name(&message.from),
+                                full_date(&message.date),
+                            ))
+                            .when(focused, |d| d.bg(theme.card_focused_bg))
+                            .child(body)
+                            .when(focused, |d| {
+                                d.child(
+                                    div()
+                                        .absolute()
+                                        .left(-px(1.))
+                                        .top(SPACE_SM + SPACE_2XS)
+                                        .bottom(SPACE_SM + SPACE_2XS)
+                                        .w(SPACE_2XS + px(1.))
+                                        .rounded_r(RADIUS_SM)
+                                        // Gray while another window has the keys (MB-042).
+                                        .bg(if active {
+                                            theme.accent
+                                        } else {
+                                            theme.text_faint
+                                        }),
+                                )
+                            })
+                            .on_any_mouse_down(cx.listener(
+                                move |this, event: &gpui::MouseDownEvent, window, cx| {
+                                    if super::is_secondary(event) {
+                                        cx.stop_propagation();
+                                        this.show_message_menu(ix, event.position, window, cx);
+                                    }
+                                },
+                            ))
+                            .into_any_element()
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
         let composer = self
             .composer
             .as_ref()
             .filter(|_| self.composer_inline(cx))
             .map(|(composer, _)| {
                 div()
+                    .w_full()
+                    .max_w(READER_MAX)
                     .mt(SPACE_LG)
                     .px(SPACE_LG)
                     .pt(SPACE_MD)
@@ -347,22 +593,29 @@ impl PigeonApp {
                     .child(
                         div()
                             .id("subject")
-                            .role(gpui::Role::Heading)
-                            .aria_label(thread.subject.clone())
+                            .w_full()
+                            .max_w(READER_MAX)
                             .text_size(TEXT_TITLE2)
                             .line_height(LINE_UI)
                             .font_weight(FontWeight::SEMIBOLD)
+                            // "(no subject)" reads as a placeholder (ME-021).
+                            .when(!thread.has_subject(), |d| {
+                                d.text_color(theme.text_faint).italic()
+                            })
                             .child(
                                 Selectable::plain(
                                     ElementId::Name(format!("subject-{}", thread.id).into()),
-                                    thread.subject.clone(),
+                                    thread.subject_or_placeholder().to_string(),
                                     theme.text_selection,
                                 )
-                                .order(ORDER_BASE),
+                                .order(ORDER_BASE)
+                                .heading(1),
                             ),
                     )
                     .child(
                         div()
+                            .w_full()
+                            .max_w(READER_MAX)
                             .mt(SPACE_MD)
                             .mb(SPACE_LG)
                             .flex()
@@ -384,29 +637,96 @@ impl PigeonApp {
             .into_any_element()
     }
 
+    /// A label on the conversation: its own name, the whole path in the
+    /// tooltip, and a click opens it (ME-022).
+    fn render_label_chip(&self, ix: usize, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let label = &self.data.labels[ix];
+        let path: SharedString = label.name.replace('/', " › ").into();
+        let tip = path.clone();
+        let shown = crate::data::Label {
+            name: leaf(&label.name).to_string(),
+            ..label.clone()
+        };
+        focusable_control(div().id(("label-chip", ix)), theme)
+            .role(gpui::Role::Link)
+            .aria_label(format!("Label {path}"))
+            .flex_none()
+            .rounded(RADIUS_SM)
+            .hover(|s| s.opacity(0.85))
+            .child(super::label_chip(&shown, theme))
+            .tooltip(move |window, cx| super::tooltip(tip.clone()).build(window, cx))
+            .on_click(cx.listener(move |this, _, _, cx| this.set_nav(Nav::Label(ix), cx)))
+            .into_any_element()
+    }
+
+    /// In place of folded messages: "3 more messages" (ME-008).
+    fn render_fold_row(
+        &self,
+        thread_id: &str,
+        count: usize,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let thread_id = thread_id.to_string();
+        let text = format!("{count} more messages");
+        focusable_control(div().id("more-messages"), theme)
+            .role(gpui::Role::Button)
+            .aria_label(text.clone())
+            .aria_expanded(false)
+            .py(SPACE_SM)
+            .px(SPACE_LG)
+            .flex()
+            .items_center()
+            .gap(SPACE_SM)
+            .hover(|s| s.bg(theme.hover_bg))
+            .text_size(TEXT_SM)
+            .text_color(theme.text_muted)
+            .child(icon(Icon::ChevronDown, ICON_SM, theme.text_faint))
+            .child(text)
+            .on_click(cx.listener(move |_, _, _, cx| {
+                cx.default_global::<ReaderUi>()
+                    .open_folds
+                    .insert(thread_id.clone());
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
     fn render_collapsed_message(
         &self,
         ix: usize,
         message: &Message,
+        last: usize,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        div()
-            .id(("message", ix))
+        let name = self.contact_name(&message.from).to_string();
+        let full = full_date(&message.date);
+        let tip = full.clone();
+        focusable_control(div().id(("message", ix)), theme)
+            .role(gpui::Role::DisclosureTriangle)
+            .aria_expanded(false)
+            .aria_label(format!("{name}, {full}: {}", message.snippet))
             .py(SPACE_MD)
             .px(SPACE_LG)
             .flex()
             .items_center()
             .gap(SPACE_SM)
-            .rounded(RADIUS_LG)
+            // Square inside the stacked card, but its first row (ME-032).
+            .when(ix == 0, |d| d.rounded_t(RADIUS_LG))
+            .when(ix == last, |d| d.rounded_b(RADIUS_LG))
             .hover(|s| s.bg(theme.hover_bg))
             .child(self.sender_avatar(&message.from, AVATAR_SM, theme))
             .child(
+                // At most half the row, so the snippet and date keep room
+                // (ME-013).
                 div()
-                    .flex_none()
+                    .min_w_0()
+                    .max_w(relative(0.5))
+                    .truncate()
                     .text_size(TEXT_BASE)
                     .font_weight(FontWeight::MEDIUM)
-                    .child(self.contact_name(&message.from).to_string()),
+                    .child(name),
             )
             .child(
                 div()
@@ -419,40 +739,60 @@ impl PigeonApp {
             )
             .child(
                 div()
+                    .id(("message-date", ix))
                     .flex_none()
                     .text_size(TEXT_SM)
                     .text_color(theme.text_faint)
-                    .child(full_date(&message.date)),
+                    .font_features(tabular_figures())
+                    .child(list_date(&message.date))
+                    .tooltip(move |window, cx| super::tooltip(tip.clone()).build(window, cx)),
             )
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_message(ix, cx)))
             .into_any_element()
     }
 
-    fn render_message(
+    /// To, Cc and, on the user's own mail, Bcc: three names a group, then
+    /// "+N others" until opened (ME-012). Each name opens its contact card.
+    fn render_recipients(
         &self,
         ix: usize,
         message: &Message,
-        collapsible: bool,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // W6: each name opens its contact card (CON-5).
-        let mut to_line: Vec<AnyElement> = Vec::new();
-        for (group, (prefix, contacts)) in [("to", &message.to), ("cc", &message.cc)]
+        const SHOWN: usize = 3;
+        let open = cx
+            .default_global::<ReaderUi>()
+            .open_recipients
+            .contains(&message.id);
+        let mine = self.data.is_me(&message.from);
+        let mut groups = vec![("to", &message.to), ("cc", &message.cc)];
+        if mine {
+            groups.push(("bcc", &message.bcc));
+        }
+        let mut line: Vec<AnyElement> = Vec::new();
+        let mut hidden = 0;
+        for (group, (prefix, contacts)) in groups
             .into_iter()
             .filter(|(_, contacts)| !contacts.is_empty())
             .enumerate()
         {
             if group > 0 {
-                to_line.push(div().mx(SPACE_XS).child("·").into_any_element());
+                line.push(div().mx(SPACE_XS).child("·").into_any_element());
             }
-            to_line.push(div().mr(SPACE_XS).child(prefix).into_any_element());
-            for (n, contact) in contacts.iter().enumerate() {
+            line.push(div().mr(SPACE_XS).child(prefix).into_any_element());
+            let shown = if open {
+                contacts.len()
+            } else {
+                contacts.len().min(SHOWN)
+            };
+            hidden += contacts.len() - shown;
+            for (n, contact) in contacts.iter().take(shown).enumerate() {
                 let name = self.contact_name(contact).to_string();
-                let last = n + 1 == contacts.len();
-                to_line.push(
+                let last = n + 1 == shown;
+                line.push(
                     self.contact_link(
-                        ("recipient", ix * 10_000 + group * 5_000 + n),
+                        ("recipient", ix * 10_000 + group * 3_000 + n),
                         contact,
                         &name,
                         theme,
@@ -464,63 +804,77 @@ impl PigeonApp {
                 );
             }
         }
-
-        let body = self.html_cache.get(message.html());
-        let images = self.message_images(message, &body, cx);
-
-        let attachments = message
-            .attachments
-            .iter()
-            .enumerate()
-            .map(|(n, attachment)| {
-                let size = file_size(attachment.size_bytes);
-                focusable_control(div().id(("attachment", ix * 100 + n)), theme)
+        if hidden > 0 {
+            let id = message.id.clone();
+            let text = match hidden {
+                1 => "+1 other".to_string(),
+                n => format!("+{n} others"),
+            };
+            line.push(
+                focusable_control(div().id(("recipients-more", ix)), theme)
                     .role(gpui::Role::Button)
-                    .aria_label(format!("Open {}, {size}", attachment.name))
-                    .h(CONTROL_LG)
-                    .pl(SPACE_MD)
-                    .pr(SPACE_XS)
-                    .flex()
-                    .items_center()
-                    .gap(SPACE_SM)
-                    .rounded(RADIUS_MD)
-                    .bg(theme.chip_bg)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.selected_bg))
-                    .child(super::attachment_icon(attachment, theme))
-                    .child(
-                        div()
-                            .max_w(px(260.))
-                            .truncate()
-                            .text_size(TEXT_SM)
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(attachment.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(TEXT_SM)
-                            .text_color(theme.text_faint)
-                            .child(size),
-                    )
-                    .child(
-                        super::icon_button_small(
-                            ("attachment-save", ix * 100 + n),
-                            Icon::Download,
-                            format!("Save {}…", attachment.name),
-                            theme,
-                        )
-                        .on_click(move |_, window, cx| {
-                            cx.stop_propagation();
-                            window.dispatch_action(Box::new(SaveAttachmentAt(ix, n)), cx)
-                        }),
-                    )
-                    .on_click(move |_, window, cx| {
-                        window.dispatch_action(Box::new(OpenAttachmentAt(ix, n)), cx)
-                    })
-            });
+                    .aria_label(format!("Show {text}"))
+                    .aria_expanded(false)
+                    .ml(SPACE_XS)
+                    .px(SPACE_XS)
+                    .rounded(RADIUS_SM)
+                    .text_color(theme.text)
+                    .hover(|s| s.bg(theme.hover_bg))
+                    .child(text)
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.stop_propagation();
+                        cx.default_global::<ReaderUi>()
+                            .open_recipients
+                            .insert(id.clone());
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            );
+        }
+        div()
+            .flex()
+            .text_size(TEXT_SM)
+            .text_color(theme.text_muted)
+            .map(|d| {
+                if open {
+                    d.flex_wrap()
+                } else {
+                    d.overflow_hidden().whitespace_nowrap()
+                }
+            })
+            .children(line)
+            .into_any_element()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_message(
+        &self,
+        thread: &Thread,
+        ix: usize,
+        message: &Message,
+        collapsible: bool,
+        narrow: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let to_line = self.render_recipients(ix, message, theme, cx);
+        let body = match &message.body {
+            Body::Loaded { .. } => self.parsed(message, cx),
+            _ => None,
+        };
+        let images = body
+            .as_ref()
+            .map(|body| self.message_images(message, body, cx))
+            .unwrap_or_default();
+        let attachments = self.render_attachments(ix, message, theme, cx);
 
         let mine = self.data.is_me(&message.from);
+        let focused = self.reader_focused && self.focused_message == Some(ix);
         let order = ORDER_BASE + ((ix as u64 + 1) << 20);
+        let name = self.contact_name(&message.from).to_string();
+        let date = full_date(&message.date);
+        let age = relative_age(&message.date, Local::now());
+        let draft = thread.folder == Folder::Drafts;
         let header = div()
             .id(("message-header", ix))
             .group("message-header")
@@ -528,15 +882,9 @@ impl PigeonApp {
             .items_start()
             .gap(SPACE_MD)
             .child(
-                self.contact_link(
-                    ("sender-avatar", ix),
-                    &message.from,
-                    self.contact_name(&message.from),
-                    theme,
-                    cx,
-                )
-                .flex_none()
-                .child(self.sender_avatar(&message.from, AVATAR_MD, theme)),
+                self.contact_link(("sender-avatar", ix), &message.from, &name, theme, cx)
+                    .flex_none()
+                    .child(self.sender_avatar(&message.from, AVATAR_MD, theme)),
             )
             .child(
                 div()
@@ -551,26 +899,30 @@ impl PigeonApp {
                             .items_baseline()
                             .gap(SPACE_SM)
                             .child(
+                                // Truncates before the date does (ME-013).
                                 self.contact_link(
                                     ("sender-name", ix),
                                     &message.from,
-                                    self.contact_name(&message.from),
+                                    &name,
                                     theme,
                                     cx,
                                 )
-                                .flex_none()
+                                .min_w_0()
+                                .truncate()
                                 .text_size(TEXT_BASE)
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(
                                     Selectable::plain(
                                         "sender-name",
-                                        self.contact_name(&message.from).to_string(),
+                                        name.clone(),
                                         theme.text_selection,
                                     )
-                                    .order(order),
+                                    .order(order)
+                                    .silent(),
                                 ),
                             )
-                            // Others' addresses on hover; never my own.
+                            // Others' addresses on hover and while the
+                            // message has the keys (MA-047); never my own.
                             .when(!mine, |this| {
                                 this.child(
                                     div()
@@ -578,8 +930,10 @@ impl PigeonApp {
                                         .truncate()
                                         .text_size(TEXT_SM)
                                         .text_color(theme.text_faint)
-                                        .opacity(0.)
-                                        .group_hover("message-header", |s| s.opacity(1.))
+                                        .when(!focused, |d| {
+                                            d.opacity(0.)
+                                                .group_hover("message-header", |s| s.opacity(1.))
+                                        })
                                         .child(
                                             Selectable::plain(
                                                 "sender-address",
@@ -591,32 +945,90 @@ impl PigeonApp {
                                 )
                             }),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_size(TEXT_SM)
-                            .text_color(theme.text_muted)
-                            .children(to_line),
-                    ),
+                    .child(to_line),
             )
             .child(
                 div()
                     .flex_none()
-                    .text_size(TEXT_SM)
-                    .text_color(theme.text_faint)
-                    .child(full_date(&message.date)),
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_XS)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_end()
+                            .text_size(TEXT_SM)
+                            .text_color(theme.text_faint)
+                            .font_features(tabular_figures())
+                            .child(date)
+                            .children(age.map(|age| div().text_size(TEXT_XS).child(age))),
+                    )
+                    // Reply to this message, rather than the newest (ME-010).
+                    .when(!draft, |this| {
+                        this.child(
+                            div()
+                                .flex()
+                                .when(!focused, |d| {
+                                    d.opacity(0.)
+                                        .group_hover("message-header", |s| s.opacity(1.))
+                                })
+                                .child(
+                                    super::icon_button_small(
+                                        ("message-reply", ix),
+                                        Icon::Reply,
+                                        "Reply",
+                                        theme,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, window, cx| {
+                                            cx.stop_propagation();
+                                            this.focus_message(ix, cx);
+                                            window.dispatch_action(Box::new(Reply), cx);
+                                        },
+                                    )),
+                                )
+                                .child(
+                                    super::icon_button_small(
+                                        ("message-more", ix),
+                                        Icon::Ellipsis,
+                                        "Reply all, forward and more",
+                                        theme,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, event: &gpui::ClickEvent, window, cx| {
+                                            cx.stop_propagation();
+                                            this.show_message_menu(
+                                                ix,
+                                                event.position(),
+                                                window,
+                                                cx,
+                                            );
+                                        },
+                                    )),
+                                ),
+                        )
+                    }),
             )
             .when(collapsible, |this| {
-                this.cursor_pointer()
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        // Not when the click ended selecting the sender.
-                        if TextSelection::selected_text(window, cx).is_empty() {
-                            this.toggle_message(ix, cx)
-                        }
-                    }))
+                this.on_click(cx.listener(move |this, _, window, cx| {
+                    // Not when the click ended selecting the sender.
+                    if TextSelection::selected_text(window, cx).is_empty() {
+                        this.toggle_message(ix, cx)
+                    }
+                }))
             });
+
+        let link = cx
+            .default_global::<ReaderUi>()
+            .link
+            .as_ref()
+            .filter(|(t, m, _)| self.reader_focused && *t == thread.id && *m == ix)
+            .map(|(_, _, n)| *n);
+        let quote_open = cx
+            .default_global::<ReaderUi>()
+            .open_quotes
+            .contains(&message.id);
         let selection = html_view::Selection {
             order: order + 2,
             all: (self.select_all_text == Some(ix)).then(|| {
@@ -629,8 +1041,36 @@ impl PigeonApp {
                     });
                 }) as OnClear
             }),
+            focused_link: link,
         };
+        let fold = body
+            .as_ref()
+            .and_then(|doc| crate::html::trailing_quote_start(doc))
+            .map(|start| {
+                let app = cx.entity().downgrade();
+                let id = message.id.clone();
+                html_view::Fold {
+                    start,
+                    open: quote_open,
+                    id: ("quote-toggle", ix).into(),
+                    on_toggle: Rc::new(move |_, cx| {
+                        let quotes = &mut cx.default_global::<ReaderUi>().open_quotes;
+                        if !quotes.remove(&id) {
+                            quotes.insert(id.clone());
+                        }
+                        app.update(cx, |_, cx| cx.notify()).ok();
+                    }),
+                }
+            });
 
+        let indent = |d: gpui::Div| {
+            if narrow {
+                d
+            } else {
+                // Under the sender's name: past the avatar and the gap.
+                d.ml(SPACE_MD).pl(AVATAR_MD)
+            }
+        };
         div()
             .px(SPACE_LG)
             .pt(SPACE_LG)
@@ -639,36 +1079,29 @@ impl PigeonApp {
             .flex_col()
             .child(header)
             .child(
-                div()
-                    .id(("message-body", ix))
-                    .mt(SPACE_LG)
-                    // Under the sender's name: past the avatar and the gap.
-                    .ml(SPACE_MD)
-                    .pl(AVATAR_MD)
+                indent(div().mt(SPACE_LG))
                     .when_some(images.ask, |this, hidden| {
                         this.child(render_images_bar(ix, &message.id, hidden, theme, cx))
                     })
-                    .child(match &message.body {
-                        Body::Loaded { .. } => render_body(
+                    .child(match (&message.body, body) {
+                        (Body::Loaded { .. }, Some(body)) => render_body(
                             &body,
                             selection,
                             html_view::ShowImages {
                                 loaded: &self.images,
                                 remote: images.show,
                             },
+                            fold,
                             theme,
                         )
                         .into_any_element(),
-                        Body::Failed(reason) => render_body_failed(ix, reason, theme),
-                        Body::NotLoaded | Body::Loading => render_body_loading(theme),
+                        (Body::Failed(reason), _) => render_body_failed(ix, reason, theme),
+                        _ => render_body_loading(theme),
                     }),
             )
-            .when(!message.attachments.is_empty(), |this| {
+            .when_some(attachments, |this, attachments| {
                 this.child(
-                    div()
-                        .mt(SPACE_LG)
-                        .ml(SPACE_MD)
-                        .pl(AVATAR_MD)
+                    indent(div().mt(SPACE_LG))
                         .flex()
                         .flex_wrap()
                         .gap(SPACE_SM)
@@ -678,6 +1111,213 @@ impl PigeonApp {
             .into_any_element()
     }
 
+    /// The message's body, parsed; a big one is parsed off the main thread
+    /// first (MC-054), and shows as loading until it is.
+    fn parsed(&self, message: &Message, cx: &mut Context<Self>) -> Option<Rc<Document>> {
+        if let Some(doc) = self.html_cache.get(&message.id, message.html()) {
+            return Some(doc);
+        }
+        let key = crate::html::HtmlCache::key(&message.id, message.html());
+        if self.html_cache.start_parse(&key) {
+            let html = message.html().to_string();
+            cx.spawn(async move |this, cx| {
+                let doc = cx
+                    .background_executor()
+                    .spawn(async move { crate::html::parse(&html) })
+                    .await;
+                this.update(cx, |this, cx| {
+                    this.html_cache.insert(key, Rc::new(doc));
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
+        None
+    }
+
+    /// The message's attachment chips: open on click, Quick Look on Space,
+    /// a menu on right-click, and a drag to Finder.
+    fn render_attachments(
+        &self,
+        ix: usize,
+        message: &Message,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<Vec<AnyElement>> {
+        if message.attachments.is_empty() {
+            return None;
+        }
+        let demo = self.backend.read(cx).is_demo();
+        let ui = cx.default_global::<ReaderUi>();
+        let anchor_cell = ui.attachment_anchor.clone();
+        let fetching: Vec<bool> = (0..message.attachments.len())
+            .map(|n| ui.fetching.contains_key(&(message.id.clone(), n)))
+            .collect();
+        // The picker opens under the conversation's first chip.
+        let first = self.data.threads[self.selected?]
+            .messages
+            .iter()
+            .position(|m| !m.attachments.is_empty())
+            == Some(ix);
+        Some(
+            message
+                .attachments
+                .iter()
+                .enumerate()
+                .map(|(n, attachment)| {
+                    let size = file_size(attachment.size_bytes);
+                    let fetching = fetching[n];
+                    let glyph = super::attachment_icon(attachment, theme);
+                    let glyph = if fetching {
+                        div()
+                            .flex_none()
+                            .child(glyph)
+                            .with_animation(
+                                ("attachment-fetching", ix * 100 + n),
+                                Animation::new(std::time::Duration::from_millis(1000))
+                                    .repeat()
+                                    .with_easing(gpui::pulsating_between(0.3, 1.)),
+                                |d, t| d.opacity(t),
+                            )
+                            .into_any_element()
+                    } else {
+                        glyph.into_any_element()
+                    };
+                    let drag = DraggedAttachment {
+                        message_id: message.id.clone(),
+                        message: ix,
+                        attachment: n,
+                        name: attachment.name.clone().into(),
+                    };
+                    focusable_control(div().id(("attachment", ix * 100 + n)), theme)
+                        .key_context(format!("{CONTROL} {ATTACHMENT}").as_str())
+                        .role(gpui::Role::Button)
+                        .aria_label(if fetching {
+                            format!("Getting {}…", attachment.name)
+                        } else {
+                            format!("Open {}, {size}", attachment.name)
+                        })
+                        .relative()
+                        .h(CONTROL_LG)
+                        .pl(SPACE_MD)
+                        .pr(SPACE_XS)
+                        .flex()
+                        .items_center()
+                        .gap(SPACE_SM)
+                        .rounded(RADIUS_MD)
+                        .bg(theme.chip_bg)
+                        .hover(|s| s.bg(theme.selected_bg))
+                        .when(first && n == 0, |d| d.child(anchor(&anchor_cell)))
+                        .child(glyph)
+                        .child(
+                            div()
+                                .max_w(px(260.))
+                                .truncate()
+                                .text_size(TEXT_SM)
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(attachment.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(TEXT_SM)
+                                .text_color(theme.text_faint)
+                                .child(size),
+                        )
+                        .child(
+                            super::icon_button_small(
+                                ("attachment-save", ix * 100 + n),
+                                Icon::Download,
+                                format!("Save {}…", attachment.name),
+                                theme,
+                            )
+                            .on_click(move |_, window, cx| {
+                                cx.stop_propagation();
+                                window.dispatch_action(Box::new(SaveAttachmentAt(ix, n)), cx)
+                            }),
+                        )
+                        .on_action(move |_: &QuickLookAttachment, window, cx| {
+                            window.dispatch_action(Box::new(QuickLookAttachmentAt(ix, n)), cx)
+                        })
+                        .on_any_mouse_down(move |event, window, cx| {
+                            if super::is_secondary(event) {
+                                cx.stop_propagation();
+                                attachment_menu(ix, n, event.position, window, cx);
+                            }
+                        })
+                        .when(!demo, |d| {
+                            d.on_drag(drag, |drag, _, window, cx| {
+                                // The file has to be on disk before the drag
+                                // leaves the window.
+                                window.dispatch_action(
+                                    Box::new(PrefetchAttachmentAt(drag.message, drag.attachment)),
+                                    cx,
+                                );
+                                cx.new(|_| drag.clone())
+                            })
+                            .external_drag_payload(
+                                |drag: &DraggedAttachment, _, cx| {
+                                    let ready = cx
+                                        .try_global::<ReaderUi>()?
+                                        .files
+                                        .get(&(drag.message_id.clone(), drag.attachment))?;
+                                    (!ready.executable).then(|| {
+                                        gpui::ExternalDragPayload::Files(gpui::FileDragPaths::new(
+                                            [(ready.path.clone(), false)],
+                                        ))
+                                    })
+                                },
+                            )
+                        })
+                        .on_click(move |_, window, cx| {
+                            window.dispatch_action(Box::new(OpenAttachmentAt(ix, n)), cx)
+                        })
+                        .into_any_element()
+                })
+                .collect(),
+        )
+    }
+
+    /// Makes `ix` the message the keys and replies act on.
+    pub(crate) fn focus_message(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.focused_message = Some(ix);
+        self.reader_focused = true;
+        cx.notify();
+    }
+
+    /// A message's context menu (MB-010): Copy for selected text, else
+    /// replies and its source.
+    fn show_message_menu(
+        &mut self,
+        ix: usize,
+        position: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !TextSelection::selected_text(window, cx).is_empty() {
+            NativeMenu::new()
+                .menu("Copy", Box::new(EditCopy))
+                .show(position, window, cx);
+            return;
+        }
+        let Some(thread) = self.selected.map(|t| &self.data.threads[t]) else {
+            return;
+        };
+        let draft = thread.folder == Folder::Drafts;
+        self.focus_message(ix, cx);
+        let mut menu = NativeMenu::new();
+        if !draft {
+            menu = menu
+                .menu("Reply", Box::new(Reply))
+                .menu("Reply All", Box::new(ReplyAll))
+                .menu("Forward", Box::new(Forward))
+                .separator();
+        }
+        menu.menu("Show Original", Box::new(ShowOriginal))
+            .menu("Save as .eml…", Box::new(SaveOriginal))
+            .show(position, window, cx);
+    }
+
     /// In place of a conversation while several are selected: what they
     /// are, and what can be done to all of them.
     fn render_bulk_summary(&self, theme: &Theme, window: &Window) -> AnyElement {
@@ -685,12 +1325,13 @@ impl PigeonApp {
         let count = targets.len();
         let all_unread = targets.iter().all(|&ix| self.data.threads[ix].unread);
         let all_starred = targets.iter().all(|&ix| self.data.threads[ix].starred);
-        let archive_label = match targets
-            .first()
-            .and_then(|&ix| self.data.threads[ix].folder.archive_target())
-        {
-            Some(Folder::Inbox) => "Move to Inbox",
-            _ => "Archive",
+        let first = targets.first().map(|&ix| &self.data.threads[ix]);
+        // The same label and icon as the toolbar's (ME-027).
+        let folder = first.map(|t| t.folder);
+        let archive_label = folder.and_then(Folder::archive_title).unwrap_or("Archive");
+        let archive_icon = match folder.and_then(Folder::archive_target) {
+            Some(Folder::Inbox) => Icon::Inbox,
+            _ => Icon::Archive,
         };
         let subjects = targets.iter().take(5).map(|&ix| {
             let thread = &self.data.threads[ix];
@@ -704,11 +1345,10 @@ impl PigeonApp {
                     div()
                         .min_w_0()
                         .truncate()
-                        .child(if thread.subject.is_empty() {
-                            "(no subject)".to_string()
-                        } else {
-                            thread.subject.clone()
-                        }),
+                        .when(!thread.has_subject(), |d| {
+                            d.italic().text_color(theme.text_faint)
+                        })
+                        .child(thread.subject_or_placeholder().to_string()),
                 )
         });
         let action =
@@ -791,7 +1431,7 @@ impl PigeonApp {
                             .gap(SPACE_XS)
                             .child(action(
                                 "bulk-archive",
-                                Icon::Archive,
+                                archive_icon,
                                 archive_label,
                                 Box::new(Archive),
                             ))
@@ -850,7 +1490,7 @@ impl PigeonApp {
     }
 
     /// W6: a name or avatar that opens `contact`'s card (CON-5); not when
-    /// the click ended selecting text.
+    /// the click ended selecting text. Right-click has its menu (MB-010).
     fn contact_link(
         &self,
         id: impl Into<ElementId>,
@@ -859,20 +1499,29 @@ impl PigeonApp {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        let menu_contact = contact.clone();
         let contact = contact.clone();
         div()
             .id(id)
             .role(gpui::Role::Button)
-            .aria_label(format!("Show contact: {name}"))
-            .cursor_pointer()
+            .aria_label(format!("Show contact: {name}, {}", contact.email))
             .rounded(RADIUS_SM)
             .hover(|s| s.text_color(theme.text))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                cx.stop_propagation();
-                if TextSelection::selected_text(window, cx).is_empty() {
-                    this.show_contact(contact.clone(), window, cx);
+            .on_any_mouse_down(move |event, window, cx| {
+                if super::is_secondary(event) {
+                    cx.stop_propagation();
+                    name_menu(&menu_contact, event.position, window, cx);
                 }
-            }))
+            })
+            .on_click(
+                cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                    cx.stop_propagation();
+                    if TextSelection::selected_text(window, cx).is_empty() {
+                        let at = (!event.is_keyboard()).then(|| event.position());
+                        this.show_contact(contact.clone(), at, window, cx);
+                    }
+                }),
+            )
     }
 
     fn contact_name<'a>(&self, contact: &'a Contact) -> &'a str {
@@ -893,11 +1542,55 @@ impl PigeonApp {
     }
 }
 
+/// An attachment's context menu (MB-010).
+fn attachment_menu(
+    message: usize,
+    attachment: usize,
+    position: gpui::Point<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    NativeMenu::new()
+        .menu("Open", Box::new(OpenAttachmentAt(message, attachment)))
+        .menu(
+            "Quick Look",
+            Box::new(QuickLookAttachmentAt(message, attachment)),
+        )
+        .separator()
+        .menu("Save…", Box::new(SaveAttachmentAt(message, attachment)))
+        .menu(
+            "Show in Finder",
+            Box::new(RevealAttachmentAt(message, attachment)),
+        )
+        .show(position, window, cx);
+}
+
+/// A sender's or recipient's context menu (MB-010).
+fn name_menu(contact: &Contact, position: gpui::Point<Pixels>, window: &mut Window, cx: &mut App) {
+    NativeMenu::new()
+        .menu(
+            "Copy Address",
+            Box::new(html_view::CopyText(contact.email.clone().into())),
+        )
+        .menu(
+            "New Message",
+            Box::new(html_view::OpenLink(
+                format!("mailto:{}", contact.email).into(),
+            )),
+        )
+        .menu(
+            "Show Contact",
+            Box::new(ShowContactFor(contact.clone(), Some(position))),
+        )
+        .show(position, window, cx);
+}
+
 /// The message's HTML, rendered natively. Parsed once per message and cached.
 fn render_body(
     doc: &Document,
     selection: html_view::Selection,
     images: html_view::ShowImages,
+    fold: Option<html_view::Fold>,
     theme: &Theme,
 ) -> impl IntoElement {
     div()
@@ -909,6 +1602,7 @@ fn render_body(
             theme,
             Some(selection),
             Some(images),
+            fold,
         ))
 }
 
@@ -927,9 +1621,11 @@ impl PigeonApp {
             return ImageConsent::default();
         }
         // W2 (ATT-2): inline images, part of the mail, need no consent.
-        let inline: Vec<SharedString> = html_view::cid_images(body)
-            .into_iter()
-            .filter(|url| !self.images.requested.contains(url))
+        let inline: Vec<SharedString> = body
+            .cid_images
+            .iter()
+            .filter(|url| !self.images.requested.contains(*url))
+            .cloned()
             .collect();
         if !inline.is_empty()
             && let Some(thread) = self.selected.map(|ix| self.data.threads[ix].id.clone())
@@ -946,7 +1642,7 @@ impl PigeonApp {
         if self.backend.read(cx).is_demo() {
             return ImageConsent::default();
         }
-        let remote = crate::html::remote_images(body);
+        let remote = &body.remote_images;
         let consent = image_consent(
             self.remote_images_setting(),
             self.images.allowed.contains(&message.id),
@@ -956,8 +1652,9 @@ impl PigeonApp {
             return consent;
         }
         let missing: Vec<SharedString> = remote
-            .into_iter()
-            .filter(|url| !self.images.requested.contains(url))
+            .iter()
+            .filter(|url| !self.images.requested.contains(*url))
+            .cloned()
             .collect();
         if !missing.is_empty() {
             let this = cx.entity().downgrade();
@@ -1026,8 +1723,12 @@ impl PigeonApp {
         cx: &mut Context<Self>,
     ) {
         for (url, image) in images {
-            let Some(image) = image else { continue };
-            let Some(format) = gpui::ImageFormat::from_mime_type(image.mime) else {
+            let format = image
+                .as_ref()
+                .and_then(|image| gpui::ImageFormat::from_mime_type(image.mime));
+            let (Some(image), Some(format)) = (image, format) else {
+                // Shown as failed, not loading forever (MA-075).
+                self.images.failed.insert(url.into());
                 continue;
             };
             self.images.ready.insert(
@@ -1167,19 +1868,25 @@ impl OriginalState {
     }
 }
 
-/// The source as lines to show: tabs as spaces, long lines broken.
+/// The source as lines to show: tabs as spaces, long lines broken every
+/// `WRAP` characters.
 fn source_lines(text: &str) -> Vec<SharedString> {
     const WRAP: usize = 100;
     let mut out = Vec::new();
     for line in text.split('\n') {
         let line = line.trim_end_matches('\r').replace('\t', "    ");
-        let chars: Vec<char> = line.chars().collect();
-        if chars.is_empty() {
+        if line.is_empty() {
             out.push(SharedString::default());
+            continue;
         }
-        for chunk in chars.chunks(WRAP) {
-            out.push(chunk.iter().collect::<String>().into());
+        let mut start = 0;
+        for (n, (at, _)) in line.char_indices().enumerate() {
+            if n > 0 && n % WRAP == 0 {
+                out.push(line[start..at].to_string().into());
+                start = at;
+            }
         }
+        out.push(line[start..].to_string().into());
     }
     if text.ends_with('\n') {
         out.pop();
@@ -1197,11 +1904,10 @@ fn render_original(original: &Original, theme: &Theme) -> AnyElement {
         .pl(SPACE_XL)
         .pr(SPACE_MD)
         .child(
-            div()
+            super::label("original-title", "Original Message")
                 .flex_none()
                 .text_size(TEXT_LG)
-                .font_weight(FontWeight::SEMIBOLD)
-                .child("Original Message"),
+                .font_weight(FontWeight::SEMIBOLD),
         )
         .child(
             div()
@@ -1310,11 +2016,34 @@ fn render_original(original: &Original, theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// In place of a body still on its way (RDR-6).
+/// In place of a body still on its way (RDR-6): pulsing lines, like the
+/// list's (ME-030).
 fn render_body_loading(theme: &Theme) -> AnyElement {
-    super::live_text("message-loading", "Loading…", gpui::accesskit::Live::Polite)
-        .text_size(TEXT_BASE)
-        .text_color(theme.text_faint)
+    let bar = |width: f32| {
+        div()
+            .w(relative(width))
+            .h(SPACE_MD)
+            .rounded(RADIUS_SM)
+            .bg(theme.chip_bg)
+    };
+    div()
+        .id("message-loading")
+        .role(gpui::Role::Status)
+        .aria_label("Loading message")
+        .flex()
+        .flex_col()
+        .gap(SPACE_SM)
+        .child(bar(0.9))
+        .child(bar(0.75))
+        .child(bar(0.82))
+        .child(bar(0.4))
+        .with_animation(
+            "message-loading",
+            Animation::new(std::time::Duration::from_millis(1200))
+                .repeat()
+                .with_easing(gpui::pulsating_between(0.5, 1.)),
+            |this, delta| this.opacity(delta),
+        )
         .into_any_element()
 }
 
@@ -1335,10 +2064,15 @@ fn render_body_failed(ix: usize, reason: &str, theme: &Theme) -> AnyElement {
                 .child("Couldn't load this message"),
         )
         .child(
-            div()
-                .text_size(TEXT_SM)
-                .text_color(theme.text_faint)
-                .child(reason.to_string()),
+            // Selectable, to copy into a search or a report (MB-035).
+            div().text_size(TEXT_SM).text_color(theme.text_faint).child(
+                Selectable::plain(
+                    ("message-failed-reason", ix),
+                    reason.to_string(),
+                    theme.text_selection,
+                )
+                .silent(),
+            ),
         )
         .child(
             focusable_control(div().id(("message-retry", ix)), theme)
@@ -1375,12 +2109,52 @@ fn more_button(theme: &Theme) -> gpui::Stateful<gpui::Div> {
         .active(|s| s.bg(theme.selected_bg))
         .child(icon(Icon::Ellipsis, ICON_TOOLBAR, theme.icon))
         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .tooltip(|window, cx| super::tooltip("More: move, label, mark read").build(window, cx))
+        .tooltip(|window, cx| super::tooltip("Move, label and more").build(window, cx))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_threads_fold_their_middle() {
+        use Slot::*;
+        assert_eq!(fold_slots(4, |_| false), [Show; 4]);
+        assert_eq!(
+            fold_slots(7, |_| false),
+            [Show, Fold(4), Hidden, Hidden, Hidden, Show, Show]
+        );
+        // An expanded message splits the fold; a run of one stays shown.
+        assert_eq!(
+            fold_slots(8, |ix| ix == 3),
+            [Show, Fold(2), Hidden, Show, Fold(2), Hidden, Show, Show]
+        );
+        assert_eq!(
+            fold_slots(6, |ix| ix == 2),
+            [Show, Show, Show, Show, Show, Show]
+        );
+    }
+
+    #[test]
+    fn ages_under_a_day() {
+        let now = Local::now();
+        let ago = |minutes| (now - chrono::Duration::minutes(minutes)).fixed_offset();
+        assert_eq!(relative_age(&ago(0), now).as_deref(), Some("just now"));
+        assert_eq!(relative_age(&ago(5), now).as_deref(), Some("5 min ago"));
+        assert_eq!(relative_age(&ago(150), now).as_deref(), Some("2 hr ago"));
+        assert_eq!(relative_age(&ago(60 * 25), now), None);
+    }
+
+    #[test]
+    fn source_lines_wrap_by_character() {
+        let long = "é".repeat(150);
+        let lines = source_lines(&format!("a\tb\r\n\n{long}\n"));
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[0].as_ref(), "a    b");
+        assert_eq!(lines[1].as_ref(), "");
+        assert_eq!(lines[2].chars().count(), 100);
+        assert_eq!(lines[3].chars().count(), 50);
+    }
 
     #[test]
     fn images_show_only_with_consent_for_this_message() {

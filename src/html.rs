@@ -4,7 +4,7 @@
 
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     hash::{DefaultHasher, Hash as _, Hasher as _},
     ops::Range,
     rc::Rc,
@@ -17,6 +17,10 @@ use markup5ever_rcdom::{Handle, NodeData, RcDom};
 #[derive(Debug, Default)]
 pub struct Document {
     pub blocks: Vec<Block>,
+    /// The remote and inline (`cid:`) images it shows, each once, in
+    /// order; found once at parse time (MC-049).
+    pub remote_images: Vec<SharedString>,
+    pub cid_images: Vec<SharedString>,
 }
 
 #[derive(Debug)]
@@ -35,7 +39,9 @@ pub enum Block {
     Quote(Vec<Block>),
     Table(Table),
     Image {
-        alt: SharedString,
+        /// `None` when the `alt` attribute is missing; empty when the image
+        /// is marked decorative.
+        alt: Option<SharedString>,
         /// A safe `http(s)` address (see `is_safe_image_url`) or a `cid:`
         /// reference; empty otherwise.
         src: SharedString,
@@ -106,31 +112,153 @@ pub struct Style {
     /// The email's own color; the renderer adjusts it for contrast.
     pub color: Option<Hsla>,
     pub link: Option<SharedString>,
+    /// The renderer's last contrast correction of `color`, as (background,
+    /// result), so it runs once per theme rather than every frame (MC-050).
+    pub readable: std::cell::Cell<Option<(Hsla, Hsla)>>,
 }
 
-/// Parsed bodies, filled lazily the first time a message is shown, so each
-/// body is parsed once. Keyed by a hash of the HTML, so it stays right however
-/// threads are reordered or added.
+/// Parsed bodies, filled the first time a message is shown, so each body is
+/// parsed once. Keyed by message id and a cheap fingerprint of the HTML
+/// (MC-049), so a body that arrives or changes gets a new entry. Bounded:
+/// cleared when it holds more than `CACHE_CAP` documents.
 #[derive(Default)]
-pub struct HtmlCache(RefCell<HashMap<u64, Rc<Document>>>);
+pub struct HtmlCache {
+    docs: RefCell<HashMap<CacheKey, Rc<Document>>>,
+    /// Big bodies being parsed off the main thread (MC-054).
+    parsing: RefCell<HashSet<CacheKey>>,
+}
+
+pub type CacheKey = (String, u64);
+
+const CACHE_CAP: usize = 300;
+
+/// Bodies at least this long are parsed in the background.
+pub const BACKGROUND_PARSE: usize = 64 * 1024;
 
 impl HtmlCache {
-    pub fn get(&self, html: &str) -> Rc<Document> {
+    pub fn key(id: &str, html: &str) -> CacheKey {
+        // The length plus both ends: enough to tell a loaded body from
+        // none, or an edited one, without hashing a whole newsletter.
         let mut hasher = DefaultHasher::new();
-        html.hash(&mut hasher);
-        self.0
-            .borrow_mut()
-            .entry(hasher.finish())
-            .or_insert_with(|| Rc::new(parse(html)))
-            .clone()
+        html.len().hash(&mut hasher);
+        let head = html.floor_char_boundary(html.len().min(256));
+        let tail = html.ceil_char_boundary(html.len().saturating_sub(256));
+        html[..head].hash(&mut hasher);
+        html[tail..].hash(&mut hasher);
+        (id.to_string(), hasher.finish())
+    }
+
+    /// The parsed body, parsing it here if it's small. A big one returns
+    /// `None` and is parsed by `start_parse`'s caller.
+    pub fn get(&self, id: &str, html: &str) -> Option<Rc<Document>> {
+        let key = Self::key(id, html);
+        if let Some(doc) = self.docs.borrow().get(&key) {
+            return Some(doc.clone());
+        }
+        if html.len() >= BACKGROUND_PARSE {
+            return None;
+        }
+        let doc = Rc::new(parse(html));
+        self.insert(key, doc.clone());
+        Some(doc)
+    }
+
+    /// Whether to start a background parse for `key`: true once.
+    pub fn start_parse(&self, key: &CacheKey) -> bool {
+        self.parsing.borrow_mut().insert(key.clone())
+    }
+
+    pub fn insert(&self, key: CacheKey, doc: Rc<Document>) {
+        self.parsing.borrow_mut().remove(&key);
+        let mut docs = self.docs.borrow_mut();
+        if docs.len() >= CACHE_CAP {
+            docs.clear();
+        }
+        docs.insert(key, doc);
     }
 }
 
 pub fn parse(html: &str) -> Document {
     let dom = parse_document(RcDom::default(), Default::default()).one(html);
+    let blocks = parse_blocks(&dom.document, &Ctx::default());
     Document {
-        blocks: parse_blocks(&dom.document, &Ctx::default()),
+        remote_images: images(&blocks, is_safe_image_url),
+        cid_images: images(&blocks, is_cid),
+        blocks,
     }
+}
+
+/// Where the trailing quoted history starts (ME-003): a last `Quote`, with
+/// the "On … wrote:" line before it, or an Outlook "Original Message"
+/// header and all after it. `None` when there is none, or when it would
+/// leave nothing above it.
+pub fn trailing_quote_start(doc: &Document) -> Option<usize> {
+    let blocks = &doc.blocks;
+    let is_text = |b: &Block, f: &dyn Fn(&str) -> bool| match b {
+        Block::Text { text, .. } => f(text.text.trim()),
+        _ => false,
+    };
+    let start = if let Some(ix) = blocks.iter().position(|b| {
+        is_text(b, &|t| {
+            t.starts_with("-----Original Message-----") || t.starts_with("———— Original Message")
+        })
+    }) {
+        ix
+    } else if matches!(blocks.last(), Some(Block::Quote(_))) {
+        let quote = blocks.len() - 1;
+        match quote.checked_sub(1) {
+            Some(before) if is_text(&blocks[before], &is_attribution) => before,
+            _ => quote,
+        }
+    } else {
+        return None;
+    };
+    (start > 0).then_some(start)
+}
+
+/// "On Tue, Oct 27, 2026 at 9:12 AM Ana <ana@x.io> wrote:", and the like.
+fn is_attribution(text: &str) -> bool {
+    let last = text.lines().last().unwrap_or_default().trim_end();
+    text.len() < 400
+        && [
+            "wrote:",
+            "schrieb:",
+            "a écrit :",
+            "a écrit:",
+            "escribió:",
+            "scrisse:",
+        ]
+        .iter()
+        .any(|end| last.ends_with(end))
+}
+
+/// The links of `blocks` in reading order, as the renderer draws them:
+/// inline links, buttons and linked images (MA-003).
+pub fn links(blocks: &[Block]) -> Vec<SharedString> {
+    fn walk(blocks: &[Block], out: &mut Vec<SharedString>) {
+        for block in blocks {
+            match block {
+                Block::Text { text, .. } | Block::Pre(text) => {
+                    out.extend(text.links.iter().map(|(_, url)| url.clone()))
+                }
+                Block::List { items, .. } => items.iter().for_each(|item| walk(item, out)),
+                Block::Quote(blocks) => walk(blocks, out),
+                Block::Table(table) => table
+                    .rows
+                    .iter()
+                    .flatten()
+                    .for_each(|cell| walk(&cell.blocks, out)),
+                Block::Image {
+                    link: Some(url), ..
+                } => out.push(url.clone()),
+                Block::Button { url, .. } => out.push(url.clone()),
+                Block::Image { .. } | Block::Rule => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(blocks, &mut out);
+    out
 }
 
 /// The document's text, one block per paragraph, for search and for editing a
@@ -151,7 +279,7 @@ pub fn plain_text(doc: &Document) -> String {
                         push_blocks(&cell.blocks, out);
                     }
                 }
-                Block::Image { alt, .. } => push_par(alt, out),
+                Block::Image { alt, .. } => push_par(alt.as_deref().unwrap_or_default(), out),
                 Block::Button { label, .. } => push_par(label, out),
                 Block::Rule => {}
             }
@@ -261,6 +389,13 @@ struct Parser {
 impl Parser {
     fn flush(&mut self, kind: TextKind, align: Align) {
         if let Some(text) = self.inline.take() {
+            // Hebrew or Arabic with no alignment of its own reads from the
+            // right (MA-042).
+            let align = if align == Align::Left && starts_rtl(&text.text) {
+                Align::Right
+            } else {
+                align
+            };
             self.blocks.push(Block::Text { text, kind, align });
         }
     }
@@ -305,6 +440,7 @@ impl Parser {
                 Some(href) if is_button(&attrs) => {
                     let label = plain_text(&Document {
                         blocks: parse_blocks(node, ctx),
+                        ..Default::default()
                     });
                     if label.is_empty() {
                         return;
@@ -339,13 +475,13 @@ impl Parser {
                     return;
                 }
                 self.flush(TextKind::Paragraph, parent.align);
-                let alt = attr(&attrs, "alt").unwrap_or_default().trim().to_string();
+                let alt = attr(&attrs, "alt").map(|alt| SharedString::from(alt.trim().to_string()));
                 let src = attr(&attrs, "src")
                     .map(str::trim)
                     .filter(|src| is_safe_image_url(src) || is_cid(src))
                     .unwrap_or_default();
                 self.blocks.push(Block::Image {
-                    alt: alt.into(),
+                    alt,
                     src: src.to_string().into(),
                     width,
                     height,
@@ -409,6 +545,19 @@ impl Parser {
             "table" => {
                 self.flush(TextKind::Paragraph, parent.align);
                 self.table(node, ctx);
+            }
+            // Gmail's quoted history (ME-003). A forward's is its content,
+            // and one around a `blockquote` is quoted already.
+            "div" if has_class(&attrs, "gmail_quote") => {
+                self.flush(TextKind::Paragraph, parent.align);
+                let blocks = parse_blocks(node, ctx);
+                let forward = matches!(blocks.first(), Some(Block::Text { text, .. })
+                    if text.text.contains("Forwarded message"));
+                if forward || blocks.iter().any(|b| matches!(b, Block::Quote(_))) {
+                    self.blocks.extend(blocks);
+                } else if !blocks.is_empty() {
+                    self.blocks.push(Block::Quote(blocks));
+                }
             }
             _ if BLOCK_TAGS.contains(&tag) => {
                 self.flush(TextKind::Paragraph, parent.align);
@@ -555,7 +704,7 @@ fn text_len(blocks: &[Block]) -> usize {
                 .flatten()
                 .map(|c| text_len(&c.blocks))
                 .sum(),
-            Block::Image { alt, .. } => alt.len(),
+            Block::Image { alt, .. } => alt.as_ref().map_or(0, |alt| alt.len()),
             Block::Button { label, .. } => label.len(),
             Block::Rule => 0,
         })
@@ -586,6 +735,9 @@ fn element_ctx(tag: &str, attrs: &[Attribute], parent: &Ctx) -> Ctx {
     {
         ctx.background = Some(color);
     }
+    if attr(attrs, "dir").is_some_and(|d| d.eq_ignore_ascii_case("rtl")) {
+        ctx.align = Align::Right;
+    }
     let align = css_value(css, "text-align").or_else(|| attr(attrs, "align"));
     match align.map(str::to_ascii_lowercase).as_deref() {
         Some("right" | "end") => ctx.align = Align::Right,
@@ -601,6 +753,17 @@ fn attr<'a>(attrs: &'a [Attribute], name: &str) -> Option<&'a str> {
         .iter()
         .find(|a| a.name.local.as_ref() == name)
         .map(|a| a.value.as_ref())
+}
+
+/// Whether the first strongly directional letter is Hebrew or Arabic.
+fn starts_rtl(text: &str) -> bool {
+    text.chars()
+        .find(|c| c.is_alphabetic())
+        .is_some_and(|c| matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF))
+}
+
+fn has_class(attrs: &[Attribute], class: &str) -> bool {
+    attr(attrs, "class").is_some_and(|c| c.split_whitespace().any(|c| c == class))
 }
 
 /// One declaration's value from an inline `style` attribute.
@@ -687,31 +850,32 @@ fn find_urls(text: &str) -> Vec<(Range<usize>, String)> {
     found
 }
 
-/// The remote images a document shows, each once, in order (ATT-1).
-pub fn remote_images(doc: &Document) -> Vec<SharedString> {
-    fn walk(blocks: &[Block], out: &mut Vec<SharedString>) {
+/// The images of `blocks` whose address passes `keep`, each once, in order.
+fn images(blocks: &[Block], keep: fn(&str) -> bool) -> Vec<SharedString> {
+    fn walk(blocks: &[Block], keep: fn(&str) -> bool, out: &mut Vec<SharedString>) {
         for block in blocks {
             match block {
-                Block::Image { src, .. } if is_safe_image_url(src) && !out.contains(src) => {
+                Block::Image { src, .. } if keep(src) && !out.contains(src) => {
                     out.push(src.clone())
                 }
-                Block::List { items, .. } => items.iter().for_each(|item| walk(item, out)),
-                Block::Quote(blocks) => walk(blocks, out),
+                Block::List { items, .. } => items.iter().for_each(|item| walk(item, keep, out)),
+                Block::Quote(blocks) => walk(blocks, keep, out),
                 Block::Table(table) => table
                     .rows
                     .iter()
                     .flatten()
-                    .for_each(|cell| walk(&cell.blocks, out)),
+                    .for_each(|cell| walk(&cell.blocks, keep, out)),
                 _ => {}
             }
         }
     }
     let mut out = Vec::new();
-    walk(&doc.blocks, &mut out);
+    walk(blocks, keep, &mut out);
     out
 }
 
-fn is_cid(src: &str) -> bool {
+/// Whether `src` is an inline image's address.
+pub fn is_cid(src: &str) -> bool {
     src.get(..4).is_some_and(|s| s.eq_ignore_ascii_case("cid:"))
 }
 
@@ -759,7 +923,8 @@ pub fn is_safe_image_url(url: &str) -> bool {
     !host.chars().all(|c| c.is_ascii_digit() || c == '.')
 }
 
-fn is_safe_url(url: &str) -> bool {
+/// A link address safe to open or send: web, mail and phone only.
+pub(crate) fn is_safe_url(url: &str) -> bool {
     let url = url.trim().to_ascii_lowercase();
     ["http://", "https://", "mailto:", "tel:"]
         .iter()
@@ -1036,7 +1201,8 @@ mod tests {
         assert_eq!(images[0].2.as_deref(), Some("https://shop.io"));
         assert_eq!(images[1].0, "cid:logo@x");
         assert_eq!(images[2].0, "", "unsafe schemes lose their src");
-        assert_eq!(remote_images(&doc), ["https://cdn.shop.io/hero.png"]);
+        assert_eq!(doc.remote_images, ["https://cdn.shop.io/hero.png"]);
+        assert_eq!(doc.cid_images, ["cid:logo@x"]);
     }
 
     #[test]
@@ -1071,6 +1237,55 @@ mod tests {
         ] {
             assert!(!is_safe_image_url(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn folds_trailing_quotes() {
+        let doc = parse(
+            r#"<p>Sounds good.</p><div class="gmail_quote"><div class="gmail_attr">On Mon, Oct 26, 2026 at 9:12 AM Ana &lt;ana@x.io&gt; wrote:<br></div>
+               <blockquote class="gmail_quote"><p>Lunch?</p></blockquote></div>"#,
+        );
+        assert_eq!(texts(&doc.blocks)[2..], ["quote"]);
+        assert_eq!(trailing_quote_start(&doc), Some(1));
+        let bare = parse(r#"<p>Hi</p><div class="gmail_quote"><p>old</p></div>"#);
+        assert_eq!(texts(&bare.blocks), ["Hi", "quote"]);
+        assert_eq!(trailing_quote_start(&bare), Some(1));
+        assert_eq!(
+            trailing_quote_start(&parse("<blockquote>only</blockquote>")),
+            None
+        );
+        let forward = parse(
+            r#"<div class="gmail_quote">---------- Forwarded message ---------<br>From: Bob</div>"#,
+        );
+        assert_eq!(trailing_quote_start(&forward), None);
+    }
+
+    #[test]
+    fn right_to_left_text_aligns_right() {
+        let doc = parse("<p>שלום, מה שלומך?</p><p>Hello</p><div dir=rtl><p>abc</p></div>");
+        let aligns: Vec<Align> = doc
+            .blocks
+            .iter()
+            .map(|b| match b {
+                Block::Text { align, .. } => *align,
+                _ => panic!(),
+            })
+            .collect();
+        assert_eq!(aligns, [Align::Right, Align::Left, Align::Right]);
+    }
+
+    #[test]
+    fn missing_and_empty_alt_differ() {
+        let doc = parse(r#"<img src="https://a.io/x.png" alt=""><img src="https://a.io/y.png">"#);
+        let alts: Vec<_> = doc
+            .blocks
+            .iter()
+            .map(|b| match b {
+                Block::Image { alt, .. } => alt.clone(),
+                _ => panic!(),
+            })
+            .collect();
+        assert_eq!(alts, [Some(SharedString::default()), None]);
     }
 
     #[test]

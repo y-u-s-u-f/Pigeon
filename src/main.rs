@@ -309,7 +309,11 @@ fn quit(backend: &Entity<Backend>, cx: &mut App) {
     .detach();
 }
 
+/// When Pigeon started, for the time to its first frame (MA-072).
+pub static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
 fn main() {
+    STARTED.get_or_init(std::time::Instant::now);
     let dir = backend::data_dir();
     logging::init(&dir);
     // PER-5: one Pigeon per data folder; a second one hands over and goes.

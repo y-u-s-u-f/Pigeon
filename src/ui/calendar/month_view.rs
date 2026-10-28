@@ -2,23 +2,24 @@
 //! across them and timed events as pills; a day that overflows says how many
 //! more it has.
 
-use chrono::{Datelike, Duration, NaiveDate};
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime};
 use gpui::{
-    AnyElement, Context, FontWeight, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    StatefulInteractiveElement as _, Styled, Window, div, prelude::FluentBuilder as _, px,
-    relative,
+    AnyElement, Context, FontWeight, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    ParentElement, StatefulInteractiveElement as _, Styled, Window, div,
+    prelude::FluentBuilder as _, px, relative,
 };
 
-use super::{CalendarView, now, occurrence_key, today, week_view::Look};
+use super::{CalendarView, occurrence_key, week_view::Look};
 use crate::ui::style::*;
 use crate::{
+    assets::Icon,
     calendar::{
         Occurrence,
         layout::pack_lanes,
-        time::{self, is_weekend, month_grid},
+        time::{self, compact_time_label, is_weekend, month_grid},
     },
     theme::Theme,
-    ui::HEADER_HEIGHT,
+    ui::{HEADER_HEIGHT, controls::bar_colors, icon, is_secondary},
 };
 
 const WEEKDAY_ROW: f32 = 30.;
@@ -42,6 +43,7 @@ impl CalendarView {
     pub(crate) fn render_month(
         &self,
         occurrences: &[Occurrence],
+        now: NaiveDateTime,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -80,7 +82,7 @@ impl CalendarView {
 
         let rows = (0..weeks).map(|w| {
             let start = grid_start + Duration::days(7 * w as i64);
-            self.render_week_row(start, month, occurrences, slots, &theme, cx)
+            self.render_week_row(start, month, occurrences, slots, now, &theme, cx)
         });
 
         div()
@@ -92,16 +94,18 @@ impl CalendarView {
             .into_any_element()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_week_row(
         &self,
         start: NaiveDate,
         month: u32,
         occurrences: &[Occurrence],
         slots: usize,
+        now: NaiveDateTime,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let today = today();
+        let today = now.date();
         let week_start = time::midnight(start);
         let week_end = week_start + Duration::days(7);
         let day_of = |t: chrono::NaiveDateTime| (t.date() - start).num_days();
@@ -182,7 +186,7 @@ impl CalendarView {
                 while day < item.end && item.lane < shown[day] {
                     day += 1;
                 }
-                pills.push(self.render_pill(item, run_start, day, week_start, theme, cx));
+                pills.push(self.render_pill(item, run_start, day, week_start, now, theme, cx));
             }
         }
 
@@ -197,6 +201,7 @@ impl CalendarView {
                 date.day().to_string()
             };
             div()
+                .id(("month-cell", date.num_days_from_ce() as usize))
                 .flex_1()
                 .min_w_0()
                 .h_full()
@@ -209,43 +214,64 @@ impl CalendarView {
                 .flex()
                 .flex_col()
                 .items_start()
+                // A double click makes an all-day event on the day (ME-044).
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        this.press_day(date, event, window, cx)
+                    }),
+                )
                 .child(
+                    // A HIT_TARGET box around the number (MA-041).
                     div()
                         .id(("month-day", date.num_days_from_ce() as usize))
-                        .h(px(22.))
-                        .min_w(px(22.))
-                        .px(SPACE_SM)
+                        .role(gpui::Role::Button)
+                        .aria_label(format!("Open {}", super::header::full_date(date)))
+                        .group("month-day")
+                        .min_w(HIT_TARGET)
+                        .h(HIT_TARGET)
+                        .mt(-SPACE_XS)
+                        .ml(-SPACE_XS)
                         .flex()
                         .flex_none()
                         .items_center()
                         .justify_center()
-                        .rounded_full()
-                        .text_size(TEXT_SM)
-                        .cursor_pointer()
-                        .map(|d| {
-                            if is_today {
-                                d.bg(theme.accent)
-                                    .text_color(theme.accent_text)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                            } else {
-                                d.text_color(if in_month {
-                                    theme.text
-                                } else {
-                                    theme.text_faint
-                                })
-                                .font_weight(if date.day() == 1 || is_anchor {
-                                    FontWeight::SEMIBOLD
-                                } else {
-                                    FontWeight::MEDIUM
-                                })
-                                // The selected day, where left and right move.
-                                .when(is_anchor, |d| d.bg(theme.selected_bg))
-                                .hover(|s| s.bg(theme.hover_bg))
-                            }
-                        })
-                        .child(label)
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(cx.listener(move |this, _, _, cx| this.open_day(date, cx))),
+                        .on_click(cx.listener(move |this, _, _, cx| this.open_day(date, cx)))
+                        .child(
+                            div()
+                                .h(CONTROL_XS)
+                                .min_w(CONTROL_XS)
+                                .px(SPACE_SM)
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .justify_center()
+                                .rounded_full()
+                                .text_size(TEXT_SM)
+                                .map(|d| {
+                                    if is_today {
+                                        d.bg(theme.accent)
+                                            .text_color(theme.accent_text)
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                    } else {
+                                        d.text_color(if in_month {
+                                            theme.text
+                                        } else {
+                                            theme.text_faint
+                                        })
+                                        .font_weight(if date.day() == 1 || is_anchor {
+                                            FontWeight::SEMIBOLD
+                                        } else {
+                                            FontWeight::MEDIUM
+                                        })
+                                        // The selected day, where left and right move.
+                                        .when(is_anchor, |d| d.bg(theme.selected_bg))
+                                        .group_hover("month-day", |s| s.bg(theme.hover_bg))
+                                    }
+                                })
+                                .child(label),
+                        ),
                 )
         });
 
@@ -269,8 +295,9 @@ impl CalendarView {
                         .text_size(TEXT_SM)
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text_muted)
+                        .role(gpui::Role::Button)
+                        .aria_label(format!("{} more events", more[d]))
                         .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
-                        .cursor_pointer()
                         .child(format!("+{} more", more[d]))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_click(cx.listener(move |this, _, _, cx| this.open_day(date, cx))),
@@ -315,12 +342,14 @@ impl CalendarView {
 
     /// An event over days `start..end` of the week: a filled bar for all-day
     /// and multi-day events, a dot, time and title for timed ones.
+    #[allow(clippy::too_many_arguments)]
     fn render_pill(
         &self,
         item: &Item,
         start: usize,
         end: usize,
-        week_start: chrono::NaiveDateTime,
+        week_start: NaiveDateTime,
+        now: NaiveDateTime,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -328,10 +357,9 @@ impl CalendarView {
         let event = &self.data.events[occurrence.event];
         let color = self.data.color_of(event);
         let selected = self.is_selected(&occurrence);
-        let past = occurrence.end <= now();
+        let past = occurrence.end <= now;
         let look = Look::of(event.my_status(&self.data.account));
-        let hover = theme.event_fill_hover(color);
-        let read_only = !self.can_edit(&event.id);
+        let read_only = !self.can_edit_ix(occurrence.event);
         let clipped_left = item.bar
             && (start > item.start || occurrence.start < week_start + Duration::days(start as i64));
         let clipped_right = item.bar
@@ -348,6 +376,7 @@ impl CalendarView {
             .role(gpui::Role::Button)
             .aria_label(self.occurrence_label(&occurrence))
             .aria_selected(selected)
+            .when(selected, |d| d.aria_active_descendant())
             .size_full()
             .px(SPACE_SM)
             .flex()
@@ -355,30 +384,43 @@ impl CalendarView {
             .gap(SPACE_XS)
             .overflow_hidden()
             .rounded(RADIUS_SM)
-            .text_size(TEXT_SM)
-            .cursor_pointer();
+            .text_size(TEXT_SM);
 
         let pill = if item.bar {
-            let (fill, text) = if selected {
-                (
-                    theme.event_selected_fill(color),
-                    theme.on_fill(theme.event_selected_fill(color)),
-                )
-            } else {
-                (theme.event_fill(color, past), theme.event_text(color, past))
-            };
-            pill.bg(fill)
-                .when(clipped_left, |d| d.rounded_l(px(0.)))
-                .when(clipped_right, |d| d.rounded_r(px(0.)))
-                .when(!selected, |d| d.hover(move |s| s.bg(hover)))
+            let (fill, text, hover) = bar_colors(color, past, selected, theme);
+            let accent = theme.event_accent(color, past);
+            // A timed event across days says when it ends, on its last day.
+            let until = (!event.all_day && !clipped_right)
+                .then(|| format!("until {}", compact_time_label(occurrence.end.time())));
+            pill.when(clipped_left, |d| d.rounded_l(px(0.)).pl(SPACE_XS))
+                .when(clipped_right, |d| d.rounded_r(px(0.)).pr(SPACE_XS))
+                .map(|d| {
+                    if selected {
+                        d.bg(fill)
+                    } else {
+                        look.bar(d, fill, accent).hover(move |s| s.bg(hover))
+                    }
+                })
+                // It goes on past the week's edge (ME-090).
+                .when(clipped_left, |d| {
+                    d.child(icon(Icon::ChevronLeft, ICON_SM, text.alpha(0.75)))
+                })
                 .child(
                     div()
+                        .flex_1()
                         .min_w_0()
                         .truncate()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(text)
+                        .when(look == Look::Declined, |d| d.line_through())
                         .child(event.display_title().to_string()),
                 )
+                .children(
+                    until.map(|until| div().flex_none().text_color(text.alpha(0.75)).child(until)),
+                )
+                .when(clipped_right, |d| {
+                    d.child(icon(Icon::ChevronRight, ICON_SM, text.alpha(0.75)))
+                })
         } else {
             let (title, muted) = if selected {
                 let text = theme.on_fill(theme.event_selected_fill(color));
@@ -427,20 +469,35 @@ impl CalendarView {
             .h(px(SLOT - 2.))
             .pl(px(if clipped_left { 0. } else { 4. }))
             .pr(px(if clipped_right { 0. } else { 5. }))
-            .child(if read_only {
+            .child(
                 pill.on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, event, window, cx| {
+                    MouseButton::Right,
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                         cx.stop_propagation();
-                        this.press_read_only(occurrence, event, window, cx)
+                        this.event_menu(occurrence, event.position, window, cx)
                     }),
                 )
-            } else {
-                pill.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.click_occurrence(occurrence, window, cx)
-                    }))
-            })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        if is_secondary(event) {
+                            this.event_menu(occurrence, event.position, window, cx);
+                        } else if read_only {
+                            this.press_read_only(occurrence, event, window, cx)
+                        }
+                    }),
+                )
+                .when(!read_only, |d| {
+                    d.on_click(
+                        cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                            if !event.is_right_click() && !event.modifiers().control {
+                                this.click_occurrence(occurrence, window, cx)
+                            }
+                        }),
+                    )
+                }),
+            )
             .into_any_element()
     }
 }

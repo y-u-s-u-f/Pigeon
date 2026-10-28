@@ -1,14 +1,11 @@
 //! The calendar's header: the period shown, the calendars menu, the view
 //! switcher, today and the arrows, and the new-event button.
 
-use chrono::{Datelike, Duration};
+use chrono::{Datelike, Duration, NaiveDate};
 use gpui::{
-    Action, Anchor, AnyElement, Context, FontWeight, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, SharedString, StatefulInteractiveElement as _, Styled, Window, anchored,
-    component::{input::Input, tooltip::Tooltip},
-    deferred, div,
-    prelude::FluentBuilder as _,
-    px,
+    Action, Anchor, AnyElement, ClickEvent, Context, FontWeight, InteractiveElement, IntoElement,
+    MouseButton, ParentElement, Pixels, SharedString, StatefulInteractiveElement as _, Styled,
+    Window, anchored, component::input::Input, deferred, div, prelude::FluentBuilder as _, px,
 };
 
 use super::{CalendarView, GoToDate, Menu, ViewKind};
@@ -18,7 +15,11 @@ use crate::{
     assets::Icon,
     calendar::{AccessRole, Calendar},
     theme::Theme,
-    ui::{HEADER_HEIGHT, icon, icon_button, popover_shadow, window_drag_area},
+    ui::{
+        HEADER_HEIGHT,
+        controls::{ButtonKind, dropdown, popover_surface, push_button, segmented},
+        icon, icon_button, live_text, tooltip, window_drag_area,
+    },
 };
 
 impl CalendarView {
@@ -29,7 +30,11 @@ impl CalendarView {
         let (from, to) = self.visible_range();
         match self.view {
             ViewKind::Day => (
-                self.anchor.format("%A, %B %-d").to_string(),
+                if crate::data::day_first() {
+                    self.anchor.format("%A, %-d %B").to_string()
+                } else {
+                    self.anchor.format("%A, %B %-d").to_string()
+                },
                 if self.anchor.year() == super::today().year() {
                     String::new()
                 } else {
@@ -64,124 +69,64 @@ impl CalendarView {
         }
     }
 
+    /// A click on a header button leaves focus on the grid, so Return
+    /// still opens the selected event (W2-R14); Tab focus stays put.
+    fn refocus_grid(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static {
+        cx.listener(|this, event: &ClickEvent, window, cx| {
+            if !event.is_keyboard() {
+                this.focus_grid(window, cx);
+            }
+        })
+    }
+
     pub(crate) fn render_header(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let (title, rest) = self.title();
 
-        let segment =
-            |id: &'static str, label: &'static str, view: ViewKind, action: Box<dyn Action>| {
-                let active = self.view == view;
-                let tooltip_action = action.boxed_clone();
-                div()
-                    .id(id)
-                    .role(gpui::Role::Tab)
-                    .aria_label(label)
-                    .aria_selected(active)
-                    .h(HIT_TARGET)
-                    .px(SPACE_MD)
-                    .flex()
-                    .items_center()
-                    .rounded(RADIUS_SM)
-                    .text_size(TEXT_SM)
-                    .font_weight(FontWeight::MEDIUM)
-                    .map(|this| {
-                        if active {
-                            this.bg(theme.overlay_bg)
-                                .text_color(theme.text)
-                                .shadow(vec![gpui::BoxShadow {
-                                    color: theme.overlay_shadow.alpha(0.18),
-                                    offset: gpui::point(px(0.), px(1.)),
-                                    blur_radius: px(2.),
-                                    spread_radius: px(0.),
-                                    inset: false,
-                                }])
-                        } else {
-                            this.text_color(theme.text_muted)
-                                .hover(|s| s.text_color(theme.text))
-                        }
-                    })
-                    .child(label)
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
-                    .tooltip(move |window, cx| {
-                        Tooltip::new(label)
-                            .action(tooltip_action.as_ref(), None)
-                            .build(window, cx)
-                    })
-            };
+        // The shared segmented control; ←/→ change it while it has focus
+        // (`step_view`).
+        let selected = match self.view {
+            ViewKind::Day => 0,
+            ViewKind::Week => 1,
+            ViewKind::Month => 2,
+        };
+        let view_switch = segmented(
+            "view-switch",
+            "View",
+            &["Day", "Week", "Month"],
+            selected,
+            &theme,
+            window,
+            cx,
+            |ix, window, cx| {
+                let action: Box<dyn Action> = match ix {
+                    0 => Box::new(ShowDayView),
+                    1 => Box::new(ShowWeekView),
+                    _ => Box::new(ShowMonthView),
+                };
+                window.dispatch_action(action, cx);
+            },
+        )
+        .track_focus(&self.view_switch_focus)
+        .tooltip(|window, cx| tooltip("Day, week or month (D, W, M)").build(window, cx));
 
-        let segmented = div()
-            .flex_none()
-            .p(SPACE_2XS)
-            .flex()
-            .items_center()
-            .gap(SPACE_2XS)
-            .rounded(RADIUS_MD)
-            .bg(theme.chip_bg)
-            .child(segment(
-                "view-day",
-                "Day",
-                ViewKind::Day,
-                Box::new(ShowDayView),
-            ))
-            .child(segment(
-                "view-week",
-                "Week",
-                ViewKind::Week,
-                Box::new(ShowWeekView),
-            ))
-            .child(segment(
-                "view-month",
-                "Month",
-                ViewKind::Month,
-                Box::new(ShowMonthView),
-            ));
-
-        let today_button = div()
-            .id("today")
-            .flex_none()
-            .h(px(28.))
-            .px(SPACE_MD)
-            .flex()
-            .items_center()
-            .rounded(RADIUS_MD)
-            .border_1()
-            .border_color(theme.border)
-            .text_size(TEXT_SM)
-            .font_weight(FontWeight::MEDIUM)
-            .hover(|s| s.bg(theme.hover_bg))
-            .active(|s| s.bg(theme.selected_bg))
-            .child("Today")
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        let today_button = push_button("today", "Today", ButtonKind::Plain, &theme)
             .on_click(|_, window, cx| window.dispatch_action(Box::new(GoToToday), cx))
+            .on_click(self.refocus_grid(cx))
             .tooltip(|window, cx| {
-                Tooltip::new("Go to today")
+                tooltip("Go to today")
                     .action(&GoToToday, None)
                     .build(window, cx)
             });
 
-        let new_button = div()
-            .id("new-event")
-            .flex_none()
-            .h(px(28.))
-            .pl(SPACE_SM)
-            .pr(SPACE_MD)
-            .flex()
-            .items_center()
-            .gap(SPACE_XS)
-            .rounded(RADIUS_MD)
-            .bg(theme.accent)
-            .text_color(theme.accent_text)
-            .text_size(TEXT_SM)
-            .font_weight(FontWeight::SEMIBOLD)
-            .hover(|s| s.opacity(0.9))
-            .active(|s| s.opacity(0.8))
-            .child(icon(Icon::Plus, px(15.), theme.accent_text))
-            .child("New")
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        let new_button = push_button("new-event", "New", ButtonKind::Primary, &theme)
+            .aria_label("New event")
             .on_click(|_, window, cx| window.dispatch_action(Box::new(NewEvent), cx))
             .tooltip(|window, cx| {
-                Tooltip::new("New event")
+                tooltip("New event")
                     .action(&NewEvent, None)
                     .build(window, cx)
             });
@@ -210,29 +155,35 @@ impl CalendarView {
                         .justify_center()
                         .rounded(RADIUS_MD)
                         .hover(|s| s.bg(theme.hover_bg))
-                        .child(icon(Icon::Clock, px(15.), theme.text_muted))
-                        .tooltip(move |window, cx| Tooltip::new(note.clone()).build(window, cx)),
+                        .child(icon(Icon::Clock, ICON_MD, theme.text_muted))
+                        .tooltip(move |window, cx| tooltip(note.clone()).build(window, cx)),
                 )
             })
             .child(self.render_calendars_button(&theme, window, cx))
-            .child(segmented)
-            .child(div().w(px(1.)).h(px(18.)).mx(SPACE_XS).bg(theme.border))
-            .child(icon_button(
-                "prev-period",
-                Icon::ChevronLeft,
-                "Previous",
-                Box::new(PrevPeriod),
-                &theme,
-            ))
+            .child(view_switch)
+            .child(div().w(px(1.)).h(ICON_XL).mx(SPACE_XS).bg(theme.border))
+            .child(
+                icon_button(
+                    "prev-period",
+                    Icon::ChevronLeft,
+                    "Previous",
+                    Box::new(PrevPeriod),
+                    &theme,
+                )
+                .on_click(self.refocus_grid(cx)),
+            )
             .child(today_button)
-            .child(icon_button(
-                "next-period",
-                Icon::ChevronRight,
-                "Next",
-                Box::new(NextPeriod),
-                &theme,
-            ))
-            .child(div().w(px(4.)))
+            .child(
+                icon_button(
+                    "next-period",
+                    Icon::ChevronRight,
+                    "Next",
+                    Box::new(NextPeriod),
+                    &theme,
+                )
+                .on_click(self.refocus_grid(cx)),
+            )
+            .child(div().w(SPACE_XS))
             .child(new_button)
             .into_any_element()
     }
@@ -247,38 +198,33 @@ impl CalendarView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let open = self.menu == Some(Menu::GoToDate);
-        let typed = self.typed_date(cx);
         let popover = open.then(|| {
+            // Parsed as typed, not per frame (MC-056).
             let hint = if self.date_input.read(cx).value().trim().is_empty() {
                 None
             } else {
-                Some(match typed {
-                    Some(date) => (date.format("%A, %B %-d, %Y").to_string(), theme.text_muted),
+                Some(match self.typed_date() {
+                    Some(date) => (full_date(date), theme.text_muted),
                     None => ("Not a date yet".to_string(), theme.text_faint),
                 })
             };
             deferred(
-                anchored().snap_to_window_with_margin(px(8.)).child(enter(
+                anchored().snap_to_window_with_margin(SPACE_SM).child(enter(
                     "go-to-date",
-                    div()
+                    popover_surface(theme)
                         .id("go-to-date")
                         .occlude()
                         .role(gpui::Role::Dialog)
                         .aria_label("Go to date")
-                        .mt(px(40.))
+                        .mt(SPACE_2XL + SPACE_SM)
                         .w(HIT_TARGET * 7. + SPACE_MD * 2. + px(2.))
                         .p(SPACE_MD)
                         .flex()
                         .flex_col()
                         .gap(SPACE_SM)
-                        .rounded(RADIUS_LG)
-                        .bg(theme.overlay_bg)
-                        .border_1()
-                        .border_color(theme.overlay_border)
-                        .shadow(popover_shadow(theme))
                         .child(
                             div()
-                                .h(px(32.))
+                                .h(CONTROL_LG)
                                 .px(SPACE_SM)
                                 .flex()
                                 .items_center()
@@ -287,7 +233,7 @@ impl CalendarView {
                                 .bg(theme.search_bg)
                                 .border_1()
                                 .border_color(theme.accent.alpha(0.55))
-                                .child(icon(Icon::Calendar, px(14.), theme.text_faint))
+                                .child(icon(Icon::Calendar, ICON_MD, theme.text_faint))
                                 .child(
                                     div().flex_1().min_w_0().child(
                                         Input::new(&self.date_input)
@@ -298,11 +244,10 @@ impl CalendarView {
                                 ),
                         )
                         .children(hint.map(|(text, color)| {
-                            div()
+                            live_text("go-to-date-hint", text, gpui::accesskit::Live::Polite)
                                 .px(SPACE_SM)
                                 .text_size(TEXT_SM)
                                 .text_color(color)
-                                .child(text)
                         }))
                         .child(self.render_mini_month("go-to-date-day", theme, cx)),
                 )),
@@ -312,12 +257,12 @@ impl CalendarView {
         div()
             .min_w_0()
             .child(
-                div()
-                    .id("calendar-title")
+                focusable_control(div().id("calendar-title"), theme)
                     .role(gpui::Role::Button)
-                    .aria_label("Go to date")
+                    .aria_label(format!("{title} {rest}, go to date"))
+                    .aria_expanded(open)
                     .min_w_0()
-                    .h(px(36.))
+                    .h(CONTROL_LG)
                     .px(SPACE_SM)
                     .overflow_hidden()
                     .whitespace_nowrap()
@@ -329,26 +274,26 @@ impl CalendarView {
                     .hover(|s| s.bg(theme.hover_bg))
                     .child(
                         div()
-                            .text_size(TEXT_XL)
+                            .text_size(TEXT_TITLE1)
                             .font_weight(FontWeight::BOLD)
                             .child(title),
                     )
                     .when(!rest.is_empty(), |d| {
                         d.child(
                             div()
-                                .text_size(TEXT_XL)
+                                .text_size(TEXT_TITLE1)
                                 .font_weight(FontWeight::NORMAL)
                                 .text_color(theme.text_faint)
                                 .child(rest),
                         )
                     })
-                    .child(icon(Icon::ChevronDown, px(14.), theme.text_faint))
+                    .child(icon(Icon::ChevronDown, ICON_MD, theme.text_faint))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(
                         cx.listener(|this, _, window, cx| this.toggle_date_picker(window, cx)),
                     )
                     .tooltip(|window, cx| {
-                        Tooltip::new("Go to date")
+                        tooltip("Go to date")
                             .action(&GoToDate, None)
                             .build(window, cx)
                     }),
@@ -359,7 +304,8 @@ impl CalendarView {
     }
 
     /// The calendars button: a stack of their colors, opening a menu to show
-    /// and hide each.
+    /// and hide each. With focus, arrows move through the open menu and
+    /// Space or Enter shows or hides the highlighted calendar (ME-045).
     fn render_calendars_button(
         &self,
         theme: &Theme,
@@ -378,13 +324,15 @@ impl CalendarView {
             .map(|(ix, c)| {
                 div()
                     .size(px(10.))
-                    .when(ix > 0, |d| d.ml(px(-4.)))
+                    .when(ix > 0, |d| d.ml(-SPACE_XS))
                     .rounded_full()
                     .bg(c.color)
                     .border_1()
                     .border_color(theme.overlay_bg)
             })
             .collect::<Vec<_>>();
+        let order = self.calendars_menu_order();
+        let highlight = self.calendars_highlight.and_then(|h| order.get(h)).copied();
 
         let menu = open.then(|| {
             let row = |ix: usize, calendar: &Calendar| {
@@ -393,6 +341,7 @@ impl CalendarView {
                     calendar.access_role,
                     AccessRole::Reader | AccessRole::FreeBusyReader
                 );
+                let highlighted = highlight == Some(ix);
                 div()
                     .id(("calendar-toggle", ix))
                     .role(gpui::Role::CheckBox)
@@ -402,17 +351,19 @@ impl CalendarView {
                     } else {
                         gpui::Toggled::False
                     })
-                    .h(px(32.))
+                    .aria_selected(highlighted)
+                    .h(ROW_SM)
                     .flex_none()
                     .px(SPACE_MD)
                     .flex()
                     .items_center()
                     .gap(SPACE_SM)
                     .rounded(RADIUS_MD)
+                    .when(highlighted, |d| d.bg(theme.selected_bg))
                     .hover(|s| s.bg(theme.hover_bg))
                     .child(
                         div()
-                            .size(px(16.))
+                            .size(ICON_LG)
                             .flex_none()
                             .flex()
                             .items_center()
@@ -422,7 +373,7 @@ impl CalendarView {
                             .border_color(calendar.color)
                             .when(visible, |d| d.bg(calendar.color))
                             .when(visible, |d| {
-                                d.child(icon(Icon::Check, px(12.), theme.on_fill(calendar.color)))
+                                d.child(icon(Icon::Check, ICON_SM, theme.on_fill(calendar.color)))
                             }),
                     )
                     .child(
@@ -447,7 +398,18 @@ impl CalendarView {
                                 .child("View only"),
                         )
                     })
-                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_calendar(ix, cx)))
+                    // ⌥-click: only this calendar; again, all of them.
+                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                        if event.modifiers().alt {
+                            this.show_only_calendar(ix, cx);
+                        } else {
+                            this.toggle_calendar(ix, cx);
+                        }
+                        window.focus(&this.calendars_focus, cx);
+                    }))
+                    .tooltip(|window, cx| {
+                        tooltip("Option-click to show only this calendar").build(window, cx)
+                    })
             };
             // Like Google Calendar: the user's own calendars, then the
             // others (shared, subscribed, holidays), each in list order.
@@ -472,8 +434,8 @@ impl CalendarView {
                                 .pb(SPACE_XS)
                                 .text_size(TEXT_XS)
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.text_faint)
-                                .child(title.to_uppercase()),
+                                .text_color(theme.text_muted)
+                                .child(title),
                         )
                         .children(calendars.into_iter().map(|(ix, c)| row(ix, c)))
                 })
@@ -484,27 +446,14 @@ impl CalendarView {
                 deferred(
                     anchored()
                         .anchor(Anchor::TopRight)
-                        .snap_to_window_with_margin(px(8.))
+                        .snap_to_window_with_margin(SPACE_SM)
                         .child(
-                            div()
-                                .id("calendars-menu")
-                                .occlude()
-                                .role(gpui::Role::Group)
-                                .aria_label("Calendars")
+                            dropdown("calendars-menu", "Calendars", CALENDARS_MENU_WIDTH, theme)
                                 .mt(SPACE_2XL)
-                                .w(px(260.))
-                                .max_h(px(440.))
+                                .max_h(CALENDARS_MENU_HEIGHT)
                                 .overflow_y_scroll()
-                                .p(SPACE_XS)
-                                .flex()
-                                .flex_col()
-                                .rounded(RADIUS_MD)
-                                .bg(theme.overlay_bg)
-                                .border_1()
-                                .border_color(theme.overlay_border)
-                                .shadow(popover_shadow(theme))
-                                .children(section("My calendars", mine))
-                                .children(section("Other calendars", others)),
+                                .children(section("My Calendars", mine))
+                                .children(section("Other Calendars", others)),
                         ),
                 )
                 .with_priority(2),
@@ -516,6 +465,7 @@ impl CalendarView {
         } else {
             "Calendars".into()
         };
+        let ring = focus_ring(theme);
 
         div()
             .flex_none()
@@ -523,7 +473,16 @@ impl CalendarView {
             .child(
                 div()
                     .id("calendars-button")
-                    .h(px(28.))
+                    .key_context(PANEL_CONTROL)
+                    .track_focus(&self.calendars_focus)
+                    .focus_visible(move |s| s.shadow(ring))
+                    .on_action(cx.listener(Self::calendars_menu_next))
+                    .on_action(cx.listener(Self::calendars_menu_prev))
+                    .on_action(cx.listener(Self::calendars_menu_activate))
+                    .role(gpui::Role::Button)
+                    .aria_label(format!("Calendars, {label}"))
+                    .aria_expanded(open)
+                    .h(CONTROL_MD)
                     .px(SPACE_MD)
                     .flex()
                     .items_center()
@@ -533,20 +492,20 @@ impl CalendarView {
                     .text_color(theme.text_muted)
                     .when(open, |d| d.bg(theme.selected_bg))
                     .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
-                    .child(
-                        div()
-                            .min_w(px(30.))
-                            .flex()
-                            .items_center()
-                            .pl(SPACE_XS)
-                            .children(dots),
-                    )
-                    .child(div().min_w(px(64.)).whitespace_nowrap().child(label))
-                    .child(icon(Icon::ChevronDown, px(13.), theme.text_faint))
+                    .active(|s| s.bg(theme.selected_bg))
+                    .child(div().flex().items_center().pl(SPACE_XS).children(dots))
+                    .child(div().whitespace_nowrap().child(label))
+                    .child(icon(Icon::ChevronDown, ICON_SM, theme.text_faint))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Calendars, cx)))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_menu(Menu::Calendars, cx);
+                        this.calendars_highlight = None;
+                        window.focus(&this.calendars_focus, cx);
+                    }))
                     .tooltip(|window, cx| {
-                        Tooltip::new("Show and hide calendars").build(window, cx)
+                        tooltip("Show and hide calendars")
+                            .action(&ToggleCalendarsMenu, None)
+                            .build(window, cx)
                     }),
             )
             .when(open, |this| this.child(self.menu_backdrop(window, cx)))
@@ -554,3 +513,15 @@ impl CalendarView {
             .into_any_element()
     }
 }
+
+/// "Friday, October 30, 2026", in the region's day and month order.
+pub(crate) fn full_date(date: NaiveDate) -> String {
+    if crate::data::day_first() {
+        date.format("%A, %-d %B %Y").to_string()
+    } else {
+        date.format("%A, %B %-d, %Y").to_string()
+    }
+}
+
+const CALENDARS_MENU_WIDTH: Pixels = px(260.);
+const CALENDARS_MENU_HEIGHT: Pixels = px(440.);

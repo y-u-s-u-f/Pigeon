@@ -8,7 +8,7 @@ pub mod menu_bar;
 use std::cell::RefCell;
 
 use objc2::{
-    MainThreadMarker, MainThreadOnly, define_class, msg_send,
+    DefinedClass as _, MainThreadMarker, MainThreadOnly, define_class, msg_send,
     rc::Retained,
     runtime::{AnyClass, AnyObject, NSObject},
     sel,
@@ -26,7 +26,7 @@ use objc2_core_services::{LSCopyDefaultHandlerForURLScheme, LSSetDefaultHandlerF
 use objc2_foundation::{
     NSBundle, NSCurrentLocaleDidChangeNotification, NSDateFormatter,
     NSDistributedNotificationCenter, NSError, NSLocale, NSNotification, NSNotificationCenter,
-    NSNotificationSuspensionBehavior, NSString, NSSystemTimeZoneDidChangeNotification,
+    NSNotificationSuspensionBehavior, NSString, NSSystemTimeZoneDidChangeNotification, NSURL,
     NSUserDefaults,
 };
 
@@ -53,6 +53,9 @@ type Handler = Box<dyn Fn(Signal)>;
 thread_local! {
     static HANDLER: RefCell<Option<Handler>> = const { RefCell::new(None) };
     static OBSERVER: RefCell<Option<Retained<Observer>>> = const { RefCell::new(None) };
+    /// The Quick Look panel's data source; the panel holds it weakly.
+    static QUICK_LOOK: RefCell<Option<(std::path::PathBuf, Retained<QuickLookSource>)>> =
+        const { RefCell::new(None) };
 }
 
 fn signal(signal: Signal) {
@@ -191,7 +194,6 @@ pub fn reduce_transparency() -> bool {
 }
 
 /// System Settings › Accessibility › Display › Differentiate without color.
-#[allow(dead_code)] // used by W2 (status shapes beside colors)
 pub fn differentiate_without_color() -> bool {
     NSWorkspace::sharedWorkspace().accessibilityDisplayShouldDifferentiateWithoutColor()
 }
@@ -275,6 +277,79 @@ pub fn set_dock_badge(count: u64) {
     NSApplication::sharedApplication(mtm)
         .dockTile()
         .setBadgeLabel(label.as_deref());
+}
+
+// Quick Look (MB-044): `QLPreviewPanel`, through the runtime. No crate for
+// QuickLookUI is in the lock file; Quartz, which holds it, is linked so the
+// class is there. Pigeon sets the panel's data source without taking
+// control of the panel through the responder chain, which gpui's window
+// doesn't offer; AppKit logs a warning for that and shows the panel.
+// Closing it (Space, Esc) gives the keys back to the window under it.
+
+#[link(name = "Quartz", kind = "framework")]
+unsafe extern "C" {}
+
+define_class!(
+    // SAFETY: `NSObject` has no subclassing requirements and
+    // `QuickLookSource` doesn't implement `Drop`.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PigeonQuickLookSource"]
+    #[ivars = Retained<NSURL>]
+    struct QuickLookSource;
+
+    impl QuickLookSource {
+        #[unsafe(method(numberOfPreviewItemsInPreviewPanel:))]
+        fn count(&self, _panel: &AnyObject) -> isize {
+            1
+        }
+
+        /// The item is the file's URL, kept alive by the source.
+        #[unsafe(method(previewPanel:previewItemAtIndex:))]
+        fn item(&self, _panel: &AnyObject, _index: isize) -> *mut NSURL {
+            Retained::as_ptr(self.ivars()).cast_mut()
+        }
+    }
+);
+
+impl QuickLookSource {
+    fn new(mtm: MainThreadMarker, url: Retained<NSURL>) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(url);
+        // SAFETY: `NSObject`'s `init` is its designated initializer.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// Show `path` in the Quick Look panel, or close the panel when it's
+/// showing it already. The caller never passes something that could run
+/// code.
+pub fn quick_look(path: &std::path::Path) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let Some(class) = AnyClass::get(c"QLPreviewPanel") else {
+        return;
+    };
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+    // SAFETY: `+sharedPreviewPanel` returns the app's panel; the messages
+    // below are `QLPreviewPanel`'s, with the argument types it declares.
+    unsafe {
+        let panel: Option<Retained<AnyObject>> = msg_send![class, sharedPreviewPanel];
+        let Some(panel) = panel else {
+            return;
+        };
+        let visible: bool = msg_send![&panel, isVisible];
+        let same = QUICK_LOOK.with(|q| q.borrow().as_ref().is_some_and(|(p, _)| p == path));
+        if visible && same {
+            let _: () = msg_send![&panel, orderOut: None::<&AnyObject>];
+            return;
+        }
+        let source = QuickLookSource::new(mtm, url);
+        let _: () = msg_send![&panel, setDataSource: &*source];
+        let _: () = msg_send![&panel, reloadData];
+        let _: () = msg_send![&panel, makeKeyAndOrderFront: None::<&AnyObject>];
+        QUICK_LOOK.with(|q| *q.borrow_mut() = Some((path.to_path_buf(), source)));
+    }
 }
 
 // Open at login (NTF-6): `SMAppService.mainApp`, through the runtime. No

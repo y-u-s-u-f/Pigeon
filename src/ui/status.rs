@@ -6,7 +6,10 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, div,
 };
 
-use super::style::*;
+use super::{
+    controls::{ButtonKind, push_button},
+    style::*,
+};
 use crate::{
     actions::SignIn,
     assets::Icon,
@@ -63,11 +66,10 @@ pub(crate) fn thousands(n: usize) -> String {
 
 /// One quiet line; "Sign in again" is a button.
 pub fn status_line(status: &SyncStatus, now_ms: i64, theme: &Theme) -> AnyElement {
-    let text = label(status, now_ms);
     if *status == SyncStatus::AuthExpired {
         return focusable_control(div().id("sign-in-again"), theme)
             .role(gpui::Role::Button)
-            .aria_label("Sign in again")
+            .aria_label("Sign In Again")
             .px(SPACE_MD)
             .py(SPACE_XS)
             .flex()
@@ -78,12 +80,12 @@ pub fn status_line(status: &SyncStatus, now_ms: i64, theme: &Theme) -> AnyElemen
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.text_danger)
             .hover(|s| s.bg(theme.hover_bg))
-            .cursor_pointer()
-            .child(super::icon(Icon::User, gpui::px(12.), theme.text_danger))
-            .child(text)
+            .child(super::icon(Icon::LogIn, ICON_SM, theme.text_danger))
+            .child("Sign In Again")
             .on_click(|_, window, cx| window.dispatch_action(Box::new(SignIn), cx))
             .into_any_element();
     }
+    let text = label(status, now_ms);
     // ME-057: Offline needs noticing; syncing shows it's under way.
     let (dot, color) = match status {
         SyncStatus::Offline { .. } => (Some(theme.warning), theme.text_muted),
@@ -100,7 +102,13 @@ pub fn status_line(status: &SyncStatus, now_ms: i64, theme: &Theme) -> AnyElemen
         .gap(SPACE_XS)
         .text_size(TEXT_XS)
         .text_color(color)
-        .children(dot.map(|dot| div().flex_none().size(gpui::px(6.)).rounded_full().bg(dot)))
+        .children(dot.map(|dot| {
+            div()
+                .flex_none()
+                .size(SPACE_XS + SPACE_2XS)
+                .rounded_full()
+                .bg(dot)
+        }))
         .child(div().min_w_0().truncate().child(text))
         .into_any_element()
 }
@@ -202,8 +210,9 @@ fn capitalize(text: &str) -> String {
         .map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
 }
 
-/// In place of a feature Google wasn't allowed to show.
-pub fn missing_scope(what: &'static str, theme: &Theme) -> AnyElement {
+/// In place of a feature Google wasn't allowed to show, with the way to
+/// allow it (ME-058).
+pub fn missing_scope(what: &'static str, glyph: Icon, theme: &Theme) -> AnyElement {
     let title = format!("{what} access wasn't granted");
     div()
         .id("missing-scope")
@@ -211,12 +220,29 @@ pub fn missing_scope(what: &'static str, theme: &Theme) -> AnyElement {
         .aria_label(title.clone())
         .flex_1()
         .h_full()
-        .child(super::empty_state(
-            Icon::Calendar,
-            title,
-            Some("Sign in again to allow it."),
-            theme,
-        ))
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(SPACE_SM)
+        .line_height(LINE_UI)
+        .child(super::icon(glyph, ICON_HERO, theme.text_faint))
+        .child(
+            super::label("missing-scope-title", title)
+                .text_size(TEXT_BASE)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text_muted),
+        )
+        .child(
+            super::label("missing-scope-hint", "Sign in again and allow it.")
+                .mb(SPACE_SM)
+                .text_size(TEXT_SM)
+                .text_color(theme.text_faint),
+        )
+        .child(
+            push_button("sign-in-again", "Sign In Again", ButtonKind::Primary, theme)
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(SignIn), cx)),
+        )
         .into_any_element()
 }
 

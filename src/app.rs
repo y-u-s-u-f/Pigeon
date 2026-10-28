@@ -14,7 +14,6 @@ mod undo;
 pub use labels::LabelCommand;
 pub use mail::{Density, SearchSuggestion};
 pub use toast::{Toast, ToastAction, ToastKind};
-#[allow(unused_imports)] // `Retime`: used by W2-CALG
 pub use undo::{Retime, UndoAction};
 
 use std::collections::{HashMap, HashSet};
@@ -22,7 +21,8 @@ use std::collections::{HashMap, HashSet};
 use gpui::{
     AppContext as _, Bounds, Context, DragMoveEvent, Entity, FocusHandle, Focusable as _,
     InteractiveElement, IntoElement, KeyContext, ListAlignment, ListOffset, ListState, MouseButton,
-    ParentElement, Pixels, Render, ScrollHandle, SharedString, Styled, Subscription, Window,
+    ParentElement, Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
+    Styled, Subscription, Window,
     component::input::{self, InputEvent, InputState},
     div, point,
     prelude::FluentBuilder as _,
@@ -37,11 +37,11 @@ use crate::{
     contacts::{ContactBook, SharedContactBook},
     data::{Folder, MailData, Thread},
     search::{FocusResults, Query},
-    settings::{CalendarViewSetting, Saved, Settings},
+    settings::{CalendarViewSetting, Saved, SavedNav, Settings},
     theme::Theme,
     ui::{
         self, PaneResize,
-        calendar::{CalendarEvent, CalendarView, ViewKind},
+        calendar::{CalendarEvent, CalendarView, Retimed, ViewKind},
         command_palette::{CommandPalette, Leading, PaletteCommand, PaletteEvent, PaletteItem},
         composer::Composer,
         settings::SettingsPage,
@@ -52,12 +52,22 @@ use crate::{
 pub const RAIL_WIDTH: Pixels = px(80.);
 const SIDEBAR_WIDTH: (Pixels, Pixels) = (px(180.), px(360.));
 const SIDEBAR_DEFAULT: Pixels = px(236.);
+/// How many recent commands head the palette (ME-062).
+const RECENT_SHOWN: usize = 5;
+/// How far past its minimum the sidebar's divider is dragged to hide it.
+const SIDEBAR_COLLAPSE: Pixels = px(60.);
 const LIST_WIDTH: (Pixels, Pixels) = (px(300.), px(640.));
 const LIST_DEFAULT: Pixels = px(400.);
 /// How narrow the list gets when the user keeps the sidebar open in a narrow
 /// window.
 const LIST_SQUEEZED: Pixels = px(220.);
 pub const READER_MIN: Pixels = px(360.);
+/// ↑ and ↓ in the reader.
+const SCROLL_STEP: Pixels = px(64.);
+/// Where the palette and the contact card sit below the window's top.
+const OVERLAY_TOP: Pixels = px(110.);
+/// What a page in the reader leaves of the last one (MB-045).
+const PAGE_OVERLAP: Pixels = px(40.);
 
 /// The widths the mail panes get in a window, from the user's widths: the
 /// list gives way first (down to its minimum), then the sidebar hides.
@@ -179,14 +189,15 @@ pub struct PigeonApp {
     pub undo_stack: undo::UndoStack,
     /// Sends waiting to go, for "Message sent" once they have (W6).
     sends: Vec<OpId>,
+    /// The outbox's queued sends, by local message id, for the list's
+    /// clock (MA-069). Read from the store only when the outbox changes.
+    pub(crate) queued_sends: HashSet<String>,
     // Mail lists and search; see `app/mail.rs`.
     /// Threads picked for a bulk action, by id. While any are, the reader
     /// shows the bulk actions instead of a conversation.
     pub checked: HashSet<String>,
     /// Where a shift-extended selection started, by thread id.
     select_anchor: Option<String>,
-    /// The row under the mouse, which shows its quick actions.
-    pub hovered_thread: Option<usize>,
     /// The thread (by id) a row's context menu is open on, when it isn't one
     /// of the picked threads: the menu's actions apply to it.
     pub context_target: Option<String>,
@@ -196,8 +207,9 @@ pub struct PigeonApp {
     pub recent_searches: Vec<String>,
     /// The highlighted search suggestion, once moved to with the arrows.
     pub search_highlight: Option<usize>,
-    /// Palette commands by last use, most recent first.
-    recent_commands: Vec<&'static str>,
+    /// Palette commands by last use, most recent first, by action name;
+    /// saved (ME-062).
+    recent_commands: Vec<String>,
     /// The message whose whole text ⌘A selected, until a click clears it.
     pub select_all_text: Option<usize>,
     pub help_filter: Entity<InputState>,
@@ -219,7 +231,28 @@ pub struct PigeonApp {
     pub original: Option<ui::reader::Original>,
     /// W4b: folded labels, hidden ones shown, a name being typed.
     pub labels_ui: labels::LabelsUi,
+    /// Threads held without their bodies, by id (MA-072): read from the
+    /// store when one is opened.
+    heads: HashSet<String>,
+    /// Each mail view's selection and scroll, as last left (MB-071).
+    nav_memory: Vec<(Nav, NavMemory)>,
+    /// The window's frame, saved with the settings (MA-034).
+    window_frame: Option<crate::settings::WindowFrame>,
+    /// The window's title as last set (MB-011).
+    window_title: SharedString,
+    /// The ⌘K and ? tip was used or dismissed (MA-094).
+    seen_tip: bool,
+    /// Threads a reply draft answers, by id (ME-011); kept by
+    /// `refresh_rows`.
+    pub draft_replies: HashSet<String>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Where a mail view was left (MB-071).
+#[derive(Clone)]
+struct NavMemory {
+    selected: Option<String>,
+    scroll: ListOffset,
 }
 
 impl PigeonApp {
@@ -230,10 +263,20 @@ impl PigeonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // Without the bodies: the first frame doesn't wait on them (MA-072).
         let (data, calendar, contacts) = {
             let b = backend.read(cx);
-            (b.load_mail(), b.load_calendar(), b.contacts())
+            (b.load_mail_heads(), b.load_calendar(), b.contacts())
         };
+        let heads = data.threads.iter().map(|t| t.id.clone()).collect();
+        if let Some(started) = crate::STARTED.get().copied() {
+            window.on_next_frame(move |_, _| {
+                crate::logging::info(&format!(
+                    "window: first frame {} ms after launch",
+                    started.elapsed().as_millis()
+                ));
+            });
+        }
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
         let appearance = cx.observe_window_appearance(window, |this, window, cx| {
@@ -273,6 +316,11 @@ impl PigeonApp {
             this.save_settings(cx);
             this.refresh_menus(window, cx);
         });
+        // MA-034: the frame is saved as it changes, debounced by the backend.
+        let bounds = cx.observe_window_bounds(window, |this, window, cx| {
+            this.window_frame = Some(shell::window_frame(window, cx));
+            this.save_settings(cx);
+        });
         let quit = cx.on_app_quit(|this, cx| {
             this.save_settings(cx);
             this.backend.update(cx, |b, _| b.flush_settings());
@@ -303,7 +351,7 @@ impl PigeonApp {
                 |this, _, event, window, cx| match event {
                     CalendarEvent::Undoable { message, removal } => {
                         let undo = UndoAction::DeleteEvent(removal.clone());
-                        this.show_undoable(message.clone(), "Delete Event", undo, cx);
+                        this.show_undoable(message.clone(), removal.undo_title(), undo, cx);
                     }
                     CalendarEvent::Discarded { message, discarded } => {
                         let undo = UndoAction::DiscardEvent(discarded.clone());
@@ -311,11 +359,16 @@ impl PigeonApp {
                     }
                     // W6 (CAL-22, CON-5).
                     CalendarEvent::Refused(why) => this.show_error_toast(why.clone(), cx),
-                    CalendarEvent::ShowContact(contact) => {
-                        this.show_contact(contact.clone(), window, cx)
+                    CalendarEvent::ShowContact(contact, position) => {
+                        this.show_contact(contact.clone(), *position, window, cx)
                     }
                 },
             );
+        // A drag or panel edit of an event's time (MA-071).
+        let retimed = cx.subscribe(&calendar, |this, _, event: &Retimed, cx| {
+            this.push_undo(event.title, UndoAction::Retime(event.retime.clone()), cx);
+        });
+        let window_frame = Some(shell::window_frame(window, cx));
 
         let mut this = Self {
             mode: Mode::Mail,
@@ -352,15 +405,15 @@ impl PigeonApp {
             toast: None,
             undo_stack: Default::default(),
             sends: Vec::new(),
+            queued_sends: HashSet::new(),
             checked: HashSet::new(),
             select_anchor: None,
-            hovered_thread: None,
             context_target: None,
             density: Density::Comfortable,
             search_all: false,
             recent_searches: Vec::new(),
             search_highlight: None,
-            recent_commands: Vec::new(),
+            recent_commands: saved.recent_commands.clone(),
             select_all_text: None,
             help_filter,
             reveal_pending: false,
@@ -372,6 +425,12 @@ impl PigeonApp {
             server_search: Default::default(),
             original: None,
             labels_ui: Default::default(),
+            heads,
+            nav_memory: Vec::new(),
+            window_frame,
+            window_title: "Pigeon".into(),
+            seen_tip: saved.seen_tip,
+            draft_replies: HashSet::new(),
             _subscriptions: vec![
                 settings_events,
                 appearance,
@@ -384,19 +443,49 @@ impl PigeonApp {
                 calendar_changed,
                 quit,
                 escape,
+                bounds,
+                retimed,
             ],
         };
+        this.labels_ui.folded = saved.collapsed_labels.iter().cloned().collect();
+        // MA-034: back in Mail or Calendar, on the view last left; nothing
+        // is selected, so nothing is marked read or opened.
+        if let Some(nav) = this.nav_from_saved(&saved.nav) {
+            this.nav = nav;
+        }
+        if saved.calendar_open {
+            this.mode = Mode::Calendar;
+        }
         this.apply_settings(saved, window, cx);
         this.server_search.available = this.backend.read(cx).can_search();
-        this.labels_ui.folded = this
-            .backend
-            .read(cx)
-            .collapsed_labels()
-            .into_iter()
-            .collect();
         this.refresh_rows(false);
         this.refresh_server_counts(cx);
+        this.queued_sends = this.backend.read(cx).queued_sends();
+        window.focus(&this.pane_focus(cx), cx);
         this
+    }
+
+    /// A saved view, if it's still there.
+    fn nav_from_saved(&self, saved: &SavedNav) -> Option<Nav> {
+        Some(match saved {
+            SavedNav::Folder(folder) => Nav::Folder(*folder),
+            SavedNav::Starred => Nav::Starred,
+            SavedNav::Label(id) => Nav::Label(self.data.labels.iter().position(|l| &l.id == id)?),
+            SavedNav::Category(category) => Nav::Category(*category),
+        })
+    }
+
+    fn saved_nav(&self) -> SavedNav {
+        match self.nav {
+            Nav::Folder(folder) => SavedNav::Folder(folder),
+            Nav::Starred => SavedNav::Starred,
+            Nav::Label(ix) => self
+                .data
+                .labels
+                .get(ix)
+                .map_or_else(SavedNav::default, |l| SavedNav::Label(l.id.clone())),
+            Nav::Category(category) => SavedNav::Category(category),
+        }
     }
 
     /// Put saved settings into effect: at startup, before the first frame.
@@ -459,6 +548,16 @@ impl PigeonApp {
             signatures: crate::settings::current(cx).signatures,
             glass: crate::settings::current(cx).glass,
             keymap: crate::settings::current(cx).keymap,
+            collapsed_labels: {
+                let mut ids: Vec<String> = self.labels_ui.folded.iter().cloned().collect();
+                ids.sort();
+                ids
+            },
+            window: self.window_frame.clone(),
+            calendar_open: self.mode == Mode::Calendar,
+            nav: self.saved_nav(),
+            seen_tip: self.seen_tip,
+            recent_commands: self.recent_commands.clone(),
         }
     }
 
@@ -480,6 +579,14 @@ impl PigeonApp {
     /// Recompute the list rows for the current nav. With `keep_scroll`, only
     /// the rows that changed are spliced so the list stays where it was.
     fn refresh_rows(&mut self, keep_scroll: bool) {
+        // ME-011: the rows mark conversations a draft answers.
+        self.draft_replies = self
+            .data
+            .threads
+            .iter()
+            .filter(|t| t.folder == Folder::Drafts)
+            .filter_map(|t| t.origin.as_ref()?.reply_to.clone())
+            .collect();
         let threads = &self.data.threads;
         let searching = self.is_searching();
         let in_view = |thread: &Thread| {
@@ -570,6 +677,7 @@ impl PigeonApp {
     pub fn set_nav(&mut self, nav: Nav, cx: &mut Context<Self>) {
         if self.nav != nav {
             self.stash_composer(cx);
+            self.remember_nav();
             self.nav = nav;
             self.labels_ui.hidden_while_open = None;
             self.selected = None;
@@ -577,8 +685,42 @@ impl PigeonApp {
             self.reader_focused = false;
             self.search_gmail(cx);
             self.refresh_rows(false);
+            self.restore_nav();
         }
         cx.notify();
+    }
+
+    /// MB-071: keep where the view was left, to come back to.
+    fn remember_nav(&mut self) {
+        let memory = NavMemory {
+            selected: self.selected.map(|ix| self.data.threads[ix].id.clone()),
+            scroll: self.list_state.logical_scroll_top(),
+        };
+        self.nav_memory.retain(|(nav, _)| *nav != self.nav);
+        self.nav_memory.push((self.nav, memory));
+    }
+
+    /// Back on a view: its scroll and selection as left. The selection is
+    /// only shown again: not marked read, and a draft doesn't open.
+    fn restore_nav(&mut self) {
+        let Some((_, memory)) = self.nav_memory.iter().find(|(nav, _)| *nav == self.nav) else {
+            return;
+        };
+        let memory = memory.clone();
+        if self.is_searching() {
+            return;
+        }
+        self.list_state.scroll_to(memory.scroll);
+        self.selected = memory
+            .selected
+            .and_then(|id| self.data.thread_ix(&id))
+            .filter(|&ix| {
+                self.data.threads[ix].folder != Folder::Drafts
+                    && self.rows.contains(&Row::Thread(ix))
+            });
+        self.expanded_messages.clear();
+        self.focused_message = None;
+        self.reader_scroll.set_offset(point(px(0.), px(0.)));
     }
 
     pub fn select_thread(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -594,14 +736,20 @@ impl PigeonApp {
         let Some(ix) = self.data.thread_ix(&id) else {
             return;
         };
+        self.ensure_bodies(ix, cx);
         if self.selected != Some(ix) {
             self.expanded_messages.clear();
             self.focused_message = None;
             self.select_all_text = None;
             self.reader_scroll.set_offset(point(px(0.), px(0.)));
+            self.expand_unread(ix);
         }
         self.selected = Some(ix);
         if std::mem::take(&mut self.data.threads[ix].unread) {
+            // So reopening it before the next sync doesn't expand them again.
+            for m in &mut self.data.threads[ix].messages {
+                m.label_ids.retain(|l| l != gmail::UNREAD);
+            }
             let threads = vec![id.clone()];
             self.backend.update(cx, |b, cx| {
                 b.mail(
@@ -621,6 +769,35 @@ impl PigeonApp {
             self.open_draft(ix, false, window, cx);
         }
         cx.notify();
+    }
+
+    /// MA-072: a thread held without its bodies gets the stored ones, in
+    /// place. Whether it was held so: then `fetch_body` asks Gmail for any
+    /// the store lacks.
+    fn ensure_bodies(&mut self, ix: usize, cx: &mut Context<Self>) -> bool {
+        let id = self.data.threads[ix].id.clone();
+        if !self.heads.remove(&id) {
+            return false;
+        }
+        if let Some(thread) = self.backend.read(cx).load_threads(&[id]).pop() {
+            self.data.threads[ix] = thread;
+        }
+        true
+    }
+
+    /// ME-008: a newly opened conversation shows its unread messages
+    /// expanded, the first of them focused.
+    fn expand_unread(&mut self, ix: usize) {
+        let messages = &self.data.threads[ix].messages;
+        let last = messages.len().saturating_sub(1);
+        let unread: Vec<usize> = messages
+            .iter()
+            .enumerate()
+            .filter(|(i, m)| *i != last && m.label_ids.iter().any(|l| l == gmail::UNREAD))
+            .map(|(i, _)| i)
+            .collect();
+        self.focused_message = unread.first().copied();
+        self.expanded_messages.extend(unread);
     }
 
     pub fn toggle_message(&mut self, ix: usize, cx: &mut Context<Self>) {
@@ -683,15 +860,65 @@ impl PigeonApp {
         } else {
             self.rows.iter().find_map(thread_at)
         };
-        match edge {
-            Some(ix) if !self.checked.is_empty() => {
-                self.selected = Some(ix);
-                self.reveal_selected();
-                cx.notify();
-            }
-            Some(ix) => self.select_thread(ix, window, cx),
-            None => {}
+        if let Some(ix) = edge {
+            self.move_selection_to(ix, window, cx);
         }
+    }
+
+    /// Select `ix` from the keyboard; moving through picked threads leaves
+    /// them unread.
+    fn move_selection_to(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.checked.is_empty() {
+            return self.select_thread(ix, window, cx);
+        }
+        self.selected = Some(ix);
+        self.reveal_selected();
+        cx.notify();
+    }
+
+    /// MB-045: Space and Page Down in the reader, by a screenful less a
+    /// little, so the last lines stay in view.
+    fn page_reader(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let height = self.reader_scroll.bounds().size.height;
+        let step = (height - PAGE_OVERLAP).max(PAGE_OVERLAP);
+        self.scroll_reader(if forward { step } else { -step }, cx);
+    }
+
+    /// The list pages itself (`app/mail.rs`).
+    fn page_down(&mut self, _: &PageDown, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.reader_focused {
+            return cx.propagate();
+        }
+        self.page_reader(true, cx);
+    }
+
+    fn page_up(&mut self, _: &PageUp, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.reader_focused {
+            return cx.propagate();
+        }
+        self.page_reader(false, cx);
+    }
+
+    fn scroll_to_top(&mut self, _: &ScrollToTop, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.reader_focused {
+            return self.select_edge(false, window, cx);
+        }
+        self.reader_scroll.set_offset(point(px(0.), px(0.)));
+        cx.notify();
+    }
+
+    fn scroll_to_bottom(
+        &mut self,
+        _: &ScrollToBottom,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.reader_focused {
+            return self.select_edge(true, window, cx);
+        }
+        let max = self.reader_scroll.max_offset().y;
+        self.reader_scroll.set_offset(point(px(0.), -max));
+        cx.notify();
     }
 
     /// The thread that takes the selection when the selected one leaves the
@@ -905,9 +1132,19 @@ impl PigeonApp {
     }
 
     fn sign_in(&mut self, _: &SignIn, _: &mut Window, cx: &mut Context<Self>) {
+        // ME-050: demo data picked on the sign-in screen goes back to it.
+        if self.backend.read(cx).demo_by_choice() {
+            self.backend.update(cx, |b, cx| {
+                b.leave_demo(cx);
+                b.sign_in(cx);
+            });
+            return;
+        }
         let b = self.backend.read(cx);
         let message = match b.source() {
-            Source::Demo => Some("Quit and open Pigeon without PIGEON_DEMO to sign in"),
+            Source::Demo => {
+                Some("Pigeon was opened with demo data. Quit and open it again to sign in.")
+            }
             Source::Google if !b.needs_sign_in() => Some("Already signed in"),
             _ => None,
         };
@@ -932,6 +1169,9 @@ impl PigeonApp {
     fn sign_out(&mut self, _: &SignOut, window: &mut Window, cx: &mut Context<Self>) {
         if self.backend.read(cx).source() == Source::Google {
             return self.ask_sign_out(window, cx);
+        }
+        if self.backend.read(cx).demo_by_choice() {
+            return self.backend.update(cx, |b, cx| b.leave_demo(cx));
         }
         let demo = self.backend.read(cx).is_demo();
         self.backend.update(cx, |b, cx| b.sign_out(cx));
@@ -1024,6 +1264,18 @@ impl PigeonApp {
     fn toggle_search(&mut self, _: &ToggleSearch, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings_page.open {
             return self.focus_settings_search(window, cx);
+        }
+        // MA-081: Find in Calendar searches the events, in the palette.
+        if self.mode == Mode::Calendar {
+            let items = self.event_items(false, cx);
+            return self.show_palette(
+                items,
+                "",
+                "Search events…".into(),
+                "No matching events".into(),
+                window,
+                cx,
+            );
         }
         self.search_open = true;
         self.search_input
@@ -1222,6 +1474,10 @@ impl PigeonApp {
     }
 
     fn back_to_list(&mut self, _: &BackToList, _: &mut Window, cx: &mut Context<Self>) {
+        // A download under way goes first, on its own Esc.
+        if self.cancel_attachment_fetches(cx) {
+            return;
+        }
         self.reader_focused = false;
         cx.notify();
     }
@@ -1235,11 +1491,11 @@ impl PigeonApp {
     }
 
     fn scroll_reader_down(&mut self, _: &ScrollReaderDown, _: &mut Window, cx: &mut Context<Self>) {
-        self.scroll_reader(px(64.), cx);
+        self.scroll_reader(SCROLL_STEP, cx);
     }
 
     fn scroll_reader_up(&mut self, _: &ScrollReaderUp, _: &mut Window, cx: &mut Context<Self>) {
-        self.scroll_reader(px(-64.), cx);
+        self.scroll_reader(-SCROLL_STEP, cx);
     }
 
     fn mailbox_key_context(&self) -> KeyContext {
@@ -1356,6 +1612,7 @@ impl PigeonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.seen_tip = true;
         if self.palette.is_some() {
             self.close_overlays(window, cx);
         } else {
@@ -1364,7 +1621,7 @@ impl PigeonApp {
     }
 
     fn open_palette(&mut self, query: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let items = self.palette_items(window, cx);
+        let (items, recent) = self.palette_items(window, cx);
         let noun = match self.mode {
             Mode::Mail => "mail",
             Mode::Calendar => "events",
@@ -1377,6 +1634,10 @@ impl PigeonApp {
             window,
             cx,
         );
+        // ME-062: the commands used last head the list, under "Recent".
+        if let Some((palette, _)) = &self.palette {
+            palette.update(cx, |p, cx| p.set_recent(recent, cx));
+        }
     }
 
     /// The palette with `items`: every command, or a list to pick from
@@ -1407,14 +1668,15 @@ impl PigeonApp {
         cx.notify();
     }
 
-    fn palette_items(&self, window: &Window, cx: &gpui::App) -> Vec<PaletteItem> {
+    /// Every palette row, and how many of the first are recent commands.
+    fn palette_items(&self, window: &Window, cx: &gpui::App) -> (Vec<PaletteItem>, usize) {
         let scope = self.scope();
+        // Once, not per command (MC-047).
+        let contexts = lookup_contexts(scope, self.reader_focused);
         let binding = |action: &dyn gpui::Action| {
-            lookup_contexts(scope, self.reader_focused)
-                .into_iter()
-                .find_map(|context| {
-                    window.highest_precedence_binding_for_action_in_context(action, context)
-                })
+            contexts.iter().find_map(|context| {
+                window.highest_precedence_binding_for_action_in_context(action, context.clone())
+            })
         };
         let mut available = COMMANDS
             .iter()
@@ -1424,14 +1686,19 @@ impl PigeonApp {
                     && self.command_available(c.when, cx)
             })
             .collect::<Vec<_>>();
-        // Most recently used first; the rest keep their order.
-        available.sort_by_key(|c| {
-            let name = (c.action)().name();
+        // The few used last first; the rest keep their order.
+        let recent_rank = |c: &Command| {
+            let name = (c.action_name)();
             self.recent_commands
                 .iter()
-                .position(|n| *n == name)
-                .unwrap_or(usize::MAX)
-        });
+                .take(RECENT_SHOWN)
+                .position(|n| n == name)
+        };
+        available.sort_by_key(|c| recent_rank(c).unwrap_or(usize::MAX));
+        let recent = available
+            .iter()
+            .filter(|c| recent_rank(c).is_some())
+            .count();
         let commands = available.into_iter().map(|c| PaletteItem {
             command: PaletteCommand::Action(c.action),
             title: self.command_title(c, window, cx),
@@ -1460,24 +1727,8 @@ impl PigeonApp {
                     binding: None,
                     search_only: false,
                 });
-            let events = calendar.data.events.iter().enumerate().map(|(ix, event)| {
-                let when = crate::calendar::time::date_label(
-                    event.start.date(),
-                    crate::ui::calendar::today(),
-                );
-                PaletteItem {
-                    command: PaletteCommand::Event(ix),
-                    title: event.display_title().to_string().into(),
-                    subtitle: Some(match &event.recurrence {
-                        Some(r) => r.label().into(),
-                        None => when.into(),
-                    }),
-                    leading: Leading::Dot(calendar.data.color_of(event)),
-                    binding: None,
-                    search_only: true,
-                }
-            });
-            return commands.chain(calendars).chain(events).collect();
+            let events = self.event_items(true, cx);
+            return (commands.chain(calendars).chain(events).collect(), recent);
         }
         let labels = self
             .data
@@ -1500,16 +1751,42 @@ impl PigeonApp {
                 .map(|m| &m.from)
                 .find(|c| !self.data.is_me(c))
                 .unwrap_or(&thread.last_message().from);
+            // Same-subject conversations tell apart by date (ME-078).
+            let date = crate::data::list_date(&thread.last_message().date);
             PaletteItem {
                 command: PaletteCommand::Thread(ix),
                 title: thread.subject.clone().into(),
-                subtitle: Some(from.display_name().to_string().into()),
+                subtitle: Some(format!("{} · {date}", from.display_name()).into()),
                 leading: Leading::Icon(Icon::Mail),
                 binding: None,
                 search_only: true,
             }
         });
-        commands.chain(labels).chain(threads).collect()
+        (commands.chain(labels).chain(threads).collect(), recent)
+    }
+
+    /// The calendar's events as palette rows; `search_only` rows show only
+    /// once something is typed.
+    fn event_items(&self, search_only: bool, cx: &gpui::App) -> Vec<PaletteItem> {
+        let calendar = self.calendar.read(cx);
+        let today = crate::ui::calendar::today();
+        calendar
+            .data
+            .events
+            .iter()
+            .enumerate()
+            .map(|(ix, event)| PaletteItem {
+                command: PaletteCommand::Event(ix),
+                title: event.display_title().to_string().into(),
+                subtitle: Some(match &event.recurrence {
+                    Some(r) => r.label().into(),
+                    None => crate::calendar::time::date_label(event.start.date(), today).into(),
+                }),
+                leading: Leading::Dot(calendar.data.color_of(event)),
+                binding: None,
+                search_only,
+            })
+            .collect()
     }
 
     /// What running `command` will do: "Undo Archive", "Unstar" (ME-055).
@@ -1560,7 +1837,7 @@ impl PigeonApp {
                     let name = action().name();
                     COMMANDS
                         .iter()
-                        .find(|c| (c.action)().name() == name)
+                        .find(|c| (c.action_name)() == name)
                         .is_none_or(|c| c.scope() == Scope::Global)
                 }
                 _ => false,
@@ -1568,8 +1845,7 @@ impl PigeonApp {
             if !global {
                 self.set_mode(self.mode, window, cx);
                 if let PaletteCommand::Action(action) = *command {
-                    self.recent_commands.retain(|n| *n != action().name());
-                    self.recent_commands.insert(0, action().name());
+                    self.remember_command(action().name());
                     cx.on_next_frame(window, move |_, window, cx| {
                         window.dispatch_action(action(), cx)
                     });
@@ -1582,8 +1858,7 @@ impl PigeonApp {
             // its shortcut had been pressed there.
             PaletteCommand::Action(action) => {
                 let action = action();
-                self.recent_commands.retain(|n| *n != action.name());
-                self.recent_commands.insert(0, action.name());
+                self.remember_command(action.name());
                 window.dispatch_action(action, cx)
             }
             PaletteCommand::MoveTo(folder) => self.move_to(folder, window, cx),
@@ -1600,12 +1875,21 @@ impl PigeonApp {
         }
     }
 
+    /// Most recent first, saved, at most `RECENT_COMMANDS` (ME-062).
+    fn remember_command(&mut self, name: &str) {
+        self.recent_commands.retain(|n| n != name);
+        self.recent_commands.insert(0, name.to_string());
+        self.recent_commands
+            .truncate(crate::settings::RECENT_COMMANDS);
+    }
+
     fn toggle_shortcuts_help(
         &mut self,
         _: &ToggleShortcutsHelp,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.seen_tip = true;
         if self.help_open {
             self.close_overlays(window, cx);
         } else {
@@ -1640,6 +1924,10 @@ impl PigeonApp {
             ui::style::enter("help-enter", self.render_shortcuts_help(window, cx))
                 .into_any_element()
         } else if let Some((card, _)) = &self.contact_card {
+            // MB-069: hung at the click, it's a popover with no backdrop.
+            if card.read(cx).is_anchored() {
+                return Some(div().absolute().child(card.clone()).into_any_element());
+            }
             ui::style::enter("contact-card-enter", div().child(card.clone())).into_any_element()
         } else {
             return None;
@@ -1657,7 +1945,7 @@ impl PigeonApp {
                     if self.help_open {
                         this.justify_center().p(SPACE_2XL)
                     } else {
-                        this.pt(px(110.)).px(SPACE_2XL)
+                        this.pt(OVERLAY_TOP).px(SPACE_2XL)
                     }
                 })
                 .bg(theme.backdrop)
@@ -1667,6 +1955,99 @@ impl PigeonApp {
                     cx.listener(|this, _, window, cx| this.close_overlays(window, cx)),
                 )
                 .child(content)
+                .into_any_element(),
+        )
+    }
+
+    /// MA-072: a selection made without `select_thread` (undo, a view
+    /// shown again) gets its bodies too.
+    fn load_selected_bodies(&mut self, cx: &mut Context<Self>) {
+        let Some(ix) = self.selected else {
+            return;
+        };
+        if self.ensure_bodies(ix, cx) {
+            let id = self.data.threads[ix].id.clone();
+            self.backend.update(cx, |b, cx| b.fetch_body(&id, cx));
+        }
+    }
+
+    /// MB-011: "Inbox — Pigeon", "Calendar — Pigeon", for Mission Control,
+    /// the Window menu and VoiceOver.
+    fn sync_window_title(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let view: SharedString = if self.backend.read(cx).source() == Source::SignedOut {
+            "".into()
+        } else if self.settings_page.open {
+            "Settings".into()
+        } else if self.mode == Mode::Calendar {
+            "Calendar".into()
+        } else {
+            self.nav_title()
+        };
+        let title: SharedString = if view.is_empty() {
+            "Pigeon".into()
+        } else {
+            format!("{view} — Pigeon").into()
+        };
+        if title != self.window_title {
+            window.set_window_title(&title);
+            self.window_title = title;
+        }
+    }
+
+    /// MA-094: the one first-run tip, in Mail, until ⌘K or ? is used or
+    /// it's dismissed. Out of the toast's way, at the bottom right.
+    fn render_tip(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        // Not over a draft's or the event panel's buttons, which sit there.
+        if self.seen_tip
+            || self.toast.is_some()
+            || self.overlay_open()
+            || self.mode != Mode::Mail
+            || self.composer.is_some()
+        {
+            return None;
+        }
+        let theme = Theme::of(cx);
+        let hint = |id: &'static str, text: &'static str, keys: &str| {
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .gap(SPACE_XS)
+                .child(text)
+                .child(ui::keys_caps(keys, theme))
+        };
+        Some(
+            div()
+                .absolute()
+                .bottom(SPACE_XL)
+                .right(SPACE_XL)
+                .child(ui::style::enter(
+                    "tip-enter",
+                    ui::controls::popover_surface(theme)
+                        .id("first-run-tip")
+                        .occlude()
+                        .role(gpui::Role::Note)
+                        .aria_label(
+                            "Tip: Command K lists every command, question mark shows the shortcuts",
+                        )
+                        .py(SPACE_XS)
+                        .pl(SPACE_LG)
+                        .pr(SPACE_XS)
+                        .flex()
+                        .items_center()
+                        .gap(SPACE_LG)
+                        .text_size(TEXT_SM)
+                        .text_color(theme.text_muted)
+                        .child(hint("tip-palette", "Every command", "cmd-k"))
+                        .child(hint("tip-shortcuts", "Shortcuts", "?"))
+                        .child(
+                            ui::icon_button_small("tip-dismiss", Icon::X, "Dismiss Tip", theme)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.seen_tip = true;
+                                    cx.notify();
+                                })),
+                        ),
+                ))
                 .into_any_element(),
         )
     }
@@ -1688,6 +2069,12 @@ impl PigeonApp {
         // Leave the reader its minimum, and the list its own beside a sidebar.
         let room = width - RAIL_WIDTH - READER_MIN;
         match kind {
+            // Dragged well past its minimum, the sidebar hides, keeping its
+            // width for next time (MB-075).
+            PaneResize::Sidebar if x < SIDEBAR_WIDTH.0 - SIDEBAR_COLLAPSE => {
+                self.sidebar_open = false;
+                self.sidebar_forced = false;
+            }
             PaneResize::Sidebar => {
                 let max = (room - LIST_WIDTH.0).min(SIDEBAR_WIDTH.1);
                 self.sidebar_width = x.min(max).max(SIDEBAR_WIDTH.0);
@@ -1718,6 +2105,8 @@ impl Render for PigeonApp {
             window.focus(&self.pane_focus(cx), cx);
         }
         window.set_rem_size(px(ui::style::BASE_REM * self.text_scale));
+        self.load_selected_bodies(cx);
+        self.sync_window_title(window, cx);
         self.schedule_reveal(window, cx);
         let theme = Theme::of(cx).clone();
         self.refresh_menus(window, cx);
@@ -1747,14 +2136,18 @@ impl Render for PigeonApp {
         );
         let sidebar_shown = sidebar_width * sidebar_open;
         let settings_open = self.settings_page.open;
-        let (signed_out, calendar_granted, sign_in) = {
+        let (signed_out, calendar_granted, sign_in, status) = {
             let b = self.backend.read(cx);
             (
                 b.source() == Source::SignedOut,
                 b.has_scope(CALENDAR_SCOPE),
                 b.sign_in_state().clone(),
+                b.status().clone(),
             )
         };
+        // One pass over the threads for every count (MC-037).
+        let counts = self.nav_counts();
+        let inbox_unread = counts.unread(Nav::Folder(Folder::Inbox));
         let panes = !settings_open && !signed_out;
         let entity = cx.entity();
         let reset = move |kind| {
@@ -1778,6 +2171,10 @@ impl Render for PigeonApp {
             .on_action(cx.listener(Self::back_to_list))
             .on_action(cx.listener(Self::scroll_reader_down))
             .on_action(cx.listener(Self::scroll_reader_up))
+            .on_action(cx.listener(Self::page_down))
+            .on_action(cx.listener(Self::page_up))
+            .on_action(cx.listener(Self::scroll_to_top))
+            .on_action(cx.listener(Self::scroll_to_bottom))
             .on_action(cx.listener(Self::mark_read))
             .on_action(cx.listener(Self::compose_new))
             .on_action(cx.listener(Self::go_to_inbox))
@@ -1842,6 +2239,7 @@ impl Render for PigeonApp {
             .on_action(cx.listener(Self::retry_loading_message))
             .on_action(cx.listener(Self::load_images))
             .on_action(cx.listener(Self::load_older))
+            .on_action(cx.listener(Self::mark_all_read))
             .map(|this| self.on_mail_actions(this, cx))
             .map(|this| self.on_label_actions(this, cx))
             .map(|this| self.on_attachment_actions(this, cx))
@@ -1858,7 +2256,7 @@ impl Render for PigeonApp {
                         .size_full()
                         .flex()
                         .flex_row()
-                        .child(ui::rail::render(None, self.inbox_unread(), &theme))
+                        .child(ui::rail::render(None, inbox_unread, &theme))
                         .child(self.render_settings(window, cx)),
                 )
             })
@@ -1871,16 +2269,21 @@ impl Render for PigeonApp {
                         .size_full()
                         .flex()
                         .flex_row()
-                        .child(ui::rail::render(
+                        .child(ui::rail::render_with_status(
                             Some(self.mode),
-                            self.inbox_unread(),
+                            inbox_unread,
+                            Some(&status),
                             &theme,
                         ))
                         .map(|this| {
                             if calendar_granted {
                                 this.child(self.calendar.clone())
                             } else {
-                                this.child(ui::status::missing_scope("Calendar", &theme))
+                                this.child(ui::status::missing_scope(
+                                    "Calendar",
+                                    Icon::Calendar,
+                                    &theme,
+                                ))
                             }
                         }),
                 )
@@ -1894,9 +2297,12 @@ impl Render for PigeonApp {
                         .size_full()
                         .flex()
                         .flex_row()
-                        .child(ui::rail::render(
+                        // The sidebar has the status line; hidden, the rail
+                        // shows it (MA-068).
+                        .child(ui::rail::render_with_status(
                             Some(self.mode),
-                            self.inbox_unread(),
+                            inbox_unread,
+                            (layout.sidebar == px(0.)).then_some(&status),
                             &theme,
                         ))
                         .when(sidebar_open > 0., |this| {
@@ -1906,7 +2312,7 @@ impl Render for PigeonApp {
                                     .h_full()
                                     .flex_none()
                                     .overflow_hidden()
-                                    .child(self.render_sidebar(sidebar_width, window, cx)),
+                                    .child(self.render_sidebar(sidebar_width, &counts, window, cx)),
                             )
                         })
                         .child(
@@ -1926,6 +2332,7 @@ impl Render for PigeonApp {
                                 .child(self.render_thread_list(
                                     layout.list,
                                     layout.sidebar > px(0.),
+                                    &counts,
                                     window,
                                     cx,
                                 )),
@@ -1964,6 +2371,7 @@ impl Render for PigeonApp {
                 )
             })
             .children(self.render_toast(cx))
+            .when(panes, |this| this.children(self.render_tip(cx)))
             .children(self.render_overlay(window, cx))
     }
 }

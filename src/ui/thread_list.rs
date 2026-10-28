@@ -1,23 +1,30 @@
 //! The virtualized thread list.
 
+use std::{collections::HashSet, rc::Rc};
+
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, Context, FontWeight, HighlightStyle,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, StyledText, Window,
+    Animation, AnimationExt as _, AnyElement, AppContext as _, Context, Focusable as _, FontStyle,
+    FontWeight, HighlightStyle, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, StyledText, Window,
     component::{input::Input, scroll::ScrollableElement as _},
     deferred, div, ease_out_quint, list,
     prelude::FluentBuilder as _,
-    px, relative,
+    px, relative, rems,
 };
 
 use super::{
-    HEADER_HEIGHT, avatar, empty_state, icon, icon_button, is_secondary, tooltip, window_drag_area,
+    HEADER_HEIGHT, avatar, binding_caps,
+    controls::{ButtonKind, popover_surface, push_button},
+    icon, icon_button, icon_button_small, is_secondary, label,
+    status::thousands,
+    tooltip, window_drag_area,
 };
 use crate::ui::style::*;
 use crate::{
     actions::{
-        CloseSearch, LoadOlderConversations, SEARCH, ToggleArchivedSection, ToggleSearch,
-        ToggleSidebar,
+        ApplyLabel, Archive, CloseSearch, Compose, Delete, LoadOlderConversations, MarkRead,
+        MarkUnread, SEARCH, SyncNow, ToggleArchivedSection, ToggleSearch, ToggleSidebar,
+        ToggleStar,
     },
     app::{Density, Nav, PigeonApp, Row, SearchSuggestion},
     assets::Icon,
@@ -32,27 +39,138 @@ const ROW_MARGIN: gpui::Pixels = SPACE_SM;
 const ROW_INSET: gpui::Pixels = SPACE_XL;
 /// Labels shown as dots in a row, at most; the reader shows them all.
 const LABEL_DOTS: usize = 3;
+const LABEL_DOT: gpui::Pixels = px(7.);
+const UNREAD_DOT: gpui::Pixels = px(6.);
+/// The row's hover group: the date gives way to the quick actions, and the
+/// checkbox shows, without the app keeping a hover state (ME-004).
+const ROW_GROUP: &str = "thread-row";
+/// The suggestions scroll past this (ME-015).
+const SUGGESTIONS_MAX: gpui::Rems = rems(22.5);
+
+/// Conversations being dragged onto the sidebar (MA-087): the row's, or
+/// every picked one when the row is one of them.
+#[derive(Clone)]
+pub struct DraggedThreads {
+    pub ids: Vec<String>,
+    title: SharedString,
+}
+
+impl Render for DraggedThreads {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::of(cx);
+        popover_surface(theme)
+            .max_w(rems(16.))
+            .h(CONTROL_MD)
+            .px(SPACE_SM)
+            .flex()
+            .items_center()
+            .gap(SPACE_SM)
+            .text_size(TEXT_SM)
+            .text_color(theme.text)
+            .child(icon(Icon::Mail, ICON_MD, theme.text_muted))
+            .child(div().min_w_0().truncate().child(self.title.clone()))
+            .when(self.ids.len() > 1, |this| {
+                this.child(
+                    div()
+                        .flex_none()
+                        .px(SPACE_XS)
+                        .rounded_full()
+                        .bg(theme.accent)
+                        .text_color(theme.accent_text)
+                        .text_size(TEXT_XS)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_features(tabular_figures())
+                        .child(self.ids.len().to_string()),
+                )
+            })
+    }
+}
+
+/// What every row needs, worked out once per frame.
+struct RowContext {
+    /// Threads with a send still waiting to go (MA-069).
+    queued: HashSet<String>,
+    /// Differentiate Without Color: label dots carry a letter (MA-024).
+    no_color: bool,
+}
 
 impl PigeonApp {
+    /// The open view's name; a nested label's last part.
     pub fn nav_title(&self) -> SharedString {
         match self.nav {
             Nav::Folder(folder) => folder.title().into(),
             Nav::Starred => "Starred".into(),
-            Nav::Label(ix) => self.data.labels[ix].name.clone().into(),
+            Nav::Label(ix) => {
+                let name = &self.data.labels[ix].name;
+                name.rsplit('/').next().unwrap_or(name).to_string().into()
+            }
             Nav::Category(category) => category.name().into(),
         }
+    }
+
+    /// "Work › Clients › Acme": the parents muted, the leaf in full (ME-022).
+    fn render_nav_title(&self, theme: &Theme) -> impl IntoElement {
+        let parents: Vec<String> = match self.nav {
+            Nav::Label(ix) => {
+                let mut parts: Vec<&str> = self.data.labels[ix].name.split('/').collect();
+                parts.pop();
+                parts.into_iter().map(String::from).collect()
+            }
+            _ => Vec::new(),
+        };
+        let title = self.nav_title();
+        let path = parents
+            .iter()
+            .map(String::as_str)
+            .chain([title.as_ref()])
+            .collect::<Vec<_>>()
+            .join(" › ");
+        div()
+            .id("list-title")
+            .role(gpui::Role::Heading)
+            .aria_level(1)
+            .aria_label(path)
+            .min_w_0()
+            .flex()
+            .items_center()
+            .text_size(TEXT_LG)
+            .font_weight(FontWeight::SEMIBOLD)
+            .when(!parents.is_empty(), |this| {
+                this.child(
+                    div()
+                        .min_w_0()
+                        .flex_shrink_1()
+                        .truncate()
+                        .text_color(theme.text_muted)
+                        .font_weight(FontWeight::NORMAL)
+                        .child(format!("{} › ", parents.join(" › "))),
+                )
+            })
+            .child(div().flex_none().max_w_full().truncate().child(title))
     }
 
     pub(crate) fn render_thread_list(
         &self,
         width: gpui::Pixels,
         sidebar_shown: bool,
+        counts: &crate::ui::sidebar::NavCounts,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         // The sidebar's number, so the two agree (LST-6).
-        let unread = self.view_unread(self.nav);
+        let unread = counts.unread(self.nav);
+        let thread_rows = self
+            .rows
+            .iter()
+            .filter(|r| matches!(r, Row::Thread(_)))
+            .count();
+        let checked_rows = self
+            .rows
+            .iter()
+            .filter(|r| matches!(r, Row::Thread(ix) if self.is_checked(*ix)))
+            .count();
+        let selecting = !self.checked.is_empty();
 
         let header = window_drag_area(div().id("list-header"))
             .h(HEADER_HEIGHT)
@@ -62,9 +180,7 @@ impl PigeonApp {
             .gap(SPACE_SM)
             .pr(SPACE_MD)
             .map(|this| {
-                if sidebar_shown {
-                    this.pl(ROW_MARGIN + ROW_INSET)
-                } else {
+                if !sidebar_shown {
                     // The way back, in the sidebar's button's place.
                     this.pl(SPACE_SM).child(icon_button(
                         "show-sidebar",
@@ -73,28 +189,38 @@ impl PigeonApp {
                         Box::new(ToggleSidebar),
                         &theme,
                     ))
+                } else if selecting && !self.search_open {
+                    this.pl(ROW_MARGIN)
+                } else {
+                    this.pl(ROW_MARGIN + ROW_INSET)
                 }
             })
             .map(|this| {
                 if self.search_open {
-                    return this.child(self.render_search_bar(&theme, cx));
+                    return this.child(self.render_search_bar(&theme, window, cx));
                 }
-                this.child(
-                    div()
-                        .text_size(TEXT_LG)
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(self.nav_title()),
-                )
+                this.when(selecting, |this| {
+                    this.child(self.render_select_all(checked_rows, thread_rows, &theme, cx))
+                })
+                .child(self.render_nav_title(&theme))
                 .when(unread > 0, |this| {
                     this.child(
                         div()
+                            .flex_none()
                             .text_size(TEXT_SM)
                             .text_color(theme.text_muted)
                             .font_features(tabular_figures())
-                            .child(format!("{unread} unread")),
+                            .child(format!("{} unread", thousands(unread))),
                     )
                 })
                 .child(div().flex_1())
+                .child(icon_button(
+                    "compose",
+                    Icon::SquarePen,
+                    "New message",
+                    Box::new(Compose),
+                    &theme,
+                ))
                 .child(icon_button(
                     "search",
                     Icon::Search,
@@ -106,57 +232,26 @@ impl PigeonApp {
 
         let searching = self.is_searching();
         let asking_gmail = self.server_search.state == ServerState::Waiting;
-        // "Load older" alone (W9) still leaves the view empty.
-        let empty = self.rows.iter().all(|r| *r == Row::LoadOlder);
+        let loaded = self.view_loaded(cx);
+        // Only conversations count (ME-001): an "Archived" header or "Load
+        // older" alone still leaves the view empty.
+        let empty = thread_rows == 0;
+        // The Inbox with nothing in it, whatever is archived under it.
+        let inbox_zero = !searching
+            && loaded
+            && self.nav == Nav::Folder(Folder::Inbox)
+            && !self
+                .rows
+                .iter()
+                .take_while(|r| !matches!(r, Row::ArchivedHeader { .. }))
+                .any(|r| matches!(r, Row::Thread(_)));
         // W4b (SRC-9): only Gmail answers these, and it can't be asked.
         let needs_gmail = searching
             && self.search_query.gmail_only()
             && (!self.server_search.available || self.server_search.state == ServerState::Offline);
-        let body = if empty && needs_gmail {
-            empty_state(
-                Icon::Search,
-                "This search needs a connection to Gmail",
-                Some("Gmail answers searches with after:, OR, negation and the like"),
-                &theme,
-            )
-        } else if empty && searching && asking_gmail {
-            // W9 (SRC-7): nothing here, but Gmail may have some.
-            empty_state(Icon::Search, "Searching Gmail…", None, &theme)
-        } else if empty && searching {
-            empty_state(
-                Icon::Search,
-                format!("No results {}", self.search_scope_text()),
-                Some(if self.search_query.scope.is_some() || self.search_all {
-                    "Try fewer or different words"
-                } else {
-                    "Try fewer words, or search all mail with in:all"
-                }),
-                &theme,
-            )
-        } else if empty && !self.view_loaded(cx) {
-            // Not "Nothing in …" before the first page is in (LST-9).
-            match self.backend.read(cx).sync_error() {
-                Some(error) => empty_state(
-                    Icon::OctagonAlert,
-                    format!("Couldn't load {}", self.nav_title()),
-                    Some(if error.starts_with("Couldn't reach") {
-                        "Pigeon will try again when it can reach Gmail"
-                    } else {
-                        "Pigeon will try again shortly"
-                    }),
-                    &theme,
-                ),
-                None => render_skeleton(&theme),
-            }
-        } else if empty {
-            empty_state(
-                Icon::Inbox,
-                format!("Nothing in {}", self.nav_title()),
-                None,
-                &theme,
-            )
-        } else {
-            let view = cx.entity();
+        let row_cx = Rc::new(self.row_context());
+        let view = cx.entity();
+        let list_view = |row_cx: Rc<RowContext>| {
             div()
                 .id("thread-list")
                 .role(gpui::Role::ListBox)
@@ -165,13 +260,103 @@ impl PigeonApp {
                 .size_full()
                 .child(
                     list(self.list_state.clone(), move |ix, window, cx| {
-                        view.update(cx, |this, cx| this.render_row(ix, window, cx))
+                        view.update(cx, |this, cx| this.render_row(ix, &row_cx, window, cx))
                     })
                     .size_full()
                     .pb(SPACE_SM),
                 )
                 .vertical_scrollbar(&self.list_state)
-                .into_any_element()
+        };
+        let body = if empty && needs_gmail {
+            centered(empty_view(
+                Icon::Search,
+                "This search needs a connection to Gmail",
+                Some(muted_hint(
+                    "Gmail answers searches with after:, OR, negation and the like",
+                    &theme,
+                )),
+                &theme,
+            ))
+        } else if empty && searching && asking_gmail {
+            // W9 (SRC-7): nothing here, but Gmail may have some.
+            centered(empty_view(Icon::Search, "Searching Gmail…", None, &theme))
+        } else if empty && searching {
+            let narrow = self.search_query.scope.is_none() && !self.search_all;
+            centered(
+                empty_view(
+                    Icon::Search,
+                    format!("No results {}", self.search_scope_text()),
+                    Some(muted_hint("Try fewer or different words", &theme)),
+                    &theme,
+                )
+                // ME-016: offered, not explained.
+                .when(narrow, |this| {
+                    this.child(
+                        push_button(
+                            "search-all-mail",
+                            "Search All Mail",
+                            ButtonKind::Plain,
+                            &theme,
+                        )
+                        .mt(SPACE_XS)
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_search_scope(cx))),
+                    )
+                }),
+            )
+        } else if empty && !loaded && !searching {
+            // Not "Nothing in …" before the first page is in (LST-9).
+            match self.backend.read(cx).sync_error() {
+                Some(error) => centered(
+                    empty_view(
+                        Icon::OctagonAlert,
+                        format!("Couldn't load {}", self.nav_title()),
+                        Some(muted_hint(
+                            if error.starts_with("Couldn't reach") {
+                                "Pigeon will try again when it can reach Gmail"
+                            } else {
+                                "Pigeon will try again shortly"
+                            },
+                            &theme,
+                        )),
+                        &theme,
+                    )
+                    // MA-076.
+                    .child(
+                        push_button("list-try-now", "Try Now", ButtonKind::Plain, &theme)
+                            .mt(SPACE_XS)
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(SyncNow), cx)
+                            }),
+                    ),
+                ),
+                None => render_skeleton(&theme),
+            }
+        } else if inbox_zero {
+            // ME-001: a quiet line and what's next, the archived threads
+            // still under it.
+            let zero = empty_view(
+                Icon::Check,
+                "You’re all caught up",
+                self.next_event_line(cx)
+                    .map(|line| muted_hint(line, &theme)),
+                &theme,
+            );
+            if self.rows.is_empty() {
+                centered(zero)
+            } else {
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .child(zero.flex_none().pt(SPACE_2XL).pb(SPACE_LG))
+                    .child(div().flex_1().min_h_0().child(list_view(row_cx)))
+                    .into_any_element()
+            }
+        } else if empty {
+            let (glyph, title, hint) = self.empty_copy(window, &theme);
+            centered(empty_view(glyph, title, hint, &theme))
+        } else {
+            list_view(row_cx).into_any_element()
         };
 
         let suggestions = self.search_suggestions(window, cx);
@@ -187,12 +372,17 @@ impl PigeonApp {
             .border_color(theme.border)
             .child(header)
             .when(
-                searching && (!empty || self.server_search.state == ServerState::Offline),
-                |this| this.child(self.render_search_summary(&theme)),
+                searching
+                    && (!empty
+                        || matches!(
+                            self.server_search.state,
+                            ServerState::Offline | ServerState::Failed
+                        )),
+                |this| this.child(self.render_search_summary(&theme, cx)),
             )
             .child(div().flex_1().min_h_0().child(body))
             .when(
-                empty && !self.rows.is_empty() && (searching || self.view_loaded(cx)),
+                empty && !inbox_zero && !self.rows.is_empty() && (searching || loaded),
                 |this| {
                     this.child(
                         div()
@@ -203,8 +393,181 @@ impl PigeonApp {
                 },
             )
             .when(!suggestions.is_empty(), |this| {
-                this.child(self.render_search_suggestions(suggestions, &theme, cx))
+                this.child(self.render_search_suggestions(suggestions, &theme, window, cx))
             })
+    }
+
+    /// The row data that isn't per thread: queued sends, the system's
+    /// Differentiate Without Color.
+    fn row_context(&self) -> RowContext {
+        RowContext {
+            queued: self.queued_sends.clone(),
+            no_color: crate::native::differentiate_without_color(),
+        }
+    }
+
+    /// The header's checkbox while picking (MB-Q12): mixed while only some
+    /// are picked; a click picks them all, or lets go when all are.
+    fn render_select_all(
+        &self,
+        checked: usize,
+        total: usize,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let all = total > 0 && checked >= total;
+        let state = if all {
+            gpui::Toggled::True
+        } else if checked > 0 {
+            gpui::Toggled::Mixed
+        } else {
+            gpui::Toggled::False
+        };
+        focusable_control(div().id("select-all"), theme)
+            .role(gpui::Role::CheckBox)
+            .aria_label(format!("Select all, {checked} of {total} selected"))
+            .aria_toggled(state)
+            .size(HIT_TARGET)
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(RADIUS_SM)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(check_box(state, theme))
+            .tooltip(move |window, cx| {
+                tooltip(if all {
+                    "Deselect all"
+                } else {
+                    "Select all conversations"
+                })
+                .build(window, cx)
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if all {
+                    this.clear_checked();
+                    cx.notify();
+                } else {
+                    this.select_all_threads(cx);
+                }
+            }))
+    }
+
+    /// An empty view's glyph, title and next step, with the key that
+    /// takes it (ME-001).
+    fn empty_copy(
+        &self,
+        window: &Window,
+        theme: &Theme,
+    ) -> (Icon, SharedString, Option<AnyElement>) {
+        let key = |before: &str, action: &dyn gpui::Action, after: &str| {
+            self.key_hint(before, action, after, window, theme)
+        };
+        let say = |text: &'static str| Some(muted_hint(text, theme));
+        match self.nav {
+            Nav::Folder(Folder::Drafts) => (
+                Icon::FilePen,
+                "No drafts".into(),
+                key("Press", &Compose, "to write a message"),
+            ),
+            Nav::Folder(Folder::Sent) => (
+                Icon::Send,
+                "No sent mail".into(),
+                key("Press", &Compose, "to write a message"),
+            ),
+            Nav::Folder(Folder::Archive) => (
+                Icon::Archive,
+                "Nothing archived".into(),
+                key("Press", &Archive, "on a conversation to archive it"),
+            ),
+            Nav::Folder(Folder::Spam) => (
+                Icon::ShieldAlert,
+                "No spam".into(),
+                say("Gmail deletes spam after 30 days"),
+            ),
+            Nav::Folder(Folder::Trash) => (
+                Icon::Trash,
+                "Trash is empty".into(),
+                say("Gmail deletes conversations in Trash after 30 days"),
+            ),
+            Nav::Folder(Folder::Inbox) => (Icon::Check, "You’re all caught up".into(), None),
+            Nav::Starred => (
+                Icon::Star,
+                "No starred conversations".into(),
+                key("Press", &ToggleStar, "on a conversation to star it"),
+            ),
+            Nav::Label(_) => (
+                Icon::Tag,
+                format!("Nothing labeled “{}”", self.nav_title()).into(),
+                key("Press", &ApplyLabel, "on a conversation to label it"),
+            ),
+            Nav::Category(category) => (
+                Icon::Inbox,
+                format!("Nothing in {}", category.name()).into(),
+                say("Move to Category files a conversation here"),
+            ),
+        }
+    }
+
+    /// "Press [C] to write a message", with the live key; nothing when the
+    /// action has none.
+    fn key_hint(
+        &self,
+        before: &str,
+        action: &dyn gpui::Action,
+        after: &str,
+        window: &Window,
+        theme: &Theme,
+    ) -> Option<AnyElement> {
+        let binding = self.binding_for(action, window)?;
+        let keys: String = binding
+            .keystrokes()
+            .iter()
+            .map(|k| k.key().to_uppercase())
+            .collect::<Vec<_>>()
+            .join(" ");
+        Some(
+            div()
+                .id("empty-hint")
+                .role(gpui::Role::Label)
+                .aria_label(format!("{before} {keys} {after}"))
+                .flex()
+                .items_center()
+                .gap(SPACE_XS)
+                .text_size(TEXT_SM)
+                .text_color(theme.text_faint)
+                .child(before.to_string())
+                .child(binding_caps(&binding, theme))
+                .child(after.to_string())
+                .into_any_element(),
+        )
+    }
+
+    /// Under inbox zero: the next event, today or tomorrow (ME-Q4 a).
+    fn next_event_line(&self, cx: &gpui::App) -> Option<String> {
+        use crate::{app::today, calendar::time};
+        let data = &self.calendar.read(cx).data;
+        let now = today::now();
+        let agenda = today::agenda(data, now);
+        let next = agenda
+            .next
+            .into_iter()
+            .chain(agenda.later)
+            .chain(agenda.tomorrow)
+            .filter(|o| o.start >= now)
+            .min_by_key(|o| o.start)?;
+        let event = &data.events[next.event];
+        let day = if next.start.date() == now.date() {
+            "Next"
+        } else {
+            "Tomorrow"
+        };
+        let title = today::truncate(event.display_title(), 40);
+        Some(if event.all_day {
+            format!("{day}: {title}")
+        } else {
+            format!("{day}: {title} at {}", time::time_label(next.start.time()))
+        })
     }
 
     /// Whether the view's first page has loaded from Gmail (STA-1).
@@ -212,21 +575,33 @@ impl PigeonApp {
         self.backend.read(cx).view_loaded(&self.view_key())
     }
 
+    /// Where a search looks, as the scope chip names it: an `in:` in the
+    /// query, else this view or All Mail.
+    fn search_scope_name(&self) -> SharedString {
+        use crate::search::Scope;
+        match self.search_query.scope {
+            None if self.search_all => "All Mail".into(),
+            None => self.nav_title(),
+            Some(Scope::All) => "All Mail".into(),
+            Some(Scope::Anywhere) => "Anywhere".into(),
+            Some(Scope::Folder(folder)) => folder.title().into(),
+        }
+    }
+
     /// "in Inbox", or where an `in:` operator or the scope chip points.
     fn search_scope_text(&self) -> String {
         use crate::search::Scope;
         match self.search_query.scope {
-            None if self.search_all => "in all mail".into(),
-            None => format!("in {}", self.nav_title()),
-            Some(Scope::All) => "in all mail".into(),
             Some(Scope::Anywhere) => "anywhere".into(),
-            Some(Scope::Folder(folder)) => format!("in {}", folder.title()),
+            None if self.search_all => "in all mail".into(),
+            Some(Scope::All) => "in all mail".into(),
+            _ => format!("in {}", self.search_scope_name()),
         }
     }
 
-    /// Under the search field: the operators it understood, tinted, and how
-    /// many threads match.
-    fn render_search_summary(&self, theme: &Theme) -> impl IntoElement {
+    /// Under the search field: the operators it understood and how many
+    /// threads match.
+    fn render_search_summary(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self
             .rows
             .iter()
@@ -239,6 +614,7 @@ impl PigeonApp {
             self.server_search.estimate,
             self.server_search.has_more(),
         );
+        let failed = self.server_search.state == ServerState::Failed;
         let note = match self.server_search.state {
             ServerState::Waiting => Some("Searching Gmail…"),
             ServerState::Offline if self.search_query.gmail_only() => {
@@ -259,6 +635,7 @@ impl PigeonApp {
             .gap(SPACE_XS)
             .text_size(TEXT_SM)
             .text_color(theme.text_muted)
+            // Status, not controls: no accent (MA-031).
             .children(self.search_query.operators().into_iter().map(|op| {
                 div()
                     .h(CONTROL_XS)
@@ -266,49 +643,56 @@ impl PigeonApp {
                     .flex()
                     .items_center()
                     .rounded(RADIUS_SM)
-                    .bg(theme.accent.alpha(0.12))
-                    .text_color(theme.accent)
+                    .bg(theme.chip_bg)
+                    .text_color(theme.text_muted)
                     .font_weight(FontWeight::MEDIUM)
                     .child(op)
             }))
             .child(
-                div()
-                    .ml(SPACE_2XS)
-                    .font_features(tabular_figures())
-                    .child(format!("{counted} {}", self.search_scope_text())),
+                label(
+                    "search-count",
+                    format!("{counted} {}", self.search_scope_text()),
+                )
+                .ml(SPACE_2XS)
+                .font_features(tabular_figures()),
             )
             .children(note.map(|note| {
-                div()
-                    .id("search-gmail-note")
-                    .role(gpui::Role::Status)
-                    .aria_label(note)
+                super::live_text("search-gmail-note", note, gpui::accesskit::Live::Polite)
                     .ml(SPACE_2XS)
-                    .text_color(theme.text_faint)
-                    .child(format!("· {note}"))
+                    .text_color(if failed {
+                        theme.text_danger
+                    } else {
+                        theme.text_faint
+                    })
             }))
+            // MA-076.
+            .when(failed, |this| {
+                this.child(
+                    push_button("search-retry", "Retry", ButtonKind::Plain, theme)
+                        .h(CONTROL_SM)
+                        .on_click(cx.listener(|this, _, _, cx| this.retry_search(cx))),
+                )
+            })
     }
 
     /// The search button, expanded into a field that fills the header. It
     /// grows out of the button's place on the right.
-    fn render_search_bar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_search_bar(
+        &self,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         // Where the search looks; a click widens it to all mail. An `in:`
-        // in the query decides instead.
+        // in the query decides instead, and the chip names it (ME-016).
         let fixed = self.search_query.scope.is_some();
-        let scope_label: SharedString = if fixed {
-            "in:".into()
-        } else if self.search_all {
-            "All Mail".into()
-        } else {
-            self.nav_title()
-        };
+        let scope_label = self.search_scope_name();
         let scope = div()
             .id("search-scope")
-            .role(gpui::Role::Button)
-            .aria_label(format!("Search in {scope_label}"))
             .flex_none()
             .h(CONTROL_SM)
             .pl(SPACE_SM)
-            .pr(SPACE_XS)
+            .pr(if fixed { SPACE_SM } else { SPACE_XS })
             .flex()
             .items_center()
             .gap(SPACE_2XS)
@@ -317,33 +701,67 @@ impl PigeonApp {
             .text_size(TEXT_SM)
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.text_muted)
-            .child(scope_label)
-            .when(!fixed, |this| {
-                this.child(icon(Icon::ChevronDown, ICON_SM, theme.text_faint))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.selected_bg).text_color(theme.text))
-                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                        window.prevent_default();
-                        cx.stop_propagation();
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_search_scope(cx)))
-                    .tooltip(|window, cx| {
-                        tooltip("Switch between this folder and all mail").build(window, cx)
-                    })
+            .child(scope_label.clone())
+            .map(|this| {
+                if fixed {
+                    this.role(gpui::Role::Label)
+                        .aria_label(format!(
+                            "Searching {scope_label}, set by in: in your search"
+                        ))
+                        .tooltip(|window, cx| {
+                            tooltip("Set by in: in your search").build(window, cx)
+                        })
+                } else {
+                    this.role(gpui::Role::Button)
+                        .aria_label(format!("Search in {scope_label}"))
+                        .child(icon(Icon::ChevronDown, ICON_SM, theme.text_faint))
+                        .hover(|s| s.bg(theme.selected_bg).text_color(theme.text))
+                        .active(|s| s.bg(theme.selected_bg).opacity(0.8))
+                        .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_search_scope(cx)))
+                        .tooltip(|window, cx| {
+                            tooltip("Switch between this folder and all mail").build(window, cx)
+                        })
+                }
             });
 
+        // MA-082: the field shows it has the keyboard; X clears the text
+        // first and closes only an empty search.
+        let focused = self.search_input.focus_handle(cx).is_focused(window);
+        let has_text = !self.search_input.read(cx).value().is_empty();
+        let clear = icon_button_small(
+            "close-search",
+            Icon::X,
+            if has_text {
+                "Clear search"
+            } else {
+                "Close search"
+            },
+            theme,
+        )
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+        .on_click(cx.listener(move |this, _, window, cx| {
+            if has_text {
+                this.clear_search_text(window, cx);
+            } else {
+                window.dispatch_action(Box::new(CloseSearch), cx);
+            }
+        }));
         let field = div()
             .key_context(SEARCH)
             .h(CONTROL_LG)
             .pl(SPACE_MD)
-            .pr(SPACE_XS)
+            .pr(SPACE_2XS)
             .flex()
             .items_center()
             .gap(SPACE_SM)
             .rounded(RADIUS_MD)
             .bg(theme.search_bg)
             .border_1()
-            .border_color(theme.border)
+            .border_color(if focused { theme.accent } else { theme.border })
             .text_size(TEXT_BASE)
             .overflow_hidden()
             .child(icon(Icon::Search, ICON_MD, theme.text_muted))
@@ -354,16 +772,7 @@ impl PigeonApp {
                     .min_w_0()
                     .child(Input::new(&self.search_input).appearance(false).px(px(0.))),
             )
-            .child(
-                icon_button(
-                    "close-search",
-                    Icon::X,
-                    "Clear search",
-                    Box::new(CloseSearch),
-                    theme,
-                )
-                .size(HIT_TARGET),
-            )
+            .child(clear)
             .with_animation(
                 "search-expand",
                 Animation::new(MOTION_PANE).with_easing(ease_out_quint()),
@@ -376,12 +785,14 @@ impl PigeonApp {
         div().flex_1().flex().justify_end().child(field)
     }
 
-    /// The dropdown under the search field: operators and recent searches
-    /// while it's empty, contacts after `from:` or `to:`.
+    /// The dropdown under the search field: recent searches and operators
+    /// while it's empty, contacts after `from:` or `to:`. It scrolls past
+    /// `SUGGESTIONS_MAX`, keeping the highlighted row in view (ME-015).
     fn render_search_suggestions(
         &self,
         suggestions: Vec<SearchSuggestion>,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let section = |title: &'static str| {
@@ -395,78 +806,106 @@ impl PigeonApp {
                 .child(title)
         };
         let mut rows: Vec<AnyElement> = Vec::new();
+        let mut highlighted_child = None;
         let mut last_kind = None;
         for (ix, suggestion) in suggestions.into_iter().enumerate() {
             let kind = std::mem::discriminant(&suggestion);
-            if last_kind != Some(kind) {
+            let title = match suggestion {
+                SearchSuggestion::Operator(..) => Some("Narrow it down"),
+                SearchSuggestion::Recent(_) => Some("Recent"),
+                SearchSuggestion::Contact { .. } => Some("People"),
+                SearchSuggestion::ClearRecent => None,
+            };
+            if let Some(title) = title
+                && last_kind != Some(kind)
+            {
                 last_kind = Some(kind);
-                rows.push(
-                    section(match suggestion {
-                        SearchSuggestion::Operator(..) => "Narrow it down",
-                        SearchSuggestion::Recent(_) => "Recent",
-                        SearchSuggestion::Contact { .. } => "People",
-                    })
-                    .into_any_element(),
-                );
+                rows.push(section(title).into_any_element());
             }
             let highlighted = self.search_highlight == Some(ix);
-            let content: AnyElement = match &suggestion {
-                SearchSuggestion::Operator(op, what) => div()
-                    .flex()
-                    .items_center()
-                    .gap(SPACE_SM)
-                    .child(
-                        div()
-                            .font_family(MONO)
-                            .text_size(TEXT_SM)
-                            .text_color(theme.accent)
-                            .child(*op),
-                    )
-                    .child(div().text_color(theme.text_muted).child(*what))
-                    .into_any_element(),
-                SearchSuggestion::Recent(query) => div()
-                    .flex()
-                    .items_center()
-                    .gap(SPACE_SM)
-                    .min_w_0()
-                    .child(icon(Icon::Clock, ICON_MD, theme.text_faint))
-                    .child(div().min_w_0().truncate().child(query.clone()))
-                    .into_any_element(),
+            if highlighted {
+                highlighted_child = Some(rows.len());
+            }
+            let (content, name): (AnyElement, SharedString) = match &suggestion {
+                SearchSuggestion::Operator(op, what) => (
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(SPACE_SM)
+                        .child(
+                            div()
+                                .font_family(MONO)
+                                .text_size(TEXT_SM)
+                                .text_color(theme.text)
+                                .child(*op),
+                        )
+                        .child(div().text_color(theme.text_muted).child(*what))
+                        .into_any_element(),
+                    format!("{op} {what}").into(),
+                ),
+                SearchSuggestion::Recent(query) => (
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(SPACE_SM)
+                        .min_w_0()
+                        .child(icon(Icon::Clock, ICON_MD, theme.text_faint))
+                        .child(div().min_w_0().truncate().child(query.clone()))
+                        .into_any_element(),
+                    query.clone().into(),
+                ),
+                SearchSuggestion::ClearRecent => (
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(SPACE_SM)
+                        .text_color(theme.text_muted)
+                        .child(icon(Icon::X, ICON_MD, theme.text_faint))
+                        .child("Clear Recent Searches")
+                        .into_any_element(),
+                    "Clear Recent Searches".into(),
+                ),
                 SearchSuggestion::Contact {
                     operator,
                     name,
                     email,
-                } => div()
-                    .flex()
-                    .items_center()
-                    .gap(SPACE_SM)
-                    .min_w_0()
-                    .child(avatar(
-                        crate::data::Contact {
-                            name: name.clone(),
-                            email: email.clone(),
-                        }
-                        .initials(),
-                        theme.avatar_color(email),
-                        AVATAR_XS,
-                        theme,
-                    ))
-                    .child(div().flex_none().child(name.clone()))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(TEXT_SM)
-                            .text_color(theme.text_muted)
-                            .child(format!("{operator}{email}")),
-                    )
-                    .into_any_element(),
+                } => (
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(SPACE_SM)
+                        .min_w_0()
+                        .child(avatar(
+                            crate::data::Contact {
+                                name: name.clone(),
+                                email: email.clone(),
+                            }
+                            .initials(),
+                            theme.avatar_color(email),
+                            AVATAR_XS,
+                            theme,
+                        ))
+                        .child(div().flex_none().child(name.clone()))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(TEXT_SM)
+                                .text_color(theme.text_muted)
+                                .child(format!("{operator}{email}")),
+                        )
+                        .into_any_element(),
+                    format!("{name}, {operator}{email}").into(),
+                ),
             };
             rows.push(
                 div()
                     .id(("search-suggestion", ix))
                     .role(gpui::Role::ListBoxOption)
+                    .aria_label(name)
                     .aria_selected(highlighted)
+                    .when(highlighted, |d| d.aria_active_descendant())
+                    .flex_none()
                     .h(ROW_SM)
                     .px(SPACE_SM)
                     .flex()
@@ -486,8 +925,20 @@ impl PigeonApp {
                     .into_any_element(),
             );
         }
+        // Scroll to the highlighted row when the arrows move it, not on
+        // every frame, so the wheel still scrolls freely.
+        let scroll = window.use_keyed_state("search-suggestions-scroll", cx, |_, _| {
+            (ScrollHandle::new(), None::<usize>)
+        });
+        let handle = scroll.read(cx).0.clone();
+        if scroll.read(cx).1 != highlighted_child {
+            if let Some(child) = highlighted_child {
+                handle.scroll_to_item(child);
+            }
+            scroll.update(cx, |s, _| s.1 = highlighted_child);
+        }
         deferred(
-            div()
+            popover_surface(theme)
                 .id("search-suggestions")
                 .role(gpui::Role::ListBox)
                 .aria_label("Search suggestions")
@@ -496,23 +947,27 @@ impl PigeonApp {
                 .top(HEADER_HEIGHT - SPACE_XS)
                 .left(ROW_MARGIN)
                 .right(ROW_MARGIN)
+                .max_h(SUGGESTIONS_MAX)
                 .p(SPACE_XS)
                 .flex()
                 .flex_col()
-                .rounded(RADIUS_MD)
-                .bg(theme.overlay_bg)
-                .border_1()
-                .border_color(theme.overlay_border)
-                .shadow(super::popover_shadow(theme))
+                .overflow_y_scroll()
+                .track_scroll(&handle)
                 .children(rows),
         )
         .with_priority(1)
     }
 
-    fn render_row(&self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_row(
+        &self,
+        ix: usize,
+        row_cx: &RowContext,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = Theme::of(cx).clone();
         match self.rows[ix] {
-            Row::Thread(thread_ix) => self.render_thread_row(thread_ix, &theme, window, cx),
+            Row::Thread(thread_ix) => self.render_thread_row(thread_ix, row_cx, &theme, window, cx),
             Row::ArchivedHeader { count } => self.render_archived_header(count, &theme, cx),
             Row::LoadOlder => self.render_load_older(&theme, cx),
         }
@@ -546,8 +1001,8 @@ impl PigeonApp {
                     .child(icon(Icon::ChevronDown, ICON_MD, theme.text_faint))
                     .child(label)
                     .when(enabled, |this| {
-                        this.cursor_pointer()
-                            .hover(|s| s.bg(theme.hover_bg))
+                        this.hover(|s| s.bg(theme.hover_bg))
+                            .active(|s| s.bg(theme.selected_bg))
                             .tooltip(|window, cx| {
                                 tooltip("Load older conversations")
                                     .action(&LoadOlderConversations, None)
@@ -576,10 +1031,10 @@ impl PigeonApp {
             .child(
                 focusable_control(div().id("archived-header"), theme)
                     .role(gpui::Role::Button)
-                    .aria_label(format!("Archived, {count}"))
+                    .aria_label(format!("Archived, {}", thousands(count)))
                     .aria_expanded(expanded)
                     .h(ROW_SM)
-                    .pl(ROW_INSET)
+                    .pl(SPACE_XS)
                     .pr(SPACE_MD)
                     .flex()
                     .items_center()
@@ -589,25 +1044,32 @@ impl PigeonApp {
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_muted)
                     .hover(|s| s.bg(theme.hover_bg))
-                    .child(icon(Icon::Archive, ICON_MD, theme.text_faint))
+                    .active(|s| s.bg(theme.selected_bg))
+                    // MB-032: the disclosure triangle leads, in the inset.
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(ROW_INSET - SPACE_XS)
+                            .flex()
+                            .justify_center()
+                            .child(icon(
+                                if expanded {
+                                    Icon::ChevronDown
+                                } else {
+                                    Icon::ChevronRight
+                                },
+                                ICON_MD,
+                                theme.text_faint,
+                            )),
+                    )
                     .child("Archived")
                     .child(
                         div()
                             .text_color(theme.text_muted)
                             .font_weight(FontWeight::NORMAL)
                             .font_features(tabular_figures())
-                            .child(count.to_string()),
+                            .child(thousands(count)),
                     )
-                    .child(div().flex_1())
-                    .child(icon(
-                        if expanded {
-                            Icon::ChevronDown
-                        } else {
-                            Icon::ChevronRight
-                        },
-                        ICON_MD,
-                        theme.text_faint,
-                    ))
                     .tooltip(move |window, cx| {
                         tooltip(if expanded {
                             "Hide archived conversations"
@@ -627,6 +1089,7 @@ impl PigeonApp {
     fn render_thread_row(
         &self,
         thread_ix: usize,
+        row_cx: &RowContext,
         theme: &Theme,
         window: &Window,
         cx: &mut Context<Self>,
@@ -636,40 +1099,26 @@ impl PigeonApp {
         let selected = self.selected == Some(thread_ix);
         let checked = self.is_checked(thread_ix);
         let selecting = !self.checked.is_empty();
-        let hovered = self.hovered_thread == Some(thread_ix);
         let unread = thread.unread;
         let compact = self.density == Density::Compact;
-        // Accent while the list has the keyboard, grey while the reader
-        // (or anything else) has it.
-        let list_focused = self.focus_handle.is_focused(window) && !self.reader_focused;
+        // Accent while the list has the keyboard in the key window, grey
+        // while the reader (or another window) has it (MB-042).
+        let list_focused = self.focus_handle.is_focused(window)
+            && !self.reader_focused
+            && window.is_window_active();
+        let has_draft = thread.folder != Folder::Drafts && self.draft_replies.contains(&thread.id);
+        let queued = row_cx.queued.contains(&thread.id);
 
         // Sent and drafts are about who they went to; everything else about
-        // who wrote last.
+        // who wrote (ME-011).
         let who = match thread.folder {
-            Folder::Sent | Folder::Drafts => last
-                .to
-                .iter()
-                .chain(&last.cc)
-                .chain(&last.bcc)
-                .next()
-                .map(|c| format!("To: {}", c.display_name()))
-                .unwrap_or_else(|| "(no recipients)".into()),
-            _ => thread
-                .messages
-                .iter()
-                .rev()
-                .map(|m| &m.from)
-                .find(|c| !self.data.is_me(c))
-                .unwrap_or(&last.from)
-                .display_name()
-                .to_string(),
+            Folder::Sent | Folder::Drafts => thread.recipients_line(),
+            _ => thread.senders_line(|c| self.data.is_me(c)),
         };
         let count = thread.messages.len();
-        let subject: SharedString = if thread.subject.is_empty() {
-            "(no subject)".into()
-        } else {
-            thread.subject.clone().into()
-        };
+        let subject: SharedString = thread.subject_or_placeholder().to_string().into();
+        let no_subject = !thread.has_subject();
+        let date = list_date(&last.date);
 
         let (primary, secondary) = if unread {
             (theme.text, theme.text_muted)
@@ -686,24 +1135,41 @@ impl PigeonApp {
             .filter_map(|id| self.data.label(id))
             .filter(|l| l.in_message_list)
             .collect();
+        let label_names = labels
+            .iter()
+            .map(|l| l.name.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
         let label_dots = (!labels.is_empty()).then(|| {
-            let names = labels
-                .iter()
-                .map(|l| l.name.clone())
-                .collect::<Vec<_>>()
-                .join(", ");
+            let names = label_names.clone();
             div()
                 .id(("label-dots", thread_ix))
                 .flex_none()
                 .flex()
                 .items_center()
                 .gap(SPACE_2XS)
-                .children(
-                    labels
-                        .iter()
-                        .take(LABEL_DOTS)
-                        .map(|l| div().size(px(7.)).rounded_full().bg(l.color)),
-                )
+                .children(labels.iter().take(LABEL_DOTS).map(|l| {
+                    if row_cx.no_color {
+                        // MA-024: a letter tells them apart without color.
+                        div()
+                            .px(SPACE_XS)
+                            .rounded(RADIUS_SM)
+                            .bg(theme.label_chip_bg(l.color))
+                            .text_color(theme.label_chip_text(l.color))
+                            .text_size(TEXT_XS)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(
+                                l.name
+                                    .rsplit('/')
+                                    .next()
+                                    .and_then(|leaf| leaf.chars().next())
+                                    .map(|c| c.to_uppercase().to_string())
+                                    .unwrap_or_default(),
+                            )
+                    } else {
+                        div().size(LABEL_DOT).rounded_full().bg(l.color)
+                    }
+                }))
                 .when(labels.len() > LABEL_DOTS, |d| {
                     d.child(
                         div()
@@ -715,47 +1181,61 @@ impl PigeonApp {
                 .tooltip(move |window, cx| tooltip(names.clone()).build(window, cx))
         });
 
-        // The date, or on hover the quick actions in its place.
-        let trailing = if hovered {
-            self.render_row_actions(thread_ix, theme, cx)
-                .into_any_element()
-        } else {
-            div()
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(SPACE_SM)
-                .when(thread.has_attachments(), |this| {
-                    this.child(icon(Icon::Paperclip, ICON_SM, secondary))
-                })
-                .when(thread.important, |this| {
-                    // W4b (FOL-12): Gmail's Important marker.
-                    this.child(
-                        div()
-                            .id(("important", thread_ix))
-                            .role(gpui::Role::Image)
-                            .aria_label("Important")
-                            .child(icon(Icon::Important, ICON_SM, theme.star))
-                            .tooltip(|window, cx| tooltip("Important").build(window, cx)),
-                    )
-                })
-                .when(thread.starred, |this| {
-                    this.child(icon(Icon::StarFilled, ICON_SM, theme.star))
-                })
-                .child(
+        // The date, and in its place on hover the quick actions (ME-004:
+        // the row's hover group swaps them; nothing is re-rendered).
+        let meta = div()
+            .id(("row-meta", thread_ix))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(SPACE_SM)
+            .group_hover(ROW_GROUP, |s| s.hidden())
+            .when(queued, |this| {
+                // MA-069.
+                this.child(
                     div()
-                        .flex_none()
-                        .text_size(TEXT_SM)
-                        .text_color(secondary)
-                        .font_features(tabular_figures())
-                        .child(list_date(&last.date)),
+                        .id(("queued", thread_ix))
+                        .role(gpui::Role::Image)
+                        .aria_label("Waiting to send")
+                        .child(icon(Icon::Clock, ICON_SM, secondary))
+                        .tooltip(|window, cx| tooltip("Waiting to send").build(window, cx)),
                 )
-                .into_any_element()
-        };
+            })
+            .when(thread.has_attachments(), |this| {
+                this.child(icon(Icon::Paperclip, ICON_SM, secondary))
+            })
+            .when(thread.important, |this| {
+                // W4b (FOL-12): Gmail's Important marker.
+                this.child(
+                    div()
+                        .id(("important", thread_ix))
+                        .role(gpui::Role::Image)
+                        .aria_label("Important")
+                        .child(icon(Icon::Important, ICON_SM, theme.star))
+                        .tooltip(|window, cx| tooltip("Important").build(window, cx)),
+                )
+            })
+            .when(thread.starred, |this| {
+                this.child(icon(Icon::StarFilled, ICON_SM, theme.star))
+            })
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(TEXT_SM)
+                    .text_color(secondary)
+                    .font_features(tabular_figures())
+                    .child(date.clone()),
+            );
+        let trailing = div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .child(meta)
+            .child(self.render_row_actions(thread_ix, theme, cx));
 
         // In the inset, clear of the focus bar: the unread dot on the sender
-        // line, or a checkbox centered in the row while picking.
-        let show_checkbox = checked || selecting || hovered;
+        // line, or a checkbox centered in the row while picking or hovered.
+        let pinned_checkbox = checked || selecting;
         let marker = div()
             .absolute()
             .left(-ROW_INSET + SPACE_XS)
@@ -765,26 +1245,35 @@ impl PigeonApp {
             .flex()
             .items_center()
             .justify_center()
-            .when(unread && !show_checkbox, |this| {
-                this.child(div().size(px(6.)).rounded_full().bg(theme.accent))
+            .when(unread && !pinned_checkbox, |this| {
+                this.child(
+                    div()
+                        .id(("unread-dot", thread_ix))
+                        .size(UNREAD_DOT)
+                        .rounded_full()
+                        .bg(theme.accent)
+                        .group_hover(ROW_GROUP, |s| s.hidden()),
+                )
             });
-        let check = show_checkbox.then(|| {
-            div()
-                .absolute()
-                .left(SPACE_XS)
-                .w(ROW_INSET - SPACE_XS)
-                .top_0()
-                .bottom_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(checkbox(thread_ix, checked, theme).on_click(cx.listener(
-                    move |this, _, _, cx| {
+        let check = div()
+            .absolute()
+            .left(SPACE_XS)
+            .w(ROW_INSET - SPACE_XS)
+            .top_0()
+            .bottom_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                checkbox(thread_ix, checked, theme)
+                    .when(!pinned_checkbox, |this| {
+                        this.hidden().group_hover(ROW_GROUP, |s| s.flex())
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         this.toggle_row_checked(thread_ix, cx);
-                    },
-                )))
-        });
+                    })),
+            );
 
         let sender = div()
             .min_w_0()
@@ -797,24 +1286,62 @@ impl PigeonApp {
             })
             .text_color(primary)
             .child(who.clone());
+        let draft_mark = has_draft.then(|| {
+            div()
+                .flex_none()
+                .text_size(TEXT_SM)
+                .text_color(theme.text_danger)
+                .child("Draft")
+        });
         let message_count = (count > 1).then(|| {
             div()
                 .flex_none()
                 .text_size(TEXT_SM)
                 .text_color(secondary)
-                .child(count.to_string())
+                .font_features(tabular_figures())
+                .child(format!("({count})"))
         });
 
+        // MA-048: what the row shows, said.
+        let mut spoken = Vec::new();
+        if unread {
+            spoken.push("Unread".to_string());
+        }
+        spoken.push(who.clone());
+        if count > 1 {
+            spoken.push(format!("{count} messages"));
+        }
+        if has_draft {
+            spoken.push("Draft".into());
+        }
+        spoken.push(subject.to_string());
+        spoken.push(date.clone());
+        for (on, what) in [
+            (thread.starred, "Starred"),
+            (thread.important, "Important"),
+            (thread.has_attachments(), "Has attachments"),
+            (queued, "Waiting to send"),
+        ] {
+            if on {
+                spoken.push(what.into());
+            }
+        }
+        if !label_names.is_empty() {
+            spoken.push(format!("Labels: {label_names}"));
+        }
+
+        let subject_weight = if unread {
+            FontWeight::MEDIUM
+        } else {
+            FontWeight::NORMAL
+        };
         let row = div()
             .id(("thread", thread_ix))
+            .group(ROW_GROUP)
             .role(gpui::Role::ListBoxOption)
-            .aria_label(format!(
-                "{}{who}, {}, {}",
-                if unread { "Unread, " } else { "" },
-                thread.subject,
-                list_date(&last.date)
-            ))
+            .aria_label(spoken.join(", "))
             .aria_selected(selected || checked)
+            .when(selected, |this| this.aria_active_descendant())
             .relative()
             .pl(ROW_INSET)
             .pr(SPACE_MD)
@@ -846,10 +1373,11 @@ impl PigeonApp {
                                     // A third of the row, so a narrow list
                                     // still leaves the subject room.
                                     .w(relative(0.3))
-                                    .max_w(px(180.))
+                                    .max_w(rems(11.25))
                                     .flex()
                                     .gap(SPACE_XS)
                                     .child(sender)
+                                    .children(draft_mark)
                                     .children(message_count),
                             )
                             .child(
@@ -859,12 +1387,14 @@ impl PigeonApp {
                                     .truncate()
                                     .text_size(TEXT_BASE)
                                     .text_color(primary)
-                                    .font_weight(if unread {
-                                        FontWeight::MEDIUM
-                                    } else {
-                                        FontWeight::NORMAL
-                                    })
-                                    .child(subject_and_snippet(&subject, &last.snippet, secondary)),
+                                    .font_weight(subject_weight)
+                                    .child(subject_and_snippet(
+                                        &subject,
+                                        no_subject,
+                                        &last.snippet,
+                                        secondary,
+                                        theme.text_faint,
+                                    )),
                             )
                             .children(label_dots)
                             .child(trailing),
@@ -883,6 +1413,7 @@ impl PigeonApp {
                                 .gap(SPACE_SM)
                                 .child(marker)
                                 .child(sender)
+                                .children(draft_mark)
                                 .children(message_count)
                                 .child(div().flex_1())
                                 .child(trailing),
@@ -899,12 +1430,14 @@ impl PigeonApp {
                                         .min_w_0()
                                         .truncate()
                                         .text_size(TEXT_BASE)
-                                        .font_weight(if unread {
-                                            FontWeight::MEDIUM
-                                        } else {
-                                            FontWeight::NORMAL
+                                        .map(|this| {
+                                            if no_subject {
+                                                // ME-021: a placeholder, not a subject.
+                                                this.italic().text_color(theme.text_faint)
+                                            } else {
+                                                this.font_weight(subject_weight).text_color(primary)
+                                            }
                                         })
-                                        .text_color(primary)
                                         .child(subject),
                                 )
                                 .children(label_dots),
@@ -944,15 +1477,12 @@ impl PigeonApp {
                         .border_color(theme.context_ring),
                 )
             })
-            .children(check)
-            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                if *hovered {
-                    this.hovered_thread = Some(thread_ix);
-                } else if this.hovered_thread == Some(thread_ix) {
-                    this.hovered_thread = None;
-                }
-                cx.notify();
-            }))
+            .child(check)
+            // MA-087: onto a folder, label or category in the sidebar.
+            .on_drag(
+                self.dragged_threads(thread_ix, checked),
+                |dragged, _, _, cx| cx.new(|_| dragged.clone()),
+            )
             .on_any_mouse_down(cx.listener(
                 move |this, event: &gpui::MouseDownEvent, window, cx| {
                     if is_secondary(event) {
@@ -975,8 +1505,35 @@ impl PigeonApp {
             .into_any_element()
     }
 
+    /// What dragging the row carries: the picked threads when it's one of
+    /// them, else the row's.
+    fn dragged_threads(&self, thread_ix: usize, checked: bool) -> DraggedThreads {
+        let thread = &self.data.threads[thread_ix];
+        let ids: Vec<String> = if checked {
+            self.rows
+                .iter()
+                .filter_map(|r| match r {
+                    Row::Thread(ix) if self.is_checked(*ix) => {
+                        Some(self.data.threads[*ix].id.clone())
+                    }
+                    _ => None,
+                })
+                .collect()
+        } else {
+            vec![thread.id.clone()]
+        };
+        let title = match ids.len() {
+            1 => thread.subject_or_placeholder().to_string(),
+            n => format!("{n} conversations"),
+        };
+        DraggedThreads {
+            ids,
+            title: title.into(),
+        }
+    }
+
     /// Archive, delete, read or unread and star, for the row under the
-    /// mouse; they act on that row alone.
+    /// mouse; they act on that row alone. Shown on the row's hover.
     fn render_row_actions(
         &self,
         thread_ix: usize,
@@ -984,7 +1541,12 @@ impl PigeonApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let thread = &self.data.threads[thread_ix];
-        let button = |id: &'static str, glyph: Icon, color, tip: &'static str| {
+        // ME-024: each teaches its key.
+        let button = |id: &'static str,
+                      glyph: Icon,
+                      color,
+                      tip: &'static str,
+                      action: Box<dyn gpui::Action>| {
             div()
                 .id((id, thread_ix))
                 .role(gpui::Role::Button)
@@ -995,32 +1557,33 @@ impl PigeonApp {
                 .justify_center()
                 .rounded(RADIUS_SM)
                 .hover(|s| s.bg(theme.selected_bg))
-                .active(|s| s.opacity(0.7))
+                .active(|s| s.bg(theme.selected_bg).opacity(0.8))
                 .child(icon(glyph, ICON_MD, color))
-                .tooltip(move |window, cx| tooltip(tip).build(window, cx))
+                .tooltip(move |window, cx| {
+                    tooltip(tip).action(action.as_ref(), None).build(window, cx)
+                })
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         };
         div()
+            .id(("row-actions", thread_ix))
             .flex_none()
             .my(-SPACE_XS)
-            .flex()
+            .hidden()
+            .group_hover(ROW_GROUP, |s| s.flex())
             .items_center()
             .gap(SPACE_2XS)
-            .when_some(thread.folder.archive_target(), |this, target| {
+            .when_some(thread.folder.archive_title(), |this, title| {
                 this.child(
                     button(
                         "row-archive",
-                        if target == Folder::Inbox {
-                            Icon::Inbox
-                        } else {
+                        if thread.folder == Folder::Inbox {
                             Icon::Archive
+                        } else {
+                            Icon::Inbox
                         },
                         theme.icon,
-                        if target == Folder::Inbox {
-                            "Move to Inbox"
-                        } else {
-                            "Archive"
-                        },
+                        title,
+                        Box::new(Archive),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
@@ -1039,6 +1602,7 @@ impl PigeonApp {
                         } else {
                             "Delete"
                         },
+                        Box::new(Delete),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
@@ -1048,9 +1612,21 @@ impl PigeonApp {
             })
             .child(
                 if thread.unread {
-                    button("row-read", Icon::MailOpen, theme.icon, "Mark as read")
+                    button(
+                        "row-read",
+                        Icon::MailOpen,
+                        theme.icon,
+                        "Mark as read",
+                        Box::new(MarkRead),
+                    )
                 } else {
-                    button("row-unread", Icon::MailUnread, theme.icon, "Mark as unread")
+                    button(
+                        "row-unread",
+                        Icon::MailUnread,
+                        theme.icon,
+                        "Mark as unread",
+                        Box::new(MarkUnread),
+                    )
                 }
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
@@ -1060,9 +1636,21 @@ impl PigeonApp {
             )
             .child(
                 if thread.starred {
-                    button("row-star", Icon::StarFilled, theme.star, "Unstar")
+                    button(
+                        "row-star",
+                        Icon::StarFilled,
+                        theme.star,
+                        "Unstar",
+                        Box::new(ToggleStar),
+                    )
                 } else {
-                    button("row-star", Icon::Star, theme.icon, "Star")
+                    button(
+                        "row-star",
+                        Icon::Star,
+                        theme.icon,
+                        "Star",
+                        Box::new(ToggleStar),
+                    )
                 }
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
@@ -1072,58 +1660,127 @@ impl PigeonApp {
     }
 }
 
-/// "Subject — snippet", the snippet dimmer, on one line.
-fn subject_and_snippet(subject: &str, snippet: &str, dim: gpui::Hsla) -> StyledText {
+/// An empty view: a glyph, a title VoiceOver reads, and a next step.
+fn empty_view(
+    glyph: Icon,
+    title: impl Into<SharedString>,
+    hint: Option<AnyElement>,
+    theme: &Theme,
+) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(SPACE_SM)
+        .px(SPACE_LG)
+        .line_height(LINE_UI)
+        .child(icon(glyph, ICON_HERO, theme.text_faint))
+        .child(
+            label("empty-title", title)
+                .text_size(TEXT_BASE)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text_muted),
+        )
+        .children(hint)
+}
+
+/// `content` in the middle of the list's pane.
+fn centered(content: gpui::Div) -> AnyElement {
+    div()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(content)
+        .into_any_element()
+}
+
+fn muted_hint(text: impl Into<SharedString>, theme: &Theme) -> AnyElement {
+    label("empty-hint", text)
+        .text_size(TEXT_SM)
+        .text_color(theme.text_faint)
+        .into_any_element()
+}
+
+/// "Subject — snippet", the snippet dimmer, on one line; "(no subject)"
+/// faint and italic (ME-021).
+fn subject_and_snippet(
+    subject: &str,
+    placeholder: bool,
+    snippet: &str,
+    dim: gpui::Hsla,
+    faint: gpui::Hsla,
+) -> StyledText {
     let text = format!("{subject}  {snippet}");
-    let range = subject.len()..text.len();
-    StyledText::new(text).with_highlights([(
-        range,
+    let snippet_range = subject.len()..text.len();
+    let mut highlights = Vec::new();
+    if placeholder {
+        highlights.push((
+            0..subject.len(),
+            HighlightStyle {
+                color: Some(faint),
+                font_style: Some(FontStyle::Italic),
+                font_weight: Some(FontWeight::NORMAL),
+                ..Default::default()
+            },
+        ));
+    }
+    highlights.push((
+        snippet_range,
         HighlightStyle {
             color: Some(dim),
             font_weight: Some(FontWeight::NORMAL),
             ..Default::default()
         },
-    )])
+    ));
+    StyledText::new(text).with_highlights(highlights)
+}
+
+/// The box of a checkbox: empty, checked, or mixed.
+fn check_box(state: gpui::Toggled, theme: &Theme) -> gpui::Div {
+    div()
+        .size(ICON_MD)
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(RADIUS_SM)
+        .map(|d| match state {
+            gpui::Toggled::True => {
+                d.bg(theme.accent)
+                    .child(icon(Icon::Check, ICON_SM, theme.accent_text))
+            }
+            gpui::Toggled::Mixed => {
+                d.bg(theme.accent)
+                    .child(icon(Icon::Minus, ICON_SM, theme.accent_text))
+            }
+            _ => d.border_1().border_color(theme.text_faint),
+        })
 }
 
 /// A row's checkbox for picking it with others.
 fn checkbox(thread_ix: usize, checked: bool, theme: &Theme) -> gpui::Stateful<gpui::Div> {
+    let state = if checked {
+        gpui::Toggled::True
+    } else {
+        gpui::Toggled::False
+    };
     div()
         .id(("row-check", thread_ix))
         .role(gpui::Role::CheckBox)
         .aria_label("Select")
-        .aria_toggled(if checked {
-            gpui::Toggled::True
-        } else {
-            gpui::Toggled::False
-        })
+        .aria_toggled(state)
         .size(HIT_TARGET)
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(
-            div()
-                .size(ICON_MD)
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(RADIUS_SM)
-                .map(|d| {
-                    if checked {
-                        d.bg(theme.accent)
-                            .child(icon(Icon::Check, ICON_SM, theme.accent_text))
-                    } else {
-                        d.border_1().border_color(theme.text_faint)
-                    }
-                }),
-        )
+        .child(check_box(state, theme))
 }
 
 /// Placeholder rows while a view's first page loads (STA-1).
 fn render_skeleton(theme: &Theme) -> AnyElement {
-    let bar = |width: gpui::DefiniteLength, height: gpui::Pixels| {
+    let bar = |width: gpui::DefiniteLength, height: gpui::Rems| {
         div()
             .w(width)
             .h(height)
@@ -1144,11 +1801,11 @@ fn render_skeleton(theme: &Theme) -> AnyElement {
                 div()
                     .flex()
                     .justify_between()
-                    .child(bar(relative(0.35), px(10.)))
-                    .child(bar(relative(0.12), px(10.))),
+                    .child(bar(relative(0.35), TEXT_BASE * 0.75))
+                    .child(bar(relative(0.12), TEXT_BASE * 0.75)),
             )
-            .child(bar(relative(0.7), px(9.)))
-            .child(bar(relative(0.9), px(9.)))
+            .child(bar(relative(0.7), TEXT_SM * 0.75))
+            .child(bar(relative(0.9), TEXT_SM * 0.75))
     };
     div()
         .id("thread-list-loading")
@@ -1161,8 +1818,10 @@ fn render_skeleton(theme: &Theme) -> AnyElement {
         .children((0..6).map(row))
         .with_animation(
             "thread-list-loading",
+            // MC-041: it keeps pulsing (MC-Q9 a), at 30 frames a second.
             Animation::new(std::time::Duration::from_millis(1200))
                 .repeat()
+                .with_max_fps(30.)
                 .with_easing(gpui::pulsating_between(0.5, 1.)),
             |this, delta| this.opacity(delta),
         )
@@ -1172,7 +1831,6 @@ fn render_skeleton(theme: &Theme) -> AnyElement {
 /// "12 results", or approximate while Gmail has more pages (SRC-6): its
 /// estimate when larger, else "12+ results". Exact once everything is in.
 fn result_count(count: usize, estimate: Option<usize>, more: bool) -> String {
-    use super::status::thousands;
     match estimate.filter(|&n| n > count) {
         Some(n) if more => format!("About {} results", thousands(n)),
         _ if more => format!("{}+ results", thousands(count)),

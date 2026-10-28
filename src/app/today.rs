@@ -309,6 +309,10 @@ pub struct Today {
     /// Reads asked for and not done yet.
     mail_due: bool,
     calendar_due: bool,
+    /// Events to read again by id, and whether the calendar list is due,
+    /// short of a whole reload (MC-010).
+    events_due: Vec<String>,
+    calendars_due: bool,
     _reload: Option<Task<()>>,
     _load: Option<Task<()>>,
     _tick: Task<()>,
@@ -367,6 +371,8 @@ impl Today {
             seen: None,
             mail_due: true,
             calendar_due: false,
+            events_due: Vec::new(),
+            calendars_due: false,
             _reload: None,
             _load: None,
             _tick: tick,
@@ -378,17 +384,25 @@ impl Today {
     }
 
     fn on_backend_event(&mut self, event: &BackendEvent, cx: &mut Context<Self>) {
+        // MC-010: events and calendars by what changed; the whole calendar
+        // only when that isn't known.
         let (mail, calendar) = match event {
             BackendEvent::ThreadsChanged(_)
             | BackendEvent::ThreadsRemoved(_)
             | BackendEvent::IdReplaced { .. }
             | BackendEvent::CountsChanged
             | BackendEvent::OpFailed { .. } => (true, false),
-            BackendEvent::EventsChanged(_)
-            | BackendEvent::EventsRemoved(_)
-            | BackendEvent::CalendarsChanged => (false, true),
-            // Demo commits change the store without saying what.
-            BackendEvent::OpCommitted(_) => (true, true),
+            BackendEvent::EventsChanged(ids) | BackendEvent::EventsRemoved(ids) => {
+                self.events_due.extend(ids.iter().cloned());
+                (false, false)
+            }
+            BackendEvent::CalendarsChanged => {
+                self.calendars_due = true;
+                (false, false)
+            }
+            // Demo commits change the store without saying what; Google's
+            // say it with the events above.
+            BackendEvent::OpCommitted(_) => (true, self.backend.read(cx).is_demo()),
             BackendEvent::SignedIn | BackendEvent::SignedOut => {
                 let fired = self.backend.read(cx).fired_reminders();
                 self.reminders = Reminders::new(fired);
@@ -402,7 +416,7 @@ impl Today {
             }
             _ => (false, false),
         };
-        if mail || calendar {
+        if mail || calendar || !self.events_due.is_empty() || self.calendars_due {
             self.mail_due |= mail;
             self.calendar_due |= calendar;
             self._reload = Some(cx.spawn(async |this, cx| {
@@ -413,10 +427,24 @@ impl Today {
     }
 
     fn reload(&mut self, cx: &mut Context<Self>) {
+        let events = std::mem::take(&mut self.events_due);
+        let calendars = std::mem::take(&mut self.calendars_due);
         if std::mem::take(&mut self.calendar_due) {
             let b = self.backend.read(cx);
             self.calendar = b.load_calendar();
             self.google = b.calendar_settings();
+            cx.notify();
+        } else if !events.is_empty() || calendars {
+            let b = self.backend.read(cx);
+            if calendars {
+                self.calendar.calendars = b.load_calendars();
+            }
+            if !events.is_empty() {
+                // A shared event has a copy per calendar, under one id.
+                let mut fresh = b.load_events(&events);
+                self.calendar.events.retain(|e| !events.contains(&e.id));
+                self.calendar.events.append(&mut fresh);
+            }
             cx.notify();
         }
         if std::mem::take(&mut self.mail_due) {

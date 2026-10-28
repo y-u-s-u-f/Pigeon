@@ -42,6 +42,10 @@ impl PigeonApp {
     /// The selection stays on its thread.
     fn on_threads_changed(&mut self, ids: &[String], cx: &mut Context<Self>) {
         let threads = self.backend.read(cx).load_threads(ids);
+        // They come with their bodies (MA-072).
+        for thread in &threads {
+            self.heads.remove(&thread.id);
+        }
         let gone: Vec<String> = ids
             .iter()
             .filter(|id| !threads.iter().any(|t| &t.id == *id))
@@ -207,7 +211,7 @@ impl PigeonApp {
 
     fn on_calendars_changed(&mut self, cx: &mut Context<Self>) {
         let backend = self.backend.read(cx);
-        let mut calendars = backend.load_calendar().calendars;
+        let mut calendars = backend.load_calendars();
         let pending = backend.queued_selections();
         self.calendar.update(cx, |calendar, cx| {
             crate::calendar::keep_pending_visibility(
@@ -241,7 +245,13 @@ impl PigeonApp {
         cx.notify();
     }
 
+    /// The outbox's queued sends, read again (MA-069).
+    pub(super) fn refresh_queued_sends(&mut self, cx: &mut Context<Self>) {
+        self.queued_sends = self.backend.read(cx).queued_sends();
+    }
+
     fn on_op_committed(&mut self, op: OpId, cx: &mut Context<Self>) {
+        self.refresh_queued_sends(cx);
         // W6: "Sending…" becomes "Message sent".
         self.on_send_committed(op, cx);
     }
@@ -251,6 +261,7 @@ impl PigeonApp {
     /// A failed send's draft is back in Drafts (CMP-12): the toast goes
     /// there.
     fn on_op_failed(&mut self, op: OpId, message: &str, cx: &mut Context<Self>) {
+        self.refresh_queued_sends(cx);
         let send = self.sends.contains(&op);
         self.sends.retain(|s| *s != op);
         self.forget_send(op, cx);
@@ -275,10 +286,15 @@ impl PigeonApp {
     }
 
     fn reload_all(&mut self, cx: &mut Context<Self>) {
+        self.refresh_queued_sends(cx);
         let (data, calendar, contacts) = {
             let b = self.backend.read(cx);
-            (b.load_mail(), b.load_calendar(), b.contacts())
+            (b.load_mail_heads(), b.load_calendar(), b.contacts())
         };
+        self.heads = data.threads.iter().map(|t| t.id.clone()).collect();
+        // Another account's labels: start over on its Inbox.
+        self.nav_memory.clear();
+        self.nav = Nav::Folder(crate::data::Folder::Inbox);
         self.composer = None;
         self.selected = None;
         self.focused_message = None;

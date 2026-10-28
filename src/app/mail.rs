@@ -17,8 +17,38 @@ use crate::{
     backend::{MailOp, Older, OpId, ViewKey, categories::Category, gmail},
     data::{Folder, Thread},
     search::{GmailQuery, NextSuggestion, PrevSuggestion, ServerState},
-    ui::command_palette::{Leading, PaletteCommand, PaletteItem},
+    ui::{
+        command_palette::{Leading, PaletteCommand, PaletteItem},
+        thread_list::DraggedThreads,
+    },
 };
+
+/// MB-062: move the selected threads to a Gmail category; from the thread
+/// menu and the `Move to Category…` palette.
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(namespace = pigeon, no_json)]
+pub struct MoveToCategoryOf(pub Category);
+
+type ActionFn = fn() -> Box<dyn Action>;
+
+/// The palette's rows run actions by `fn`, one per category.
+const CATEGORY_ACTIONS: [(Category, ActionFn); 5] = [
+    (Category::Primary, || {
+        Box::new(MoveToCategoryOf(Category::Primary))
+    }),
+    (Category::Social, || {
+        Box::new(MoveToCategoryOf(Category::Social))
+    }),
+    (Category::Promotions, || {
+        Box::new(MoveToCategoryOf(Category::Promotions))
+    }),
+    (Category::Updates, || {
+        Box::new(MoveToCategoryOf(Category::Updates))
+    }),
+    (Category::Forums, || {
+        Box::new(MoveToCategoryOf(Category::Forums))
+    }),
+];
 
 /// How much of each thread the list shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,17 +72,21 @@ pub enum SearchSuggestion {
         name: String,
         email: String,
     },
+    /// "Clear Recent Searches", under the recent ones (ME-015).
+    ClearRecent,
 }
 
+/// The first `COMMON_OPERATORS` show in an empty field; the rest once a
+/// prefix of them is typed (ME-015).
 const OPERATORS: [(&str, &str); 13] = [
     ("from:", "Sender"),
     ("to:", "Recipient"),
     ("subject:", "Words in the subject"),
-    ("label:", "Has a label"),
     ("is:unread", "Unread"),
-    ("is:starred", "Starred"),
     ("has:attachment", "Has attachments"),
     ("in:all", "Every folder but Spam and Trash"),
+    ("label:", "Has a label"),
+    ("is:starred", "Starred"),
     // W4b (SRC-9): Gmail answers these.
     ("after:", "Sent after a date, like 2026/01/31"),
     ("older_than:", "Older than 2d, 3m or 1y"),
@@ -60,6 +94,8 @@ const OPERATORS: [(&str, &str); 13] = [
     ("is:important", "Marked important"),
     ("category:", "An Inbox category, like promotions"),
 ];
+
+const COMMON_OPERATORS: usize = 6;
 
 const RECENT_SEARCHES: usize = 5;
 
@@ -101,6 +137,24 @@ impl PigeonApp {
             .on_action(cx.listener(|this, _: &PrevSuggestion, window, cx| {
                 this.step_search_suggestion(false, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &ClearRecentSearches, _, cx| this.clear_recent_searches(cx)),
+            )
+            .on_action(cx.listener(|this, _: &MoveToCategory, window, cx| {
+                this.open_category_palette(window, cx)
+            }))
+            .on_action(cx.listener(|this, action: &MoveToCategoryOf, _, cx| {
+                let targets = this.targets();
+                this.move_to_category(targets, action.0, cx)
+            }))
+            .on_action(cx.listener(|this, _: &OpenInGmail, _, cx| this.open_in_gmail(cx)))
+            // The reader pages itself (W2-SHELL); these are the list's.
+            .on_action(
+                cx.listener(|this, _: &PageDown, window, cx| this.page_list(true, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &PageUp, window, cx| this.page_list(false, window, cx)),
+            )
             .map(|root| {
                 // From the palette, which leaves focus outside the draft.
                 // With focus in the draft, the composer already passed it on.
@@ -110,7 +164,7 @@ impl PigeonApp {
                         .upgrade()
                         .and_then(|app| Some(app.read(cx).composer.as_ref()?.0.clone()));
                     match composer {
-                        Some(composer) if !composer.read(cx).is_focused(window, cx) => {
+                        Some(composer) if !composer.read(cx).has_focus(window, cx) => {
                             composer.update(cx, |c, cx| c.format(format, window, cx))
                         }
                         _ => cx.propagate(),
@@ -126,12 +180,6 @@ impl PigeonApp {
         };
         self.list_state.remeasure();
         self.reveal_selected();
-    }
-
-    /// Unread threads in the Inbox, for the rail: Primary's, the number
-    /// the sidebar and the Dock show (FOL-11).
-    pub fn inbox_unread(&self) -> usize {
-        self.view_unread(Nav::Folder(Folder::Inbox))
     }
 
     /// Scroll the selected thread's row into view. A row the list hasn't
@@ -184,7 +232,7 @@ impl PigeonApp {
         !self.checked.is_empty() && self.checked.contains(&self.data.threads[ix].id)
     }
 
-    pub(super) fn clear_checked(&mut self) {
+    pub(crate) fn clear_checked(&mut self) {
         self.checked.clear();
         self.select_anchor = None;
     }
@@ -305,7 +353,7 @@ impl PigeonApp {
 
     /// ⌘A in the list (MA-078): pick every conversation loaded, keeping
     /// the anchor.
-    pub(super) fn select_all_threads(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn select_all_threads(&mut self, cx: &mut Context<Self>) {
         let rows: Vec<usize> = self
             .rows
             .iter()
@@ -336,6 +384,42 @@ impl PigeonApp {
         }
         self.reader_focused = false;
         cx.notify();
+    }
+
+    /// PageDown / PageUp in the list (MB-045): the selection moves by a
+    /// screenful of rows. With the reader focused they're the reader's.
+    fn page_list(&mut self, down: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reader_focused {
+            return cx.propagate();
+        }
+        let threads: Vec<(usize, usize)> = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(row, r)| match r {
+                Row::Thread(ix) => Some((row, *ix)),
+                _ => None,
+            })
+            .collect();
+        if threads.is_empty() {
+            return;
+        }
+        let list = &self.list_state;
+        let bottom = list.viewport_bounds().bottom();
+        let top = list.logical_scroll_top().item_ix;
+        let shown = (top..self.rows.len())
+            .take_while(|&row| list.bounds_for_item(row).is_some_and(|b| b.top() < bottom))
+            .count();
+        let step = shown.saturating_sub(1).max(1);
+        let at = self
+            .selected_row()
+            .and_then(|row| threads.iter().position(|&(r, _)| r == row));
+        let to = match (at, down) {
+            (None, _) => 0,
+            (Some(at), true) => (at + step).min(threads.len() - 1),
+            (Some(at), false) => at.saturating_sub(step),
+        };
+        self.move_selection_to(threads[to].1, window, cx);
     }
 
     /// Escape: let go of the picked threads, back to the selected one.
@@ -793,12 +877,26 @@ impl PigeonApp {
             return;
         };
         let targets = self.targets();
-        if targets.is_empty() {
-            return;
-        }
         let remove = targets
             .iter()
             .all(|&ix| self.data.threads[ix].labels.contains(&id));
+        self.set_label(label, targets, remove, cx);
+    }
+
+    /// Add the label to `targets`, or take it off them.
+    fn set_label(
+        &mut self,
+        label: usize,
+        targets: Vec<usize>,
+        remove: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.data.labels.get(label).map(|l| l.id.clone()) else {
+            return;
+        };
+        if targets.is_empty() {
+            return;
+        }
         let changed = self.ids_where(&targets, |t| t.labels.contains(&id) == remove);
         for &ix in &targets {
             let labels = &mut self.data.threads[ix].labels;
@@ -825,6 +923,149 @@ impl PigeonApp {
         };
         self.push_label_change(title, changed, add, take, Some(message), cx);
         cx.notify();
+    }
+
+    /// MB-062: the Inbox threads among `targets` go to `category`, at once.
+    /// Gmail's own categories, so no undo.
+    pub(crate) fn move_to_category(
+        &mut self,
+        targets: Vec<usize>,
+        category: Category,
+        cx: &mut Context<Self>,
+    ) {
+        let targets: Vec<usize> = targets
+            .into_iter()
+            .filter(|&ix| leaves_for(&self.data.threads[ix], category))
+            .collect();
+        if targets.is_empty() {
+            return;
+        }
+        let mut change = (Vec::new(), Vec::new());
+        for &ix in &targets {
+            change = self.data.threads[ix].set_category(category);
+        }
+        let (add, remove) = change;
+        self.queue_labels(&targets, add, remove, cx);
+        self.refresh_rows(true);
+        self.refresh_server_counts(cx);
+        let message = match targets.len() {
+            1 => format!("Moved to {}", category.name()),
+            n => format!("Moved {n} conversations to {}", category.name()),
+        };
+        self.show_toast(ToastKind::Done, message, None, cx);
+        cx.notify();
+    }
+
+    /// `Move to Category…`: the palette, listing the categories.
+    fn open_category_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let targets = self.targets();
+        if !targets
+            .iter()
+            .any(|&ix| self.data.threads[ix].folder == Folder::Inbox)
+        {
+            self.show_toast(
+                ToastKind::Info,
+                "Only conversations in the Inbox have a category",
+                None,
+                cx,
+            );
+            return;
+        }
+        let items = CATEGORY_ACTIONS
+            .iter()
+            .map(|&(category, action)| PaletteItem {
+                command: PaletteCommand::Action(action),
+                title: category.name().into(),
+                subtitle: None,
+                leading: Leading::Icon(category_icon(category)),
+                binding: None,
+                search_only: false,
+            })
+            .collect();
+        self.show_palette(
+            items,
+            "",
+            "Move to category…".into(),
+            "No such category".into(),
+            window,
+            cx,
+        );
+    }
+
+    /// MB-061: the conversation in Gmail on the web, in this account.
+    fn open_in_gmail(&mut self, cx: &mut Context<Self>) {
+        let Some(&ix) = self.targets().first() else {
+            return;
+        };
+        if self.backend.read(cx).is_demo() {
+            return self.show_toast(ToastKind::Info, "Demo data isn't in Gmail", None, cx);
+        }
+        match self.data.threads[ix].gmail_link(&self.data.account.email) {
+            Some(url) => cx.open_url(&url),
+            None => self.show_toast(
+                ToastKind::Info,
+                "This conversation isn't in Gmail yet",
+                None,
+                cx,
+            ),
+        }
+    }
+
+    // Dragging conversations onto the sidebar (MA-087).
+
+    /// Whether dropping `dragged` on `nav` changes anything, so only those
+    /// rows light up.
+    pub(crate) fn accepts_drop(&self, nav: Nav, dragged: &DraggedThreads) -> bool {
+        let threads = dragged
+            .ids
+            .iter()
+            .filter_map(|id| self.data.thread_ix(id))
+            .map(|ix| &self.data.threads[ix]);
+        let not_draft = |t: &&Thread| t.folder != Folder::Drafts;
+        match nav {
+            Nav::Folder(
+                folder @ (Folder::Inbox | Folder::Archive | Folder::Spam | Folder::Trash),
+            ) => threads.filter(not_draft).any(|t| t.folder != folder),
+            Nav::Folder(_) => false,
+            Nav::Starred => threads.filter(not_draft).any(|t| !t.starred),
+            Nav::Label(ix) => self.data.labels.get(ix).is_some_and(|label| {
+                threads
+                    .filter(not_draft)
+                    .any(|t| !t.labels.contains(&label.id))
+            }),
+            Nav::Category(category) => threads.into_iter().any(|t| leaves_for(t, category)),
+        }
+    }
+
+    /// Drop `dragged` on a sidebar row: move, star, label or recategorize.
+    pub(crate) fn drop_threads(
+        &mut self,
+        nav: Nav,
+        dragged: &DraggedThreads,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.accepts_drop(nav, dragged) {
+            return;
+        }
+        let targets: Vec<usize> = dragged
+            .ids
+            .iter()
+            .filter_map(|id| self.data.thread_ix(id))
+            .collect();
+        let movable = self.targets_without_drafts(&targets);
+        match nav {
+            Nav::Folder(folder) => self.move_threads(movable, |_| Some(folder), window, cx),
+            Nav::Starred => {
+                let unstarred = movable
+                    .into_iter()
+                    .filter(|&ix| !self.data.threads[ix].starred)
+                    .collect();
+                self.star_threads(unstarred, cx)
+            }
+            Nav::Label(ix) => self.set_label(ix, movable, false, cx),
+            Nav::Category(category) => self.move_to_category(targets, category, cx),
+        }
     }
 
     /// `v`: the palette, listing the folders to move to.
@@ -897,6 +1138,16 @@ impl PigeonApp {
         let draft = thread.folder == Folder::Drafts;
 
         let mut menu = NativeMenu::new();
+        // MB-018: a menu for several says so first.
+        if several {
+            menu = menu
+                .menu_with_disabled(
+                    format!("{} Conversations", targets.len()),
+                    true,
+                    Box::new(ClearSelection),
+                )
+                .separator();
+        }
         if with_replies && !several && !draft {
             menu = menu
                 .menu("Reply", Box::new(Reply))
@@ -905,13 +1156,8 @@ impl PigeonApp {
                 .separator();
         }
         if with_replies {
-            if let Some(target) = thread.folder.archive_target() {
-                let label = if target == Folder::Inbox {
-                    "Move to Inbox"
-                } else {
-                    "Archive"
-                };
-                menu = menu.menu(label, Box::new(Archive));
+            if let Some(title) = thread.folder.archive_title() {
+                menu = menu.menu(title, Box::new(Archive));
             }
             if thread.folder != Folder::Trash {
                 menu = menu.menu(
@@ -925,43 +1171,68 @@ impl PigeonApp {
                     Box::new(ToggleStar),
                 )
                 .separator();
-        }
-        menu = if unread {
-            menu.menu("Mark as Read", Box::new(MarkRead))
-        } else {
-            menu.menu("Mark as Unread", Box::new(MarkUnread))
-        };
-        // W4b (FOL-12).
-        let important = targets.iter().all(|&ix| self.data.threads[ix].important);
-        menu = menu.menu(
-            if important {
-                "Mark as Not Important"
+            // The toolbar's "…" leaves out what sits beside it (MB-020).
+            menu = if unread {
+                menu.menu("Mark as Read", Box::new(MarkRead))
             } else {
-                "Mark as Important"
-            },
-            Box::new(ToggleImportant),
-        );
+                menu.menu("Mark as Unread", Box::new(MarkUnread))
+            };
+            // W4b (FOL-12).
+            let important = targets.iter().all(|&ix| self.data.threads[ix].important);
+            menu = menu.menu(
+                if important {
+                    "Mark as Not Important"
+                } else {
+                    "Mark as Important"
+                },
+                Box::new(ToggleImportant),
+            );
+        }
         if !draft {
+            // MB-018: not the folder they're all in already.
             let mut folders = NativeMenu::new();
             for folder in Folder::ALL {
-                if folder != Folder::Drafts && folder != Folder::Sent {
-                    folders = folders.menu_with_disabled(
-                        folder.title(),
-                        !several && folder == thread.folder,
-                        Box::new(MoveToFolder(folder)),
-                    );
+                let here = targets
+                    .iter()
+                    .all(|&ix| self.data.threads[ix].folder == folder);
+                if folder != Folder::Drafts && folder != Folder::Sent && !here {
+                    folders = folders.menu(folder.title(), Box::new(MoveToFolder(folder)));
                 }
             }
             menu = menu.submenu("Move to", folders);
-        }
-        let mut labels = NativeMenu::new();
-        for (ix, label) in self.data.labels.iter().enumerate() {
-            let on = targets
+            // MB-062: Gmail's categories, for Inbox conversations.
+            let inbox: Vec<&Thread> = targets
                 .iter()
-                .all(|&t| self.data.threads[t].labels.contains(&label.id));
-            labels = labels.menu_with_check(label.name.clone(), on, Box::new(ToggleLabel(ix)));
+                .map(|&ix| &self.data.threads[ix])
+                .filter(|t| t.folder == Folder::Inbox)
+                .collect();
+            if !inbox.is_empty() {
+                let mut categories = NativeMenu::new();
+                for (category, action) in CATEGORY_ACTIONS {
+                    let here = inbox.iter().all(|t| !leaves_for(t, category));
+                    categories = categories.menu_with_check(category.name(), here, action());
+                }
+                menu = menu.submenu("Move to Category", categories);
+            }
         }
-        menu = menu.submenu("Label", labels);
+        if self.data.labels.is_empty() {
+            menu = menu.menu("New Label…", Box::new(NewLabel));
+        } else {
+            let mut labels = NativeMenu::new();
+            for (ix, label) in self.data.labels.iter().enumerate() {
+                let on = targets
+                    .iter()
+                    .all(|&t| self.data.threads[t].labels.contains(&label.id));
+                labels = labels.menu_with_check(label.name.clone(), on, Box::new(ToggleLabel(ix)));
+            }
+            menu = menu.submenu("Label", labels);
+        }
+        // MB-061.
+        if !several && !draft {
+            menu = menu
+                .separator()
+                .menu("Open in Gmail", Box::new(OpenInGmail));
+        }
         menu.show(position, window, cx);
     }
 
@@ -1017,7 +1288,7 @@ impl PigeonApp {
             When::Labels => mail && !self.data.labels.is_empty(),
             When::LabelOpen => mail && matches!(self.nav, Nav::Label(_)),
             When::FromChoice => {
-                mail && self.composer.is_some() && self.data.account.identities().len() > 1
+                mail && self.composer.is_some() && self.data.account.has_several_identities()
             }
             When::Event => !mail && self.calendar.read(cx).selected.is_some(),
             When::EventOpen => !mail && self.calendar.read(cx).panel.is_some(),
@@ -1034,6 +1305,14 @@ impl PigeonApp {
             }
             When::SignedIn => self.backend.read(cx).source() == Source::Google,
             When::SignedOut => self.backend.read(cx).source() == Source::SignedOut,
+            When::CanSignIn => {
+                let b = self.backend.read(cx);
+                b.source() == Source::SignedOut || b.demo_by_choice()
+            }
+            When::CanSignOut => {
+                let b = self.backend.read(cx);
+                b.source() == Source::Google || b.demo_by_choice()
+            }
             When::Pending => false,
         }
     }
@@ -1086,34 +1365,47 @@ impl PigeonApp {
 
     // Search suggestions.
 
-    /// What the dropdown under the search field offers now: operators and
-    /// recent searches while it's empty, contacts while a `from:` or `to:`
-    /// is being typed.
+    /// What the dropdown under the search field offers now: recent
+    /// searches and common operators while it's empty, the operators a
+    /// typed prefix starts, contacts while a `from:` or `to:` is being
+    /// typed (ME-015).
     pub fn search_suggestions(&self, window: &Window, cx: &App) -> Vec<SearchSuggestion> {
         if !self.search_open || !self.search_input.focus_handle(cx).is_focused(window) {
             return Vec::new();
         }
+        let operator =
+            |&(op, what): &(&'static str, &'static str)| SearchSuggestion::Operator(op, what);
         let value = self.search_input.read(cx).value();
         if value.trim().is_empty() {
-            return OPERATORS
+            let mut out: Vec<SearchSuggestion> = self
+                .recent_searches
                 .iter()
-                .map(|&(op, what)| SearchSuggestion::Operator(op, what))
-                .chain(
-                    self.recent_searches
-                        .iter()
-                        .map(|q| SearchSuggestion::Recent(q.clone())),
-                )
+                .map(|q| SearchSuggestion::Recent(q.clone()))
                 .collect();
+            if !out.is_empty() {
+                out.push(SearchSuggestion::ClearRecent);
+            }
+            out.extend(OPERATORS[..COMMON_OPERATORS].iter().map(operator));
+            return out;
         }
         if value.ends_with(char::is_whitespace) {
             return Vec::new();
         }
         let last = value.split_whitespace().last().unwrap_or_default();
-        let Some((operator, query)) = ["from:", "to:"]
+        let Some((operator_typed, query)) = ["from:", "to:"]
             .into_iter()
             .find_map(|op| Some((op, last.strip_prefix(op)?)))
         else {
-            return Vec::new();
+            // A start of an operator: "has" offers "has:attachment".
+            let typed = last.to_lowercase();
+            if typed.chars().count() < 2 {
+                return Vec::new();
+            }
+            return OPERATORS
+                .iter()
+                .filter(|(op, _)| op.starts_with(&typed) && *op != typed)
+                .map(operator)
+                .collect();
         };
         if query.is_empty() || query.contains('@') {
             return Vec::new();
@@ -1125,7 +1417,7 @@ impl PigeonApp {
             .map(|ix| {
                 let contact = book.contact(ix);
                 SearchSuggestion::Contact {
-                    operator,
+                    operator: operator_typed,
                     name: contact.display_name().to_string(),
                     email: contact.email.clone(),
                 }
@@ -1177,19 +1469,22 @@ impl PigeonApp {
         cx: &mut Context<Self>,
     ) {
         let value = self.search_input.read(cx).value().to_string();
+        // What's before the word being typed, which a suggestion completes.
+        let head = value
+            .rsplit_once(char::is_whitespace)
+            .map_or("", |(head, _)| head);
+        let sep = if head.is_empty() { "" } else { " " };
         let text = match suggestion {
             // Operators that need a value wait for it; the rest are whole.
-            SearchSuggestion::Operator(op, _) if op.ends_with(':') => op.to_string(),
-            SearchSuggestion::Operator(op, _) => format!("{op} "),
+            SearchSuggestion::Operator(op, _) if op.ends_with(':') => format!("{head}{sep}{op}"),
+            SearchSuggestion::Operator(op, _) => format!("{head}{sep}{op} "),
             SearchSuggestion::Recent(query) => query,
             SearchSuggestion::Contact {
                 operator, email, ..
-            } => {
-                let head = value
-                    .rsplit_once(char::is_whitespace)
-                    .map_or("", |(head, _)| head);
-                let sep = if head.is_empty() { "" } else { " " };
-                format!("{head}{sep}{operator}{email} ")
+            } => format!("{head}{sep}{operator}{email} "),
+            SearchSuggestion::ClearRecent => {
+                self.clear_recent_searches(cx);
+                return;
             }
         };
         self.set_search_text(&text, window, cx);
@@ -1197,8 +1492,21 @@ impl PigeonApp {
             .update(cx, |input, cx| input.focus(window, cx));
     }
 
+    /// The search field's X (MA-082): the text goes, the search stays open
+    /// with the keyboard.
+    pub(crate) fn clear_search_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_search_text("", window, cx);
+        self.search_input
+            .update(cx, |input, cx| input.focus(window, cx));
+    }
+
     /// Replace the search text, and search for it.
-    fn set_search_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn set_search_text(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.search_input.update(cx, |input, cx| {
             input.set_value(text.to_string(), window, cx)
         });
@@ -1206,6 +1514,13 @@ impl PigeonApp {
         self.search_highlight = None;
         self.refresh_rows(false);
         self.search_gmail(cx);
+        cx.notify();
+    }
+
+    /// "Clear Recent Searches" (ME-015).
+    fn clear_recent_searches(&mut self, cx: &mut Context<Self>) {
+        self.recent_searches.clear();
+        self.search_highlight = None;
         cx.notify();
     }
 
@@ -1277,6 +1592,13 @@ impl PigeonApp {
         };
         let query = query.expect("asked");
         self.request_search(serial, query, None, crate::search::SEARCH_DEBOUNCE, cx);
+    }
+
+    /// The search summary's Retry (MA-076): ask Gmail again.
+    pub(crate) fn retry_search(&mut self, cx: &mut Context<Self>) {
+        self.server_search.ask(None);
+        self.search_gmail(cx);
+        cx.notify();
     }
 
     /// The next page of Gmail's results, at the end of the search's rows.
@@ -1370,6 +1692,27 @@ pub fn folder_icon(folder: Folder) -> Icon {
         Folder::Spam => Icon::ShieldAlert,
         Folder::Trash => Icon::Trash,
     }
+}
+
+/// A category's glyph, as the sidebar shows it.
+fn category_icon(category: Category) -> Icon {
+    match category {
+        Category::Primary => Icon::Inbox,
+        Category::Social => Icon::Users,
+        Category::Promotions => Icon::Megaphone,
+        Category::Updates => Icon::Bell,
+        Category::Forums => Icon::MessagesSquare,
+    }
+}
+
+/// Whether moving `thread` to `category` changes it: it's in the Inbox
+/// and not in that category alone.
+fn leaves_for(thread: &Thread, category: Category) -> bool {
+    use crate::backend::categories::in_category;
+    thread.folder == Folder::Inbox
+        && Category::ALL
+            .into_iter()
+            .any(|c| in_category(thread, c) != (c == category))
 }
 
 /// The threads an action applies to: the context menu's row, else the picked

@@ -69,14 +69,7 @@ pub fn reminders_for(event: &Event, calendar: &Calendar) -> Vec<Reminder> {
 /// The user's own answer, when someone else organizes the event; aliases
 /// count as the user.
 pub fn my_answer(data: &CalendarData, event: &Event) -> Option<RsvpStatus> {
-    if event.organizer_self || data.account.is_me(&event.organizer.email) {
-        return None;
-    }
-    event
-        .attendees
-        .iter()
-        .find(|a| data.account.is_me(&a.email))
-        .map(|a| a.status)
+    event.my_status(&data.account)
 }
 
 /// Whether an event counts for the user: on a calendar they show, not
