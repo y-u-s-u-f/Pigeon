@@ -608,6 +608,9 @@ impl CalendarView {
                     .text_size(TEXT_SM)
                     .line_height(relative(1.25))
                     .cursor_pointer()
+                    // Overlapping blocks share pixels: only the top one
+                    // gets hover, tooltip and clicks.
+                    .block_mouse_except_scroll()
                     .map(|d| match look {
                         _ if selected => d.shadow(vec![gpui::BoxShadow {
                             color: theme.overlay_shadow.alpha(0.35),
