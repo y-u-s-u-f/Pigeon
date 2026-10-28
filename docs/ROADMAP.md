@@ -1027,7 +1027,8 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 - **Today:** Shows and edits a link with a Join button (`cx.open_url()`). `video_link` in JSON. From Google (W4): `conferenceData.entryPoints` (the `video` one) or else `hangoutLink` fills `Event::conference_uri` and `video_link`, so Join works.
 - **Today (writes, W7):** A link from `conferenceData`/`hangoutLink` is read-only in the panel and never written. A link typed in Pigeon is saved into the location when that's empty, else at the top of the description (6.4 item 9; `place()`); after the next sync it shows there, not in the video field.
 - **Today (W5):** `calendar::policy::video_link()` also finds a Meet, Zoom, Teams or Webex URL in the location or description (for the menu bar and quick join, W1; `next_joinable()`). Creating Meet links: CAL-34.
-- **Needs:** A tester pass (T2c). Phone and PIN entry points aren't shown; the panel's video field still shows only `video_link`.
+- **Today (join in the panel):** The panel's Join button uses `policy::video_link()` too, so an event whose only link is in its location or notes (a Zoom URL pasted into the description, say) gets Join beside the empty video field, and "Add Google Meet" is hidden since the event already has a call. The invite card (CAL-20) uses it as well.
+- **Needs:** A tester pass (T2c). Phone and PIN entry points aren't shown; the panel's video field itself still shows only `video_link`.
 
 #### CAL-21 Drag to create, move and resize
 

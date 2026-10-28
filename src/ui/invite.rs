@@ -23,7 +23,7 @@ use crate::{
     calendar::{
         Event, Occurrence, RsvpStatus,
         layout::pack_lanes,
-        occurrences,
+        occurrences, policy,
         time::{self, date_label, time_range_label},
     },
     data::{Invite, InviteDetails, InviteMethod},
@@ -273,7 +273,7 @@ impl PigeonApp {
                 .iter()
                 .any(|a| a.email.eq_ignore_ascii_case(&event.organizer.email))
                 as usize;
-        let link = event.video_link.clone();
+        let link = policy::video_link(event).unwrap_or_default().to_string();
 
         let details = div()
             .mt(SPACE_MD)

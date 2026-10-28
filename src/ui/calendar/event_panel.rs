@@ -1323,10 +1323,7 @@ impl CalendarView {
     /// calendars that take Meet (any writable one in demo mode), for
     /// events without a call yet.
     pub(crate) fn meet_state(&self, event: &Event, cx: &gpui::App) -> Option<MeetState> {
-        if !event.conference_uri.is_empty()
-            || !event.video_link.trim().is_empty()
-            || self.access_of(event) != Access::Edit
-        {
+        if policy::video_link(event).is_some() || self.access_of(event) != Access::Edit {
             return None;
         }
         if event.meet_request.is_some() {
@@ -2348,6 +2345,8 @@ impl CalendarView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let link = event.video_link.clone();
+        // Also a link in the location or notes.
+        let join = policy::video_link(event).map(str::to_string);
         let editable = self.access_of(event) == Access::Edit;
         let meet = self.meet_state(event, cx).filter(|_| link.is_empty());
         // A Meet link from Google stays as Google made it (CAL-17).
@@ -2400,10 +2399,13 @@ impl CalendarView {
                                     }
                                 })
                         })
-                        .when(!link.is_empty(), |d| {
+                        .when_some(join, |d, join| {
+                            let service = crate::app::today::video_service(&join);
                             d.child(
                                 div()
                                     .id("join-call")
+                                    .role(gpui::Role::Button)
+                                    .aria_label(format!("Join {service}"))
                                     .flex_none()
                                     .h(px(28.))
                                     .px(SPACE_MD)
@@ -2418,7 +2420,7 @@ impl CalendarView {
                                     .hover(|s| s.opacity(0.9))
                                     .child(icon(Icon::Video, px(14.), theme.accent_text))
                                     .child("Join")
-                                    .on_click(move |_, _, cx| cx.open_url(&link)),
+                                    .on_click(move |_, _, cx| cx.open_url(&join)),
                             )
                         })
                         .when_some(meet, |d, state| d.child(meet_button(state, theme, cx))),
