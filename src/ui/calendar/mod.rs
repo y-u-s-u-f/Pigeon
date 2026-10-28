@@ -319,6 +319,8 @@ pub struct CalendarView {
     panel_stale: bool,
     /// The panel sliding shut, drawn until its animation ends.
     closing_panel: Option<EventPanel>,
+    /// The panel sliding shut showed a new event, so it keeps its buttons.
+    closing_was_new: bool,
     pub menu: Option<Menu>,
     pub prompt: Option<SeriesPrompt>,
     pub show_week_numbers: bool,
@@ -335,12 +337,14 @@ pub struct CalendarView {
     date_input: Entity<InputState>,
     book: SharedContactBook,
     backend: Entity<Backend>,
-    /// The event made last, while it's open and may still be dropped for
-    /// having no title.
+    /// The event made last, while it's open and not yet saved: Save keeps
+    /// it, Discard (X, Escape) drops it, and it's dropped for having no
+    /// title.
     new_event: Option<String>,
     /// Edits settling (`flush_edit`).
     pending: Option<PendingEdit>,
-    /// A new event that goes in once it has a title.
+    /// A new event that goes in once it has a title and the panel leaves
+    /// it.
     unsent: Option<String>,
     _edit_timer: Option<Task<()>>,
     /// An answer to an invite, settling.
@@ -432,6 +436,7 @@ impl CalendarView {
             panel: None,
             panel_stale: false,
             closing_panel: None,
+            closing_was_new: false,
             menu: None,
             prompt: None,
             show_week_numbers: false,
@@ -805,7 +810,70 @@ impl CalendarView {
         }
     }
 
+    /// Whether the panel shows a new event that hasn't been saved yet.
+    pub(crate) fn panel_is_new(&self) -> bool {
+        self.panel
+            .as_ref()
+            .is_some_and(|p| self.new_event.as_deref() == Some(p.event_id.as_str()))
+    }
+
+    /// Save (⌘S): a new event goes in, through the same path as before
+    /// (asking about guests); edits to others already went as typed. Either
+    /// way the panel closes. A new event needs a title first.
+    fn save_event(&mut self, _: &SaveEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(panel) = &self.panel else {
+            cx.propagate();
+            return;
+        };
+        if self.panel_is_new() && panel.title.read(cx).value().trim().is_empty() {
+            let title = panel.title.clone();
+            title.update(cx, |input, cx| input.focus(window, cx));
+            cx.emit(CalendarEvent::Refused(
+                "Add a title to save the event".into(),
+            ));
+            return;
+        }
+        // The question about a repeating event's change stays to be answered.
+        if self.asking_scope() {
+            return;
+        }
+        self.close_panel(window, cx);
+    }
+
+    /// Discard (and X or Escape on a new event): it goes without being
+    /// saved, and nothing of it reaches the backend.
+    pub(crate) fn discard_new_event(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.new_event.take() else {
+            return self.close_panel(window, cx);
+        };
+        let never_went = self.unsent.as_ref() == Some(&id);
+        if never_went {
+            self.unsent = None;
+        }
+        // Edits to other events still settling go.
+        self.flush_edit(cx);
+        self.data.events.retain(|e| e.id != id);
+        self.meet_requests.remove(&id);
+        if !never_went {
+            self.queue(
+                CalOp::Delete {
+                    id: id.clone(),
+                    occurrence: None,
+                    scope: SeriesScope::All,
+                    send_updates: SendUpdates::None,
+                },
+                cx,
+            );
+        }
+        if self.selected.as_ref().is_some_and(|s| s.event_id == id) {
+            self.selected = None;
+        }
+        self.panel = None;
+        self.close_panel(window, cx);
+    }
+
     pub fn close_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.closing_was_new = self.panel_is_new();
         self.leave_panel(window, cx);
         // Slides shut, unless its event just went.
         self.closing_panel = self.panel.take();
@@ -934,9 +1002,11 @@ impl CalendarView {
     /// text belongs to another event than the one settling.
     fn send_edit(&mut self, cx: &mut Context<Self>) {
         self._edit_timer = None;
+        // A new event still open waits for Save (or the panel leaving it).
         let unsent = self
             .unsent
             .as_ref()
+            .filter(|id| self.new_event.as_ref() != Some(*id))
             .and_then(|id| self.event(id))
             .filter(|e| !e.title.trim().is_empty())
             .cloned();
@@ -1087,6 +1157,16 @@ impl CalendarView {
                             selected.start = occurrence;
                         }
                     }
+                }
+                // Cancel after Save: the new event opens again, unsaved.
+                None if self.panel.is_none()
+                    && let Some(start) = self.event(&id).map(|e| e.start) =>
+                {
+                    self.open_event(&id, start, true, window, cx);
+                    self.unsent = Some(id.clone());
+                    self.new_event = Some(id);
+                    cx.notify();
+                    return;
                 }
                 None => {
                     self.data.events.retain(|e| e.id != id);
@@ -2060,7 +2140,8 @@ impl CalendarView {
     }
 
     /// Escape: the innermost open thing closes: a drag, a prompt, a dropdown
-    /// or picker, then the panel, then the selection.
+    /// or picker, then the panel (discarding a new event), then the
+    /// selection.
     fn close_event(&mut self, _: &CloseEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.cancel_drag(cx) {
             return;
@@ -2082,6 +2163,8 @@ impl CalendarView {
             self.cancel_unscoped_edit(window, cx);
             window.focus(&self.focus_handle, cx);
             cx.notify();
+        } else if self.panel_is_new() {
+            self.discard_new_event(window, cx);
         } else if self.panel.is_some() {
             self.close_panel(window, cx);
         } else if self.selected.take().is_some() {
@@ -2404,7 +2487,8 @@ impl Render for CalendarView {
         }
         let open = self.panel.is_some();
         let panel = match (&self.panel, &self.closing_panel) {
-            (Some(panel), _) | (None, Some(panel)) => self.render_panel(panel, window, cx),
+            (Some(panel), _) => self.render_panel(panel, self.panel_is_new(), window, cx),
+            (None, Some(panel)) => self.render_panel(panel, self.closing_was_new, window, cx),
             (None, None) => None,
         };
         let docked = self.panel_docked(window);
@@ -2441,6 +2525,7 @@ impl Render for CalendarView {
             .on_action(cx.listener(Self::open_selected))
             .on_action(cx.listener(Self::delete_selected))
             .on_action(cx.listener(Self::close_event))
+            .on_action(cx.listener(Self::save_event))
             .on_action(cx.listener(Self::toggle_calendars_menu))
             .on_action(cx.listener(Self::add_google_meet))
             .on_action(cx.listener(Self::set_repeat))

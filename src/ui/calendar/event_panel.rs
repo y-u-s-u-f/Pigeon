@@ -1,6 +1,7 @@
 //! The event panel, docked on the right. Every field edits the event in
 //! place: text as you type, dates and times when committed (enter, leaving
-//! the field, a pick from its picker, or up and down).
+//! the field, a pick from its picker, or up and down). A new event waits
+//! for Save (⌘S); Discard, X or Escape drop it.
 
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime};
 use gpui::{
@@ -557,7 +558,8 @@ impl CalendarView {
         let Some((panel, event)) = self.panel_event() else {
             return;
         };
-        if !panel.edit_scope.wants(event) {
+        // A new event isn't saved yet, so there's no series to ask about.
+        if !panel.edit_scope.wants(event) || self.panel_is_new() {
             return;
         }
         let (event, occurrence) = (event.clone(), panel.occurrence);
@@ -1579,6 +1581,7 @@ impl CalendarView {
     pub(crate) fn render_panel(
         &self,
         panel: &EventPanel,
+        is_new: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
@@ -1613,7 +1616,7 @@ impl CalendarView {
             .child(icon_button(
                 "event-close",
                 Icon::X,
-                "Close",
+                if is_new { "Discard new event" } else { "Close" },
                 Box::new(CloseEvent),
                 &theme,
             ));
@@ -1738,7 +1741,8 @@ impl CalendarView {
             ))
             .child(divider(&theme))
             .child(self.render_options(event, &theme, window, cx))
-            .child(self.render_delete(event, &theme, cx));
+            // A new event has Discard instead.
+            .when(!is_new, |d| d.child(self.render_delete(event, &theme, cx)));
 
         div()
             .key_context(EVENT_PANEL)
@@ -1763,8 +1767,81 @@ impl CalendarView {
             .border_color(theme.border)
             .child(header)
             .child(body)
+            .when(is_new || editable, |d| {
+                d.child(self.render_footer(is_new, &theme))
+            })
             .into_any_element()
             .into()
+    }
+
+    /// Save and Discard for a new event; Done for one whose edits already
+    /// went as they were made.
+    fn render_footer(&self, is_new: bool, theme: &Theme) -> impl IntoElement {
+        let button = |id: &'static str, label: &'static str, primary: bool| {
+            focusable_control(div().id(id), theme)
+                .role(gpui::Role::Button)
+                .aria_label(label)
+                .h(HIT_TARGET)
+                .px(SPACE_MD)
+                .flex()
+                .items_center()
+                .gap(SPACE_SM)
+                .rounded(RADIUS_MD)
+                .text_size(TEXT_SM)
+                .font_weight(FontWeight::MEDIUM)
+                .map(|d| {
+                    if primary {
+                        d.bg(theme.accent)
+                            .text_color(theme.accent_text)
+                            .hover(|s| s.opacity(0.9))
+                    } else {
+                        d.text_color(theme.text_muted)
+                            .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
+                    }
+                })
+                .child(label)
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        };
+        let (label, note) = if is_new {
+            ("Save", "Not saved yet")
+        } else {
+            ("Done", "Changes save as you make them")
+        };
+        div()
+            .flex_none()
+            .px(SPACE_LG)
+            .py(SPACE_SM)
+            .flex()
+            .items_center()
+            .gap(SPACE_SM)
+            .border_t_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(TEXT_XS)
+                    .text_color(theme.text_faint)
+                    .child(note),
+            )
+            .when(is_new, |d| {
+                d.child(
+                    button("event-discard", "Discard", false)
+                        .child(keycap("esc", theme))
+                        .on_click(|_, window, cx| window.dispatch_action(Box::new(CloseEvent), cx)),
+                )
+            })
+            .child(
+                button("event-save", label, true)
+                    .child(
+                        div()
+                            .text_size(TEXT_XS)
+                            .text_color(theme.accent_text.alpha(0.75))
+                            .child("⌘S"),
+                    )
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(SaveEvent), cx)),
+            )
     }
 
     /// "Repeats every week", or for an occurrence changed on its own, the

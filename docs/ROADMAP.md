@@ -968,10 +968,10 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 #### CAL-7 Edit an event in the panel
 
-- **Today:** Click, or `e`/`enter` on the selection, opens the right panel. Title, calendar, location, video link, guests, notes, reminder and busy/free edit in place; changes apply on every keystroke (`on_field_event()`); Esc closes. `open_event()`, `close_panel()`; `EventPanel` (`event_panel.rs`).
+- **Today:** Click, or `e`/`enter` on the selection, opens the right panel. Title, calendar, location, video link, guests, notes, reminder and busy/free edit in place; changes apply on every keystroke (`on_field_event()`); Esc closes. `open_event()`, `close_panel()`; `EventPanel` (`event_panel.rs`). A footer under the fields says so ("Changes save as you make them") with a **Done** button (⌘S, "Save Event" in ⌘K) that closes the panel, sending what's still settling; read-only events have no footer. While "Apply this change to" is asked, ⌘S/Done waits for the answer.
 - **Today (writes, W7):** Edits settle, then go as one `events.patch` per event: when the panel leaves the event or after 1.5 s idle (`EDIT_DEBOUNCE`; `patched()`, `settle_edit()`, `flush_edit()` in `mod.rs`). The body carries only the changed fields (`backend::calendar::patch_body()`), with `If-Match` on the stored ETag; Google's answer is stored, so the next patch has the new ETag. A failure reloads Google's version (rollback) with a toast; a 412 says "Changed elsewhere; reloaded" (STA-5). A calendar sync runs 2 s after each committed write (`Backend::sync_calendar_soon()`). Read-only events (CAL-22) show their fields read-only.
 - **Needs:** A tester pass on the real account (T2c). Edits still settling are lost if the app quits within 1.5 s. CalDAV: `PUT` with `If-Match`.
-- **Notes:** No Save button, so failed writes must keep the user's text (STA-2). A sync that reloads the open event can replace fields being edited; the title, location and notes are read back from the panel's fields before each patch (`read_panel_text()`), the rest isn't.
+- **Notes:** Done only closes; there's no staged save for existing events, so failed writes must keep the user's text (STA-2). A sync that reloads the open event can replace fields being edited; the title, location and notes are read back from the panel's fields before each patch (`read_panel_text()`), the rest isn't.
 
 #### CAL-8 Date, time and all-day editing
 
@@ -982,8 +982,9 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 #### CAL-9 Create an event
 
 - **Today:** `c` or the header "+" creates one at the next half hour (today or the selected day), opens it, focuses the title. Dragging or double-clicking the grid also creates (CAL-21). Goes to the first visible calendar, its default reminder (CAL-15), busy, user as organizer. `new_event()`, `create_event()`. An untitled new event is dropped when its panel closes, without a toast.
-- **Today (writes, W7):** `events.insert` once the new event has a title (on leaving the panel or after 1.5 s idle; `CalendarView::unsent`); an untitled one never reaches Google. With guests it asks "Send invitations to guests?" first (CAL-13).
-- **Needs:** A tester pass on the real account (T2c).
+- **Today (Save and Discard):** While a new event is open, the panel's footer says "Not saved yet" with **Discard** (Esc) and **Save** (⌘S, "Save Event" in ⌘K); the header X reads "Discard new event", and the "Delete event" row is hidden. Save without a title focuses the title and toasts "Add a title to save the event". Discard, X and Escape drop the event; nothing reaches the backend (`discard_new_event()`). Opening another event or making another new one keeps a titled new event, as before. Cancel on "Send invitations to guests?" after Save reopens the event, still unsaved. A new event never asks "Apply this change to" (no series exists yet).
+- **Today (writes, W7):** `events.insert` once the new event has a title and is saved (Save, or the panel leaving it for another event; `CalendarView::unsent`, held back in `send_edit()` while `new_event` is open); an untitled one never reaches Google. With guests it asks "Send invitations to guests?" first (CAL-13); a Meet request goes with the insert (CAL-34). Quick add (CAL-39) waits for Save the same way.
+- **Needs:** A tester pass on the real account (T2c). A staged new event lives only in memory until saved; quitting with it open loses it.
 - **Notes:** A default-calendar setting isn't built.
 
 #### CAL-10 Delete an event and undo

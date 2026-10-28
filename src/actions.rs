@@ -94,6 +94,7 @@ actions!(
         SelectNextEvent,
         SelectPrevEvent,
         CloseEvent,
+        SaveEvent,
         ToggleCalendarsMenu,
         AcceptInvite,
         MaybeInvite,
@@ -430,6 +431,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("k", SelectPrevEvent, Some(CAL)),
         // Inputs pass escape on, so this closes the panel from them too.
         KeyBinding::new("escape", CloseEvent, Some(CALENDAR)),
+        KeyBinding::new("cmd-s", SaveEvent, Some(CALENDAR)),
         KeyBinding::new("cmd-z", Undo, Some(CAL)),
         KeyBinding::new("?", ToggleShortcutsHelp, Some(CAL)),
         KeyBinding::new("tab", event_panel::NextField, Some(EVENT_PANEL)),
@@ -790,7 +792,8 @@ pub const COMMANDS: &[Command] = commands! {
     CalendarEvents: "Add Reminder…", Bell, AddReminder;
     CalendarEvents: "Open Event", Calendar, OpenEvent;
     CalendarEvents: "Delete Event", Trash, DeleteEvent;
-    CalendarEvents: "Close Event", X, CloseEvent;
+    CalendarEvents: "Save Event", Check, SaveEvent;
+    CalendarEvents: "Close Event (Discards a New One)", X, CloseEvent;
     CalendarEvents: "Undo Delete", Undo, Undo;
     CalendarNavigation: "Today", Calendar, GoToToday;
     CalendarNavigation: "Go to Date…", Calendar, GoToDate;
