@@ -240,6 +240,10 @@ pub struct DraftOrigin {
     pub markdown: String,
     /// The thread a reply answers, by id.
     pub reply_to: Option<String>,
+    /// ME-010: the message in it the reply answers, by id; empty for the
+    /// thread's last.
+    #[serde(default)]
+    pub answers: String,
     pub quoted: Option<Quote>,
     /// W3 (MST-2): it carries the From alias's signature, kept apart from
     /// the markdown.
@@ -397,14 +401,10 @@ pub enum FileKind {
 impl Attachment {
     pub fn kind(&self) -> FileKind {
         let mime = self.mime.to_ascii_lowercase();
-        let ext = self
-            .name
-            .rsplit_once('.')
-            .map(|(_, ext)| ext.to_ascii_lowercase())
-            .unwrap_or_default();
+        let ext = extension(&self.name);
         if mime == "application/pdf" || ext == "pdf" {
             FileKind::Pdf
-        } else if mime.starts_with("image/") {
+        } else if mime.starts_with("image/") || matches!(ext.as_str(), "heic" | "heif") {
             FileKind::Image
         } else if mime.contains("zip")
             || mime.contains("compressed")
@@ -433,16 +433,14 @@ impl Attachment {
     /// An attachment for a file the user picked, guessing its type from
     /// the extension.
     pub fn from_file(name: String, size_bytes: u64) -> Self {
-        let ext = name
-            .rsplit_once('.')
-            .map(|(_, ext)| ext.to_ascii_lowercase())
-            .unwrap_or_default();
+        let ext = extension(&name);
         let mime = match ext.as_str() {
             "pdf" => "application/pdf",
             "png" => "image/png",
             "jpg" | "jpeg" => "image/jpeg",
             "gif" => "image/gif",
             "heic" => "image/heic",
+            "heif" => "image/heif",
             "webp" => "image/webp",
             "zip" => "application/zip",
             "txt" | "md" => "text/plain",
@@ -463,6 +461,13 @@ impl Attachment {
     }
 }
 
+/// A file name's extension, lower case; empty when it has none.
+fn extension(name: &str) -> String {
+    name.rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
 pub(crate) fn hex_color<'de, D: Deserializer<'de>>(d: D) -> Result<Hsla, D::Error> {
     let s = String::deserialize(d)?;
     from_hex(&s).ok_or_else(|| serde::de::Error::custom(format!("not a color: {s}")))
@@ -477,15 +482,7 @@ pub fn to_hex(color: Hsla) -> String {
 
 pub fn from_hex(s: &str) -> Option<Hsla> {
     let v = u32::from_str_radix(s.trim_start_matches('#'), 16).ok()?;
-    Some(
-        Rgba {
-            r: ((v >> 16) & 0xff) as f32 / 255.,
-            g: ((v >> 8) & 0xff) as f32 / 255.,
-            b: (v & 0xff) as f32 / 255.,
-            a: 1.,
-        }
-        .into(),
-    )
+    Some(gpui::rgb(v).into())
 }
 
 impl MailData {
@@ -682,6 +679,24 @@ impl Thread {
         self.messages.last().expect("threads always have messages")
     }
 
+    /// Its labels and flags from its messages' labels, as Gmail derives
+    /// them: the union of the label ids, the user labels among them, and
+    /// unread, starred and important.
+    pub fn derive_from_labels(&mut self) {
+        use crate::backend::gmail;
+        self.label_ids = gmail::union_labels(self.messages.iter().map(|m| &m.label_ids));
+        let has = |label: &str| self.label_ids.iter().any(|l| l == label);
+        self.unread = has(gmail::UNREAD);
+        self.starred = has(gmail::STARRED);
+        self.important = has(gmail::IMPORTANT);
+        self.labels = self
+            .label_ids
+            .iter()
+            .filter(|l| !gmail::is_system_label(l))
+            .cloned()
+            .collect();
+    }
+
     pub fn has_attachments(&self) -> bool {
         self.messages.iter().any(|m| !m.attachments.is_empty())
     }
@@ -802,14 +817,20 @@ impl Thread {
 
     /// Rebuild `search`; call after changing the thread's messages.
     pub fn reindex(&mut self) {
-        let all = self.search_text();
-        self.set_search(all);
+        // The people index once, for both (MC-026).
+        let (from, to, subject) = self.people_index();
+        let all = self.search_text(&from, &to, &subject);
+        self.search = SearchIndex {
+            all,
+            from,
+            to,
+            subject,
+        };
     }
 
     /// Everything a search looks through, lowercased: what the store keeps
     /// as `threads.search_text`, so loading doesn't parse HTML (DAT-6).
-    pub fn search_text(&self) -> String {
-        let (from, to, subject) = self.people_index();
+    fn search_text(&self, from: &str, to: &str, subject: &str) -> String {
         let mut all = format!("{subject}\n{from}{to}");
         for message in &self.messages {
             all.push_str(&message.snippet.to_lowercase());

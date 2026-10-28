@@ -40,6 +40,14 @@
 				<string>mailto</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.pigeon.dev</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>pigeon</string>
+			</array>
+		</dict>
 	</array>
 </dict>
 </plist>

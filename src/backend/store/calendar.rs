@@ -384,17 +384,21 @@ impl Store {
         series: &str,
     ) -> anyhow::Result<Vec<NaiveDateTime>> {
         let conn = self.conn();
+        // The column, not the model: no event is parsed (MC-020).
         let mut stmt = conn.prepare(
-            "SELECT model FROM events
-             WHERE account = ?1 AND calendar_id = ?2 AND recurring_event_id = ?3",
+            "SELECT original_start FROM events
+             WHERE account = ?1 AND calendar_id = ?2 AND recurring_event_id = ?3
+             AND original_start IS NOT NULL",
         )?;
         let rows = stmt.query_map(params![account, calendar, series], |r| {
             r.get::<_, String>(0)
         })?;
         let mut out = Vec::new();
-        for model in rows {
-            let event: Event = serde_json::from_str(&model?)?;
-            out.extend(event.original_start);
+        for start in rows {
+            out.push(NaiveDateTime::parse_from_str(
+                &start?,
+                "%Y-%m-%d %H:%M:%S%.f",
+            )?);
         }
         Ok(out)
     }

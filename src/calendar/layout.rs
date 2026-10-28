@@ -38,7 +38,7 @@ pub fn pack_columns(spans: &[(i64, i64)]) -> Vec<Placement> {
     for i in order {
         let (start, end) = spans[i];
         if start >= cluster_end && !cluster.is_empty() {
-            finish(&mut placements, &mut cluster, &overlaps);
+            finish(&mut placements, &mut cluster, &mut cluster_end, &overlaps);
         }
         // The first column without an event this one overlaps.
         let col = (0..)
@@ -50,23 +50,21 @@ pub fn pack_columns(spans: &[(i64, i64)]) -> Vec<Placement> {
             .expect("some column is free");
         placements[i].col = col;
         cluster.push(i);
-        cluster_end = if cluster.len() == 1 {
-            end
-        } else {
-            cluster_end.max(end)
-        };
+        cluster_end = cluster_end.max(end);
     }
     if !cluster.is_empty() {
-        finish(&mut placements, &mut cluster, &overlaps);
+        finish(&mut placements, &mut cluster, &mut cluster_end, &overlaps);
     }
     placements
 }
 
 /// Give a finished cluster its column count, and widen each event over the
-/// columns to its right that hold nothing it overlaps.
+/// columns to its right that hold nothing it overlaps; then start the next
+/// cluster empty.
 fn finish(
     placements: &mut [Placement],
     cluster: &mut Vec<usize>,
+    cluster_end: &mut i64,
     overlaps: &impl Fn(usize, usize) -> bool,
 ) {
     let cols = cluster
@@ -85,6 +83,7 @@ fn finish(
         placements[i].span = 1 + (col + 1..cols).take_while(|&c| !blocked(c)).count();
     }
     cluster.clear();
+    *cluster_end = i64::MIN;
 }
 
 /// Where a placed event goes across a day `width` wide: its left edge and

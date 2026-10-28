@@ -114,14 +114,12 @@ pub struct Calendar {
 impl Calendar {
     /// The reminders of events that use the calendar's defaults.
     pub fn defaults(&self) -> Vec<Reminder> {
-        if self.default_reminders.is_empty() {
-            self.default_reminder
-                .map(Reminder::popup)
-                .into_iter()
-                .collect()
-        } else {
-            self.default_reminders.clone()
-        }
+        policy::reminders_or(&self.default_reminders, self.default_reminder)
+    }
+
+    /// The minutes of `defaults`, without building it (MC-064).
+    pub fn default_minutes(&self) -> impl Iterator<Item = u32> + '_ {
+        policy::reminder_minutes(&self.default_reminders, self.default_reminder)
     }
 
     /// "Add Google Meet" is offered (CAL-34).
@@ -298,14 +296,12 @@ pub struct Event {
 impl Event {
     /// Its own reminders (not the calendar's defaults).
     pub fn own_reminders(&self) -> Vec<Reminder> {
-        if self.reminders.is_empty() {
-            self.reminder_minutes
-                .map(Reminder::popup)
-                .into_iter()
-                .collect()
-        } else {
-            self.reminders.clone()
-        }
+        policy::reminders_or(&self.reminders, self.reminder_minutes)
+    }
+
+    /// The minutes of `own_reminders`, without building it (MC-064).
+    pub fn own_minutes(&self) -> impl Iterator<Item = u32> + '_ {
+        policy::reminder_minutes(&self.reminders, self.reminder_minutes)
     }
 
     /// Its own reminders become `reminders`, sorted, without repeats.

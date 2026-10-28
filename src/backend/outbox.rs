@@ -134,8 +134,7 @@ impl Outbox {
                 && row.resource == local_id
                 && row.not_before > now
             {
-                self.store
-                    .outbox_update_payload(row.id, &row.payload, now)?;
+                self.store.outbox_set_not_before(row.id, now)?;
             }
         }
         Ok(())
@@ -189,9 +188,7 @@ impl Outbox {
 
     /// Couldn't reach Google: the op waits again, until `at`.
     pub fn retry_later(&self, id: OpId, at: i64, error: &str) -> anyhow::Result<()> {
-        if let Some(row) = self.store.outbox_row(id)? {
-            self.store.outbox_update_payload(id, &row.payload, at)?;
-        }
+        self.store.outbox_set_not_before(id, at)?;
         self.store.outbox_set_state(id, "pending", Some(error))
     }
 
@@ -243,8 +240,7 @@ impl Outbox {
                 && matches!(row.kind.as_str(), "mail.send" | "mail.delete_draft")
                 && row.not_before > now
             {
-                self.store
-                    .outbox_update_payload(row.id, &row.payload, now)?;
+                self.store.outbox_set_not_before(row.id, now)?;
             }
         }
         Ok(())
@@ -252,9 +248,7 @@ impl Outbox {
 
     /// How many ops are still to go ("3 changes waiting").
     pub fn waiting(&self) -> usize {
-        self.store
-            .outbox_pending(&self.account)
-            .map_or(0, |rows| rows.len())
+        self.store.outbox_count(&self.account).unwrap_or(0)
     }
 
     /// The threads with label, trash or untrash ops still to go: those a
@@ -740,7 +734,7 @@ mod tests {
 
     // Commits (W5).
 
-    use crate::backend::http::{FakeClock, FakeTransport};
+    use crate::backend::http::{FakeClock, FakeTransport, batch_body};
     use crate::data::{Folder, Message};
 
     const ACCOUNT: &str = "me@example.com";
@@ -779,38 +773,10 @@ mod tests {
         store.load_threads(ACCOUNT, &[id.to_string()]).unwrap()[0].folder
     }
 
-    /// Answers batches with boundary `b`.
-    struct Batches(Arc<FakeTransport>);
-    impl Transport for Batches {
-        fn send(&self, r: &Request) -> Result<Response, TransportError> {
-            let mut response = self.0.send(r)?;
-            if r.path() == BATCH {
-                response.headers =
-                    vec![("Content-Type".into(), "multipart/mixed; boundary=b".into())];
-            }
-            Ok(response)
-        }
-    }
-
-    fn batch_body(parts: &[(u16, &str)]) -> String {
-        let mut out = String::new();
-        for (ix, (status, body)) in parts.iter().enumerate() {
-            out.push_str(&format!(
-                "--b\r\nContent-ID: <response-item-{}>\r\n\r\nHTTP/1.1 {status} X\r\n\r\n{body}\r\n",
-                ix + 1
-            ));
-        }
-        out + "--b--\r\n"
-    }
-
     fn gmail(fake: FakeTransport) -> (Gmail, Arc<FakeTransport>, Arc<FakeClock>) {
         let fake = Arc::new(fake);
         let clock = Arc::new(FakeClock::new());
-        (
-            Gmail::with_clock(Arc::new(Batches(fake.clone())), clock.clone()),
-            fake,
-            clock,
-        )
+        (Gmail::with_clock(fake.clone(), clock.clone()), fake, clock)
     }
 
     /// (method, path, JSON body) of each call, batches opened up.

@@ -37,8 +37,7 @@ pub fn week_start(date: NaiveDate) -> NaiveDate {
 }
 
 pub fn week_start_on(date: NaiveDate, first: Weekday) -> NaiveDate {
-    let back = (date.weekday().num_days_from_monday() + 7 - first.num_days_from_monday()) % 7;
-    date - Duration::days(back as i64)
+    date - Duration::days(date.weekday().days_since(first) as i64)
 }
 
 /// The Monday of `date`'s week: RRULE's default week start.
@@ -141,7 +140,12 @@ fn pill_time_label_on(time: NaiveTime, h24: bool) -> String {
     if h24 {
         return time_label_on(time, true);
     }
-    format!("{}{}", short_time(time), meridiem(time).to_lowercase())
+    time.format(if time.minute() == 0 {
+        "%-I%P"
+    } else {
+        "%-I:%M%P"
+    })
+    .to_string()
 }
 
 /// "9", "9:30": the hour and, when not on the hour, the minutes.
@@ -198,7 +202,12 @@ fn compact_time_label_on(time: NaiveTime, h24: bool) -> String {
     if h24 {
         return time_label_on(time, true);
     }
-    format!("{} {}", short_time(time), meridiem(time))
+    time.format(if time.minute() == 0 {
+        "%-I %p"
+    } else {
+        "%-I:%M %p"
+    })
+    .to_string()
 }
 
 /// "Sun, Oct 25, 9:12 AM", with the year when it isn't `today`'s; "Sun,
@@ -314,14 +323,10 @@ pub fn parse_date(text: &str, today: NaiveDate) -> Option<NaiveDate> {
     month_alone()
         .or_else(|| with_year("%Y-%m-%d"))
         .or_else(|| with_year("%m/%d/%Y"))
-        .or_else(|| with_year("%b %d %Y"))
         .or_else(|| with_year("%B %d %Y"))
-        .or_else(|| with_year("%d %b %Y"))
         .or_else(|| with_year("%d %B %Y"))
         .or_else(|| without_year("%m/%d/%Y", "/"))
-        .or_else(|| without_year("%b %d %Y", " "))
         .or_else(|| without_year("%B %d %Y", " "))
-        .or_else(|| without_year("%d %b %Y", " "))
         .or_else(|| without_year("%d %B %Y", " "))
 }
 

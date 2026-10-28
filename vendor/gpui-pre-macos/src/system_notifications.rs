@@ -23,9 +23,9 @@ use objc2_foundation::{NSArray, NSBundle, NSError, NSObject, NSObjectProtocol, N
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNMutableNotificationContent, UNNotification, UNNotificationAction,
     UNNotificationActionOptions, UNNotificationCategory, UNNotificationCategoryOptions,
-    UNNotificationDefaultActionIdentifier, UNNotificationPresentationOptions,
-    UNNotificationRequest, UNNotificationResponse, UNUserNotificationCenter,
-    UNUserNotificationCenterDelegate,
+    UNNotificationDefaultActionIdentifier, UNNotificationInterruptionLevel,
+    UNNotificationPresentationOptions, UNNotificationRequest, UNNotificationResponse,
+    UNNotificationSound, UNUserNotificationCenter, UNUserNotificationCenterDelegate,
 };
 
 type ResponseCallback = Rc<RefCell<Option<Box<dyn FnMut(SystemNotificationResponse)>>>>;
@@ -167,8 +167,36 @@ impl NotificationCenter {
         let content = UNMutableNotificationContent::new();
         content.setTitle(&NSString::from_str(&notification.title));
         content.setBody(&NSString::from_str(&notification.body));
-        if !notification.actions.is_empty() {
-            let category_identifier = self.register_category(&notification.actions);
+        // Pigeon patch: actions whose id starts with `@` are content options,
+        // not buttons (see PIGEON_PATCHES.md).
+        let (options, actions): (Vec<_>, Vec<_>) = notification
+            .actions
+            .into_iter()
+            .partition(|action| action.id.starts_with('@'));
+        let mut placeholder = None;
+        for option in &options {
+            let (key, value) = option
+                .id
+                .split_once("=")
+                .unwrap_or((option.id.as_ref(), ""));
+            match key {
+                "@sound" => content.setSound(Some(&UNNotificationSound::defaultSound())),
+                "@thread" => content.setThreadIdentifier(&NSString::from_str(value)),
+                "@level" => content.setInterruptionLevel(match value {
+                    "passive" => UNNotificationInterruptionLevel::Passive,
+                    "time-sensitive" => UNNotificationInterruptionLevel::TimeSensitive,
+                    _ => UNNotificationInterruptionLevel::Active,
+                }),
+                "@hidden" => placeholder = Some(option.clone()),
+                _ => log::warn!("unknown notification option {key}"),
+            }
+        }
+        // The hidden-preview placeholder belongs to the category, so it's
+        // part of the category's key.
+        let category: Vec<SystemNotificationAction> =
+            actions.into_iter().chain(placeholder).collect();
+        if !category.is_empty() {
+            let category_identifier = self.register_category(&category);
             content.setCategoryIdentifier(&NSString::from_str(&category_identifier));
         }
 
@@ -200,10 +228,22 @@ impl NotificationCenter {
             return identifier.clone();
         }
 
-        let identifier =
-            SharedString::from(format!("gpui-system-notification-{}", categories.len()));
+        // Pigeon patch: named after its actions, so a notification delivered
+        // before a relaunch still finds its category.
+        let identifier = SharedString::from(format!(
+            "gpui-system-notification-{}",
+            actions
+                .iter()
+                .map(|action| action.id.as_ref())
+                .collect::<Vec<_>>()
+                .join("+")
+        ));
+        let placeholder = actions
+            .iter()
+            .find_map(|action| action.id.strip_prefix("@hidden="));
         let platform_actions: Vec<Retained<UNNotificationAction>> = actions
             .iter()
+            .filter(|action| !action.id.starts_with('@'))
             .map(|action| {
                 UNNotificationAction::actionWithIdentifier_title_options(
                     &NSString::from_str(&action.id),
@@ -212,13 +252,21 @@ impl NotificationCenter {
                 )
             })
             .collect();
-        let category =
-            UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
+        let category = match placeholder {
+            Some(placeholder) => UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_hiddenPreviewsBodyPlaceholder_options(
+                &NSString::from_str(&identifier),
+                &NSArray::from_retained_slice(&platform_actions),
+                &NSArray::new(),
+                &NSString::from_str(placeholder),
+                UNNotificationCategoryOptions::empty(),
+            ),
+            None => UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
                 &NSString::from_str(&identifier),
                 &NSArray::from_retained_slice(&platform_actions),
                 &NSArray::new(),
                 UNNotificationCategoryOptions::empty(),
-            );
+            ),
+        };
 
         categories.insert(actions.to_vec(), (identifier.clone(), category));
         let all: Vec<Retained<UNNotificationCategory>> = categories

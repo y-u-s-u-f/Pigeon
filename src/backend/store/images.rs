@@ -10,10 +10,7 @@ use super::Store;
 pub const IMAGE_CACHE_CAP: i64 = 64 * 1024 * 1024;
 
 fn url_hash(url: &str) -> String {
-    Sha256::digest(url.as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    format!("{:x}", Sha256::digest(url.as_bytes()))
 }
 
 impl Store {
@@ -39,35 +36,39 @@ impl Store {
         now: i64,
         cap: i64,
     ) -> anyhow::Result<()> {
+        self.put_images([(url, mime, bytes)], now, cap)
+    }
+
+    /// Keep `images` (url, type, bytes) in one transaction, then drop the
+    /// oldest until the cache fits in `cap` bytes, in one statement.
+    pub fn put_images<'a>(
+        &self,
+        images: impl IntoIterator<Item = (&'a str, &'a str, &'a [u8])>,
+        now: i64,
+        cap: i64,
+    ) -> anyhow::Result<()> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        tx.execute(
-            "INSERT INTO images (url_hash, url, mime, bytes, fetched_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT (url_hash) DO UPDATE SET
-                mime = excluded.mime, bytes = excluded.bytes, fetched_at = excluded.fetched_at",
-            params![url_hash(url), url, mime, bytes, now],
-        )?;
-        let over: Vec<String> = {
-            let mut stmt = tx.prepare(
-                "SELECT url_hash, length(bytes) FROM images ORDER BY fetched_at DESC, rowid DESC",
-            )?;
-            let mut total = 0;
-            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
-            let mut over = Vec::new();
-            for row in rows {
-                let (hash, len) = row?;
-                total += len;
-                if total > cap {
-                    over.push(hash);
-                }
-            }
-            over
-        };
-        for hash in over {
-            tx.prepare_cached("DELETE FROM images WHERE url_hash = ?1")?
-                .execute([hash])?;
+        for (url, mime, bytes) in images {
+            tx.prepare_cached(
+                "INSERT INTO images (url_hash, url, mime, bytes, fetched_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT (url_hash) DO UPDATE SET
+                    mime = excluded.mime, bytes = excluded.bytes, fetched_at = excluded.fetched_at",
+            )?
+            .execute(params![url_hash(url), url, mime, bytes, now])?;
         }
+        tx.execute(
+            "DELETE FROM images WHERE rowid IN (
+                SELECT rowid FROM (
+                    SELECT rowid, SUM(length(bytes)) OVER (
+                        ORDER BY fetched_at DESC, rowid DESC
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                    ) AS total FROM images
+                ) WHERE total > ?1
+            )",
+            [cap],
+        )?;
         tx.commit()?;
         Ok(())
     }

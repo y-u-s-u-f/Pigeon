@@ -54,30 +54,7 @@ impl Default for ImageTransport {
 impl Transport for ImageTransport {
     fn send(&self, request: &Request) -> Result<Response, TransportError> {
         let started = Instant::now();
-        let run = || -> Result<Response, ureq::Error> {
-            let mut builder = ureq::http::Request::builder().uri(&request.url);
-            for (name, value) in &request.headers {
-                builder = builder.header(name, value);
-            }
-            let response = self.agent.run(builder.body(())?)?;
-            let status = response.status().as_u16();
-            let headers = response
-                .headers()
-                .iter()
-                .map(|(n, v)| (n.to_string(), v.to_str().unwrap_or_default().to_string()))
-                .collect();
-            let body = response
-                .into_body()
-                .with_config()
-                .limit(IMAGE_LIMIT as u64)
-                .read_to_vec()?;
-            Ok(Response {
-                status,
-                headers,
-                body,
-            })
-        };
-        let result = run();
+        let result = super::http::run(&self.agent, request, None, IMAGE_LIMIT as u64);
         let status = result.as_ref().ok().map(|r| r.status);
         eprintln!(
             "Pigeon: {}",
@@ -139,6 +116,53 @@ pub(super) fn decode(bytes: Vec<u8>) -> anyhow::Result<FetchedImage> {
         bytes,
         width,
         height,
+    })
+}
+
+/// An HEIC or HEIF file by its `ftyp` box (MB-078).
+pub fn is_heif(b: &[u8]) -> bool {
+    const BRANDS: [&[u8]; 8] = [
+        b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"mif1", b"msf1",
+    ];
+    b.get(4..8) == Some(b"ftyp") && b.get(8..12).is_some_and(|brand| BRANDS.contains(&brand))
+}
+
+/// An HEIC or HEIF image as JPEG, through AppKit's image decoders; `None`
+/// when it can't be read.
+pub fn heif_to_jpeg(bytes: &[u8]) -> Option<Vec<u8>> {
+    use objc2::{
+        msg_send,
+        rc::{Retained, autoreleasepool},
+        runtime::{AnyClass, AnyObject},
+    };
+    /// `NSBitmapImageFileTypeJPEG`.
+    const JPEG: usize = 3;
+    autoreleasepool(|_| {
+        let data_class = AnyClass::get(c"NSData")?;
+        let rep_class = AnyClass::get(c"NSBitmapImageRep")?;
+        let dict_class = AnyClass::get(c"NSDictionary")?;
+        // SAFETY: plain Foundation and AppKit calls with their documented
+        // signatures; `bytes` outlives the copy `dataWithBytes` makes, and
+        // the JPEG's bytes are copied out while it's alive.
+        unsafe {
+            let data: Option<Retained<AnyObject>> = msg_send![
+                data_class,
+                dataWithBytes: bytes.as_ptr().cast::<std::ffi::c_void>(),
+                length: bytes.len()
+            ];
+            let rep: Option<Retained<AnyObject>> = msg_send![rep_class, imageRepWithData: &*data?];
+            let properties: Option<Retained<AnyObject>> = msg_send![dict_class, dictionary];
+            let jpeg: Option<Retained<AnyObject>> = msg_send![
+                &*rep?,
+                representationUsingType: JPEG,
+                properties: &*properties?
+            ];
+            let jpeg = jpeg?;
+            let len: usize = msg_send![&*jpeg, length];
+            let ptr: *const std::ffi::c_void = msg_send![&*jpeg, bytes];
+            (!ptr.is_null() && len > 0)
+                .then(|| std::slice::from_raw_parts(ptr.cast::<u8>(), len).to_vec())
+        }
     })
 }
 
@@ -264,6 +288,16 @@ mod tests {
         ];
         assert_eq!(sniff(&jpeg), Some(("image/jpeg", 64, 32)));
         assert_eq!(sniff(b"<svg xmlns='http://www.w3.org/2000/svg'/>"), None);
+    }
+
+    #[test]
+    fn heif_is_known_by_its_ftyp_box() {
+        assert!(is_heif(b"\0\0\0\x18ftypheic\0\0\0\0mif1heic"));
+        assert!(is_heif(b"\0\0\0\x18ftypmif1\0\0\0\0"));
+        assert!(!is_heif(b"\0\0\0\x18ftypisom\0\0\0\0"));
+        assert!(!is_heif(&png(1, 1)));
+        // Not an image AppKit reads: nothing comes back.
+        assert_eq!(heif_to_jpeg(b"\0\0\0\x18ftypheic garbage"), None);
     }
 
     #[test]

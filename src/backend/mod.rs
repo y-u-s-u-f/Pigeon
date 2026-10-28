@@ -303,6 +303,10 @@ pub struct Outgoing {
     pub attachments: Vec<Attachment>,
     /// The thread a reply answers.
     pub reply_to: Option<String>,
+    /// ME-010: the message in it a reply answers, by id; empty for the
+    /// thread's last. Its Message-ID threads the reply.
+    #[serde(default)]
+    pub answers: String,
     pub quoted: Option<Quote>,
     /// W3 (MST-1): the alias's Reply-To, if it has one.
     #[serde(default)]
@@ -365,6 +369,7 @@ impl Outgoing {
             kind: self.kind,
             markdown: self.markdown.clone(),
             reply_to: self.reply_to.clone(),
+            answers: self.answers.clone(),
             quoted: self.quoted.clone(),
             signature: !self.signature.is_empty(),
         };
@@ -1703,14 +1708,6 @@ impl Backend {
     pub fn wake(&mut self, cx: &mut Context<Self>) {
         self.sync.calendar_due = true;
         self.run_sync(cx);
-    }
-
-    /// The Dock badge's count: unread conversations in Primary, the Inbox as
-    /// Pigeon shows it (FOL-11).
-    pub fn inbox_unread(&self) -> u64 {
-        self.category_counts()
-            .unread(categories::Category::Primary)
-            .into()
     }
 
     /// Whether these threads are read, or out of the Inbox, now: their

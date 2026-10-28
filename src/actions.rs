@@ -932,9 +932,6 @@ pub enum When {
     CanSignIn,
     /// Signed in, or on demo data picked on the sign-in screen (ME-050).
     CanSignOut,
-    /// Never: the row waits for its handler, which a later wave adds
-    /// (polish plan, W2/W3). Its owner swaps in the real gate.
-    Pending,
 }
 
 macro_rules! commands {
@@ -974,7 +971,7 @@ pub const COMMANDS: &[Command] = commands! {
     Compose: "Save Draft", FilePen, SaveDraft if Draft;
     Compose: "Close Draft (Saves to Drafts)", FilePen, CloseDraft if Draft;
     Compose: "Discard Draft", Trash, DiscardDraft if Draft;
-    Compose: "Open Draft in New Window", SquarePen, OpenDraftInNewWindow if Pending;
+    Compose: "Open Draft in New Window", SquarePen, OpenDraftInNewWindow if Draft;
     Compose: "Bold", Bold, FormatBold if Draft;
     Compose: "Italic", Italic, FormatItalic if Draft;
     Compose: "Underline", Underline, FormatUnderline if Draft;
@@ -1099,7 +1096,7 @@ pub const COMMANDS: &[Command] = commands! {
     App: "Open Pigeon Window", Mail, ShowMainWindow, help_only;
     App: "Send Test Notification", Bell, SendTestNotification;
     App: "Turn New Mail Notifications On / Off", Bell, ToggleNotifications => Notifications;
-    App: "Turn Event Reminders On / Off", Bell, ToggleEventReminders if Pending => EventReminders;
+    App: "Turn Event Reminders On / Off", Bell, ToggleEventReminders => EventReminders;
     App: "Turn Open at Login On / Off", Settings, ToggleOpenAtLogin => OpenAtLogin;
     // W2: attachments and the original message.
     Conversation: "Open Attachment", Paperclip, OpenAttachment if Thread;

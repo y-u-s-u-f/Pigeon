@@ -76,12 +76,36 @@ impl Store {
     /// The calendars with a show/hide still to go (`SetSelected`'s resource
     /// is `calendar:<id>`).
     pub fn queued_selections(&self, account: &str) -> anyhow::Result<HashSet<String>> {
-        Ok(self
-            .outbox_pending(account)?
-            .into_iter()
-            .filter(|r| r.kind == "calendar.set_selected")
-            .filter_map(|r| r.resource.strip_prefix("calendar:").map(String::from))
-            .collect())
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT resource FROM outbox WHERE account = ?1
+             AND state IN ('pending', 'inflight') AND kind = 'calendar.set_selected'",
+        )?;
+        let rows = stmt.query_map([account], |r| r.get::<_, String>(0))?;
+        let mut out = HashSet::new();
+        for resource in rows {
+            if let Some(id) = resource?.strip_prefix("calendar:") {
+                out.insert(id.to_string());
+            }
+        }
+        Ok(out)
+    }
+
+    /// How many of the account's rows are still to go.
+    pub fn outbox_count(&self, account: &str) -> anyhow::Result<usize> {
+        Ok(self.conn().query_row(
+            "SELECT COUNT(*) FROM outbox WHERE account = ?1 AND state IN ('pending', 'inflight')",
+            [account],
+            |r| r.get::<_, i64>(0),
+        )? as usize)
+    }
+
+    pub fn outbox_set_not_before(&self, id: i64, not_before: i64) -> anyhow::Result<()> {
+        self.conn().execute(
+            "UPDATE outbox SET not_before = ?2 WHERE id = ?1",
+            params![id, not_before],
+        )?;
+        Ok(())
     }
 
     pub fn outbox_update_payload(

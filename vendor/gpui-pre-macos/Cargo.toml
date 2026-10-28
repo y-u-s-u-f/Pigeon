@@ -251,6 +251,7 @@ features = [
     "UNNotificationContent",
     "UNNotificationRequest",
     "UNNotificationResponse",
+    "UNNotificationSound",
     "UNNotificationTrigger",
     "UNUserNotificationCenter",
 ]

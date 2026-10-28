@@ -2,19 +2,26 @@
 //! signs in with Google in the browser, D tries the demo data, Esc cancels a
 //! sign-in that's waiting for the browser; the keys are bound in the
 //! `Onboarding` context (MC-089).
+//!
+//! It shows the app icon, says what Pigeon asks Google for and where it
+//! goes (MB-057), offers Open Again while waiting, and lets people choose
+//! the menu bar icon before it appears (MB-Q1).
+
+use std::{path::PathBuf, sync::OnceLock};
 
 use gpui::{
     AnyElement, App, Context, Div, FocusHandle, FontWeight, InteractiveElement as _, IntoElement,
     ParentElement as _, Pixels, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-    accesskit::Live, actions, div, prelude::FluentBuilder as _, px,
+    accesskit::Live, actions, div, img, prelude::FluentBuilder as _, px,
 };
 
 use super::{icon, keycap_on_accent, keys_caps, live_text, style::*, window_drag_area};
 use crate::{
     actions::{CancelSignIn, ONBOARDING, SignIn, UseDemoData},
-    app::PigeonApp,
+    app::{PigeonApp, menu_bar},
     assets::Icon,
     backend::SignInState,
+    settings,
     theme::Theme,
 };
 
@@ -25,6 +32,22 @@ actions!(onboarding, [Confirm, TryDemo]);
 /// The wide buttons, and the error above them.
 const BUTTON_WIDTH: Pixels = px(260.);
 const ERROR_WIDTH: Pixels = px(360.);
+/// The app icon, as macOS shows it in Finder's large icons (MB-008).
+const APP_ICON: Pixels = px(64.);
+
+/// What Pigeon asks for, as Settings › Accounts › Access says it (MB-057).
+const ACCESS_NOTE: &str = "Opens Google in your browser. Pigeon asks for your mail, calendar and contacts; they stay on this Mac and go only to Google.";
+
+/// The bundle's `AppIcon.png` (scripts/bundle.sh); none under `cargo run`.
+fn app_icon_path() -> Option<&'static PathBuf> {
+    static PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let exe = std::env::current_exe().ok()?;
+        let path = exe.parent()?.parent()?.join("Resources/AppIcon.png");
+        path.is_file().then_some(path)
+    })
+    .as_ref()
+}
 
 impl PigeonApp {
     pub(crate) fn render_onboarding(
@@ -51,14 +74,32 @@ impl PigeonApp {
                         .text_size(TEXT_MD)
                         .text_color(theme.text_muted),
                 )
-                .child(button(
-                    "cancel-sign-in",
-                    "Cancel",
-                    keys_caps("escape", &theme),
-                    false,
-                    &theme,
-                    |_, window, cx| window.dispatch_action(Box::new(CancelSignIn), cx),
-                ))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(SPACE_SM)
+                        .child(button(
+                            "cancel-sign-in",
+                            "Cancel",
+                            keys_caps("escape", &theme),
+                            false,
+                            &theme,
+                            |_, window, cx| window.dispatch_action(Box::new(CancelSignIn), cx),
+                        ))
+                        .child({
+                            // A closed tab: a fresh sign-in in a new one.
+                            let backend = self.backend.clone();
+                            button("open-again", "Open Again", div(), false, &theme, {
+                                move |_, _, cx| {
+                                    backend.update(cx, |b, cx| {
+                                        b.cancel_sign_in(cx);
+                                        b.sign_in(cx);
+                                    })
+                                }
+                            })
+                        }),
+                )
         } else {
             div()
                 .flex()
@@ -93,6 +134,15 @@ impl PigeonApp {
                     &theme,
                     |_, window, cx| window.dispatch_action(Box::new(UseDemoData), cx),
                 ))
+                .child(
+                    super::label("access-note", ACCESS_NOTE)
+                        .max_w(ERROR_WIDTH)
+                        .mt(SPACE_SM)
+                        .text_center()
+                        .text_size(TEXT_SM)
+                        .text_color(theme.text_muted),
+                )
+                .child(menu_bar_check(settings::get(cx).menu_bar.icon, &theme))
         };
 
         window_drag_area(div().id("onboarding"))
@@ -137,7 +187,15 @@ impl PigeonApp {
                     .flex_col()
                     .items_center()
                     .gap(SPACE_SM)
-                    .child(icon(Icon::Mail, ICON_HERO, theme.icon))
+                    .child(match app_icon_path() {
+                        Some(path) => div()
+                            .id("app-icon")
+                            .role(gpui::Role::Image)
+                            .aria_label("Pigeon app icon")
+                            .child(img(path.clone()).size(APP_ICON))
+                            .into_any_element(),
+                        None => icon(Icon::Mail, ICON_HERO, theme.icon).into_any_element(),
+                    })
                     .child(
                         div()
                             .id("onboarding-title")
@@ -158,6 +216,60 @@ impl PigeonApp {
             .child(body)
             .into_any_element()
     }
+}
+
+/// MB-Q1: the menu bar icon is on unless turned off here, before it
+/// shows; Settings › Menu Bar changes it later.
+fn menu_bar_check(on: bool, theme: &Theme) -> impl IntoElement {
+    let label = "Show Pigeon in the menu bar";
+    focusable_control(div().id("menu-bar-check"), theme)
+        .role(gpui::Role::CheckBox)
+        .aria_label(label)
+        .aria_toggled(if on {
+            gpui::Toggled::True
+        } else {
+            gpui::Toggled::False
+        })
+        .mt(SPACE_SM)
+        .px(SPACE_SM)
+        .h(CONTROL_MD)
+        .flex()
+        .items_center()
+        .gap(SPACE_SM)
+        .rounded(RADIUS_MD)
+        .text_size(TEXT_SM)
+        .text_color(theme.text)
+        .hover(|s| s.bg(theme.hover_bg))
+        .active(|s| s.bg(theme.selected_bg))
+        .child(
+            div()
+                .flex_none()
+                .size(ICON_LG)
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(RADIUS_SM / 2.)
+                .map(|d| {
+                    if on {
+                        d.bg(theme.switch_on).child(icon(
+                            Icon::Check,
+                            ICON_SM,
+                            theme.on_fill(theme.switch_on),
+                        ))
+                    } else {
+                        d.bg(theme.control_track)
+                            .border_1()
+                            .border_color(theme.border)
+                    }
+                }),
+        )
+        .child(label)
+        .on_click(|_, _, cx| {
+            let mut prefs = settings::get(cx).menu_bar;
+            prefs.icon = !prefs.icon;
+            menu_bar::set_prefs(prefs, cx);
+            cx.refresh_windows();
+        })
 }
 
 /// A wide button with its key beside the label.

@@ -37,9 +37,7 @@ pub struct InlineImage {
 /// The `cid:` address an inline image is shown and cached under.
 pub fn inline_url(bytes: &[u8]) -> String {
     use sha2::Digest as _;
-    let hash = sha2::Sha256::digest(bytes);
-    let hex: String = hash[..12].iter().map(|b| format!("{b:02x}")).collect();
-    format!("cid:pigeon-{hex}")
+    format!("cid:pigeon-{:.24x}", sha2::Sha256::digest(bytes))
 }
 
 /// The message's images with a Content-ID, by that id (lower case).
@@ -49,15 +47,23 @@ fn inline_parts(message: &mail_parser::Message) -> Vec<(String, InlineImage)> {
         let Some(id) = part.content_id() else {
             continue;
         };
-        if !part
+        let Some(subtype) = part
             .content_type()
-            .is_some_and(|ct| ct.ctype().eq_ignore_ascii_case("image"))
-        {
+            .filter(|ct| ct.ctype().eq_ignore_ascii_case("image"))
+            .map(|ct| ct.subtype().unwrap_or_default().to_ascii_lowercase())
+        else {
             continue;
-        }
-        let bytes = part.decoded();
+        };
+        let mut bytes = part.decoded();
         if bytes.len() > super::images::IMAGE_LIMIT {
             continue;
+        }
+        // MB-078: iPhone photos, as JPEG.
+        if super::images::sniff(&bytes).is_none()
+            && (matches!(subtype.as_str(), "heic" | "heif") || super::images::is_heif(&bytes))
+            && let Some(jpeg) = super::images::heif_to_jpeg(&bytes)
+        {
+            bytes = std::borrow::Cow::Owned(jpeg);
         }
         let Some((mime, _, _)) = super::images::sniff(&bytes) else {
             continue;
@@ -78,27 +84,6 @@ fn inline_parts(message: &mail_parser::Message) -> Vec<(String, InlineImage)> {
     out
 }
 
-/// `%XX` escapes decoded, as `cid:` URLs may carry them (RFC 2392).
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && let Some(v) = s
-                .get(i + 1..i + 3)
-                .and_then(|h| u8::from_str_radix(h, 16).ok())
-        {
-            out.push(v);
-            i += 3;
-            continue;
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 /// Every `cid:<id>` in `html` whose id is in `ids` (lower case) pointed at
 /// its image's own address.
 fn rewrite_cids(html: &str, ids: &[(String, InlineImage)]) -> String {
@@ -114,7 +99,7 @@ fn rewrite_cids(html: &str, ids: &[(String, InlineImage)]) -> String {
         let end = html[start..]
             .find(|c: char| matches!(c, '"' | '\'' | '>' | ')' | '<') || c.is_whitespace())
             .map_or(html.len(), |i| i + start);
-        let id = percent_decode(&html[start..end]).to_lowercase();
+        let id = super::http::percent_decode(&html[start..end]).to_lowercase();
         if let Some((_, image)) = ids.iter().find(|(seen, _)| *seen == id) {
             out.push_str(&html[last..at]);
             out.push_str(&image.url);

@@ -72,12 +72,8 @@ pub fn commit_compose(
 
 /// The Gmail draft id stored for a Drafts thread, and its message's id.
 fn stored_draft(store: &Store, account: &str, local_id: &str) -> Option<(String, String)> {
-    store
-        .stored_drafts(account)
-        .ok()?
-        .into_iter()
-        .find(|(local, _, _)| local == local_id)
-        .and_then(|(_, draft_id, message)| Some((draft_id?, message)))
+    let (draft_id, message) = store.stored_draft(account, local_id).ok()??;
+    Some((draft_id?, message))
 }
 
 /// A thread id Gmail knows: not one made up here.
@@ -85,16 +81,19 @@ fn gmail_thread(id: Option<&str>) -> Option<&str> {
     id.filter(|id| !id.starts_with("sent-local-") && !id.starts_with("draft-"))
 }
 
-/// The headers that thread a reply: from the last message of the thread it
-/// answers, drafts left out.
+/// The headers that thread a reply: from the message it answers (ME-010),
+/// else the last message of the thread, drafts left out.
 fn threading(store: &Store, account: &str, draft: &Outgoing) -> Option<mime::Threading> {
     let id = draft.reply_to.clone()?;
     let thread = store.load_threads(account, &[id]).ok()?.pop()?;
-    let parent = thread
-        .messages
-        .iter()
-        .rev()
-        .find(|m| !m.label_ids.iter().any(|l| l == gmail::DRAFT) && !m.message_id.is_empty())?;
+    let usable = |m: &&crate::data::Message| {
+        !m.label_ids.iter().any(|l| l == gmail::DRAFT) && !m.message_id.is_empty()
+    };
+    let answered = (!draft.answers.is_empty())
+        .then(|| thread.messages.iter().find(|m| m.id == draft.answers))
+        .flatten()
+        .filter(usable);
+    let parent = answered.or_else(|| thread.messages.iter().rev().find(usable))?;
     mime::reply_threading(parent)
 }
 
@@ -164,9 +163,8 @@ fn read_files(
 }
 
 fn build(
-    store: &Store,
-    account: &str,
     draft: &Outgoing,
+    threading: Option<mime::Threading>,
     is_draft: bool,
     files: Vec<(crate::data::Attachment, Vec<u8>)>,
 ) -> (Vec<u8>, String) {
@@ -176,7 +174,7 @@ fn build(
         &mime::Build {
             message_id: message_id.clone(),
             date: chrono::Utc::now().timestamp(),
-            threading: threading(store, account, draft),
+            threading,
             draft: is_draft,
             files,
         },
@@ -241,7 +239,7 @@ fn save_draft(
         revision,
     )?;
     let files = read_files(gmail, draft, stored.as_ref().map(|s| s.0.as_str()))?;
-    let (raw, _) = build(store, account, draft, true, files);
+    let (raw, _) = build(draft, threading(store, account, draft), true, files);
     let thread_id = gmail_thread(draft.reply_to.as_deref());
     let request = match &stored {
         Some((id, _)) => gmail::draft_update_request(id, &raw, thread_id),
@@ -314,8 +312,10 @@ fn send(
     events: &mut Vec<BackendEvent>,
 ) -> anyhow::Result<()> {
     let stored = local_id.and_then(|id| stored_draft(store, account, id));
+    // Looked up once, for the message and the copy stored (MC-029).
+    let threading = threading(store, account, draft);
     let sent = read_files(gmail, draft, stored.as_ref().map(|s| s.0.as_str())).and_then(|files| {
-        let (raw, message_id) = build(store, account, draft, false, files);
+        let (raw, message_id) = build(draft, threading.clone(), false, files);
         let joins = gmail_thread(draft.reply_to.as_deref());
         let request = match &stored {
             Some((id, _)) => gmail::draft_send_request(id, &raw, joins),
@@ -359,7 +359,7 @@ fn send(
     let mut message = draft.to_message(labels);
     message.id = sent.id.clone();
     message.message_id = message_id;
-    if let Some(t) = threading(store, account, draft) {
+    if let Some(t) = threading {
         message.in_reply_to = t.in_reply_to;
         message.references = t.references;
     }
@@ -404,15 +404,7 @@ fn send(
 /// Folder, flags and labels from the messages' labels, as sync derives them.
 fn rederive(thread: &mut Thread, me: &Account) {
     thread.folder = gmail::derive_folder(&thread.messages, me);
-    thread.label_ids = gmail::union_labels(thread.messages.iter().map(|m| &m.label_ids));
-    thread.unread = thread.label_ids.iter().any(|l| l == gmail::UNREAD);
-    thread.starred = thread.label_ids.iter().any(|l| l == gmail::STARRED);
-    thread.labels = thread
-        .label_ids
-        .iter()
-        .filter(|l| !gmail::is_system_label(l))
-        .cloned()
-        .collect();
+    thread.derive_from_labels();
     thread.reindex();
 }
 
@@ -447,6 +439,7 @@ fn load_draft(
         kind: crate::app::ComposeKind::New,
         markdown: String::new(),
         reply_to: None,
+        answers: String::new(),
         quoted: None,
         signature: false,
     });
@@ -642,6 +635,45 @@ mod tests {
         assert_eq!(t.messages.len(), 2);
         assert_eq!(t.folder, Folder::Inbox);
         assert_eq!(t.last_message().in_reply_to, "m1@example.com");
+    }
+
+    /// ME-010: a reply to an earlier message threads under that one; an
+    /// unknown id falls back to the last message.
+    #[test]
+    fn a_reply_threads_under_the_message_it_answers() {
+        let store = Store::open_in_memory().unwrap();
+        let message = |id: &str, references: &[&str]| {
+            let mut m = Message::new(Contact {
+                name: "Ana".into(),
+                email: "ana@example.com".into(),
+            });
+            m.id = id.into();
+            m.label_ids = vec![gmail::INBOX.into()];
+            m.message_id = format!("{id}@example.com");
+            m.references = references.iter().map(|r| r.to_string()).collect();
+            m
+        };
+        let t = Thread::local(
+            "t1".into(),
+            "Lunch".into(),
+            Folder::Inbox,
+            vec![message("m1", &[]), message("m2", &["m1@example.com"])],
+            None,
+        );
+        store.put_threads(ME, &[t]).unwrap();
+        let draft = |answers: &str| Outgoing {
+            kind: ComposeKind::Reply,
+            reply_to: Some("t1".into()),
+            answers: answers.into(),
+            ..outgoing("Re: Lunch")
+        };
+        let first = threading(&store, ME, &draft("m1")).unwrap();
+        assert_eq!(first.in_reply_to, "m1@example.com");
+        assert_eq!(first.references, ["m1@example.com"]);
+        let last = threading(&store, ME, &draft("gone")).unwrap();
+        assert_eq!(last.in_reply_to, "m2@example.com");
+        assert_eq!(last.references, ["m1@example.com", "m2@example.com"]);
+        assert_eq!(threading(&store, ME, &draft("")).unwrap(), last);
     }
 
     #[test]

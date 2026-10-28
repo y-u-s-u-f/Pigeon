@@ -525,7 +525,7 @@ impl CalendarView {
             let above = top_px >= LABEL_HEIGHT + 4.;
             div()
                 .absolute()
-                .left(px(2.))
+                .left(SPACE_2XS)
                 .map(|d| {
                     if above {
                         d.top(px(top_px - LABEL_HEIGHT - 4.))
@@ -556,11 +556,11 @@ impl CalendarView {
                     div()
                         .absolute()
                         .top(px(top_px))
-                        .left(px(2.))
-                        .right(px(6.))
+                        .left(SPACE_2XS)
+                        .right(SPACE_XS + SPACE_2XS)
                         .h(px(height))
                         .px(SPACE_SM)
-                        .py(px(if compact { 0. } else { 4. }))
+                        .py(if compact { px(0.) } else { SPACE_XS })
                         .flex()
                         .when(compact, |d| d.items_center().gap(SPACE_SM))
                         .when(!compact, |d| d.flex_col())

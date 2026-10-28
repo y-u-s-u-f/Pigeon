@@ -6,7 +6,10 @@
 use gpui::{Context, Entity};
 
 use super::{Nav, PigeonApp, ToastAction, ToastKind};
-use crate::backend::{Backend, BackendEvent, OpId, SyncStatus};
+use crate::{
+    actions::SignIn,
+    backend::{Backend, BackendEvent, OpId, Source, SyncStatus},
+};
 
 impl PigeonApp {
     pub(super) fn on_backend_event(
@@ -235,7 +238,16 @@ impl PigeonApp {
     // Status, the outbox and signing in.
 
     /// Also the account's name, which the profile check may have updated.
-    fn on_status(&mut self, _status: &SyncStatus, cx: &mut Context<Self>) {
+    /// An expired sign-in says so once, with the way back (MB-054).
+    fn on_status(&mut self, status: &SyncStatus, cx: &mut Context<Self>) {
+        let expired = *status == SyncStatus::AuthExpired;
+        if expired && !std::mem::replace(&mut self.auth_expired, expired) {
+            let fix = ToastAction::run("Sign In Again", |_, window, cx| {
+                window.dispatch_action(Box::new(SignIn), cx)
+            });
+            self.show_toast(ToastKind::Error, "Google signed Pigeon out", Some(fix), cx);
+        }
+        self.auth_expired = expired;
         if let Some(account) = self.backend.read(cx).account().cloned() {
             self.calendar.update(cx, |calendar, _| {
                 calendar.data.account = account.clone();
@@ -278,6 +290,14 @@ impl PigeonApp {
     /// comes from the new source.
     fn on_signed_in(&mut self, cx: &mut Context<Self>) {
         self.reload_all(cx);
+        // MB-057: after reload_all, which clears the toast.
+        let b = self.backend.read(cx);
+        if b.source() == Source::Google
+            && let Some(email) = b.account().map(|a| a.email.clone())
+            && !email.is_empty()
+        {
+            self.show_toast(ToastKind::Done, format!("Signed in as {email}"), None, cx);
+        }
     }
 
     fn on_signed_out(&mut self, cx: &mut Context<Self>) {

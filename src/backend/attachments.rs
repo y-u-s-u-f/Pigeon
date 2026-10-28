@@ -181,7 +181,7 @@ fn touch(path: &Path) {
 pub fn cache_key(account: &str, message: &str, part: &str) -> String {
     use sha2::Digest as _;
     let hash = sha2::Sha256::digest(format!("{account}\n{message}\n{part}").as_bytes());
-    hash[..16].iter().map(|b| format!("{b:02x}")).collect()
+    format!("{hash:.32x}")
 }
 
 /// A file name that's safe to write: no directories, no control or
@@ -330,12 +330,37 @@ pub fn quarantine(path: &Path) {
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let value = format!("0081;{secs:08x};Pigeon;");
-    let set = std::process::Command::new("/usr/bin/xattr")
-        .args(["-w", "com.apple.quarantine", &value])
-        .arg(path)
-        .output();
-    if let Err(e) = set {
-        eprintln!("Pigeon: couldn't quarantine a file: {e}");
+    // Set in-process rather than spawning `/usr/bin/xattr` (MC-032).
+    unsafe extern "C" {
+        fn setxattr(
+            path: *const std::ffi::c_char,
+            name: *const std::ffi::c_char,
+            value: *const std::ffi::c_void,
+            size: usize,
+            position: u32,
+            options: std::ffi::c_int,
+        ) -> std::ffi::c_int;
+    }
+    use std::os::unix::ffi::OsStrExt as _;
+    let Ok(c_path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return;
+    };
+    // SAFETY: both strings are NUL-terminated and `value` outlives the call.
+    let set = unsafe {
+        setxattr(
+            c_path.as_ptr(),
+            c"com.apple.quarantine".as_ptr(),
+            value.as_ptr().cast(),
+            value.len(),
+            0,
+            0,
+        )
+    };
+    if set != 0 {
+        eprintln!(
+            "Pigeon: couldn't quarantine a file: {}",
+            std::io::Error::last_os_error()
+        );
     }
 }
 
@@ -632,17 +657,16 @@ impl Backend {
                                 .put_bodies(&account, &tid, vec![(message_id.clone(), parsed)])
                                 .is_ok();
                         } else {
-                            for image in &parsed.inline_images {
-                                store
-                                    .put_image(
-                                        &image.url,
-                                        image.mime,
-                                        &image.bytes,
-                                        now_ms(),
-                                        IMAGE_CACHE_CAP,
-                                    )
-                                    .ok();
-                            }
+                            store
+                                .put_images(
+                                    parsed
+                                        .inline_images
+                                        .iter()
+                                        .map(|i| (i.url.as_str(), i.mime, i.bytes.as_slice())),
+                                    now_ms(),
+                                    IMAGE_CACHE_CAP,
+                                )
+                                .ok();
                         }
                         for (url, image) in &mut found {
                             if image.is_none() {

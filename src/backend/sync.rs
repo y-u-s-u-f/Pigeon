@@ -327,7 +327,7 @@ impl MailSync {
             .iter()
             .map(|&ix| gmail::label_get_request(&list.labels[ix].id))
             .collect();
-        let mut labels = list.labels.clone();
+        let mut labels = list.labels;
         for (ix, result) in counted
             .into_iter()
             .zip(self.gmail.batch::<gmail::GLabel>(&requests))
@@ -441,21 +441,30 @@ impl MailSync {
             }
         }
         let stored = tri!(self.store.stored_drafts(&self.account));
+        // By Gmail draft id, and by local id (MC-024).
+        let by_draft: HashMap<&str, (&String, &String)> = stored
+            .iter()
+            .filter_map(|(local, d, message)| Some((d.as_deref()?, (local, message))))
+            .rev()
+            .collect();
+        let by_local: HashMap<&str, &String> = stored
+            .iter()
+            .rev()
+            .map(|(local, _, message)| (local.as_str(), message))
+            .collect();
         let local_for = |draft_id: &str| {
-            stored
-                .iter()
-                .find(|(_, d, _)| d.as_deref() == Some(draft_id))
-                .map(|(local, _, message)| (local.clone(), message.clone()))
+            by_draft
+                .get(draft_id)
+                .map(|(local, message)| ((*local).clone(), (*message).clone()))
         };
         let mut wanted = Vec::new();
         let mut keep: HashSet<String> = HashSet::new();
         for draft in &drafts {
             let (thread_id, stored_message) = local_for(&draft.id).unwrap_or_else(|| {
                 let id = gmail::draft_thread_id(&draft.id);
-                let message = stored
-                    .iter()
-                    .find(|(local, _, _)| *local == id)
-                    .map(|(_, _, m)| m.clone())
+                let message = by_local
+                    .get(id.as_str())
+                    .map(|m| (*m).clone())
                     .unwrap_or_default();
                 (id, message)
             });
@@ -1114,7 +1123,7 @@ impl Backend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::http::FakeTransport;
+    use crate::backend::http::{FakeTransport, batch_body};
 
     const ACCOUNT: &str = "me@example.com";
     const BATCH: &str = "/batch/gmail/v1";
@@ -1123,46 +1132,6 @@ mod tests {
         let fake = Arc::new(fake);
         let sync = MailSync {
             gmail: Gmail::new(fake.clone()),
-            store: Store::open_in_memory().unwrap(),
-            account: ACCOUNT.into(),
-        };
-        (sync, fake)
-    }
-
-    /// A batch response holding `bodies` (status, JSON) in order.
-    fn batch_body(bodies: &[(u16, &str)]) -> String {
-        let mut out = String::new();
-        for (ix, (status, body)) in bodies.iter().enumerate() {
-            out.push_str(&format!(
-                "--b\r\nContent-Type: application/http\r\nContent-ID: <response-item-{}>\r\n\r\n\
-                 HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n\r\n{body}\r\n",
-                ix + 1
-            ));
-        }
-        out.push_str("--b--\r\n");
-        out
-    }
-
-    /// The fake answers batches with this boundary.
-    struct Batches(Arc<FakeTransport>);
-    impl Transport for Batches {
-        fn send(
-            &self,
-            r: &crate::backend::http::Request,
-        ) -> Result<crate::backend::http::Response, crate::backend::http::TransportError> {
-            let mut response = self.0.send(r)?;
-            if r.path() == BATCH {
-                response.headers =
-                    vec![("Content-Type".into(), "multipart/mixed; boundary=b".into())];
-            }
-            Ok(response)
-        }
-    }
-
-    fn sync_batches(fake: FakeTransport) -> (MailSync, Arc<FakeTransport>) {
-        let fake = Arc::new(fake);
-        let sync = MailSync {
-            gmail: Gmail::new(Arc::new(Batches(fake.clone()))),
             store: Store::open_in_memory().unwrap(),
             account: ACCOUNT.into(),
         };
@@ -1230,8 +1199,7 @@ mod tests {
         let thread = include_str!("../../tests/fixtures/google/gmail/thread_metadata.json");
         let gone = r#"{"error":{"code":404,"message":"Not Found"}}"#;
         let body = batch_body(&[(200, thread), (404, gone)]);
-        let (sync, fake) =
-            sync_batches(FakeTransport::new().on("POST", BATCH, &[], &[(200, &body)]));
+        let (sync, fake) = sync(FakeTransport::new().on("POST", BATCH, &[], &[(200, &body)]));
         sync.store
             .put_threads(
                 ACCOUNT,
@@ -1356,8 +1324,7 @@ mod tests {
             (200, &message),
             (400, r#"{"error":{"message":"Bad Request"}}"#),
         ]);
-        let (sync, fake) =
-            sync_batches(FakeTransport::new().on("POST", BATCH, &[], &[(200, &body)]));
+        let (sync, fake) = sync(FakeTransport::new().on("POST", BATCH, &[], &[(200, &body)]));
         sync.store
             .put_synced_threads(
                 ACCOUNT,
@@ -1422,7 +1389,7 @@ mod tests {
             Arc::new(FakeTransport::new().on("POST", BATCH, &[], &[(200, &first), (200, &second)]));
         let sync = MailSync {
             gmail: Gmail::with_clock(
-                Arc::new(Batches(fake.clone())),
+                fake.clone(),
                 Arc::new(crate::backend::http::FakeClock::new()),
             ),
             store: Store::open_in_memory().unwrap(),
@@ -1444,8 +1411,7 @@ mod tests {
         let thread = include_str!("../../tests/fixtures/google/gmail/thread_metadata.json");
         let denied = r#"{"error":{"code":400,"message":"Bad Request"}}"#;
         let body = batch_body(&[(200, thread), (400, denied)]);
-        let (worker, _) =
-            sync_batches(FakeTransport::new().on("POST", BATCH, &[], &[(200, &body)]));
+        let (worker, _) = sync(FakeTransport::new().on("POST", BATCH, &[], &[(200, &body)]));
         let plan = VecDeque::from([
             Step::Fetch(vec!["thread-a1".into(), "bad".into()]),
             Step::Drafts,
@@ -1473,7 +1439,7 @@ mod tests {
         let labels = r#"{"labels":[{"id":"INBOX","name":"INBOX","type":"system"},
             {"id":"Label_7","name":"Work","type":"user"}]}"#;
         let one = r#"{"threads":[{"id":"thread-a1","historyId":"1052"}]}"#;
-        let (sync, fake) = sync_batches(
+        let (sync, fake) = sync(
             FakeTransport::new()
                 .on(
                     "GET",
@@ -1613,7 +1579,7 @@ mod tests {
             "internalDate":"1793000000000",
             "payload":{"headers":[{"name":"To","value":"x@example.com"},{"name":"Subject","value":"Plan"}]}}"#;
         let body = batch_body(&[(200, meta)]);
-        let (sync, _) = sync_batches(
+        let (sync, _) = sync(
             FakeTransport::new()
                 .on("GET", "/gmail/v1/users/me/drafts", &[], &[(200, list)])
                 .on("POST", BATCH, &[], &[(200, &body)]),

@@ -5,26 +5,30 @@
 //! step.
 //!
 //! Keys: ↑/↓ (j/k) move through the sections or the rows, Tab and ⇧Tab go
-//! between the two, Space/Enter toggles, ←/→ change a value, `/` or ⌘F
-//! search, Esc clears the search, then goes back.
+//! between the two, Space/Enter toggles or opens a pop-up (then ↑/↓ and
+//! Enter pick), ←/→ change a value, `/` or ⌘F search, Esc closes a pop-up,
+//! clears the search, then goes back.
 
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, FontWeight,
-    HighlightStyle, Hsla, InteractiveElement, IntoElement, KeyBinding, MouseButton, ParentElement,
-    Pixels, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled, StyledText,
-    Subscription, Task, Window, WindowAppearance, actions, anchored,
-    component::input::{Input, InputEvent, InputState},
+    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, Focusable as _,
+    FontWeight, HighlightStyle, Hsla, InteractiveElement, IntoElement, KeyBinding, MouseButton,
+    ParentElement, Pixels, Rems, ScrollHandle, SharedString, StatefulInteractiveElement as _,
+    Styled, StyledText, Subscription, Task, Window, actions, anchored,
+    component::{
+        input::{Input, InputEvent, InputState},
+        scroll::ScrollableElement as _,
+    },
     deferred, div, point,
     prelude::FluentBuilder as _,
-    px,
+    px, rems,
 };
 
 use super::{
     HEADER_HEIGHT, account_avatar, binding_caps,
     controls::{self, ButtonKind, dropdown, menu_check, menu_row, popup, push_button},
-    empty_state, icon, keycap,
+    empty_state, icon, icon_button_small, keys_caps,
     motion::{self, Rise},
     window_drag_area,
 };
@@ -36,9 +40,10 @@ use crate::{
     backend::Source,
     data::Contact,
     native::{self, LoginItem},
+    notify::{self, Permission},
     settings::{
-        self, Appearance, Entry, HotKey, KeymapPreset, Match, RemoteImages, Section, SettingId,
-        TimeFormat,
+        self, Appearance, DockBadge, Entry, HotKey, KeymapPreset, Match, RemoteImages, Section,
+        SettingId, TimeFormat,
     },
     theme::Theme,
     ui::{calendar::ViewKind, shortcuts_help::live_bindings},
@@ -67,9 +72,14 @@ pub const SETTINGS_SEARCH: &str = "SettingsSearch";
 const FLASH: Duration = Duration::from_millis(1200);
 const SECTIONS_WIDTH: Pixels = px(220.);
 const CONTENT_MAX: Pixels = px(680.);
+const MENU_WIDTH: Pixels = px(220.);
+const MENU_MAX_HEIGHT: Pixels = px(280.);
+/// A setting's row, and a shortcut's, at least.
+const ROW_MIN: Rems = rems(56. / BASE_REM);
+const ROW_MIN_COMPACT: Rems = rems(36. / BASE_REM);
 
 const APPEARANCES: &[&str] = &["System", "Light", "Dark"];
-const SCOPES: &[&str] = &["Current view", "All mail"];
+const SCOPES: &[&str] = &["Current View", "All Mail"];
 const VIEWS: &[&str] = &["Day", "Week", "Month"];
 const IMAGES: &[&str] = &["Ask", "Always", "Never"];
 // As `TimeFormat::ALL`.
@@ -89,6 +99,8 @@ const PANEL_KEYS: &[&str] = &["⌃⌥⌘Space", "⌃⌥⌘P", "Off"];
 const JOIN_KEYS: &[&str] = &["⌃⌥⌘J", "⌃⌥⌘M", "Off"];
 // As `KeymapPreset::ALL`.
 const KEYMAPS: &[&str] = &["Gmail", "Apple Mail"];
+// As `DockBadge::ALL`.
+const DOCK_BADGES: &[&str] = &["Off", "Primary", "All Inbox"];
 /// A slider's keyboard step.
 const SLIDER_STEP: f32 = 0.1;
 
@@ -110,8 +122,16 @@ pub struct SettingsPage {
     scroll: ScrollHandle,
     /// Sign Out was pressed once: the row asks to confirm.
     confirm_sign_out: bool,
+    /// While confirming, the keyboard is on Sign Out rather than Cancel
+    /// (MB-028: Return cancels unless → moved it).
+    sign_out_armed: bool,
     /// The pop-up menu of this setting is open.
     menu: Option<SettingId>,
+    /// The option the keyboard is on in the open menu (MC-069).
+    menu_cursor: usize,
+    /// Every command's bindings, by `COMMANDS` index, for the preset they
+    /// were read for (MC-040).
+    bindings: Option<(KeymapPreset, Vec<Vec<KeyBinding>>)>,
     _flash: Option<Task<()>>,
 }
 
@@ -121,7 +141,7 @@ impl SettingsPage {
         let events = cx.subscribe_in(&search, window, PigeonApp::on_settings_search);
         let page = Self {
             open: false,
-            section: Section::Appearance,
+            section: Section::ALL[0],
             row: None,
             result: 0,
             keyboard: false,
@@ -131,7 +151,10 @@ impl SettingsPage {
             search,
             scroll: ScrollHandle::new(),
             confirm_sign_out: false,
+            sign_out_armed: false,
             menu: None,
+            menu_cursor: 0,
+            bindings: None,
             _flash: None,
         };
         (page, events)
@@ -176,21 +199,34 @@ enum Change {
     Reset,
 }
 
-/// Shortcuts are looked up in their app's contexts.
-fn shortcut_bindings(ix: usize, window: &Window) -> Vec<KeyBinding> {
-    let command = &COMMANDS[ix];
-    let scope = match command.group.scope() {
-        Scope::Calendar => Scope::Calendar,
-        Scope::Mail | Scope::Global => Scope::Mail,
-    };
-    live_bindings(&*(command.action)(), scope, window)
+/// Every command's bindings, looked up in its app's contexts.
+fn all_bindings(window: &Window) -> Vec<Vec<KeyBinding>> {
+    COMMANDS
+        .iter()
+        .map(|command| {
+            let scope = match command.group.scope() {
+                Scope::Calendar => Scope::Calendar,
+                Scope::Mail | Scope::Global => Scope::Mail,
+            };
+            live_bindings(&*(command.action)(), scope, window)
+        })
+        .collect()
 }
 
-/// Shortcuts without a binding are left out, as in the `?` sheet.
-fn shown(entry: Entry, window: &Window) -> bool {
-    match entry {
-        Entry::Shortcut(ix) => !shortcut_bindings(ix, window).is_empty(),
-        _ => true,
+impl SettingsPage {
+    fn shortcut_bindings(&self, ix: usize) -> &[KeyBinding] {
+        self.bindings
+            .as_ref()
+            .and_then(|(_, all)| all.get(ix))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Shortcuts without a binding are left out, as in the `?` sheet.
+    fn shown(&self, entry: Entry) -> bool {
+        match entry {
+            Entry::Shortcut(ix) => !self.shortcut_bindings(ix).is_empty(),
+            _ => true,
+        }
     }
 }
 
@@ -233,13 +269,30 @@ impl PigeonApp {
         if self.settings_page.open {
             self.close_settings(window, cx);
         } else {
-            self.close_overlays(window, cx);
+            self.open_settings_page(window, cx);
             let page = &mut self.settings_page;
-            page.open = true;
             page.row = None;
             page.keyboard = false;
             window.focus(&page.focus, cx);
             cx.notify();
+        }
+    }
+
+    fn open_settings_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.settings_page.open {
+            self.close_overlays(window, cx);
+            self.settings_page.open = true;
+            shell::refresh_system_items();
+            notify::refresh_permission(cx);
+        }
+        self.read_settings_bindings(window, cx);
+    }
+
+    /// The bindings shown, read again once the preset changed.
+    fn read_settings_bindings(&mut self, window: &Window, cx: &App) {
+        let preset = settings::get(cx).keymap;
+        if self.settings_page.bindings.as_ref().map(|(p, _)| *p) != Some(preset) {
+            self.settings_page.bindings = Some((preset, all_bindings(window)));
         }
     }
 
@@ -250,22 +303,17 @@ impl PigeonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.settings_page.open {
-            self.close_overlays(window, cx);
-            self.settings_page.open = true;
-        }
+        self.open_settings_page(window, cx);
         self.jump_to_setting(Entry::Section(action.0), window, cx);
     }
 
     /// Sign Out from ⌘K or the menu (ACC-7): Settings › Accounts with the
     /// confirmation showing, as its own button asks.
     pub(crate) fn ask_sign_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.settings_page.open {
-            self.close_overlays(window, cx);
-            self.settings_page.open = true;
-        }
+        self.open_settings_page(window, cx);
         self.jump_to_setting(Entry::Setting(SettingId::SignOut), window, cx);
         self.settings_page.confirm_sign_out = true;
+        self.settings_page.sign_out_armed = false;
         cx.notify();
     }
 
@@ -299,17 +347,17 @@ impl PigeonApp {
             .to_string()
     }
 
-    fn settings_results(&self, window: &Window, cx: &App) -> Vec<Match> {
+    fn settings_results(&self, cx: &App) -> Vec<Match> {
         settings::search(&self.settings_query(cx))
             .into_iter()
-            .filter(|m| shown(m.entry, window))
+            .filter(|m| self.settings_page.shown(m.entry))
             .collect()
     }
 
-    fn section_rows(&self, section: Section, window: &Window) -> Vec<Entry> {
+    fn section_rows(&self, section: Section) -> Vec<Entry> {
         settings::entries(section)
             .into_iter()
-            .filter(|e| shown(*e, window))
+            .filter(|e| self.settings_page.shown(*e))
             .collect()
     }
 
@@ -332,7 +380,7 @@ impl PigeonApp {
     }
 
     fn open_settings_result(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let results = self.settings_results(window, cx);
+        let results = self.settings_results(cx);
         if let Some(m) = results.get(self.settings_page.result) {
             self.jump_to_setting(m.entry, window, cx);
         }
@@ -344,14 +392,15 @@ impl PigeonApp {
         let section = entry.section();
         let row = match entry {
             Entry::Section(_) => None,
-            entry => self
-                .section_rows(section, window)
-                .iter()
-                .position(|e| *e == entry),
+            entry => self.section_rows(section).iter().position(|e| *e == entry),
         };
         let page = &mut self.settings_page;
         page.section = section;
         page.row = row;
+        if section == Section::Notifications {
+            notify::refresh_permission(cx);
+        }
+        let page = &mut self.settings_page;
         page.keyboard = true;
         page.pending_scroll = row.is_some().then_some(Reveal::Top);
         if row.is_none() {
@@ -377,7 +426,11 @@ impl PigeonApp {
         if page.section != section {
             page.section = section;
             page.scroll.set_offset(point(px(0.), px(0.)));
+            if section == Section::Notifications {
+                notify::refresh_permission(cx);
+            }
         }
+        let page = &mut self.settings_page;
         page.row = None;
         page.confirm_sign_out = false;
         page.menu = None;
@@ -396,13 +449,20 @@ impl PigeonApp {
         };
         self.settings_page.keyboard = true;
         self.settings_page.confirm_sign_out = false;
-        self.settings_page.menu = None;
+        // ↑/↓ move through an open menu's options (MC-069).
+        if let Some(id) = self.settings_page.menu {
+            if let Control::Menu(_, options) = self.control(id, window, cx) {
+                let page = &mut self.settings_page;
+                page.menu_cursor = step(page.menu_cursor, options.len());
+            }
+            return cx.notify();
+        }
         if !self.settings_query(cx).is_empty() {
-            let len = self.settings_results(window, cx).len();
+            let len = self.settings_results(cx).len();
             self.settings_page.result = step(self.settings_page.result, len);
             self.settings_page.pending_scroll = Some(Reveal::Nearest);
         } else if let Some(row) = self.settings_page.row {
-            let len = self.section_rows(self.settings_page.section, window).len();
+            let len = self.section_rows(self.settings_page.section).len();
             self.settings_page.row = Some(step(row, len));
             self.settings_page.pending_scroll = Some(Reveal::Nearest);
         } else {
@@ -420,9 +480,7 @@ impl PigeonApp {
         page.keyboard = true;
         window.focus(&page.focus, cx);
         if self.settings_query(cx).is_empty()
-            && !self
-                .section_rows(self.settings_page.section, window)
-                .is_empty()
+            && !self.section_rows(self.settings_page.section).is_empty()
         {
             let page = &mut self.settings_page;
             page.row = Some(page.row.unwrap_or(0));
@@ -441,12 +499,9 @@ impl PigeonApp {
     }
 
     /// The setting under the keyboard, when it's on one.
-    fn cursor_setting(&self, window: &Window) -> Option<SettingId> {
+    fn cursor_setting(&self) -> Option<SettingId> {
         let row = self.settings_page.row?;
-        match self
-            .section_rows(self.settings_page.section, window)
-            .get(row)?
-        {
+        match self.section_rows(self.settings_page.section).get(row)? {
             Entry::Setting(id) => Some(*id),
             _ => None,
         }
@@ -456,18 +511,32 @@ impl PigeonApp {
         if !self.settings_query(cx).is_empty() {
             return self.open_settings_result(window, cx);
         }
+        if let Some(id) = self.settings_page.menu {
+            let option = self.settings_page.menu_cursor;
+            return self.change_setting(id, Change::Choice(option), window, cx);
+        }
         if self.settings_page.row.is_none() {
             return self.settings_enter_rows(window, cx);
         }
-        let Some(id) = self.cursor_setting(window) else {
+        let Some(id) = self.cursor_setting() else {
             return;
         };
         let change = match self.control(id, window, cx) {
             Control::Switch(on) => Change::Switch(!on),
             Control::Choice(ix, options) => Change::Choice((ix + 1) % options.len()),
-            Control::Menu(ix, options) => Change::Choice((ix + 1) % options.len()),
+            Control::Menu(ix, _) => return self.open_settings_menu(id, ix, cx),
             Control::Stepper { .. } => Change::Reset,
             Control::Slider { locked, .. } if !locked => Change::Reset,
+            // Return on the confirmation is Cancel unless → moved to Sign
+            // Out (MB-028).
+            Control::Button { .. }
+                if id == SettingId::SignOut
+                    && self.settings_page.confirm_sign_out
+                    && !self.settings_page.sign_out_armed =>
+            {
+                self.settings_page.confirm_sign_out = false;
+                return cx.notify();
+            }
             Control::Button { .. } => return self.press_setting(id, window, cx),
             Control::Account(_) | Control::Keys(_) | Control::Info(_) | Control::Slider { .. } => {
                 return;
@@ -476,16 +545,30 @@ impl PigeonApp {
         self.change_setting(id, change, window, cx);
     }
 
+    /// Open setting `id`'s pop-up, the keyboard on option `at`.
+    fn open_settings_menu(&mut self, id: SettingId, at: usize, cx: &mut Context<Self>) {
+        let page = &mut self.settings_page;
+        page.menu = Some(id);
+        page.menu_cursor = at;
+        cx.notify();
+    }
+
     /// Sync Now and Sign Out; Sign Out asks first, signed in to Google.
     fn press_setting(&mut self, id: SettingId, window: &mut Window, cx: &mut Context<Self>) {
         match id {
             SettingId::SyncNow => window.dispatch_action(Box::new(SyncNow), cx),
             SettingId::TestNotification => crate::notify::send_test(cx),
+            SettingId::NotificationPermission => match notify::permission(cx) {
+                Permission::NotAsked => notify::ask_permission(cx),
+                Permission::Denied => notify::open_system_settings(cx),
+                _ => {}
+            },
             SettingId::DefaultMailApp => shell::make_default_mail_app(cx),
             SettingId::SignOut => {
                 let google = self.backend.read(cx).source() == Source::Google;
                 if google && !self.settings_page.confirm_sign_out {
                     self.settings_page.confirm_sign_out = true;
+                    self.settings_page.sign_out_armed = false;
                 } else {
                     self.settings_page.confirm_sign_out = false;
                     if google {
@@ -509,12 +592,16 @@ impl PigeonApp {
             }
             return;
         }
-        let Some(id) = self.cursor_setting(window) else {
+        let Some(id) = self.cursor_setting() else {
             if !up {
                 self.settings_leave_rows(window, cx);
             }
             return;
         };
+        if id == SettingId::SignOut && self.settings_page.confirm_sign_out {
+            self.settings_page.sign_out_armed = up;
+            return cx.notify();
+        }
         let change = match self.control(id, window, cx) {
             Control::Switch(_) => Change::Switch(up),
             Control::Choice(ix, options) if up => Change::Choice((ix + 1).min(options.len() - 1)),
@@ -552,11 +639,10 @@ impl PigeonApp {
         let calendar = self.calendar.read(cx);
         match id {
             SettingId::Appearance => Control::Choice(
-                match self.settings.appearance {
-                    Appearance::System => 0,
-                    Appearance::Light => 1,
-                    Appearance::Dark => 2,
-                },
+                Appearance::ALL
+                    .iter()
+                    .position(|a| *a == self.settings.appearance)
+                    .unwrap_or(0),
                 APPEARANCES,
             ),
             SettingId::TextSize => {
@@ -567,7 +653,6 @@ impl PigeonApp {
                     can_up: self.text_scale < max - 0.01,
                 }
             }
-            SettingId::ReduceMotion => Control::Switch(self.settings.reduce_motion),
             SettingId::CompactList => Control::Switch(self.density == Density::Compact),
             SettingId::Sidebar => {
                 Control::Switch(self.pane_layout(window.viewport_size().width).sidebar > px(0.))
@@ -595,7 +680,7 @@ impl PigeonApp {
                 IMAGES,
             ),
             SettingId::TimeFormat => {
-                let format = settings::current(cx).time_format;
+                let format = settings::get(cx).time_format;
                 let ix = TimeFormat::ALL.iter().position(|f| *f == format);
                 Control::Choice(ix.unwrap_or(0), TIME_FORMATS)
             }
@@ -604,13 +689,7 @@ impl PigeonApp {
                 let ix = (0..EVENT_MINUTES.len())
                     .min_by_key(|&i| EVENT_MINUTES[i].abs_diff(minutes))
                     .unwrap_or(3);
-                Control::Menu(
-                    ix,
-                    EVENT_LENGTHS
-                        .iter()
-                        .map(|l| (l.to_string(), None))
-                        .collect(),
-                )
+                Control::Menu(ix, menu_options(EVENT_LENGTHS))
             }
             SettingId::DefaultCalendar => {
                 let writable: Vec<_> = calendar.writable_calendars().collect();
@@ -639,36 +718,56 @@ impl PigeonApp {
                 danger: true,
             },
             // Sprint 2 W1.
-            SettingId::Notifications => Control::Switch(settings::current(cx).notifications),
+            SettingId::Notifications => Control::Switch(settings::get(cx).notifications),
             SettingId::TestNotification => Control::Button {
-                label: "Send",
+                label: "Send Test",
                 danger: false,
             },
-            SettingId::OpenAtLogin => match native::login_item() {
+            SettingId::NotificationPermission => match notify::permission(cx) {
+                Permission::NotAsked => Control::Button {
+                    label: "Turn On",
+                    danger: false,
+                },
+                Permission::Denied => Control::Button {
+                    label: "Open System Settings",
+                    danger: false,
+                },
+                permission => Control::Info(permission.label().into()),
+            },
+            SettingId::NotificationSound => Control::Switch(settings::get(cx).notification_sound),
+            SettingId::EventReminders => Control::Switch(settings::get(cx).event_reminders),
+            SettingId::DockBadge => {
+                let badge = settings::get(cx).dock_badge;
+                let ix = DockBadge::ALL.iter().position(|b| *b == badge);
+                Control::Choice(ix.unwrap_or(1), DOCK_BADGES)
+            }
+            // Cached by `shell`, asked again on opening and activation (MC-038).
+            SettingId::OpenAtLogin => match shell::login_item() {
                 LoginItem::Unavailable(why) => Control::Info(why.into()),
                 LoginItem::On | LoginItem::NeedsApproval => Control::Switch(true),
                 LoginItem::Off => Control::Switch(false),
             },
             SettingId::LoginItemStatus => Control::Info(shell::login_item_status()),
             // Sprint 2 W7b.
-            SettingId::MenuBarIcon => Control::Switch(settings::current(cx).menu_bar.icon),
+            SettingId::MenuBarIcon => Control::Switch(settings::get(cx).menu_bar.icon),
             SettingId::MenuBarNextMeeting => {
-                Control::Switch(settings::current(cx).menu_bar.next_meeting)
+                Control::Switch(settings::get(cx).menu_bar.next_meeting)
             }
+            // ME-068: pop-ups, as the options are long and uneven.
             SettingId::MenuBarPanelKey => {
-                let key = settings::current(cx).menu_bar.panel_key;
+                let key = settings::get(cx).menu_bar.panel_key;
                 let ix = HotKey::PANEL.iter().position(|k| *k == key).unwrap_or(0);
-                Control::Choice(ix, PANEL_KEYS)
+                Control::Menu(ix, menu_options(PANEL_KEYS))
             }
             SettingId::MenuBarJoinKey => {
-                let key = settings::current(cx).menu_bar.join_key;
+                let key = settings::get(cx).menu_bar.join_key;
                 let ix = HotKey::JOIN.iter().position(|k| *k == key).unwrap_or(0);
-                Control::Choice(ix, JOIN_KEYS)
+                Control::Menu(ix, menu_options(JOIN_KEYS))
             }
             SettingId::MenuBarShortcutStatus => Control::Info(menu_bar::hot_key_status()),
             // Sprint 2 W3.
-            SettingId::Signatures => Control::Switch(settings::current(cx).signatures),
-            SettingId::DefaultMailApp => match native::mail_handler() {
+            SettingId::Signatures => Control::Switch(settings::get(cx).signatures),
+            SettingId::DefaultMailApp => match shell::mail_handler() {
                 native::MailHandler::Unavailable(why) => Control::Info(why.into()),
                 native::MailHandler::Pigeon => Control::Info("Pigeon opens mailto: links.".into()),
                 native::MailHandler::Other(_) => Control::Button {
@@ -678,7 +777,7 @@ impl PigeonApp {
             },
             // W1-THM contract; W1-KITA gives these their slider and choice.
             SettingId::Transparency => {
-                let transparency = 100 - settings::current(cx).glass.min(100);
+                let transparency = 100 - settings::get(cx).glass.min(100);
                 Control::Slider {
                     value: transparency as f32 / 100.,
                     text: format!("{transparency}%"),
@@ -686,7 +785,7 @@ impl PigeonApp {
                 }
             }
             SettingId::ShortcutPreset => {
-                let keymap = settings::current(cx).keymap;
+                let keymap = settings::get(cx).keymap;
                 let ix = KeymapPreset::ALL.iter().position(|k| *k == keymap);
                 Control::Choice(ix.unwrap_or(0), KEYMAPS)
             }
@@ -716,18 +815,16 @@ impl PigeonApp {
         if current == Some(on) && matches!(change, Change::Switch(_)) {
             return;
         }
+        // A pick closes the pop-up it came from.
+        self.settings_page.menu = None;
         match id {
-            SettingId::Appearance => {
-                let appearance = [Appearance::System, Appearance::Light, Appearance::Dark][choice];
-                self.set_appearance(appearance, window, cx);
-            }
+            SettingId::Appearance => self.set_appearance(Appearance::ALL[choice], window, cx),
             SettingId::TextSize => match change {
                 Change::Step(delta) => {
                     self.set_text_scale(self.text_scale + delta as f32 * TEXT_SCALE_STEP, cx)
                 }
                 _ => self.set_text_scale(1., cx),
             },
-            SettingId::ReduceMotion => self.set_reduce_motion(on, cx),
             SettingId::CompactList => self.toggle_density(),
             SettingId::Sidebar => self.toggle_sidebar(&crate::actions::ToggleSidebar, window, cx),
             SettingId::ArchivedInInbox => {
@@ -744,27 +841,24 @@ impl PigeonApp {
                 cx.notify();
             }),
             SettingId::RemoteImages => {
-                // Kept on `saved` itself, where the reader reads it (ATT-1).
-                self.saved.remote_images =
-                    [RemoteImages::Ask, RemoteImages::Always, RemoteImages::Never][choice];
-                self.saved.notifications = settings::current(cx).notifications;
-                self.saved.menu_bar = settings::current(cx).menu_bar;
-                self.saved.signatures = settings::current(cx).signatures;
-                self.saved.time_format = settings::current(cx).time_format;
-                self.saved.glass = settings::current(cx).glass;
-                self.saved.keymap = settings::current(cx).keymap;
-                settings::remember(&self.saved, cx);
-                let map = self.saved.to_map();
-                self.backend.update(cx, |b, cx| b.save_settings(map, cx));
+                // Also on `saved` itself, where the reader reads it (ATT-1).
+                let images = [RemoteImages::Ask, RemoteImages::Always, RemoteImages::Never][choice];
+                self.saved.remote_images = images;
+                shell::change_app_settings(cx, |s| s.remote_images = images);
             }
             SettingId::Notifications => shell::set_notifications(on, cx),
+            SettingId::NotificationSound => {
+                shell::change_app_settings(cx, |s| s.notification_sound = on)
+            }
+            SettingId::EventReminders => shell::change_app_settings(cx, |s| s.event_reminders = on),
+            SettingId::DockBadge => shell::set_dock_badge(DockBadge::ALL[choice], cx),
             SettingId::Signatures => shell::set_signatures(on, cx),
             SettingId::OpenAtLogin => shell::set_open_at_login(on, cx),
             SettingId::MenuBarIcon
             | SettingId::MenuBarNextMeeting
             | SettingId::MenuBarPanelKey
             | SettingId::MenuBarJoinKey => {
-                let mut prefs = settings::current(cx).menu_bar;
+                let mut prefs = settings::get(cx).menu_bar;
                 match id {
                     SettingId::MenuBarIcon => prefs.icon = on,
                     SettingId::MenuBarNextMeeting => prefs.next_meeting = on,
@@ -774,16 +868,12 @@ impl PigeonApp {
                 menu_bar::set_prefs(prefs, cx);
             }
             SettingId::TimeFormat => shell::set_time_format(TimeFormat::ALL[choice], cx),
-            SettingId::EventLength => {
-                self.settings_page.menu = None;
-                self.calendar.update(cx, |c, cx| {
-                    c.prefs.event_minutes = Some(EVENT_MINUTES[choice]);
-                    c.apply_display();
-                    cx.notify();
-                })
-            }
+            SettingId::EventLength => self.calendar.update(cx, |c, cx| {
+                c.prefs.event_minutes = Some(EVENT_MINUTES[choice]);
+                c.apply_display();
+                cx.notify();
+            }),
             SettingId::DefaultCalendar => {
-                self.settings_page.menu = None;
                 self.calendar.update(cx, |c, cx| {
                     c.prefs.default_calendar = choice
                         .checked_sub(1)
@@ -799,11 +889,12 @@ impl PigeonApp {
             | SettingId::SyncNow
             | SettingId::SignOut
             | SettingId::TestNotification
+            | SettingId::NotificationPermission
             | SettingId::LoginItemStatus
             | SettingId::MenuBarShortcutStatus
             | SettingId::DefaultMailApp => {}
             SettingId::Transparency => {
-                let transparency = 100 - settings::current(cx).glass.min(100);
+                let transparency = 100 - settings::get(cx).glass.min(100);
                 let transparency = match change {
                     Change::Step(delta) => transparency as f32 / 100. + delta as f32 * SLIDER_STEP,
                     Change::Set(value) => value,
@@ -816,6 +907,7 @@ impl PigeonApp {
                 let preset = KeymapPreset::ALL[choice];
                 shell::change_app_settings(cx, |s| s.keymap = preset);
                 crate::set_keymap(preset, cx);
+                self.read_settings_bindings(window, cx);
             }
         }
         cx.notify();
@@ -830,35 +922,13 @@ impl PigeonApp {
         cx: &mut Context<Self>,
     ) {
         self.settings.appearance = appearance;
-        cx.set_window_appearance(match appearance {
-            Appearance::System => None,
-            Appearance::Light => Some(WindowAppearance::Light),
-            Appearance::Dark => Some(WindowAppearance::Dark),
-        });
+        cx.set_window_appearance(appearance.window_appearance());
         self.sync_theme(window, cx);
     }
 
     /// The theme for the user's choice, or for the window's appearance.
     pub(crate) fn sync_theme(&self, window: &mut Window, cx: &mut App) {
-        let appearance = match self.settings.appearance {
-            Appearance::System => window.appearance(),
-            Appearance::Light => WindowAppearance::Light,
-            Appearance::Dark => WindowAppearance::Dark,
-        };
-        Theme::apply(appearance, window, cx);
-    }
-
-    /// On: reduce motion whatever the system says. Off: follow it again.
-    pub(crate) fn set_reduce_motion(&mut self, on: bool, cx: &mut Context<Self>) {
-        if on {
-            self.system_reduce_motion = cx.reduce_motion();
-            cx.set_reduce_motion(true);
-        } else {
-            // Back to what Base last wrote, so it takes the flag over again.
-            cx.set_reduce_motion(self.system_reduce_motion);
-            gpui::base::apply_system_reduce_motion(cx);
-        }
-        self.settings.reduce_motion = on;
+        Theme::sync_for(self.settings.appearance, window, cx);
     }
 
     // Rendering.
@@ -868,16 +938,18 @@ impl PigeonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        self.read_settings_bindings(window, cx);
         let theme = Theme::of(cx).clone();
         let query = self.settings_query(cx);
         let searching = !query.is_empty();
         let results = if searching {
-            self.settings_results(window, cx)
+            self.settings_results(cx)
         } else {
             Vec::new()
         };
         let focused = self.settings_page.focus.is_focused(window);
-        let ring = focused && self.settings_page.keyboard;
+        // Not in a background window (MB-042).
+        let ring = focused && self.settings_page.keyboard && window.is_window_active();
         let section = self.settings_page.section;
 
         // The scroll view's children, and which one holds the cursor.
@@ -906,7 +978,7 @@ impl PigeonApp {
                 ));
             }
         } else {
-            let rows = self.section_rows(section, window);
+            let rows = self.section_rows(section);
             let mut last_group = None;
             for (ix, entry) in rows.iter().enumerate() {
                 if let Entry::Shortcut(command) = entry {
@@ -980,7 +1052,7 @@ impl PigeonApp {
             .h_full()
             .flex()
             .flex_row()
-            .child(self.render_settings_sections(&results, searching, ring, &theme, cx))
+            .child(self.render_settings_sections(&results, searching, ring, &theme, window, cx))
             .child(
                 div()
                     .flex_1()
@@ -1017,8 +1089,8 @@ impl PigeonApp {
                                     .gap(SPACE_SM)
                                     .text_size(TEXT_SM)
                                     .text_color(theme.text_faint)
-                                    .child(keycap("Esc", &theme))
-                                    .child(if searching { "to clear" } else { "to go back" }),
+                                    .child(if searching { "Clear" } else { "Back" })
+                                    .child(keys_caps("escape", &theme)),
                             ),
                     )
                     .map(|this| {
@@ -1030,30 +1102,38 @@ impl PigeonApp {
                                 &theme,
                             ))
                         } else {
+                            // The scroll bar sits beside the rows, outside
+                            // the list (MB-068).
                             this.child(
                                 div()
-                                    .id("settings-rows")
-                                    .role(gpui::Role::List)
-                                    .aria_label(title.clone())
+                                    .relative()
                                     .flex_1()
                                     .min_h_0()
-                                    .overflow_y_scroll()
-                                    .track_scroll(&self.settings_page.scroll)
-                                    .px(SPACE_2XL)
-                                    .pt(SPACE_LG)
-                                    .pb(SPACE_2XL)
-                                    .flex()
-                                    .flex_col()
-                                    // Rows are the scroll view's own children, so
-                                    // `scroll_to_item` can find them by index.
-                                    .children(children.into_iter().map(|child| {
+                                    .child(
                                         div()
-                                            .flex_none()
-                                            .max_w(CONTENT_MAX)
+                                            .id("settings-rows")
+                                            .role(gpui::Role::List)
+                                            .aria_label(title.clone())
+                                            .size_full()
+                                            .overflow_y_scroll()
+                                            .track_scroll(&self.settings_page.scroll)
+                                            .px(SPACE_2XL)
+                                            .pt(SPACE_LG)
+                                            .pb(SPACE_2XL)
                                             .flex()
                                             .flex_col()
-                                            .child(child)
-                                    })),
+                                            // Rows are the scroll view's own children,
+                                            // so `scroll_to_item` can find them by index.
+                                            .children(children.into_iter().map(|child| {
+                                                div()
+                                                    .flex_none()
+                                                    .max_w(CONTENT_MAX)
+                                                    .flex()
+                                                    .flex_col()
+                                                    .child(child)
+                                            })),
+                                    )
+                                    .vertical_scrollbar(&self.settings_page.scroll),
                             )
                         }
                     }),
@@ -1066,8 +1146,11 @@ impl PigeonApp {
         searching: bool,
         ring: bool,
         theme: &Theme,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let window_active = window.is_window_active();
+        let search = self.render_settings_search(searching, theme, window, cx);
         let items = Section::ALL.iter().map(|&section| {
             let count = results
                 .iter()
@@ -1079,21 +1162,32 @@ impl PigeonApp {
             div()
                 .id(("settings-section", section as usize))
                 .role(gpui::Role::Tab)
-                .aria_label(section.title())
+                .aria_label(if searching {
+                    format!(
+                        "{}, {count} result{}",
+                        section.title(),
+                        if count == 1 { "" } else { "s" }
+                    )
+                } else {
+                    section.title().to_string()
+                })
                 .aria_selected(active)
-                .h(px(30.))
+                .h(ROW_SM)
                 .px(SPACE_MD)
                 .flex()
                 .items_center()
                 .gap(SPACE_SM)
                 .rounded(RADIUS_MD)
                 .text_size(TEXT_BASE)
-                .cursor_pointer()
                 .map(|this| {
                     if active {
-                        this.bg(theme.nav_active_bg)
-                            .text_color(theme.text)
-                            .font_weight(FontWeight::MEDIUM)
+                        this.bg(if window_active {
+                            theme.nav_active_bg
+                        } else {
+                            theme.selected_bg
+                        })
+                        .text_color(theme.text)
+                        .font_weight(FontWeight::MEDIUM)
                     } else {
                         this.text_color(if dim {
                             theme.text_faint
@@ -1106,7 +1200,7 @@ impl PigeonApp {
                 .when(cursor, |this| this.shadow(focus_ring(theme)))
                 .child(icon(
                     section.icon(),
-                    px(16.),
+                    ICON_LG,
                     if active {
                         theme.icon_active
                     } else {
@@ -1151,29 +1245,7 @@ impl PigeonApp {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Settings"),
             )
-            .child(
-                div()
-                    .key_context(SETTINGS_SEARCH)
-                    .mx(SPACE_MD)
-                    .mb(SPACE_SM)
-                    .h(px(30.))
-                    .px(SPACE_SM)
-                    .flex()
-                    .items_center()
-                    .gap(SPACE_SM)
-                    .rounded(RADIUS_MD)
-                    .bg(theme.search_bg)
-                    .text_size(TEXT_BASE)
-                    .child(icon(Icon::Search, px(13.), theme.text_faint))
-                    .child(
-                        div().flex_1().min_w_0().child(
-                            Input::new(&self.settings_page.search)
-                                .appearance(false)
-                                .px(px(0.)),
-                        ),
-                    )
-                    .when(!searching, |this| this.child(keycap("/", theme))),
-            )
+            .child(search)
             .child(
                 div()
                     .id("settings-sections")
@@ -1181,14 +1253,70 @@ impl PigeonApp {
                     .aria_label("Settings sections")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
                     .px(SPACE_MD)
                     .pb(SPACE_MD)
                     .flex()
                     .flex_col()
                     .gap(SPACE_2XS)
+                    .overflow_y_scrollbar()
                     .children(items),
             )
+    }
+
+    /// The search field: an accent border while it has the keyboard, and
+    /// ✕ to clear it, keeping the keyboard there (MA-082).
+    fn render_settings_search(
+        &self,
+        searching: bool,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let focused = self
+            .settings_page
+            .search
+            .focus_handle(cx)
+            .is_focused(window);
+        div()
+            .key_context(SETTINGS_SEARCH)
+            .mx(SPACE_MD)
+            .mb(SPACE_SM)
+            .h(CONTROL_LG)
+            .pl(SPACE_SM)
+            .pr(if searching { SPACE_2XS } else { SPACE_SM })
+            .flex()
+            .items_center()
+            .gap(SPACE_SM)
+            .rounded(RADIUS_MD)
+            .bg(theme.search_bg)
+            .border_1()
+            .border_color(if focused { theme.accent } else { theme.border })
+            .text_size(TEXT_BASE)
+            .child(icon(Icon::Search, ICON_MD, theme.text_faint))
+            .child(
+                div().flex_1().min_w_0().child(
+                    Input::new(&self.settings_page.search)
+                        .appearance(false)
+                        .px(px(0.)),
+                ),
+            )
+            .map(|this| {
+                if searching {
+                    this.child(
+                        icon_button_small("settings-clear-search", Icon::X, "Clear search", theme)
+                            .on_mouse_down(MouseButton::Left, |_, window, _| {
+                                window.prevent_default()
+                            })
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.clear_settings_search(window, cx);
+                                this.focus_settings_search(window, cx);
+                            })),
+                    )
+                } else {
+                    this.child(keys_caps("/", theme))
+                }
+            })
+            .into_any_element()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1203,9 +1331,9 @@ impl PigeonApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = Theme::of(cx).clone();
+        // By color alone, so the text doesn't shift as it's typed (ME-079).
         let highlight = HighlightStyle {
             color: Some(theme.match_text),
-            font_weight: Some(FontWeight::SEMIBOLD),
             ..Default::default()
         };
         let styled = |text: &'static str, ranges: Option<&Vec<std::ops::Range<usize>>>| {
@@ -1218,7 +1346,9 @@ impl PigeonApp {
         let in_results = found.is_some();
         let control = match entry {
             Entry::Setting(id) => Some(self.control(id, window, cx)),
-            Entry::Shortcut(command) => Some(Control::Keys(shortcut_bindings(command, window))),
+            Entry::Shortcut(command) => Some(Control::Keys(
+                self.settings_page.shortcut_bindings(command).to_vec(),
+            )),
             Entry::Section(_) => None,
         };
         let compact = matches!(entry, Entry::Shortcut(_));
@@ -1234,6 +1364,16 @@ impl PigeonApp {
         let confirming = entry == Entry::Setting(SettingId::SignOut)
             && self.settings_page.confirm_sign_out
             && !in_results;
+        // Why Make Default failed, until it works (ME-074).
+        let error = (entry == Entry::Setting(SettingId::DefaultMailApp) && !in_results)
+            .then(shell::default_mail_app_error)
+            .flatten();
+
+        // MA-073: what macOS says, above Turn On or Open System Settings.
+        let permission = (entry == Entry::Setting(SettingId::NotificationPermission)
+            && !in_results
+            && matches!(control, Some(Control::Button { .. })))
+        .then(|| notify::permission(cx).label());
 
         let leading = match (&control, entry) {
             (Some(Control::Account(me)), _) => Some(
@@ -1241,13 +1381,13 @@ impl PigeonApp {
                     self.backend.read(cx).profile_photo(),
                     me.initials(),
                     theme.avatar_color(&me.email),
-                    px(32.),
+                    AVATAR_MD,
                     &theme,
                 )
                 .into_any_element(),
             ),
             (_, Entry::Section(section)) => {
-                Some(icon(section.icon(), px(16.), theme.icon).into_any_element())
+                Some(icon(section.icon(), ICON_LG, theme.icon).into_any_element())
             }
             _ => None,
         };
@@ -1256,8 +1396,7 @@ impl PigeonApp {
                 div().child(me.name.clone()).into_any_element(),
                 Some(
                     div()
-                        .child(me.email.clone())
-                        .child(super::status::granted(self.backend.read(cx)))
+                        .child(account_line(&me.email, self.backend.read(cx)))
                         .into_any_element(),
                 ),
             ),
@@ -1265,11 +1404,24 @@ impl PigeonApp {
                 div().child(label).into_any_element(),
                 Some(div().child(text.clone()).into_any_element()),
             ),
+            _ if permission.is_some() => (
+                div().child(label).into_any_element(),
+                Some(div().children(permission).into_any_element()),
+            ),
+            _ if error.is_some() => (
+                div().child(label).into_any_element(),
+                Some(
+                    div()
+                        .text_color(theme.text_danger)
+                        .children(error.clone())
+                        .into_any_element(),
+                ),
+            ),
             _ if confirming => (
                 div().child("Sign out?").into_any_element(),
                 Some(
                     div()
-                        .text_color(theme.danger)
+                        .text_color(theme.text_danger)
                         .child(format!(
                             "{} and its cached mail and calendar are removed from this Mac.",
                             self.data.me().email
@@ -1399,6 +1551,13 @@ impl PigeonApp {
                 let Entry::Setting(id) = entry else {
                     unreachable!()
                 };
+                let armed = self.settings_page.sign_out_armed;
+                let keyboard_ring = |on: bool| {
+                    let ring = focus_ring(&theme);
+                    move |el: gpui::Stateful<gpui::Div>| {
+                        if on { el.shadow(ring) } else { el }
+                    }
+                };
                 let press = |name: &'static str| {
                     cx.listener(move |this, _: &ClickEvent, window, cx| {
                         cx.stop_propagation();
@@ -1422,6 +1581,7 @@ impl PigeonApp {
                                 ButtonKind::Plain,
                                 &theme,
                             )
+                            .map(keyboard_ring(cursor && ring && !armed))
                             .on_click(press("settings-cancel")),
                         )
                         .child(
@@ -1431,6 +1591,7 @@ impl PigeonApp {
                                 ButtonKind::Destructive,
                                 &theme,
                             )
+                            .map(keyboard_ring(cursor && ring && armed))
                             .on_click(press("settings-confirm")),
                         )
                         .into_any_element()
@@ -1450,7 +1611,7 @@ impl PigeonApp {
                 chrono::Utc::now().timestamp_millis(),
                 &theme,
             )),
-            None => Some(icon(Icon::ChevronRight, px(14.), theme.text_faint).into_any_element()),
+            None => Some(icon(Icon::ChevronRight, ICON_MD, theme.text_faint).into_any_element()),
         };
 
         div()
@@ -1461,10 +1622,12 @@ impl PigeonApp {
                 _ => label.to_string(),
             })
             .aria_selected(cursor)
+            .when(cursor, |this| this.aria_active_descendant())
             .when(!description.is_empty(), |this| {
                 this.aria_description(description)
             })
-            .min_h(px(if compact { 36. } else { 56. }))
+            .when_some(error, |this, error| this.aria_description(error))
+            .min_h(if compact { ROW_MIN_COMPACT } else { ROW_MIN })
             .px(SPACE_MD)
             .py(if compact { SPACE_XS } else { SPACE_SM })
             .flex()
@@ -1472,15 +1635,15 @@ impl PigeonApp {
             .gap(SPACE_LG)
             .rounded(RADIUS_MD)
             .map(|this| {
+                // The keyboard's row as in every overlay (ME-080).
                 if flash {
                     this.bg(theme.selected_focused_bg)
-                } else if cursor {
-                    this.bg(theme.hover_bg)
+                } else if cursor && ring {
+                    this.bg(theme.selected_bg)
                 } else {
                     this.hover(|s| s.bg(theme.hover_bg))
                 }
             })
-            .when(cursor && ring, |this| this.shadow(focus_ring(&theme)))
             .children(leading)
             .child(
                 div()
@@ -1576,13 +1739,14 @@ impl PigeonApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let open = self.settings_page.menu == Some(id);
-        let width = px(220.);
+        let width = MENU_WIDTH;
+        let highlighted = self.settings_page.menu_cursor;
         let swatches = options.iter().any(|(_, color)| color.is_some());
         let swatch = |color: Option<Hsla>| {
             swatches.then(|| {
                 div()
                     .flex_none()
-                    .size(px(10.))
+                    .size(SPACE_SM + SPACE_2XS)
                     .rounded_full()
                     .when_some(color, |d, color| d.bg(color))
             })
@@ -1591,13 +1755,15 @@ impl PigeonApp {
         let menu = open.then(|| {
             let rows = options.iter().enumerate().map(|(option, (name, color))| {
                 let chosen = option == selected;
+                let lit = option == highlighted;
                 menu_row(
                     ("settings-menu-row", option),
                     name.clone(),
                     chosen,
-                    chosen,
+                    lit,
                     theme,
                 )
+                .when(lit, |row| row.aria_active_descendant())
                 .child(menu_check(chosen, theme))
                 .children(swatch(*color))
                 .child(div().flex_1().min_w_0().truncate().child(name.clone()))
@@ -1611,7 +1777,7 @@ impl PigeonApp {
                 Rise::Down,
                 dropdown("settings-menu-list", label, width, theme)
                     .mt(SPACE_XS)
-                    .max_h(px(280.))
+                    .max_h(MENU_MAX_HEIGHT)
                     .overflow_y_scroll()
                     .children(rows),
             )
@@ -1624,7 +1790,7 @@ impl PigeonApp {
                     .aria_label(format!("{label}: {}", current.0))
                     .aria_expanded(open)
                     .w(width)
-                    .h(HIT_TARGET)
+                    .h(CONTROL_MD)
                     .px(SPACE_MD)
                     .flex()
                     .items_center()
@@ -1638,18 +1804,17 @@ impl PigeonApp {
                     .active(|s| s.bg(theme.selected_bg).opacity(0.8))
                     .children(swatch(current.1))
                     .child(div().flex_1().min_w_0().truncate().child(current.0))
-                    .child(icon(Icon::ChevronDown, px(13.), theme.text_faint))
+                    .child(icon(Icon::ChevronDown, ICON_MD, theme.text_faint))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         cx.stop_propagation();
-                        let page = &mut this.settings_page;
-                        page.menu = if page.menu == Some(id) {
-                            None
+                        if this.settings_page.menu == Some(id) {
+                            this.settings_page.menu = None;
+                            cx.notify();
                         } else {
-                            Some(id)
-                        };
-                        window.focus(&page.focus, cx);
-                        cx.notify();
+                            this.open_settings_menu(id, selected, cx);
+                        }
+                        window.focus(&this.settings_page.focus, cx);
                     })),
             )
             .when(open, |d| {
@@ -1679,6 +1844,10 @@ impl PigeonApp {
     }
 }
 
+fn menu_options(names: &[&str]) -> Vec<(String, Option<Hsla>)> {
+    names.iter().map(|name| (name.to_string(), None)).collect()
+}
+
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
@@ -1688,9 +1857,21 @@ fn group_header(title: &'static str, theme: &Theme) -> AnyElement {
         .pt(SPACE_LG)
         .pb(SPACE_XS)
         .px(SPACE_MD)
-        .text_size(TEXT_XS)
+        .text_size(TEXT_SM)
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(theme.text_faint)
-        .child(title.to_uppercase())
+        .text_color(theme.text_muted)
+        .child(title)
         .into_any_element()
+}
+
+/// "Google · a@b.com · Mail, Calendar and Contacts allowed" (MB-058).
+fn account_line(email: &str, backend: &crate::backend::Backend) -> String {
+    let granted = super::status::granted(backend);
+    let provider = (backend.source() == Source::Google).then_some("Google");
+    provider
+        .into_iter()
+        .chain([email])
+        .chain((!granted.is_empty()).then_some(granted.as_str()))
+        .collect::<Vec<_>>()
+        .join(" · ")
 }

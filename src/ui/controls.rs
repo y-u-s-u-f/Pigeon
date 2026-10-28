@@ -325,7 +325,7 @@ pub fn stepper(
         .child(button("Decrease", Icon::Minus, -1, can_down))
         .child(
             div()
-                .min_w(px(44.))
+                .min_w(STEPPER_VALUE_MIN)
                 .flex()
                 .justify_center()
                 .text_size(TEXT_SM)
@@ -337,6 +337,8 @@ pub fn stepper(
     stop_mouse_down(el)
 }
 
+/// A stepper's value, so the buttons don't move as it changes.
+const STEPPER_VALUE_MIN: Pixels = px(44.);
 const SLIDER_WIDTH: Pixels = px(160.);
 const SLIDER_TRACK: Pixels = px(4.);
 const SLIDER_KNOB: Pixels = px(16.);

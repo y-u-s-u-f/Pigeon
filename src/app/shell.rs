@@ -12,17 +12,19 @@ use std::cell::RefCell;
 use chrono::NaiveDateTime;
 use gpui::{
     AnyWindowHandle, App, AppContext as _, Bounds, Context, DisplayId, Entity, Global, Pixels,
-    Size, Task, TitlebarOptions, WeakEntity, Window, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds, WindowOptions, point, px, size,
+    Size, Task, TitlebarOptions, WeakEntity, Window, WindowBackgroundAppearance, WindowBounds,
+    WindowOptions, point, px, size,
 };
 
 use super::{Mode, PigeonApp, RAIL_WIDTH};
 use crate::{
     actions::*,
-    backend::{self, Backend, BackendEvent},
+    backend::{
+        self, Backend, BackendEvent, SyncStatus, categories::Category, http::percent_decode,
+    },
     logging, native,
     notify::{self, NoticeTarget},
-    settings::{self, Appearance, Saved, TimeFormat, WindowFrame},
+    settings::{self, DockBadge, Saved, TimeFormat, WindowFrame},
     theme::{Display, Theme},
 };
 
@@ -78,27 +80,6 @@ fn add_addresses(list: &mut Vec<String>, field: &str) {
     );
 }
 
-/// `%XX` escapes as UTF-8; a broken escape stays as written.
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && let Some(v) = s
-                .get(i + 1..i + 3)
-                .and_then(|h| u8::from_str_radix(h, 16).ok())
-        {
-            out.push(v);
-            i += 3;
-            continue;
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 /// What to bring up in the main window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Show {
@@ -112,6 +93,47 @@ pub enum Show {
     Compose(Option<Mailto>),
     NewEvent,
     Settings,
+    /// Mail's search, holding this text (MB-063).
+    Search(String),
+    /// Calendar, on today (MB-063).
+    Today,
+}
+
+/// A `pigeon://` link (MB-063), for Shortcuts, Raycast, Alfred and the
+/// like. Any web page can open one, so each only shows or fills in
+/// something; nothing is sent, saved or changed.
+///
+/// - `pigeon://compose[/addresses][?to=&cc=&bcc=&subject=&body=]`, as `mailto:`
+/// - `pigeon://thread/<id>`
+/// - `pigeon://search?q=<query>`
+/// - `pigeon://event/new`
+/// - `pigeon://today`
+pub fn parse_pigeon_url(url: &str) -> Option<Show> {
+    const SCHEME: &str = "pigeon://";
+    if !url.get(..SCHEME.len())?.eq_ignore_ascii_case(SCHEME) {
+        return None;
+    }
+    let rest = &url[SCHEME.len()..];
+    let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let (host, tail) = path.split_once('/').unwrap_or((path, ""));
+    let tail = tail.trim_end_matches('/');
+    let field = |name: &str| {
+        query.split('&').find_map(|pair| {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            (percent_decode(key) == name).then(|| percent_decode(&value.replace('+', " ")))
+        })
+    };
+    match (host.to_ascii_lowercase().as_str(), tail) {
+        ("compose", to) => Mailto::parse(&format!("mailto:{to}?{query}"))
+            .map(|m| Show::Compose((m != Mailto::default()).then_some(m))),
+        ("thread", id) if !id.is_empty() && !id.contains('/') => {
+            Some(Show::Thread(percent_decode(id)))
+        }
+        ("search", "") => Some(Show::Search(field("q").unwrap_or_default())),
+        ("event", "new") => Some(Show::NewEvent),
+        ("today", "") => Some(Show::Today),
+        _ => None,
+    }
 }
 
 /// The main window: its handle, and its view while it's open.
@@ -197,13 +219,17 @@ pub fn init(backend: Entity<Backend>, cx: &mut App) {
     });
     cx.on_action(|_: &SendTestNotification, cx| notify::send_test(cx));
     cx.on_action(|_: &ToggleNotifications, cx| {
-        let on = !settings::current(cx).notifications;
+        let on = !settings::get(cx).notifications;
         set_notifications(on, cx);
+    });
+    cx.on_action(|_: &ToggleEventReminders, cx| {
+        change_app_settings(cx, |s| s.event_reminders = !s.event_reminders);
+        cx.refresh_windows();
     });
     cx.on_action(|_: &MakeDefaultMailApp, cx| make_default_mail_app(cx));
     cx.on_action(|_: &ToggleOpenAtLogin, cx| {
         let on = !matches!(
-            native::login_item(),
+            login_item(),
             native::LoginItem::On | native::LoginItem::NeedsApproval
         );
         set_open_at_login(on, cx);
@@ -232,19 +258,19 @@ pub fn init(backend: Entity<Backend>, cx: &mut App) {
         cell.1 = Some(Box::new(move |urls| {
             let cx = async_cx.clone();
             executor
-                .spawn(async move { cx.update(|cx| open_mailto(urls, cx)) })
+                .spawn(async move { cx.update(|cx| open_urls_now(urls, cx)) })
                 .detach();
         }));
         std::mem::take(&mut cell.0)
     });
     if !pending.is_empty() {
         // After the main window opens, at launch.
-        cx.defer(move |cx| open_mailto(pending, cx));
+        cx.defer(move |cx| open_urls_now(pending, cx));
     }
     update_badge(cx);
 }
 
-fn backend_of(cx: &App) -> Entity<Backend> {
+pub(crate) fn backend_of(cx: &App) -> Entity<Backend> {
     cx.global::<Shell>().backend.clone()
 }
 
@@ -255,7 +281,7 @@ fn on_signal(signal: native::Signal, cx: &mut App) {
             show(Show::Main, cx);
         }
         native::Signal::LocaleChanged => {
-            apply_time_format(settings::current(cx).time_format);
+            apply_time_format(settings::get(cx).time_format);
             cx.refresh_windows();
         }
         native::Signal::TimeZoneChanged => {
@@ -277,17 +303,10 @@ fn on_signal(signal: native::Signal, cx: &mut App) {
 /// Re-apply the theme in every window, after the display options or the
 /// glass changed. Not from inside a window's update: that window is skipped.
 fn refresh_theme(cx: &mut App) {
-    let appearance = settings::current(cx).appearance;
+    let appearance = settings::get(cx).appearance;
     for window in cx.windows() {
         window
-            .update(cx, |_, window, cx| {
-                let appearance = match appearance {
-                    Appearance::System => window.appearance(),
-                    Appearance::Light => WindowAppearance::Light,
-                    Appearance::Dark => WindowAppearance::Dark,
-                };
-                Theme::apply(appearance, window, cx);
-            })
+            .update(cx, |_, window, cx| Theme::sync_for(appearance, window, cx))
             .ok();
     }
     cx.refresh_windows();
@@ -331,11 +350,21 @@ pub fn set_time_format(format: TimeFormat, cx: &mut App) {
     cx.refresh_windows();
 }
 
-fn open_mailto(urls: Vec<String>, cx: &mut App) {
+/// `mailto:` and `pigeon://` links (LNK-3, MB-063).
+fn open_urls_now(urls: Vec<String>, cx: &mut App) {
     for url in urls {
-        logging::info(&format!("open url: {url}"));
-        if let Some(mailto) = Mailto::parse(&url) {
-            show(Show::Compose(Some(mailto)), cx);
+        // Not the whole link: it can hold a message's text.
+        logging::info(&format!(
+            "open url: {}:",
+            url.split(':').next().unwrap_or_default()
+        ));
+        let what = match Mailto::parse(&url) {
+            Some(mailto) => Some(Show::Compose(Some(mailto))),
+            None => parse_pigeon_url(&url),
+        };
+        match what {
+            Some(what) => show(what, cx),
+            None => logging::info("open url: not one Pigeon knows"),
         }
     }
 }
@@ -467,8 +496,9 @@ fn fit_frame(frame: &WindowFrame, area: Size<Pixels>) -> Option<Bounds<Pixels>> 
 
 fn window_options(cx: &mut App) -> WindowOptions {
     // MA-034: where it was left, else centered on the main display.
-    let restored = settings::current(cx)
+    let restored = settings::get(cx)
         .window
+        .clone()
         .and_then(|frame| restored_frame(&frame, cx));
     let (window_bounds, display_id) = match restored {
         Some((bounds, display)) => (bounds, Some(display)),
@@ -477,9 +507,6 @@ fn window_options(cx: &mut App) -> WindowOptions {
             None,
         ),
     };
-    // The traffic lights (60pt wide on macOS 26) sit centered in the rail,
-    // level with the middle of the pane headers.
-    let lights_x = (RAIL_WIDTH - px(60.)) / 2.;
     WindowOptions {
         window_bounds: Some(window_bounds),
         display_id,
@@ -487,7 +514,7 @@ fn window_options(cx: &mut App) -> WindowOptions {
         titlebar: Some(TitlebarOptions {
             title: Some("Pigeon".into()),
             appears_transparent: true,
-            traffic_light_position: Some(point(lights_x, px(19.))),
+            traffic_light_position: Some(traffic_lights()),
         }),
         // Panes move the window themselves (see `ui::window_drag_area`).
         app_owns_titlebar_drag: true,
@@ -496,13 +523,19 @@ fn window_options(cx: &mut App) -> WindowOptions {
     }
 }
 
+/// Where the traffic lights sit: centered in the rail (they're 60pt wide
+/// on macOS 26), level with the middle of the pane headers. Draft windows
+/// put them in the same place (MB-047).
+pub fn traffic_lights() -> gpui::Point<Pixels> {
+    point((RAIL_WIDTH - px(60.)) / 2., px(19.))
+}
+
 /// Glass, or opaque under Reduce Transparency, Increase Contrast or a
 /// glass of 100, for a window about to open; `Theme::apply` keeps it in step.
 pub fn window_background(cx: &App) -> WindowBackgroundAppearance {
     let display = cx.try_global::<Display>().copied().unwrap_or_default();
-    let opaque = display.reduce_transparency
-        || display.increase_contrast
-        || settings::current(cx).glass >= 100;
+    let opaque =
+        display.reduce_transparency || display.increase_contrast || settings::get(cx).glass >= 100;
     if opaque {
         WindowBackgroundAppearance::Opaque
     } else {
@@ -533,12 +566,26 @@ pub fn set_signatures(on: bool, cx: &mut App) {
     cx.refresh_windows();
 }
 
-/// W3: Settings › General and ⌘K (LNK-3). macOS may ask to confirm.
+/// W3: Settings › General and ⌘K (LNK-3). macOS may ask to confirm. A
+/// failure stays in Settings' row and shows as a toast (ME-074).
 pub fn make_default_mail_app(cx: &mut App) {
     let result = native::make_default_mail_app();
     logging::info(&format!("default mail app: {result:?}"));
-    if let Err(e) = result {
-        eprintln!("Pigeon: couldn't become the default mail app: {e}");
+    refresh_system_items();
+    let error = result.err();
+    SYSTEM.with(|s| s.borrow_mut().mail_error = error.clone());
+    if let Some(error) = error
+        && let Some(main) = cx.global::<Shell>().main.clone()
+    {
+        // Called from inside the main window's update: show it after.
+        cx.defer(move |cx| {
+            main.update(cx, |this, _, cx| {
+                this.show_error_toast(
+                    format!("Pigeon couldn't become the default mail app. {error}"),
+                    cx,
+                )
+            });
+        });
     }
     cx.refresh_windows();
 }
@@ -546,7 +593,7 @@ pub fn make_default_mail_app(cx: &mut App) {
 /// Settings › General and ⌘K (NTF-6). Needing approval opens System
 /// Settings where it's given.
 pub fn set_open_at_login(on: bool, cx: &mut App) {
-    if native::login_item() == native::LoginItem::NeedsApproval && on {
+    if login_item() == native::LoginItem::NeedsApproval && on {
         native::open_login_items_settings();
         return;
     }
@@ -555,23 +602,71 @@ pub fn set_open_at_login(on: bool, cx: &mut App) {
         "login item: {} → {result:?}",
         if on { "on" } else { "off" }
     ));
-    LOGIN_ERROR.with(|e| *e.borrow_mut() = result.err());
-    if on && native::login_item() == native::LoginItem::NeedsApproval {
+    refresh_system_items();
+    SYSTEM.with(|s| s.borrow_mut().login_error = result.err());
+    if on && login_item() == native::LoginItem::NeedsApproval {
         native::open_login_items_settings();
     }
     cx.refresh_windows();
 }
 
+/// The login item and the mail handler as macOS last said, and what went
+/// wrong changing them (MC-038). Asking macOS goes through XPC and Launch
+/// Services, so it happens on first use, after a change and each time
+/// Pigeon comes forward (`refresh_system_items`), not every frame.
+#[derive(Default)]
+struct SystemItems {
+    login_item: Option<native::LoginItem>,
+    mail_handler: Option<native::MailHandler>,
+    login_error: Option<String>,
+    mail_error: Option<String>,
+}
+
 thread_local! {
-    static LOGIN_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+    static SYSTEM: RefCell<SystemItems> = RefCell::new(SystemItems::default());
+}
+
+/// Ask macOS again the next time they're read: after a change, and when
+/// Pigeon comes forward (approval in System Settings shows then).
+pub fn refresh_system_items() {
+    SYSTEM.with(|s| {
+        let mut s = s.borrow_mut();
+        s.login_item = None;
+        s.mail_handler = None;
+    });
+}
+
+/// Pigeon's login item, as macOS last said.
+pub fn login_item() -> native::LoginItem {
+    SYSTEM.with(|s| {
+        s.borrow_mut()
+            .login_item
+            .get_or_insert_with(native::login_item)
+            .clone()
+    })
+}
+
+/// Who opens `mailto:` links, as macOS last said.
+pub fn mail_handler() -> native::MailHandler {
+    SYSTEM.with(|s| {
+        s.borrow_mut()
+            .mail_handler
+            .get_or_insert_with(native::mail_handler)
+            .clone()
+    })
+}
+
+/// Why "Make Default" last failed, until it works (ME-074).
+pub fn default_mail_app_error() -> Option<String> {
+    SYSTEM.with(|s| s.borrow().mail_error.clone())
 }
 
 /// What Settings › General says about the login item, as macOS has it.
 pub fn login_item_status() -> String {
-    if let Some(error) = LOGIN_ERROR.with(|e| e.borrow().clone()) {
+    if let Some(error) = SYSTEM.with(|s| s.borrow().login_error.clone()) {
         return format!("Couldn't change it. {error}");
     }
-    match native::login_item() {
+    match login_item() {
         native::LoginItem::Unavailable(why) => why.to_string(),
         native::LoginItem::On => "On: Pigeon opens when you log in.".into(),
         native::LoginItem::Off => "Off.".into(),
@@ -584,7 +679,7 @@ pub fn login_item_status() -> String {
 fn on_backend_event(backend: Entity<Backend>, event: &BackendEvent, cx: &mut App) {
     match event {
         BackendEvent::NewMail(new) => {
-            if !settings::current(cx).notifications {
+            if !settings::get(cx).notifications {
                 logging::info(&format!(
                     "notify: {} new, not shown (notifications off)",
                     new.len()
@@ -608,6 +703,7 @@ fn on_backend_event(backend: Entity<Backend>, event: &BackendEvent, cx: &mut App
         }
         BackendEvent::CountsChanged
         | BackendEvent::OpCommitted(_)
+        | BackendEvent::Status(_)
         | BackendEvent::SignedIn
         | BackendEvent::SignedOut => update_badge(cx),
         _ => {}
@@ -647,9 +743,27 @@ fn in_view(thread_id: &str, cx: &App) -> bool {
     }
 }
 
-/// NTF-2: Primary's unread count on the Dock icon.
+/// Settings › Notifications › Dock badge (MB-055).
+pub fn set_dock_badge(badge: DockBadge, cx: &mut App) {
+    change_app_settings(cx, |s| s.dock_badge = badge);
+    update_badge(cx);
+}
+
+/// NTF-2: the unread count on the Dock icon, as Settings asks (MB-055).
 fn update_badge(cx: &mut App) {
-    let count = backend_of(cx).read(cx).inbox_unread();
+    let backend = backend_of(cx).read(cx);
+    // MB-054: stale counts don't stand while the sign-in has expired.
+    let expired = *backend.status() == SyncStatus::AuthExpired;
+    let counts = backend.category_counts();
+    let count = match settings::get(cx).dock_badge {
+        _ if expired => 0,
+        DockBadge::Off => 0,
+        DockBadge::Primary => counts.unread(Category::Primary).into(),
+        DockBadge::AllInbox => Category::ALL
+            .iter()
+            .map(|&c| u64::from(counts.unread(c)))
+            .sum(),
+    };
     let shell = cx.global_mut::<Shell>();
     if shell.badge != Some(count) {
         shell.badge = Some(count);
@@ -663,6 +777,7 @@ impl PigeonApp {
     /// written, and sync polls as in the background.
     pub(super) fn before_close(&mut self, cx: &mut Context<Self>) {
         self.stash_composer(cx);
+        self.close_draft_windows(cx);
         self.save_settings(cx);
         self.backend.update(cx, |b, cx| {
             b.flush_settings();
@@ -707,6 +822,21 @@ impl PigeonApp {
                 if !self.settings_page.open {
                     self.toggle_settings(&OpenSettings, window, cx);
                 }
+            }
+            // MB-063: shown, not saved to the recent searches.
+            Show::Search(text) => {
+                self.close_overlays(window, cx);
+                self.set_mode(Mode::Mail, window, cx);
+                self.search_open = true;
+                self.set_search_text(&text, window, cx);
+                self.search_input
+                    .update(cx, |input, cx| input.focus(window, cx));
+            }
+            Show::Today => {
+                self.set_mode(Mode::Calendar, window, cx);
+                self.calendar.update(cx, |c, cx| {
+                    c.go_to_date(crate::ui::calendar::today(), window, cx)
+                });
             }
         }
     }
@@ -815,5 +945,37 @@ mod tests {
         assert_eq!(m.body, "hi%", "a broken escape stays");
         assert_eq!(Mailto::parse("mailto:").unwrap(), Mailto::default());
         assert!(Mailto::parse("mail").is_none());
+    }
+
+    /// MB-063: each `pigeon://` link shows or fills in, and nothing else.
+    #[test]
+    fn pigeon_urls() {
+        let parse = parse_pigeon_url;
+        assert_eq!(parse("pigeon://compose"), Some(Show::Compose(None)));
+        assert_eq!(
+            parse("PIGEON://compose/ana@x.com?subject=Hi%20there&body=a+b"),
+            Some(Show::Compose(Some(Mailto {
+                to: vec!["ana@x.com".into()],
+                subject: "Hi there".into(),
+                body: "a+b".into(),
+                ..Default::default()
+            })))
+        );
+        assert_eq!(
+            parse("pigeon://thread/18c2f%2Fa"),
+            Some(Show::Thread("18c2f/a".into()))
+        );
+        assert_eq!(parse("pigeon://thread/"), None);
+        assert_eq!(
+            parse("pigeon://search?q=from%3Aana+is%3Aunread"),
+            Some(Show::Search("from:ana is:unread".into()))
+        );
+        assert_eq!(parse("pigeon://search"), Some(Show::Search(String::new())));
+        assert_eq!(parse("pigeon://event/new"), Some(Show::NewEvent));
+        assert_eq!(parse("pigeon://today/"), Some(Show::Today));
+        assert_eq!(parse("pigeon://send?to=a@x.com"), None);
+        assert_eq!(parse("pigeon://event/delete"), None);
+        assert_eq!(parse("https://x.com"), None);
+        assert_eq!(parse("pig"), None);
     }
 }

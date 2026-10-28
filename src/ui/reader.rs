@@ -46,6 +46,10 @@ pub const MESSAGES_START: usize = 2;
 const READER_MAX: Pixels = px(760.);
 /// A reader narrower than this drops the body's indent.
 const NARROW: Pixels = px(520.);
+/// The longest file name an attachment chip shows.
+const CHIP_NAME_MAX: Pixels = px(260.);
+/// The bulk actions' column.
+const BULK_MAX: Pixels = px(440.);
 
 /// The reader's state that outlives a frame but isn't the app's data: what
 /// the user opened, ⌥Tab's link, and attachment files on their way.
@@ -319,6 +323,13 @@ impl PigeonApp {
                     .mr(SPACE_SM)
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(SendMessage), cx)),
             )
+            .child(icon_button(
+                "compose-new-window",
+                Icon::PanelTop,
+                "Open in new window",
+                Box::new(OpenDraftInNewWindow),
+                theme,
+            ))
             .child(icon_button(
                 "compose-discard",
                 Icon::Trash,
@@ -1212,7 +1223,7 @@ impl PigeonApp {
                         .child(glyph)
                         .child(
                             div()
-                                .max_w(px(260.))
+                                .max_w(CHIP_NAME_MAX)
                                 .truncate()
                                 .text_size(TEXT_SM)
                                 .font_weight(FontWeight::MEDIUM)
@@ -1384,12 +1395,12 @@ impl PigeonApp {
             .flex()
             .flex_col()
             .items_center()
-            .pt(px(72.))
+            .pt(SPACE_2XL * 2. + SPACE_SM)
             .px(SPACE_XL)
             .child(
                 div()
                     .w_full()
-                    .max_w(px(440.))
+                    .max_w(BULK_MAX)
                     .flex()
                     .flex_col()
                     .gap(SPACE_LG)

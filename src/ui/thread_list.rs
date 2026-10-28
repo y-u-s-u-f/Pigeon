@@ -41,6 +41,8 @@ const ROW_INSET: gpui::Pixels = SPACE_XL;
 const LABEL_DOTS: usize = 3;
 const LABEL_DOT: gpui::Pixels = px(7.);
 const UNREAD_DOT: gpui::Pixels = px(6.);
+/// The bar on the selected row's leading edge while the list has focus.
+const FOCUS_BAR: gpui::Pixels = px(3.);
 /// The row's hover group: the date gives way to the quick actions, and the
 /// checkbox shows, without the app keeping a hover state (ME-004).
 const ROW_GROUP: &str = "thread-row";
@@ -593,8 +595,8 @@ impl PigeonApp {
         use crate::search::Scope;
         match self.search_query.scope {
             Some(Scope::Anywhere) => "anywhere".into(),
-            None if self.search_all => "in all mail".into(),
-            Some(Scope::All) => "in all mail".into(),
+            None if self.search_all => "in All Mail".into(),
+            Some(Scope::All) => "in All Mail".into(),
             _ => format!("in {}", self.search_scope_name()),
         }
     }
@@ -723,7 +725,7 @@ impl PigeonApp {
                         })
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_search_scope(cx)))
                         .tooltip(|window, cx| {
-                            tooltip("Switch between this folder and all mail").build(window, cx)
+                            tooltip("Switch between this folder and All Mail").build(window, cx)
                         })
                 }
             });
@@ -1459,7 +1461,7 @@ impl PigeonApp {
                         .left(SPACE_2XS)
                         .top(relative(0.25))
                         .bottom(relative(0.25))
-                        .w(px(3.))
+                        .w(FOCUS_BAR)
                         .rounded_full()
                         .bg(theme.focus_bar),
                 )

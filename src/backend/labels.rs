@@ -10,6 +10,8 @@
 //!   message names the ones left as they were.
 //! - Deleting never touches mail: Gmail takes the label off it.
 
+use std::collections::HashMap;
+
 use gpui::{Context, Task};
 
 use super::{
@@ -116,41 +118,45 @@ fn parent_of(labels: &[Label], ix: usize) -> Option<usize> {
 /// The labels as a tree. Siblings go by their place in `order` (label ids,
 /// the user's own arrangement), those not in it after, by name.
 pub fn label_tree(labels: &[Label], order: &[String]) -> Vec<LabelNode> {
-    let parents: Vec<Option<usize>> = (0..labels.len()).map(|ix| parent_of(labels, ix)).collect();
+    let mut place: HashMap<&str, usize> = HashMap::with_capacity(order.len());
+    for (ix, id) in order.iter().enumerate() {
+        place.entry(id.as_str()).or_insert(ix);
+    }
+    // Each label's children, sorted once; the roots last (MC-033).
+    let mut kids: Vec<Vec<usize>> = vec![Vec::new(); labels.len() + 1];
+    for ix in 0..labels.len() {
+        kids[parent_of(labels, ix).unwrap_or(labels.len())].push(ix);
+    }
+    for list in &mut kids {
+        list.sort_by_cached_key(|&ix| {
+            let place = place.get(labels[ix].id.as_str()).copied();
+            (place.unwrap_or(usize::MAX), labels[ix].name.to_lowercase())
+        });
+    }
     let mut out = Vec::with_capacity(labels.len());
     fn walk(
         labels: &[Label],
-        order: &[String],
-        parents: &[Option<usize>],
+        kids: &[Vec<usize>],
         parent: Option<usize>,
         depth: usize,
         out: &mut Vec<LabelNode>,
     ) {
-        let mut kids: Vec<usize> = (0..labels.len())
-            .filter(|&ix| parents[ix] == parent)
-            .collect();
-        kids.sort_by_key(|&ix| {
-            let place = order.iter().position(|id| *id == labels[ix].id);
-            (place.unwrap_or(usize::MAX), labels[ix].name.to_lowercase())
-        });
-        for ix in kids {
+        for &ix in &kids[parent.unwrap_or(labels.len())] {
             let name = match parent {
                 Some(p) => labels[ix].name[labels[p].name.len() + 1..].to_string(),
                 None => labels[ix].name.clone(),
             };
-            let at = out.len();
             out.push(LabelNode {
                 ix,
                 depth,
                 name,
                 parent,
-                children: 0,
+                children: kids[ix].len(),
             });
-            walk(labels, order, parents, Some(ix), depth + 1, out);
-            out[at].children = parents.iter().filter(|p| **p == Some(ix)).count();
+            walk(labels, kids, Some(ix), depth + 1, out);
         }
     }
-    walk(labels, order, &parents, None, 0, &mut out);
+    walk(labels, &kids, None, 0, &mut out);
     out
 }
 

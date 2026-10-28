@@ -347,7 +347,7 @@ fn main() {
         // Closing the window leaves Pigeon running, in the Dock (NTF-3).
         shell::init(backend, cx);
         // The saved preset is known once the shell has read the settings.
-        set_keymap(settings::current(cx).keymap, cx);
+        set_keymap(settings::get(cx).keymap, cx);
         shell::show(Show::Main, cx);
         // W7b: the menu bar item, its panel and the reminders.
         shell::install_menu_bar(cx);

@@ -17,8 +17,6 @@ use crate::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub appearance: Appearance,
-    /// Reduce motion whatever the system says; off follows the system.
-    pub reduce_motion: bool,
     /// After the selected conversation is archived, deleted or moved, open
     /// the next one; otherwise leave nothing selected.
     pub auto_advance: bool,
@@ -30,7 +28,6 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             appearance: Appearance::System,
-            reduce_motion: false,
             auto_advance: true,
             search_all_mail: false,
         }
@@ -43,6 +40,35 @@ pub enum Appearance {
     System,
     Light,
     Dark,
+}
+
+impl Appearance {
+    pub const ALL: [Appearance; 3] = [Appearance::System, Appearance::Light, Appearance::Dark];
+
+    /// What windows are set to; none follows the system (MC-085).
+    pub fn window_appearance(self) -> Option<gpui::WindowAppearance> {
+        match self {
+            Appearance::System => None,
+            Appearance::Light => Some(gpui::WindowAppearance::Light),
+            Appearance::Dark => Some(gpui::WindowAppearance::Dark),
+        }
+    }
+}
+
+/// What the Dock icon's badge counts (MB-055).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DockBadge {
+    Off,
+    /// Unread conversations in Primary.
+    #[default]
+    Primary,
+    /// Unread conversations in every Inbox category.
+    AllInbox,
+}
+
+impl DockBadge {
+    pub const ALL: [DockBadge; 3] = [DockBadge::Off, DockBadge::Primary, DockBadge::AllInbox];
 }
 
 /// The clock times show on, in mail and calendar alike. `System` follows
@@ -92,7 +118,8 @@ pub enum RemoteImages {
 #[serde(default)]
 pub struct Saved {
     pub appearance: Appearance,
-    pub reduce_motion: bool,
+    // `reduce_motion`, saved before MB-072, is ignored: Pigeon follows the
+    // system's Reduce Motion.
     pub auto_advance: bool,
     pub search_all_mail: bool,
     pub compact_list: bool,
@@ -139,6 +166,13 @@ pub struct Saved {
     /// Palette commands by last use, most recent first, by action name
     /// (ME-062); at most `RECENT_COMMANDS`.
     pub recent_commands: Vec<String>,
+    /// The alert sound with single new-mail notices and event reminders
+    /// (MA-073).
+    pub notification_sound: bool,
+    /// Post event reminders (MB-052); off still marks them fired.
+    pub event_reminders: bool,
+    /// What the Dock badge counts (MB-055).
+    pub dock_badge: DockBadge,
 }
 
 /// How many recent palette commands are kept (ME-062).
@@ -270,7 +304,6 @@ impl Default for Saved {
         let settings = Settings::default();
         Self {
             appearance: settings.appearance,
-            reduce_motion: settings.reduce_motion,
             auto_advance: settings.auto_advance,
             search_all_mail: settings.search_all_mail,
             compact_list: false,
@@ -298,6 +331,9 @@ impl Default for Saved {
             nav: SavedNav::default(),
             seen_tip: false,
             recent_commands: Vec::new(),
+            notification_sound: true,
+            event_reminders: true,
+            dock_badge: DockBadge::Primary,
         }
     }
 }
@@ -355,9 +391,15 @@ impl gpui::Global for AppSettings {}
 
 /// The settings as last saved, wherever they were changed.
 pub fn current(cx: &gpui::App) -> Saved {
+    get(cx).clone()
+}
+
+/// The same, borrowed, to read a field without cloning them all (MC-046).
+pub fn get(cx: &gpui::App) -> &Saved {
+    static DEFAULT: std::sync::LazyLock<Saved> = std::sync::LazyLock::new(Saved::default);
     cx.try_global::<AppSettings>()
-        .map(|s| s.0.clone())
-        .unwrap_or_default()
+        .map(|s| &s.0)
+        .unwrap_or(&DEFAULT)
 }
 
 pub fn remember(saved: &Saved, cx: &mut gpui::App) {
@@ -366,24 +408,25 @@ pub fn remember(saved: &Saved, cx: &mut gpui::App) {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
+    General,
     Appearance,
     Mail,
     Calendar,
     Notifications,
     MenuBar,
-    General,
     Accounts,
     Shortcuts,
 }
 
 impl Section {
+    /// General first (ME-067).
     pub const ALL: [Section; 8] = [
+        Section::General,
         Section::Appearance,
         Section::Mail,
         Section::Calendar,
         Section::Notifications,
         Section::MenuBar,
-        Section::General,
         Section::Accounts,
         Section::Shortcuts,
     ];
@@ -432,7 +475,6 @@ impl Section {
 pub enum SettingId {
     Appearance,
     TextSize,
-    ReduceMotion,
     CompactList,
     Sidebar,
     ArchivedInInbox,
@@ -467,6 +509,11 @@ pub enum SettingId {
     // Polish W1.
     Transparency,
     ShortcutPreset,
+    // Polish W3.
+    NotificationSound,
+    EventReminders,
+    DockBadge,
+    NotificationPermission,
 }
 
 pub struct SettingMeta {
@@ -498,8 +545,6 @@ pub const SETTINGS: &[SettingMeta] = settings! {
         ["glass", "opaque", "opacity", "blur", "translucent", "see-through", "accessibility", "solid"];
     Appearance: TextSize, "Text size", "Make all text bigger or smaller. Also ⌘= and ⌘-.",
         ["font", "zoom", "scale", "bigger", "smaller", "larger", "accessibility"];
-    Appearance: ReduceMotion, "Reduce motion", "Turn animations off. Off follows the system setting.",
-        ["animation", "animations", "transitions", "accessibility", "movement"];
     Mail: CompactList, "Compact list", "One line per conversation in the list.",
         ["density", "dense", "comfortable", "condensed", "rows", "spacing"];
     Mail: Sidebar, "Show sidebar", "Mailboxes and labels beside the list.",
@@ -534,6 +579,14 @@ pub const SETTINGS: &[SettingMeta] = settings! {
         ["log out", "logout", "sign off", "remove account", "disconnect"];
     Notifications: Notifications, "New mail notifications", "A notification for each new message in the Inbox; more than three at once become one.",
         ["alerts", "banners", "notify", "new mail"];
+    Notifications: NotificationPermission, "macOS permission", "Whether macOS lets Pigeon show notifications.",
+        ["permission", "allow", "system settings", "blocked", "denied", "off"];
+    Notifications: NotificationSound, "Play sound", "The alert sound with a new message and an event reminder. Several messages at once arrive quietly.",
+        ["sound", "audio", "chime", "alert", "mute", "silent", "quiet"];
+    Notifications: EventReminders, "Event reminders", "A notification when an event's reminder is due.",
+        ["reminder", "alerts", "calendar", "meeting", "event", "notify"];
+    Notifications: DockBadge, "Dock badge", "The unread count on Pigeon's Dock icon: Primary, or every Inbox category.",
+        ["badge", "dock", "count", "unread", "icon", "number"];
     Notifications: TestNotification, "Send test notification", "Shows one now. The first time, macOS asks whether Pigeon may notify you.",
         ["try", "permission", "allow", "test"];
     General: TimeFormat, "Time format", "1 PM or 13:00, in mail and calendar. System follows macOS's Date & Time settings.",
@@ -772,9 +825,16 @@ mod tests {
             nav: SavedNav::Label("Label_2".into()),
             seen_tip: true,
             recent_commands: vec!["pigeon::Archive".into()],
+            notification_sound: false,
+            event_reminders: false,
+            dock_badge: DockBadge::AllInbox,
             ..Saved::default()
         };
         assert_eq!(Saved::from_map(saved.to_map()), saved);
+        // Saved before MB-072: ignored.
+        let mut map = saved.to_map();
+        map.insert("reduce_motion".into(), true.into());
+        assert_eq!(Saved::from_map(map), saved);
         // Unknown keys go, bad values take their default, the rest stay.
         let mut map = saved.to_map();
         map.insert("gone".into(), true.into());
@@ -833,7 +893,7 @@ mod tests {
         assert_eq!(settings_found("dark"), vec![SettingId::Appearance]);
         assert_eq!(settings_found("font"), vec![SettingId::TextSize]);
         assert_eq!(settings_found("density"), vec![SettingId::CompactList]);
-        assert!(settings_found("animation").contains(&SettingId::ReduceMotion));
+        assert_eq!(settings_found("badge"), vec![SettingId::DockBadge]);
     }
 
     #[test]

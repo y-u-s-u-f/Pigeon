@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, FixedOffset, Local, TimeZone as _};
 use serde::Deserialize;
 
-use super::http::{self, Clock, Request, Response, SystemClock, Transport, TransportError};
+use super::http::{
+    self, Clock, Request, Response, SystemClock, Transport, TransportError, encode as enc,
+};
 use crate::data::{Account, Body, Contact, DraftOrigin, Folder, Label, Loaded, Message, Thread};
 
 pub const INBOX: &str = "INBOX";
@@ -387,11 +389,7 @@ impl From<TransportError> for GmailError {
 /// The response's JSON, or the error it carries.
 fn parse<T: serde::de::DeserializeOwned>(response: &Response) -> Result<T, GmailError> {
     if !response.is_success() {
-        let message = response
-            .json::<serde_json::Value>()
-            .ok()
-            .and_then(|v| v["error"]["message"].as_str().map(String::from))
-            .unwrap_or_default();
+        let message = response.error_message().unwrap_or_default();
         return Err(GmailError::Status {
             status: response.status,
             message,
@@ -404,20 +402,6 @@ fn parse<T: serde::de::DeserializeOwned>(response: &Response) -> Result<T, Gmail
         &response.body
     };
     serde_json::from_slice(body).map_err(|e| GmailError::Parse(e.to_string()))
-}
-
-/// Percent-encodes a query value.
-fn enc(value: &str) -> String {
-    let mut out = String::new();
-    for b in value.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 // The requests, each with its quota cost.
@@ -1075,27 +1059,22 @@ pub fn thread_from_gmail(t: &GThread, me: &Account) -> Option<Thread> {
         .find(|s| !s.is_empty())
         .unwrap_or_default();
     let messages: Vec<Message> = parsed.into_iter().map(|(m, _)| m).collect();
-    let label_ids = union_labels(messages.iter().map(|m| &m.label_ids));
-    let has = |label: &str| label_ids.iter().any(|l| l == label);
     let mut thread = Thread {
         id: t.id.clone(),
         subject,
         folder: derive_folder(&messages, me),
-        labels: label_ids
-            .iter()
-            .filter(|l| !is_system_label(l))
-            .cloned()
-            .collect(),
-        starred: has(STARRED),
-        unread: has(UNREAD),
-        important: has(IMPORTANT),
+        labels: Vec::new(),
+        starred: false,
+        unread: false,
+        important: false,
         messages,
         history_id: t.history_id,
         loaded: Loaded::Metadata,
         search: Default::default(),
         origin: None,
-        label_ids,
+        label_ids: Vec::new(),
     };
+    thread.derive_from_labels();
     thread.reindex();
     Some(thread)
 }
@@ -1109,6 +1088,7 @@ pub fn draft_thread(draft_id: &str, m: &GMessage) -> Thread {
         kind: crate::app::ComposeKind::Reply,
         markdown: String::new(),
         reply_to: Some(m.thread_id.clone()),
+        answers: String::new(),
         quoted: None,
         signature: false,
     });
@@ -1170,7 +1150,7 @@ pub fn touches_drafts(history: &[History]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::http::FakeTransport;
+    use crate::backend::http::{FakeTransport, batch_body};
 
     fn me() -> Account {
         Account {
@@ -1355,27 +1335,6 @@ mod tests {
         assert!(results[2].is_err());
     }
 
-    /// Answers batches with boundary `b`.
-    struct Batches(Arc<FakeTransport>);
-    impl Transport for Batches {
-        fn send(&self, r: &Request) -> Result<Response, TransportError> {
-            let mut response = self.0.send(r)?;
-            response.headers = vec![("Content-Type".into(), "multipart/mixed; boundary=b".into())];
-            Ok(response)
-        }
-    }
-
-    fn batch_body(parts: &[(u16, &str)]) -> String {
-        let mut out = String::new();
-        for (ix, (status, body)) in parts.iter().enumerate() {
-            out.push_str(&format!(
-                "--b\r\nContent-ID: <response-item-{}>\r\n\r\nHTTP/1.1 {status} X\r\n\r\n{body}\r\n",
-                ix + 1
-            ));
-        }
-        out + "--b--\r\n"
-    }
-
     /// The paths a batch request carries, in order.
     fn batch_paths(request: &Request) -> Vec<String> {
         String::from_utf8_lossy(&request.body)
@@ -1404,7 +1363,7 @@ mod tests {
             &[(200, &first), (200, &second), (200, &third)],
         ));
         let clock = Arc::new(http::FakeClock::new());
-        let gmail = Gmail::with_clock(Arc::new(Batches(fake.clone())), clock.clone());
+        let gmail = Gmail::with_clock(fake.clone(), clock.clone());
         let requests: Vec<Request> = ["a", "b", "c", "d"]
             .iter()
             .map(|id| thread_get_request(id))
@@ -1437,10 +1396,7 @@ mod tests {
     #[test]
     fn batches_hold_at_most_batch_size_calls() {
         let fake = Arc::new(FakeTransport::new().on("POST", "/batch/gmail/v1", &[], &[(200, "")]));
-        let gmail = Gmail::with_clock(
-            Arc::new(Batches(fake.clone())),
-            Arc::new(http::FakeClock::new()),
-        );
+        let gmail = Gmail::with_clock(fake.clone(), Arc::new(http::FakeClock::new()));
         let requests: Vec<Request> = (0..45)
             .map(|i| thread_get_request(&format!("t{i}")))
             .collect();
@@ -1493,7 +1449,7 @@ mod tests {
                     &[(200, &batch_body(&[(200, &thread)]))],
                 ),
         );
-        let gmail = Gmail::new(Arc::new(Batches(fake.clone())));
+        let gmail = Gmail::new(fake.clone());
         let store = store_with_a1();
         let query = crate::search::GmailQuery {
             q: "budget".into(),
@@ -1549,7 +1505,7 @@ mod tests {
                     &[(200, &batch_body(&[(200, &thread)]))],
                 ),
         );
-        let gmail = Gmail::new(Arc::new(Batches(fake.clone())));
+        let gmail = Gmail::new(fake.clone());
         let store = store_with_a1();
         let query = crate::search::GmailQuery {
             q: "before:1793000000".into(),

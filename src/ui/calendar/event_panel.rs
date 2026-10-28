@@ -71,6 +71,8 @@ const MENU_WIDTH: Pixels = px(220.);
 const REPEAT_MENU_WIDTH: Pixels = px(260.);
 /// The repeat's end date field.
 const UNTIL_WIDTH: Pixels = px(160.);
+/// The guest suggestions under the Guests field.
+const SUGGESTIONS_WIDTH: Pixels = px(300.);
 /// Rows the time picker shows at once.
 const TIME_PICKER_ROWS: f32 = 8.;
 
@@ -159,7 +161,7 @@ pub(crate) fn location_target(location: &str) -> Option<String> {
     }
     Some(format!(
         "https://maps.apple.com/?q={}",
-        crate::backend::auth::encode(location)
+        crate::backend::http::encode(location)
     ))
 }
 
@@ -3452,7 +3454,7 @@ impl CalendarView {
                     .aria_label("Suggested guests")
                     .occlude()
                     .mt(SPACE_XS)
-                    .w(px(300.))
+                    .w(SUGGESTIONS_WIDTH)
                     .p(SPACE_XS)
                     .flex()
                     .flex_col()

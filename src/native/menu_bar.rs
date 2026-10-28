@@ -164,15 +164,20 @@ pub fn listen(handler: impl Fn(Signal) + 'static) {
 }
 
 /// The bird, as a template image so it follows the menu bar's look, and
-/// the same with the new-mail dot.
+/// the same with the new-mail dot. Pigeon's own mark from the bundle
+/// (`MenuBarIcon.png`, MA-056), SF Symbols' `bird` under `cargo run`.
 fn glyphs() -> (Option<Retained<NSImage>>, Option<Retained<NSImage>>) {
-    let Some(bird) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-        &NSString::from_str("bird"),
-        Some(&NSString::from_str("Pigeon")),
-    ) else {
+    let name = NSString::from_str("Pigeon");
+    let Some(bird) = NSImage::imageNamed(&NSString::from_str("MenuBarIcon")).or_else(|| {
+        NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &NSString::from_str("bird"),
+            Some(&name),
+        )
+    }) else {
         return (None, None);
     };
     bird.setTemplate(true);
+    bird.setAccessibilityDescription(Some(&name));
     let size = bird.size();
     let canvas = NSSize::new(size.width + DOT - 1., size.height);
     let inner = bird.clone();

@@ -328,6 +328,9 @@ impl Render for PaneResize {
     }
 }
 
+/// A pane divider's grab band, centered on the border.
+const DIVIDER_BAND: Pixels = px(6.);
+
 /// The draggable divider over the border at `x`: a 6pt band centered on
 /// it, lit with a 1px accent line on hover and while `active` (dragged).
 /// Double-clicking calls `on_reset`. Drawn over the panes, after them, so
@@ -339,19 +342,21 @@ pub fn pane_divider(
     theme: &Theme,
     on_reset: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    let (id, group) = match kind {
-        PaneResize::Sidebar => ("sidebar-divider", "sidebar-divider"),
-        PaneResize::List => ("list-divider", "list-divider"),
+    let (id, group, label) = match kind {
+        PaneResize::Sidebar => ("sidebar-divider", "sidebar-divider", "Resize sidebar"),
+        PaneResize::List => ("list-divider", "list-divider", "Resize list"),
     };
     let accent = theme.accent;
     div()
         .id(id)
+        .role(gpui::Role::Splitter)
+        .aria_label(label)
         .group(group)
         .absolute()
         .top_0()
         .bottom_0()
-        .left(x - px(3.))
-        .w(px(6.))
+        .left(x - DIVIDER_BAND / 2.)
+        .w(DIVIDER_BAND)
         .occlude()
         .cursor_col_resize()
         .child(
@@ -360,7 +365,7 @@ pub fn pane_divider(
                 .absolute()
                 .top_0()
                 .bottom_0()
-                .left(px(2.))
+                .left(SPACE_2XS)
                 .w(px(1.))
                 .when(active, |d| d.bg(accent))
                 .group_hover(group, |s| s.bg(accent)),

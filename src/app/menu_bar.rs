@@ -133,7 +133,7 @@ pub fn install(today: Entity<Today>, cx: &mut App) {
             hot_keys: String::new(),
         })
     });
-    apply(settings::current(cx).menu_bar, cx);
+    apply(settings::get(cx).menu_bar, cx);
     cx.observe(&today, |_, cx| update_status(cx)).detach();
     cx.on_action(|_: &OpenMenuBarPanel, _| schedule(|| toggle(Source::Command)));
     cx.on_action(|_: &JoinNextMeeting, cx| join_next(cx));
@@ -317,7 +317,7 @@ fn update_status(cx: &mut App) {
     let Some(today) = today::model(cx) else {
         return;
     };
-    let prefs = settings::current(cx).menu_bar;
+    let prefs = settings::get(cx).menu_bar;
     let today = today.read(cx);
     let title = prefs
         .next_meeting
@@ -328,7 +328,7 @@ fn update_status(cx: &mut App) {
 
 /// Settings › Menu bar: save, then put into effect.
 pub fn set_prefs(prefs: MenuBarPrefs, cx: &mut App) {
-    if settings::current(cx).menu_bar == prefs {
+    if settings::get(cx).menu_bar == prefs {
         return;
     }
     shell::change_app_settings(cx, |s| s.menu_bar = prefs);

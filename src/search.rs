@@ -23,7 +23,11 @@ enum Term {
     From(String),
     To(String),
     Subject(String),
-    Label(String),
+    /// As typed, and `normalize`d for matching.
+    Label {
+        raw: String,
+        norm: String,
+    },
     Unread,
     Starred,
     Attachment,
@@ -101,7 +105,7 @@ fn gmail_chip(token: &str) -> Option<String> {
 impl Query {
     pub fn parse(input: &str) -> Self {
         let mut query = Query::default();
-        let raw = tokenize_raw(input);
+        let raw = tokenize(input, true);
         if raw.iter().any(|t| gmail_only(t)) {
             let operator = |t: &str| {
                 gmail_only(t)
@@ -126,7 +130,7 @@ impl Query {
                     .join(" "),
             );
         }
-        for token in tokenize(input) {
+        for token in tokenize(input, false) {
             let (key, value) = match token.split_once(':') {
                 // An operator still waiting for its value, as it's typed.
                 Some((key, ""))
@@ -143,27 +147,20 @@ impl Query {
                 ("from", _) => Term::From(value),
                 ("to", _) => Term::To(value),
                 ("subject", _) => Term::Subject(value),
-                ("label", _) => Term::Label(value),
+                ("label", _) => Term::label(value),
                 ("is", "unread") => Term::Unread,
                 ("is", "starred") => Term::Starred,
                 ("has", "attachment" | "attachments") => Term::Attachment,
                 ("in", scope) => {
-                    query.scope = Some(match scope {
-                        "inbox" => Scope::Folder(Folder::Inbox),
-                        "archive" | "archived" => Scope::Folder(Folder::Archive),
-                        "sent" => Scope::Folder(Folder::Sent),
-                        "drafts" | "draft" => Scope::Folder(Folder::Drafts),
-                        "spam" => Scope::Folder(Folder::Spam),
-                        "trash" => Scope::Folder(Folder::Trash),
-                        "anywhere" => Scope::Anywhere,
-                        "starred" => {
+                    query.scope = Some(match (folder_scope(scope), scope) {
+                        (Some(scope), _) => scope,
+                        (None, "starred") => {
                             query.terms.push(Term::Starred);
                             Scope::All
                         }
-                        "all" => Scope::All,
                         // Like Gmail, `in:` also takes a label.
-                        label => {
-                            query.terms.push(Term::Label(label.to_string()));
+                        (None, label) => {
+                            query.terms.push(Term::label(label.to_string()));
                             Scope::All
                         }
                     });
@@ -180,18 +177,18 @@ impl Query {
     /// "is:unread", "in: Archive". Free text is left out.
     pub fn operators(&self) -> Vec<String> {
         let mut out: Vec<String> = self.gmail_chips.clone();
-        out.extend(self.terms.iter().filter(|_| !self.gmail_only()).filter_map(
-            |term| match term {
+        if !self.gmail_only() {
+            out.extend(self.terms.iter().filter_map(|term| match term {
                 Term::Text(_) => None,
                 Term::From(v) => Some(format!("from: {v}")),
                 Term::To(v) => Some(format!("to: {v}")),
                 Term::Subject(v) => Some(format!("subject: {v}")),
-                Term::Label(v) => Some(format!("label: {v}")),
+                Term::Label { raw, .. } => Some(format!("label: {raw}")),
                 Term::Unread => Some("is:unread".into()),
                 Term::Starred => Some("is:starred".into()),
                 Term::Attachment => Some("has:attachment".into()),
-            },
-        ));
+            }));
+        }
         if let Some(scope) = self.scope {
             out.push(match scope {
                 Scope::Folder(folder) => format!("in: {}", folder.title()),
@@ -263,7 +260,7 @@ impl Query {
                 Term::From(v) => format!("from:{}", quote(v)),
                 Term::To(v) => format!("to:{}", quote(v)),
                 Term::Subject(v) => format!("subject:{}", quote(v)),
-                Term::Label(v) => gmail_label(v, labels),
+                Term::Label { raw, .. } => gmail_label(raw, labels),
                 Term::Unread => "is:unread".into(),
                 Term::Starred => "is:starred".into(),
                 Term::Attachment => "has:attachment".into(),
@@ -283,15 +280,12 @@ impl Query {
             Term::From(text) => index.from.contains(text.as_str()),
             Term::To(text) => index.to.contains(text.as_str()),
             Term::Subject(text) => index.subject.contains(text.as_str()),
-            Term::Label(text) => {
-                let wanted = normalize(text);
-                thread.labels.iter().any(|id| {
-                    normalize(id).starts_with(&wanted)
-                        || data
-                            .label(id)
-                            .is_some_and(|l| normalize(&l.name).starts_with(&wanted))
-                })
-            }
+            Term::Label { norm, .. } => thread.labels.iter().any(|id| {
+                normalized_starts_with(id, norm)
+                    || data
+                        .label(id)
+                        .is_some_and(|l| normalized_starts_with(&l.name, norm))
+            }),
             Term::Unread => thread.unread,
             Term::Starred => thread.starred,
             Term::Attachment => thread.has_attachments(),
@@ -299,12 +293,28 @@ impl Query {
     }
 }
 
+impl Term {
+    fn label(raw: String) -> Self {
+        let norm = normalize(&raw);
+        Term::Label { raw, norm }
+    }
+}
+
 /// "Side Projects", "side-projects" and "sideprojects" all compare equal.
 fn normalize(text: &str) -> String {
+    normalized_chars(text).collect()
+}
+
+fn normalized_chars(text: &str) -> impl Iterator<Item = char> + '_ {
     text.chars()
         .filter(|c| c.is_alphanumeric())
         .flat_map(char::to_lowercase)
-        .collect()
+}
+
+/// `normalize(text).starts_with(prefix)`, without building the string.
+fn normalized_starts_with(text: &str, prefix: &str) -> bool {
+    let mut chars = normalized_chars(text);
+    prefix.chars().all(|p| chars.next() == Some(p))
 }
 
 /// Gmail's archive: in no folder (SRC-4).
@@ -502,29 +512,33 @@ impl ServerSearch {
     }
 }
 
-/// An `in:` that `parse` takes as the scope: a folder, `all` or
-/// `anywhere`. `in:<label>` stays in the query.
-fn sets_scope(token: &str) -> bool {
-    token.split_once(':').is_some_and(|(key, value)| {
-        key.eq_ignore_ascii_case("in")
-            && matches!(
-                value.to_lowercase().as_str(),
-                "inbox"
-                    | "archive"
-                    | "archived"
-                    | "sent"
-                    | "drafts"
-                    | "draft"
-                    | "spam"
-                    | "trash"
-                    | "all"
-                    | "anywhere"
-            )
+/// The scope an `in:` value sets: a folder, `all` or `anywhere`.
+/// `in:starred` and `in:<label>` are terms instead.
+fn folder_scope(value: &str) -> Option<Scope> {
+    Some(match value {
+        "inbox" => Scope::Folder(Folder::Inbox),
+        "archive" | "archived" => Scope::Folder(Folder::Archive),
+        "sent" => Scope::Folder(Folder::Sent),
+        "drafts" | "draft" => Scope::Folder(Folder::Drafts),
+        "spam" => Scope::Folder(Folder::Spam),
+        "trash" => Scope::Folder(Folder::Trash),
+        "all" => Scope::All,
+        "anywhere" => Scope::Anywhere,
+        _ => return None,
     })
 }
 
-/// Splits on whitespace like `tokenize`, keeping the quotes, for Gmail.
-fn tokenize_raw(input: &str) -> Vec<String> {
+/// An `in:` that `parse` takes as the scope (`folder_scope`). `in:<label>`
+/// stays in the query.
+fn sets_scope(token: &str) -> bool {
+    token.split_once(':').is_some_and(|(key, value)| {
+        key.eq_ignore_ascii_case("in") && folder_scope(&value.to_lowercase()).is_some()
+    })
+}
+
+/// Splits on whitespace, keeping "quoted phrases" (also after `key:`)
+/// whole; with `keep_quotes`, the quotes stay in, for Gmail.
+fn tokenize(input: &str, keep_quotes: bool) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut quoted = false;
@@ -532,30 +546,10 @@ fn tokenize_raw(input: &str) -> Vec<String> {
         match c {
             '"' => {
                 quoted = !quoted;
-                current.push(c);
-            }
-            c if c.is_whitespace() && !quoted => {
-                if !current.is_empty() {
-                    tokens.push(std::mem::take(&mut current));
+                if keep_quotes {
+                    current.push(c);
                 }
             }
-            c => current.push(c),
-        }
-    }
-    if !current.is_empty() {
-        tokens.push(current);
-    }
-    tokens
-}
-
-/// Splits on whitespace, keeping "quoted phrases" (also after `key:`) whole.
-fn tokenize(input: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    let mut quoted = false;
-    for c in input.chars() {
-        match c {
-            '"' => quoted = !quoted,
             c if c.is_whitespace() && !quoted => {
                 if !current.is_empty() {
                     tokens.push(std::mem::take(&mut current));

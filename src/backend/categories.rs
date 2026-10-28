@@ -221,7 +221,8 @@ impl Backend {
         let email = self.email().to_string();
         match self.source {
             Source::Demo => {
-                let threads = self.store.load_all_threads(&email).unwrap_or_default();
+                // The Inbox's heads, without bodies (MC-035).
+                let threads = self.store.load_inbox_heads(&email, &[]).unwrap_or_default();
                 self.categories.counts = local_counts(&threads);
             }
             Source::Google => {
@@ -244,7 +245,7 @@ impl Backend {
     pub(super) fn refresh_category_counts(&mut self, cx: &mut Context<Self>) {
         let email = self.email().to_string();
         if self.source == Source::Demo {
-            let threads = self.store.load_all_threads(&email).unwrap_or_default();
+            let threads = self.store.load_inbox_heads(&email, &[]).unwrap_or_default();
             self.set_category_counts(local_counts(&threads), cx);
             return;
         }

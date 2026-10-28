@@ -623,15 +623,28 @@ impl PigeonApp {
                         move |window, cx| tooltip(email.clone()).build(window, cx)
                     }),
             )
-            .child(div().mx(SPACE_MD).mb(SPACE_SM).child(if demo {
-                demo_row(&theme)
-            } else {
-                super::status::status_line(
-                    self.backend.read(cx).status(),
-                    chrono::Utc::now().timestamp_millis(),
-                    &theme,
-                )
-            }))
+            .child(
+                div()
+                    .mx(SPACE_MD)
+                    .mb(SPACE_SM)
+                    .flex()
+                    .flex_col()
+                    .gap(SPACE_SM)
+                    .child(if demo {
+                        demo_row(&theme)
+                    } else {
+                        super::status::status_line(
+                            self.backend.read(cx).status(),
+                            chrono::Utc::now().timestamp_millis(),
+                            &theme,
+                        )
+                    })
+                    .children(super::status::notifications_card(
+                        self.backend.read(cx),
+                        &theme,
+                        cx,
+                    )),
+            )
             .child(
                 div()
                     .id("sidebar-nav")

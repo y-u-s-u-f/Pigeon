@@ -81,7 +81,9 @@ pub fn info(message: &str) {
         eprint!("{line}");
         return;
     };
-    if rotate_if_full(&log.path, CAP)
+    // The open file is checked (fstat), not its path, on every line (MC-068).
+    if log.file.metadata().is_ok_and(|m| m.len() > CAP)
+        && rotate_if_full(&log.path, CAP)
         && let Ok(file) = open(&log.path)
     {
         if log.redirected {

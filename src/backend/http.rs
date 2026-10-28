@@ -163,6 +163,56 @@ impl Response {
     pub fn json<T: serde::de::DeserializeOwned>(&self) -> serde_json::Result<T> {
         serde_json::from_slice(&self.body)
     }
+
+    /// Google's `error.message`, when the body carries one.
+    pub fn error_message(&self) -> Option<String> {
+        self.json::<serde_json::Value>()
+            .ok()?
+            .pointer("/error/message")?
+            .as_str()
+            .map(str::to_string)
+    }
+}
+
+/// Percent-encodes a path segment or query value: all but RFC 3986's
+/// unreserved characters.
+pub fn encode(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char)
+            }
+            _ => {
+                out.push('%');
+                out.push(HEX[usize::from(b >> 4)] as char);
+                out.push(HEX[usize::from(b & 0xf)] as char);
+            }
+        }
+    }
+    out
+}
+
+/// `%XX` escapes as UTF-8; a broken escape stays as written.
+pub fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(v) = s
+                .get(i + 1..i + 3)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(v);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Never the query, the headers' secrets or the body: they hold tokens,
@@ -351,37 +401,48 @@ impl UreqTransport {
     }
 
     fn run(&self, request: &Request, token: Option<&str>) -> Result<Response, ureq::Error> {
-        let mut builder = ureq::http::Request::builder()
-            .method(request.method)
-            .uri(&request.url);
-        for (name, value) in &request.headers {
-            builder = builder.header(name, value);
-        }
-        if let Some(token) = token {
-            builder = builder.header("Authorization", format!("Bearer {token}"));
-        }
-        let response = if request.body.is_empty() {
-            self.agent.run(builder.body(())?)?
-        } else {
-            self.agent.run(builder.body(&request.body[..])?)?
-        };
-        let status = response.status().as_u16();
-        let headers = response
-            .headers()
-            .iter()
-            .map(|(n, v)| (n.to_string(), v.to_str().unwrap_or_default().to_string()))
-            .collect();
-        let body = response
-            .into_body()
-            .with_config()
-            .limit(self.body_limit)
-            .read_to_vec()?;
-        Ok(Response {
-            status,
-            headers,
-            body,
-        })
+        run(&self.agent, request, token, self.body_limit)
     }
+}
+
+/// `request` on `agent`, with `token` as its bearer, reading at most
+/// `limit` bytes of the body.
+pub fn run(
+    agent: &ureq::Agent,
+    request: &Request,
+    token: Option<&str>,
+    limit: u64,
+) -> Result<Response, ureq::Error> {
+    let mut builder = ureq::http::Request::builder()
+        .method(request.method)
+        .uri(&request.url);
+    for (name, value) in &request.headers {
+        builder = builder.header(name, value);
+    }
+    if let Some(token) = token {
+        builder = builder.header("Authorization", format!("Bearer {token}"));
+    }
+    let response = if request.body.is_empty() {
+        agent.run(builder.body(())?)?
+    } else {
+        agent.run(builder.body(&request.body[..])?)?
+    };
+    let status = response.status().as_u16();
+    let headers = response
+        .headers()
+        .iter()
+        .map(|(n, v)| (n.to_string(), v.to_str().unwrap_or_default().to_string()))
+        .collect();
+    let body = response
+        .into_body()
+        .with_config()
+        .limit(limit)
+        .read_to_vec()?;
+    Ok(Response {
+        status,
+        headers,
+        body,
+    })
 }
 
 impl Transport for UreqTransport {
@@ -838,12 +899,34 @@ impl Transport for FakeTransport {
         if status == 0 {
             return Err(TransportError::Network("scripted failure".into()));
         }
+        // A scripted batch answer uses the boundary `batch_body` writes.
+        let content_type = if request.path().starts_with("/batch") {
+            "multipart/mixed; boundary=b"
+        } else {
+            "application/json"
+        };
         Ok(Response {
             status,
-            headers: vec![("Content-Type".into(), "application/json".into())],
+            headers: vec![("Content-Type".into(), content_type.into())],
             body: body.into_bytes(),
         })
     }
+}
+
+/// A batch answer as Google writes it, boundary `b`: each part's (status,
+/// body), in order.
+#[cfg(test)]
+pub fn batch_body(parts: &[(u16, &str)]) -> String {
+    let mut out = String::new();
+    for (ix, (status, body)) in parts.iter().enumerate() {
+        out.push_str(&format!(
+            "--b\r\nContent-Type: application/http\r\nContent-ID: <response-item-{}>\r\n\r\n\
+             HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n\r\n{body}\r\n",
+            ix + 1
+        ));
+    }
+    out.push_str("--b--\r\n");
+    out
 }
 
 impl FakeTransport {
@@ -908,9 +991,15 @@ pub const BATCH_LIMIT: usize = 50;
 /// One request carrying `requests` to `endpoint` (Gmail's is
 /// `https://gmail.googleapis.com/batch/gmail/v1`). Parts are numbered from
 /// 1 in order; costs add up.
-pub fn encode_batch(endpoint: &str, requests: &[Request], boundary: &str) -> Request {
+pub fn encode_batch<'a>(
+    endpoint: &str,
+    requests: impl IntoIterator<Item = &'a Request>,
+    boundary: &str,
+) -> Request {
     let mut body = String::new();
-    for (ix, request) in requests.iter().enumerate() {
+    let mut cost = 0;
+    for (ix, request) in requests.into_iter().enumerate() {
+        cost += request.cost;
         body.push_str(&format!(
             "--{boundary}\r\nContent-Type: application/http\r\nContent-ID: <item-{}>\r\n\r\n",
             ix + 1
@@ -939,7 +1028,7 @@ pub fn encode_batch(endpoint: &str, requests: &[Request], boundary: &str) -> Req
             format!("multipart/mixed; boundary={boundary}"),
         )],
         body: body.into_bytes(),
-        cost: requests.iter().map(|r| r.cost).sum(),
+        cost,
     }
 }
 
@@ -973,7 +1062,7 @@ pub fn batch(
         let last = attempt + 1 >= MAX_ATTEMPTS;
         let mut retry = Vec::new();
         for chunk in pending.chunks(size) {
-            let calls: Vec<Request> = chunk.iter().map(|&ix| requests[ix].clone()).collect();
+            let calls: Vec<&Request> = chunk.iter().map(|&ix| &requests[ix]).collect();
             for (&ix, part) in chunk.iter().zip(send_batch(transport, endpoint, &calls)) {
                 match part {
                     Ok(r) if !last && is_retryable(&r) => retry.push(ix),
@@ -1004,10 +1093,14 @@ pub fn batch(
 fn send_batch(
     transport: &dyn Transport,
     endpoint: &str,
-    calls: &[Request],
+    calls: &[&Request],
 ) -> Vec<Result<Response, BatchError>> {
     let whole = |e: BatchError| calls.iter().map(|_| Err(e.clone())).collect();
-    let response = match transport.send(&encode_batch(endpoint, calls, "batch_pigeon")) {
+    let response = match transport.send(&encode_batch(
+        endpoint,
+        calls.iter().copied(),
+        "batch_pigeon",
+    )) {
         Ok(r) if r.is_success() => r,
         Ok(r) => return whole(BatchError::Refused(r)),
         Err(e) => return whole(BatchError::Transport(e)),

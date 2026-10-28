@@ -28,14 +28,14 @@ use serde_json::{Map, Value, json};
 
 use super::{
     BackendEvent, CalOp, SendUpdates,
-    http::{self, Request, Response, Transport, TransportError},
+    http::{self, Request, Response, Transport, TransportError, encode as enc},
     store::Store,
 };
 use crate::{
     calendar::{
         AccessRole, Attendee, Calendar, Event, EventStatus, GoogleSettings, Reminder,
         ReminderMethod, RsvpStatus, Rule, SeriesScope,
-        recurrence::parse_recurrence,
+        recurrence::{ical_until, parse_recurrence},
         reminders::ReminderKey,
         time::{LocalZone, midnight},
     },
@@ -303,7 +303,7 @@ pub fn event_from_google(
     default_reminder: Option<u32>,
     zone: &LocalZone,
 ) -> Option<Item> {
-    let g: GoogleEvent = serde_json::from_value(raw.clone()).ok()?;
+    let g = GoogleEvent::deserialize(raw).ok()?;
     let status = match g.status.as_str() {
         "cancelled" => EventStatus::Cancelled,
         "tentative" => EventStatus::Tentative,
@@ -446,30 +446,14 @@ fn plain_description(text: &str) -> String {
 
 // Calls.
 
-/// Percent-encodes a path segment or query value.
-fn enc(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for b in text.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
-
 fn rfc3339(t: DateTime<Utc>) -> String {
-    t.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 /// A failed call's reason, in Google's words when it gave some.
 fn api_error(what: &str, response: &Response) -> anyhow::Error {
     let message = response
-        .json::<Value>()
-        .ok()
-        .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
+        .error_message()
         .unwrap_or_else(|| format!("HTTP {}", response.status));
     anyhow!("{what}: {message}")
 }
@@ -890,23 +874,31 @@ impl CalendarPass<'_> {
             )?);
         }
         self.store.put_google_events(self.account, &puts)?;
+        let mut refreshed = Vec::new();
         for id in series {
-            self.refresh_series(&id, touched)?;
+            refreshed.extend(self.refresh_series(&id, touched)?);
         }
+        // One transaction for all of them (MC-020).
+        self.store.put_google_events(self.account, &refreshed)?;
         Ok(())
     }
 
     /// A series' exceptions, recomputed: its EXDATEs and every instance
     /// stored on its own. For a rule Pigeon can't expand, Google's own
-    /// occurrences replace the stored ones.
-    fn refresh_series(&self, id: &str, touched: &mut BTreeSet<String>) -> anyhow::Result<()> {
+    /// occurrences replace the stored ones. Gives the series to store, when
+    /// its exceptions are recomputed.
+    fn refresh_series(
+        &self,
+        id: &str,
+        touched: &mut BTreeSet<String>,
+    ) -> anyhow::Result<Option<(Event, String)>> {
         let Some((mut series, json)) =
             self.store.calendar_event(self.account, self.calendar, id)?
         else {
-            return Ok(());
+            return Ok(None);
         };
         let Some(rule) = &series.recurrence else {
-            return Ok(());
+            return Ok(None);
         };
         touched.insert(series.id.clone());
         if rule.unsupported {
@@ -941,11 +933,17 @@ impl CalendarPass<'_> {
             );
             touched.extend(instances.iter().map(|(e, _)| e.id.clone()));
             self.store.put_google_events(self.account, &instances)?;
-            return Ok(());
+            return Ok(None);
+        }
+        // Only the rule's lines are read from the stored JSON.
+        #[derive(Deserialize)]
+        struct Lines {
+            #[serde(default)]
+            recurrence: Vec<String>,
         }
         let lines: Vec<String> = json
             .as_deref()
-            .and_then(|j| serde_json::from_str::<GoogleEvent>(j).ok())
+            .and_then(|j| serde_json::from_str::<Lines>(j).ok())
             .map(|g| g.recurrence)
             .unwrap_or_default();
         let mut exceptions = parse_recurrence(&lines, series.all_day, self.zone).exdates;
@@ -956,9 +954,7 @@ impl CalendarPass<'_> {
         exceptions.sort();
         exceptions.dedup();
         series.exceptions = exceptions;
-        self.store
-            .put_google_events(self.account, &[(series, json.unwrap_or_default())])?;
-        Ok(())
+        Ok(Some((series, json.unwrap_or_default())))
     }
 }
 
@@ -1078,16 +1074,6 @@ pub fn instance_id(
             "{series}_{}",
             (zone.to_utc)(original).format("%Y%m%dT%H%M%SZ")
         )
-    }
-}
-
-/// An exclusive end as RRULE's inclusive UNTIL: a date all day, else UTC.
-fn ical_until(until: NaiveDateTime, all_day: bool, zone: &LocalZone) -> String {
-    let last = until - Duration::seconds(1);
-    if all_day {
-        last.format("%Y%m%d").to_string()
-    } else {
-        (zone.to_utc)(last).format("%Y%m%dT%H%M%SZ").to_string()
     }
 }
 
@@ -1638,8 +1624,10 @@ impl Writer<'_> {
                 };
                 self.store
                     .put_google_events(self.account, &[(event, raw.to_string())])?;
-                if let Some(series) = series {
-                    pass.refresh_series(&series, touched)?;
+                if let Some(series) = series
+                    && let Some(refreshed) = pass.refresh_series(&series, touched)?
+                {
+                    self.store.put_google_events(self.account, &[refreshed])?;
                 }
             }
             Some(Item::Deleted(id)) => {
@@ -1706,7 +1694,7 @@ impl Writer<'_> {
         items
             .into_iter()
             .find(|raw| {
-                serde_json::from_value::<GoogleTime>(raw["originalStartTime"].clone())
+                GoogleTime::deserialize(&raw["originalStartTime"])
                     .ok()
                     .and_then(|t| wall_time(&t, self.zone))
                     .is_some_and(|(t, _)| t == original)

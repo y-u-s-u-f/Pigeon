@@ -28,6 +28,8 @@ const DAY_NUMBER: f32 = 30.;
 const SLOT: f32 = 21.;
 /// The week number column, when shown.
 const WEEK_NUMBER: f32 = 36.;
+/// A timed event's calendar dot.
+const EVENT_DOT: gpui::Pixels = px(7.);
 
 /// An event's place in one week row.
 struct Item {
@@ -435,7 +437,7 @@ impl CalendarView {
                 .when(!selected, |d| d.hover(|s| s.bg(theme.hover_bg)))
                 .child(
                     div()
-                        .size(px(7.))
+                        .size(EVENT_DOT)
                         .flex_none()
                         .rounded_full()
                         .map(|d| match look {
@@ -467,8 +469,8 @@ impl CalendarView {
             .left(relative(start as f32 / 7.))
             .w(relative((end - start) as f32 / 7.))
             .h(px(SLOT - 2.))
-            .pl(px(if clipped_left { 0. } else { 4. }))
-            .pr(px(if clipped_right { 0. } else { 5. }))
+            .pl(if clipped_left { px(0.) } else { SPACE_XS })
+            .pr(if clipped_right { px(0.) } else { SPACE_XS })
             .child(
                 pill.on_mouse_down(
                     MouseButton::Right,

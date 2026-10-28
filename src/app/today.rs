@@ -5,18 +5,25 @@
 //! minute boundary fires the reminders that fell due and lets the menu bar
 //! redraw its countdown.
 //!
+//! Reminders can be turned off (MB-052) and snoozed for five minutes from
+//! the notice (MB-051). A sign-in that expires with no Pigeon window in
+//! front posts one notice (MB-054), taken back once signed in again.
+//!
 //! The decisions themselves are plain functions, tested below: what the
 //! panel lists (`agenda`), the title beside the icon (`status_title`), the
 //! new-mail dot (`has_new_mail`) and quick join (`quick_join`).
 
-use std::time::{Duration as StdDuration, Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration as StdDuration, Instant},
+};
 
 use chrono::{DateTime, Duration, FixedOffset, Local, NaiveDateTime, Timelike as _};
 use gpui::{App, AppContext as _, Context, Entity, Global, Task};
 
 use crate::{
     backend::{
-        Backend, BackendEvent,
+        Backend, BackendEvent, Source, SyncStatus,
         categories::{Category, in_category},
     },
     calendar::{
@@ -27,7 +34,8 @@ use crate::{
     },
     data::{Account, Folder, Thread},
     logging,
-    notify::{self, Notice, NoticeTarget},
+    notify::{self, Kind, Notice, NoticeTarget},
+    settings,
 };
 
 /// How far ahead the next meeting shows beside the icon.
@@ -38,6 +46,8 @@ pub const TITLE_MAX: usize = 20;
 pub const QUICK_JOIN_AHEAD: Duration = Duration::minutes(10);
 /// Changes reported this close together are read once.
 const RELOAD_DEBOUNCE: StdDuration = StdDuration::from_millis(250);
+/// A reminder's Snooze shows it again this much later (MB-051).
+const SNOOZE: Duration = Duration::minutes(5);
 
 /// One Primary Inbox conversation, as the panel lists it.
 #[derive(Clone, Debug, PartialEq)]
@@ -258,7 +268,17 @@ pub fn reminder_notice(reminder: &DueReminder) -> Notice {
             start,
         },
         join_url: reminder.join_url.clone(),
+        kind: Kind::Reminder,
     }
+}
+
+/// The reminder again after a snooze, saying how long is left now.
+pub fn snoozed(reminder: &DueReminder, now: NaiveDateTime) -> DueReminder {
+    let left = (reminder.key.start - now).num_seconds().max(0);
+    let mut again = reminder.clone();
+    again.key.minutes = ((left + 59) / 60) as u32;
+    again.at = now;
+    again
 }
 
 /// The reminder scheduler and its sleep-aware clock (CAL-15).
@@ -275,19 +295,16 @@ impl Reminders {
         }
     }
 
-    /// Hand each reminder due since the last tick to `sink`. `mono` stops
-    /// while the Mac sleeps.
+    /// The reminders due since the last tick. `mono` stops while the Mac
+    /// sleeps.
     pub fn tick(
         &mut self,
         data: &CalendarData,
         responded_only: bool,
         wall: NaiveDateTime,
         mono: StdDuration,
-        sink: &mut dyn FnMut(&ReminderKey, Notice),
-    ) {
-        for due in self.scheduler.tick(data, responded_only, wall, mono) {
-            sink(&due.key, reminder_notice(&due));
-        }
+    ) -> Vec<DueReminder> {
+        self.scheduler.tick(data, responded_only, wall, mono)
     }
 }
 
@@ -313,6 +330,12 @@ pub struct Today {
     /// short of a whole reload (MC-010).
     events_due: Vec<String>,
     calendars_due: bool,
+    /// The reminders shown, by notice tag, for Snooze; and the snoozes
+    /// waiting, by the same tag.
+    shown: HashMap<String, DueReminder>,
+    snoozes: HashMap<String, Task<()>>,
+    /// The sign-in had expired at the last status (MB-054).
+    expired: bool,
     _reload: Option<Task<()>>,
     _load: Option<Task<()>>,
     _tick: Task<()>,
@@ -373,6 +396,9 @@ impl Today {
             calendar_due: false,
             events_due: Vec::new(),
             calendars_due: false,
+            shown: HashMap::new(),
+            snoozes: HashMap::new(),
+            expired: false,
             _reload: None,
             _load: None,
             _tick: tick,
@@ -408,9 +434,16 @@ impl Today {
                 self.reminders = Reminders::new(fired);
                 self.check_reminders(cx);
                 self.seen = None;
+                // MB-057: back in front of the browser once Google said yes.
+                if matches!(event, BackendEvent::SignedIn)
+                    && self.backend.read(cx).source() == Source::Google
+                {
+                    cx.activate(true);
+                }
                 (true, true)
             }
-            BackendEvent::Status(_) => {
+            BackendEvent::Status(status) => {
+                self.on_status(status, cx);
                 cx.notify();
                 (false, false)
             }
@@ -464,27 +497,88 @@ impl Today {
 
     fn minute(&mut self, cx: &mut Context<Self>) {
         self.check_reminders(cx);
+        let now = now();
+        self.shown.retain(|_, r| r.end > now);
+        let shown = &self.shown;
+        self.snoozes.retain(|tag, _| shown.contains_key(tag));
         cx.notify();
     }
 
     /// Notify the reminders that fell due since the last tick (CAL-15).
+    /// With reminders off (MB-052) they're still marked fired, so turning
+    /// them on doesn't bring back the missed ones.
     fn check_reminders(&mut self, cx: &mut Context<Self>) {
-        let mut due = Vec::new();
         let mono = self.reminders.started.elapsed();
-        self.reminders.tick(
+        let due = self.reminders.tick(
             &self.calendar,
             self.google.remind_responded_only,
             now(),
             mono,
-            &mut |key, notice| due.push((key.clone(), notice)),
         );
-        for (key, notice) in due {
-            self.backend.read(cx).mark_reminder_fired(&key);
+        for reminder in due {
+            self.backend.read(cx).mark_reminder_fired(&reminder.key);
+            self.post_reminder(reminder, cx);
+        }
+    }
+
+    fn post_reminder(&mut self, reminder: DueReminder, cx: &mut Context<Self>) {
+        let key = &reminder.key;
+        if !settings::get(cx).event_reminders {
             logging::info(&format!(
-                "reminder: {} at {} ({} min before)",
-                notice.title, key.start, key.minutes
+                "reminder: {} at {}, not shown (reminders off)",
+                reminder.title, key.start
             ));
-            notify::notify(notice, cx);
+            return;
+        }
+        logging::info(&format!(
+            "reminder: {} at {} ({} min before)",
+            reminder.title, key.start, key.minutes
+        ));
+        let notice = reminder_notice(&reminder);
+        self.shown.insert(notice.tag.clone(), reminder);
+        notify::notify(notice, cx);
+    }
+
+    /// Snooze on the reminder tagged `tag`: again in `SNOOZE`, saying how
+    /// long is left then.
+    fn snooze(&mut self, tag: &str, cx: &mut Context<Self>) {
+        let Some(reminder) = self.shown.get(tag).cloned() else {
+            return;
+        };
+        logging::info(&format!("reminder: {} snoozed", reminder.title));
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(SNOOZE.to_std().unwrap_or_default())
+                .await;
+            this.update(cx, |this, cx| {
+                this.post_reminder(snoozed(&reminder, now()), cx)
+            })
+            .ok();
+        });
+        self.snoozes.insert(tag.to_string(), task);
+    }
+
+    /// MB-054: an expired sign-in nobody is looking at gets one notice,
+    /// taken back once it's fine again.
+    fn on_status(&mut self, status: &SyncStatus, cx: &mut Context<Self>) {
+        let expired = *status == SyncStatus::AuthExpired;
+        if expired == std::mem::replace(&mut self.expired, expired) {
+            return;
+        }
+        if !expired {
+            notify::dismiss(notify::SIGN_IN_TAG, cx);
+        } else if cx.active_window().is_none() {
+            notify::notify(
+                Notice {
+                    tag: notify::SIGN_IN_TAG.into(),
+                    title: "Sign In Again".into(),
+                    body: "Google signed Pigeon out, so mail and calendar stopped updating.".into(),
+                    target: NoticeTarget::Inbox,
+                    join_url: None,
+                    kind: Kind::App,
+                },
+                cx,
+            );
         }
     }
 
@@ -511,6 +605,13 @@ impl Today {
         if let Some(ix) = self.mail.iter().position(|r| r.id == id) {
             f(&mut self.mail, ix);
         }
+    }
+}
+
+/// Snooze on a reminder's notice (MB-051).
+pub fn snooze(tag: &str, cx: &mut App) {
+    if let Some(today) = model(cx) {
+        today.update(cx, |t, cx| t.snooze(tag, cx));
     }
 }
 
@@ -743,19 +844,19 @@ mod tests {
         }];
         let data = data(vec![design, declined]);
         let mut reminders = Reminders::new(Default::default());
-        let mut sink: Vec<(ReminderKey, Notice)> = Vec::new();
+        let mut sink: Vec<DueReminder> = Vec::new();
         // A fake clock: one tick a minute from 10:45, the clocks in step.
         for m in 0..=20 {
-            reminders.tick(
+            sink.extend(reminders.tick(
                 &data,
                 false,
                 at(d(27), 10, 45) + Duration::minutes(m),
                 StdDuration::from_secs(500 + 60 * m as u64),
-                &mut |key, notice| sink.push((key.clone(), notice)),
-            );
+            ));
         }
         assert_eq!(sink.len(), 1, "one reminder, not the declined one");
-        let (key, notice) = &sink[0];
+        let key = &sink[0].key;
+        let notice = &reminder_notice(&sink[0]);
         assert_eq!((key.event.as_str(), key.minutes), ("design", 10));
         assert_eq!(notice.title, "design");
         assert!(notice.body.starts_with("In 10 min · "), "{}", notice.body);
@@ -773,5 +874,16 @@ mod tests {
             }
         );
         assert_eq!(notice.tag, "event-work-design-20261027T1100");
+        assert_eq!(notice.kind, Kind::Reminder);
+        // Snoozed at 10:50: five minutes on, it says what's left then.
+        let again = snoozed(&sink[0], at(d(27), 10, 55) + Duration::seconds(10));
+        let notice = reminder_notice(&again);
+        assert!(notice.body.starts_with("In 5 min · "), "{}", notice.body);
+        assert_eq!(notice.tag, "event-work-design-20261027T1100", "replaces it");
+        assert!(
+            reminder_notice(&snoozed(&sink[0], at(d(27), 11, 2)))
+                .body
+                .starts_with("Now · ")
+        );
     }
 }

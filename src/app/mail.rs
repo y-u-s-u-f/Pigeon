@@ -1313,7 +1313,6 @@ impl PigeonApp {
                 let b = self.backend.read(cx);
                 b.source() == Source::Google || b.demo_by_choice()
             }
-            When::Pending => false,
         }
     }
 
@@ -1334,10 +1333,9 @@ impl PigeonApp {
             }
             Toggle::WeekNumbers => self.calendar.read(cx).show_week_numbers,
             Toggle::FullScreen => window.is_fullscreen(),
-            Toggle::Notifications => crate::settings::current(cx).notifications,
-            Toggle::OpenAtLogin => crate::native::login_item() == crate::native::LoginItem::On,
-            // Not a setting yet (W3-SYS).
-            Toggle::EventReminders => true,
+            Toggle::Notifications => crate::settings::get(cx).notifications,
+            Toggle::OpenAtLogin => super::shell::login_item() == crate::native::LoginItem::On,
+            Toggle::EventReminders => crate::settings::get(cx).event_reminders,
             Toggle::HiddenLabels => self.labels_ui.show_hidden,
             Toggle::LabelFolded => match self.nav {
                 Nav::Label(ix) => self

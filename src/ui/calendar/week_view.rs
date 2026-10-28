@@ -34,6 +34,12 @@ const LANE_GAP: f32 = 3.;
 pub const STRIPE_WIDTH: gpui::Pixels = px(3.);
 /// The grab area at a timed event's bottom edge.
 const RESIZE_HANDLE: gpui::Pixels = px(6.);
+/// The day number's circle in the column headers.
+const DAY_NUMBER: gpui::Pixels = px(32.);
+const DAY_HEADER_HEIGHT: gpui::Pixels = px(62.);
+/// The dot at the start of the now line, and the time label on it.
+const NOW_DOT: gpui::Pixels = px(10.);
+const NOW_LABEL: gpui::Pixels = px(16.);
 /// The all-day lanes shown before the rest fold into "+N" (ME-040).
 const MAX_LANES: usize = 3;
 /// Events shorter than this are laid out as if they were this long, since
@@ -254,7 +260,7 @@ impl CalendarView {
                 .child(
                     div()
                         .id(("day-number", date.num_days_from_ce() as usize))
-                        .size(px(32.))
+                        .size(DAY_NUMBER)
                         .flex()
                         .items_center()
                         .justify_center()
@@ -296,7 +302,7 @@ impl CalendarView {
         // The Day view's title already names the day.
         let header = (!single).then(|| {
             div()
-                .h(px(62.))
+                .h(DAY_HEADER_HEIGHT)
                 .flex_none()
                 .flex()
                 .child(
@@ -389,7 +395,7 @@ impl CalendarView {
                 div()
                     .absolute()
                     .top(px(hour as f32 * HOUR_HEIGHT - 7.))
-                    .right(px(9.))
+                    .right(SPACE_SM)
                     .text_size(TEXT_XS)
                     .text_color(theme.text_faint)
                     .child(compact_time_label(
@@ -536,9 +542,9 @@ impl CalendarView {
                             .child(
                                 div()
                                     .absolute()
-                                    .left(px(-5.))
-                                    .top(px(-4.))
-                                    .size(px(10.))
+                                    .left(-NOW_DOT / 2.)
+                                    .top(px(1.) - NOW_DOT / 2.)
+                                    .size(NOW_DOT)
                                     .rounded_full()
                                     .bg(theme.cal_now),
                             ),
@@ -549,9 +555,9 @@ impl CalendarView {
         let now_label = today_visible.then(|| {
             div()
                 .absolute()
-                .right(px(5.))
-                .top(px(now_top - 8.))
-                .h(px(16.))
+                .right(SPACE_XS)
+                .top(px(now_top) - NOW_LABEL / 2.)
+                .h(NOW_LABEL)
                 .px(SPACE_XS)
                 .flex()
                 .items_center()

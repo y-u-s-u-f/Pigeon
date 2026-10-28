@@ -6,8 +6,9 @@
 //! card, events and mail, Enter opens the selected one in the main window,
 //! `j` joins the next meeting, `e` archives and ⇧I marks read the selected
 //! mail (Undo with `z`), `c` composes, `n` makes an event, ⌘O opens
-//! Pigeon, Esc closes. The window is shown, hidden and sized by
-//! `app::menu_bar`; this view only draws and asks.
+//! Pigeon, ⌘, opens Settings, Esc closes. The gear in the footer has
+//! Settings… and Quit Pigeon (ME-072). The window is shown, hidden and
+//! sized by `app::menu_bar`; this view only draws and asks.
 
 use std::{cell::Cell, rc::Rc, time::Instant};
 
@@ -15,17 +16,24 @@ use chrono::{Duration, NaiveDateTime};
 use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, FontWeight, InteractiveElement, IntoElement,
     ParentElement, Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
-    Styled, Task, Window, actions, div, prelude::FluentBuilder as _, px,
+    Styled, Task, Window, actions, component::scroll::ScrollableElement as _, div,
+    prelude::FluentBuilder as _, px,
 };
 
-use super::{keycap_on_accent, keys_caps, style::*};
+use super::{
+    controls::{dropdown, menu_check, menu_row},
+    icon, keycap_on_accent, keys_caps,
+    style::*,
+    tooltip,
+};
 use crate::{
     app::{
         menu_bar::{self, HideReason},
         shell::Show,
         today::{self, Agenda, MailRow, Today},
     },
-    backend::{BackendEvent, MailOp, OpId, SyncStatus, UNDO_WINDOW, gmail},
+    assets::Icon,
+    backend::{Backend, BackendEvent, MailOp, OpId, SyncStatus, UNDO_WINDOW, gmail},
     calendar::{CalendarData, Occurrence, policy, time},
     data::{Folder, list_date},
     settings,
@@ -64,6 +72,7 @@ const MAX_MAIL: usize = 4;
 const TIME_COLUMN: Pixels = px(56.);
 const COLOR_BAR: Pixels = px(3.);
 const UNREAD_DOT: Pixels = px(6.);
+const GEAR_MENU_WIDTH: Pixels = px(200.);
 
 /// What ↑/↓ move through.
 #[derive(Clone, Debug, PartialEq)]
@@ -93,6 +102,11 @@ pub struct MenuBarPanel {
     reveal: bool,
     /// The content's height as last laid out, to size the window to it.
     height: Rc<Cell<f32>>,
+    /// Today's agenda and what ↑/↓ move through, as last drawn (MC-042).
+    agenda: Agenda,
+    items: Vec<Item>,
+    /// The gear's menu is open.
+    gear_open: bool,
     _undo_timer: Option<Task<()>>,
 }
 
@@ -124,6 +138,9 @@ impl MenuBarPanel {
             scroll: ScrollHandle::new(),
             reveal: false,
             height: Rc::new(Cell::new(f32::from(PANEL_START_HEIGHT))),
+            agenda: Agenda::default(),
+            items: Vec::new(),
+            gear_open: false,
             _undo_timer: None,
         }
     }
@@ -141,7 +158,8 @@ impl MenuBarPanel {
         self.notice = notice;
         self.selected = 0;
         self.reveal = true;
-        window.set_rem_size(px(BASE_REM * settings::current(cx).text_scale));
+        self.gear_open = false;
+        window.set_rem_size(px(BASE_REM * settings::get(cx).text_scale));
         sync_theme(window, cx);
         window.focus(&self.focus, cx);
         cx.notify();
@@ -167,26 +185,17 @@ impl MenuBarPanel {
         items
     }
 
-    fn current(&self, cx: &App) -> (Agenda, Vec<Item>) {
-        let today = self.today.read(cx);
-        let agenda = today::agenda(&today.calendar, today::now());
-        let items = Self::items(&agenda, &today.mail);
-        (agenda, items)
-    }
-
-    fn selected_item(&self, cx: &App) -> Option<Item> {
-        let (_, items) = self.current(cx);
-        items
-            .get(self.selected.min(items.len().saturating_sub(1)))
+    fn selected_item(&self) -> Option<Item> {
+        self.items
+            .get(self.selected.min(self.items.len().saturating_sub(1)))
             .cloned()
     }
 
     fn step(&mut self, forward: bool, cx: &mut Context<Self>) {
-        let (_, items) = self.current(cx);
-        if items.is_empty() {
+        if self.items.is_empty() {
             return;
         }
-        let last = items.len() - 1;
+        let last = self.items.len() - 1;
         self.selected = if forward {
             (self.selected + 1).min(last)
         } else {
@@ -205,7 +214,7 @@ impl MenuBarPanel {
     }
 
     fn open_selected(&mut self, _: &OpenSelected, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(item) = self.selected_item(cx) {
+        if let Some(item) = self.selected_item() {
             self.open_item(&item, cx);
         }
     }
@@ -222,8 +231,8 @@ impl MenuBarPanel {
 
     fn join(&mut self, _: &Join, _: &mut Window, cx: &mut Context<Self>) {
         let today = self.today.read(cx);
-        let agenda = today::agenda(&today.calendar, today::now());
-        let url = agenda
+        let url = self
+            .agenda
             .next
             .and_then(|o| policy::video_link(&today.calendar.events[o.event]).map(str::to_string));
         if let Some(url) = url {
@@ -233,7 +242,7 @@ impl MenuBarPanel {
     }
 
     fn selected_mail(&self, cx: &App) -> Option<MailRow> {
-        let Some(Item::Mail(id)) = self.selected_item(cx) else {
+        let Some(Item::Mail(id)) = self.selected_item() else {
             return None;
         };
         self.today
@@ -250,16 +259,7 @@ impl MenuBarPanel {
             return;
         };
         let backend = self.today.read(cx).backend().clone();
-        let ids = vec![row.id.clone()];
-        let ops = backend.update(cx, |b, cx| {
-            let ops: Vec<OpId> = MailOp::moves(ids.clone(), Folder::Inbox, Folder::Archive)
-                .into_iter()
-                .map(|op| b.mail(op, cx))
-                .collect();
-            // The main window and the badge read it back, queued.
-            cx.emit(BackendEvent::ThreadsChanged(ids));
-            ops
-        });
+        let ops = archive_thread(&backend, &row.id, cx);
         self.today.update(cx, |t, _| {
             t.update_mail(&row.id, |rows, ix| {
                 rows.remove(ix);
@@ -307,17 +307,7 @@ impl MenuBarPanel {
             return;
         };
         let backend = self.today.read(cx).backend().clone();
-        backend.update(cx, |b, cx| {
-            b.mail(
-                MailOp::Modify {
-                    threads: vec![row.id.clone()],
-                    add: Vec::new(),
-                    remove: vec![gmail::UNREAD.to_string()],
-                },
-                cx,
-            );
-            cx.emit(BackendEvent::ThreadsChanged(vec![row.id.clone()]));
-        });
+        mark_thread_read(&backend, &row.id, cx);
         self.today.update(cx, |t, _| {
             t.update_mail(&row.id, |rows, ix| rows[ix].unread = false)
         });
@@ -336,7 +326,11 @@ impl MenuBarPanel {
         menu_bar::open_in_main(Show::Main);
     }
 
-    fn close(&mut self, _: &Close, _: &mut Window, _: &mut Context<Self>) {
+    /// Esc closes the gear's menu first.
+    fn close(&mut self, _: &Close, _: &mut Window, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.gear_open) {
+            return cx.notify();
+        }
         menu_bar::hide_later(HideReason::Escape);
     }
 
@@ -355,20 +349,38 @@ impl MenuBarPanel {
 
 /// The theme for the user's choice, or this window's appearance.
 fn sync_theme(window: &mut Window, cx: &mut App) {
-    use gpui::WindowAppearance;
-    let appearance = match settings::current(cx).appearance {
-        settings::Appearance::System => window.appearance(),
-        settings::Appearance::Light => WindowAppearance::Light,
-        settings::Appearance::Dark => WindowAppearance::Dark,
-    };
-    if Theme::of(cx).is_dark
-        != matches!(
-            appearance,
-            WindowAppearance::Dark | WindowAppearance::VibrantDark
-        )
-    {
-        Theme::apply(appearance, window, cx);
-    }
+    Theme::sync_for(settings::get(cx).appearance, window, cx);
+}
+
+/// Archive conversation `id` as the main app's Archive does, queued, so it
+/// can be undone; the ops, to cancel. For the panel and mail notices
+/// (MB-050), with or without the main window.
+pub(crate) fn archive_thread(backend: &Entity<Backend>, id: &str, cx: &mut App) -> Vec<OpId> {
+    let ids = vec![id.to_string()];
+    backend.update(cx, |b, cx| {
+        let ops = MailOp::moves(ids.clone(), Folder::Inbox, Folder::Archive)
+            .into_iter()
+            .map(|op| b.mail(op, cx))
+            .collect();
+        // The main window and the badge read it back, queued.
+        cx.emit(BackendEvent::ThreadsChanged(ids));
+        ops
+    })
+}
+
+/// Mark conversation `id` read, as the main app's Mark as Read does.
+pub(crate) fn mark_thread_read(backend: &Entity<Backend>, id: &str, cx: &mut App) {
+    backend.update(cx, |b, cx| {
+        b.mail(
+            MailOp::Modify {
+                threads: vec![id.to_string()],
+                add: Vec::new(),
+                remove: vec![gmail::UNREAD.to_string()],
+            },
+            cx,
+        );
+        cx.emit(BackendEvent::ThreadsChanged(vec![id.to_string()]));
+    });
 }
 
 fn event_show(data: &CalendarData, o: &Occurrence) -> Option<Show> {
@@ -442,6 +454,8 @@ impl Render for MenuBarPanel {
         self.selected = self.selected.min(items.len().saturating_sub(1));
         let reveal = std::mem::take(&mut self.reveal);
         let selected = items.get(self.selected).cloned();
+        self.agenda = agenda.clone();
+        self.items = items;
         let is_selected = |item: &Item| selected.as_ref() == Some(item);
 
         // The scrolling middle: one flat list, so the selection can be
@@ -597,18 +611,29 @@ impl Render for MenuBarPanel {
                         el.child(self.card(data, &o, now, selected, &theme, cx))
                     })
                     .child(
+                        // The scroll bar beside the lists, not in them
+                        // (MB-068).
                         div()
-                            .id("menu-bar-lists")
-                            // As tall as its rows; it gives way, and
-                            // scrolls, once the panel is at its maximum.
+                            .relative()
                             .min_h(px(0.))
-                            .overflow_y_scroll()
-                            .track_scroll(&self.scroll)
-                            .children(middle),
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .id("menu-bar-lists")
+                                    // As tall as its rows; it gives way, and
+                                    // scrolls, once the panel is at its maximum.
+                                    .min_h(px(0.))
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.scroll)
+                                    .children(middle),
+                            )
+                            .vertical_scrollbar(&self.scroll),
                     )
                     .when_some(self.undo.as_ref(), |el, undo| {
                         el.child(self.undo_bar(undo, &theme, cx))
                     })
+                    .when(self.gear_open, |el| el.child(self.gear_menu(&theme)))
                     .child(self.footer(&theme, cx)),
             )
     }
@@ -692,7 +717,6 @@ impl MenuBarPanel {
             .join(" · ");
         let item = Item::Next(*o);
         let open = item.clone();
-        let ring = focus_ring(theme);
         div()
             .id("menu-bar-next")
             .role(gpui::Role::Group)
@@ -706,11 +730,14 @@ impl MenuBarPanel {
             .mb(SPACE_XS)
             .p(SPACE_MD)
             .rounded(RADIUS_LG)
-            .bg(theme.menu_bar_card)
+            // The keyboard's item as in every overlay (ME-080).
+            .bg(if selected {
+                theme.selected_bg
+            } else {
+                theme.menu_bar_card
+            })
             .border_1()
             .border_color(theme.border)
-            .when(selected, |el| el.shadow(ring))
-            .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.selected = 0;
                 this.open_item(&open, cx);
@@ -729,6 +756,7 @@ impl MenuBarPanel {
                             .bg(theme.chip_bg)
                             .text_size(TEXT_XS)
                             .font_weight(FontWeight::MEDIUM)
+                            .font_features(tabular_figures())
                             .text_color(theme.accent)
                             .child(chip),
                     )
@@ -780,12 +808,13 @@ impl MenuBarPanel {
                                 .text_color(theme.accent_text)
                                 .text_size(TEXT_SM)
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .cursor_pointer()
+                                .hover(|s| s.opacity(0.9))
+                                .active(|s| s.opacity(0.8))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     cx.stop_propagation();
                                     this.join(&Join, window, cx);
                                 }))
-                                .child("Join meeting")
+                                .child("Join Meeting")
                                 .child(keycap_on_accent("J", theme)),
                         )
                     })
@@ -802,9 +831,9 @@ impl MenuBarPanel {
                             .rounded(RADIUS_MD)
                             .bg(theme.chip_bg)
                             .hover(|s| s.bg(theme.selected_bg))
+                            .active(|s| s.bg(theme.selected_bg).opacity(0.8))
                             .text_size(TEXT_SM)
                             .font_weight(FontWeight::SEMIBOLD)
-                            .cursor_pointer()
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
                                 this.open_item(&item, cx);
@@ -975,8 +1004,7 @@ impl MenuBarPanel {
     }
 
     fn select(&mut self, item: &Item, cx: &mut Context<Self>) {
-        let (_, items) = self.current(cx);
-        if let Some(ix) = items.iter().position(|i| i == item) {
+        if let Some(ix) = self.items.iter().position(|i| i == item) {
             self.selected = ix;
             cx.notify();
         }
@@ -1051,6 +1079,53 @@ impl MenuBarPanel {
                 theme,
                 cx.listener(|this, _, window, cx| this.open_pigeon(&OpenPigeon, window, cx)),
             ))
+            .child(
+                div()
+                    .id("menu-bar-gear")
+                    .role(gpui::Role::Button)
+                    .aria_label("Settings and Quit")
+                    .aria_expanded(self.gear_open)
+                    .size(HIT_TARGET)
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(RADIUS_MD)
+                    .when(self.gear_open, |el| el.bg(theme.selected_bg))
+                    .hover(|s| s.bg(theme.hover_bg))
+                    .active(|s| s.bg(theme.selected_bg))
+                    .child(icon(Icon::Settings, ICON_MD, theme.icon))
+                    .tooltip(|window, cx| tooltip("Settings and quit").build(window, cx))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.gear_open = !this.gear_open;
+                        cx.notify();
+                    })),
+            )
+    }
+
+    /// The gear's menu, in the flow above the footer, so the panel grows to
+    /// hold it rather than clipping a pop-up.
+    fn gear_menu(&self, theme: &Theme) -> impl IntoElement {
+        let row = |id: &'static str, label: &'static str, keys: &'static str| {
+            menu_row(id, label, false, false, theme)
+                .child(menu_check(false, theme))
+                .child(div().flex_1().child(label))
+                .child(keys_caps(keys, theme))
+        };
+        div().flex_none().flex().justify_end().px(SPACE_SM).child(
+            dropdown("menu-bar-gear-menu", "Pigeon", GEAR_MENU_WIDTH, theme)
+                .mb(SPACE_XS)
+                .child(
+                    row("menu-bar-settings", "Settings…", "cmd-,").on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(crate::actions::OpenSettings), cx)
+                    }),
+                )
+                .child(
+                    row("menu-bar-quit", "Quit Pigeon", "cmd-q").on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(crate::actions::Quit), cx)
+                    }),
+                ),
+        )
     }
 }
 
@@ -1074,10 +1149,11 @@ fn row_shell(
         .items_center()
         .gap(SPACE_SM + SPACE_2XS)
         .rounded(RADIUS_MD)
-        .cursor_pointer()
+        .when(selected, |el| el.aria_active_descendant())
         .map(|el| {
+            // The keyboard's row as in every overlay (ME-080).
             if selected {
-                el.bg(theme.selected_focused_bg)
+                el.bg(theme.selected_bg)
             } else {
                 el.hover(|s| s.bg(theme.hover_bg))
             }
@@ -1100,10 +1176,10 @@ fn section_header(
         .px(SPACE_LG)
         .pt(SPACE_MD)
         .pb(SPACE_XS)
-        .text_size(TEXT_XS)
+        .text_size(TEXT_SM)
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(theme.text_faint)
-        .child(title.to_uppercase())
+        .text_color(theme.text_muted)
+        .child(title)
         .when_some(right, |el, right| {
             el.child(div().font_weight(FontWeight::NORMAL).child(right))
         })
@@ -1139,8 +1215,8 @@ fn footer_button(
         .items_center()
         .gap(SPACE_XS + SPACE_2XS)
         .rounded(RADIUS_MD)
-        .cursor_pointer()
         .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
+        .active(|s| s.bg(theme.selected_bg).text_color(theme.text))
         .on_click(on_click)
         .child(label)
         .child(keys_caps(key, theme))

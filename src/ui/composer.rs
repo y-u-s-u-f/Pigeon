@@ -274,6 +274,9 @@ pub struct Composer {
     pub kind: ComposeKind,
     /// The thread replied to, by id. Forwards start a new thread, so have none.
     pub reply_to: Option<String>,
+    /// ME-010: the message in it a reply answers, by id; empty for the
+    /// thread's last.
+    pub answers: String,
     /// The Drafts thread this edits: replaced on save, removed on send.
     pub draft_id: Option<String>,
     pub quoted: Option<Quoted>,
@@ -461,6 +464,7 @@ impl Composer {
         Self {
             kind,
             reply_to,
+            answers: String::new(),
             draft_id,
             quoted,
             inline,

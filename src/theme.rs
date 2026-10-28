@@ -10,7 +10,10 @@ use gpui::{
     transparent_black,
 };
 
-use crate::{native, settings};
+use crate::{
+    native,
+    settings::{self, Appearance},
+};
 
 #[derive(Clone, Debug)]
 pub struct Theme {
@@ -537,6 +540,15 @@ impl Theme {
         Self::apply(window.appearance(), window, cx);
     }
 
+    /// Install the theme for the user's `appearance`, which `System` takes
+    /// from the window (MC-085).
+    pub fn sync_for(appearance: Appearance, window: &mut Window, cx: &mut App) {
+        let appearance = appearance
+            .window_appearance()
+            .unwrap_or_else(|| window.appearance());
+        Self::apply(appearance, window, cx);
+    }
+
     /// Install the theme for `appearance`, which the user may have chosen
     /// over the window's, with the system's display options and the user's
     /// glass; make `window`'s background opaque or glass to match.
@@ -545,7 +557,7 @@ impl Theme {
             .try_global::<Display>()
             .copied()
             .unwrap_or_else(Display::read);
-        let theme = Self::build(appearance, &display, settings::current(cx).glass);
+        let theme = Self::build(appearance, &display, settings::get(cx).glass);
         window.set_background_appearance(if theme.opaque {
             WindowBackgroundAppearance::Opaque
         } else {

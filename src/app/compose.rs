@@ -225,6 +225,51 @@ fn forwarded_attachments(original: &Message) -> Vec<crate::data::Attachment> {
         .collect()
 }
 
+/// A message sent (`send_composer`): where it went, and whether it went
+/// from a Drafts thread, now gone.
+pub(super) struct Sent {
+    thread_id: String,
+    appended: bool,
+    from_draft: bool,
+}
+
+/// Whether `composer`'s draft can go: loaded, valid, with recipients and
+/// files within the limit, and nothing left to confirm (ME-019). The
+/// problem shows in the draft, in `window`, its own.
+pub(super) fn ready_to_send(
+    composer: &Entity<Composer>,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) -> bool {
+    // Not before its text is in (ME-007).
+    if composer.read(cx).is_loading(cx) {
+        composer.update(cx, |c, cx| {
+            c.set_attachment_error("The draft is still loading", cx)
+        });
+        return false;
+    }
+    if !composer.update(cx, |c, cx| c.validate(window, cx)) {
+        return false;
+    }
+    let c = composer.read(cx);
+    let content = c.content(cx);
+    if !content.has_recipients() {
+        composer.update(cx, |c, cx| {
+            c.set_error("Add at least one recipient", cx);
+            c.focus_to(window, cx);
+        });
+        return false;
+    }
+    if attachments_size(&content.attachments) > ATTACHMENT_LIMIT {
+        composer.update(cx, |c, cx| {
+            c.set_attachment_error(ATTACHMENT_LIMIT_ERROR, cx)
+        });
+        return false;
+    }
+    // No subject, or a forgotten file: asked once (ME-019).
+    composer.update(cx, |c, cx| c.confirm_send(&content, window, cx))
+}
+
 impl PigeonApp {
     /// Delete in Drafts discards the draft, like the discard button, then
     /// moves to the neighbor.
@@ -274,7 +319,20 @@ impl PigeonApp {
         if kind != ComposeKind::New && !self.checked.is_empty() {
             return;
         }
-        // One draft per conversation: answering again reopens it.
+        // One draft per conversation: answering again reopens it, or brings
+        // its window forward (MB-047).
+        if matches!(kind, ComposeKind::Reply | ComposeKind::ReplyAll)
+            && let Some(ix) = self.selected
+        {
+            let id = self.data.threads[ix].id.clone();
+            let draft = self.reply_draft_of(&id);
+            let draft_id = draft.map(|d| self.data.threads[d].id.clone());
+            if self.raise_draft_window(&id, cx)
+                || draft_id.is_some_and(|d| self.raise_draft_window(&d, cx))
+            {
+                return;
+            }
+        }
         if matches!(kind, ComposeKind::Reply | ComposeKind::ReplyAll)
             && let Some(ix) = self.selected
             && let Some(draft) = self.reply_draft_of(&self.data.threads[ix].id)
@@ -317,8 +375,15 @@ impl PigeonApp {
         let identities = self.data.account.identities();
         let answered = thread.map(|t| self.answered(t));
         content.from = pick_from(kind, answered, &identities);
-        content.signature = crate::settings::current(cx).signatures;
+        content.signature = crate::settings::get(cx).signatures;
+        let answers = match (&reply_to, answered) {
+            (Some(_), Some(m)) => m.id.clone(),
+            _ => String::new(),
+        };
         self.open_composer(kind, content, reply_to, quoted, window, cx);
+        if let Some((composer, _)) = &self.composer {
+            composer.update(cx, |c, _| c.answers = answers);
+        }
     }
 
     /// A new composer for a draft not saved yet, focused where writing
@@ -400,6 +465,7 @@ impl PigeonApp {
         let origin = thread.origin.as_ref();
         let kind = origin.map_or(ComposeKind::New, |o| o.kind);
         let reply_to = origin.and_then(|o| o.reply_to.clone());
+        let answers = origin.map(|o| o.answers.clone()).unwrap_or_default();
         let quoted = origin
             .and_then(|o| o.quoted.as_ref())
             .map(|q| Quoted::new(q.header.clone(), q.html.clone()));
@@ -412,6 +478,7 @@ impl PigeonApp {
             )
             .with_identities(identities);
             composer.awaiting_body = awaiting_body;
+            composer.answers = answers;
             composer
         });
         self.set_composer(composer, window, cx);
@@ -420,15 +487,19 @@ impl PigeonApp {
     /// The open draft's text arrived from Gmail: show it, unless the user
     /// has started writing (DRF-6: never over their edits).
     pub(super) fn refresh_open_draft(&mut self, ids: &[String], cx: &mut Context<Self>) {
-        let Some((composer, _)) = &self.composer else {
-            return;
-        };
-        let c = composer.read(cx);
-        let Some(id) = c
-            .draft_id
-            .clone()
-            .filter(|id| c.awaiting_body && ids.contains(id))
-        else {
+        let mut open = self
+            .composer
+            .iter()
+            .map(|(c, _)| c)
+            .chain(self.draft_windows.iter().map(|d| &d.composer));
+        let found = open.find_map(|composer| {
+            let c = composer.read(cx);
+            c.draft_id
+                .clone()
+                .filter(|id| c.awaiting_body && ids.contains(id))
+                .map(|id| (composer.clone(), id))
+        });
+        let Some((composer, id)) = found else {
             return;
         };
         let Some(thread) = self.data.thread_ix(&id).map(|ix| &self.data.threads[ix]) else {
@@ -438,15 +509,15 @@ impl PigeonApp {
             return;
         }
         // The text is in; it only replaces what's shown while untouched.
-        if !c.is_pristine(cx) {
-            composer.clone().update(cx, |c, cx| {
+        if !composer.read(cx).is_pristine(cx) {
+            composer.update(cx, |c, cx| {
                 c.awaiting_body = false;
                 cx.notify();
             });
             return;
         }
         let content = draft_content(thread);
-        composer.clone().update(cx, |c, cx| c.load(content, cx));
+        composer.update(cx, |c, cx| c.load(content, cx));
     }
 
     /// "Sending…" went: "Message sent", unless another toast took its place.
@@ -533,6 +604,7 @@ impl PigeonApp {
             attachments: content.attachments,
             dropped_files: composer.dropped_files.clone(),
             reply_to: composer.reply_to.clone(),
+            answers: composer.answers.clone(),
             quoted: composer.quoted.as_ref().map(|q| Quote {
                 header: q.header.clone(),
                 html: q.html.clone(),
@@ -588,6 +660,11 @@ impl PigeonApp {
         let Some((composer, _)) = self.composer.take() else {
             return;
         };
+        self.stash(composer, cx);
+    }
+
+    /// Put `composer`'s draft away: to Drafts if it says anything.
+    pub(super) fn stash(&mut self, composer: Entity<Composer>, cx: &mut Context<Self>) {
         composer.update(cx, |c, _| c.set_closed(true));
         let c = composer.read(cx);
         if !c.is_pristine(cx) {
@@ -617,36 +694,34 @@ impl PigeonApp {
             return;
         };
         let composer = composer.clone();
-        // Not before its text is in (ME-007).
-        if composer.read(cx).is_loading(cx) {
-            composer.update(cx, |c, cx| {
-                c.set_attachment_error("The draft is still loading", cx)
-            });
+        if !ready_to_send(&composer, window, cx) {
             return;
         }
-        if !composer.update(cx, |c, cx| c.validate(window, cx)) {
-            return;
+        composer.update(cx, |c, cx| c.remember_focus(window, cx));
+        let sent = self.send_composer(composer, cx);
+        self.close_composer(window, cx);
+        // A reply stays in view, ending with the message just sent.
+        if sent.appended {
+            if let Some(ix) = self.data.thread_ix(&sent.thread_id) {
+                if self.selected != Some(ix) {
+                    self.reveal_thread(ix, window, cx);
+                }
+                self.reader_scroll.scroll_to_bottom();
+            }
+        } else if sent.from_draft {
+            self.selected = None;
         }
+    }
+
+    /// Send what `composer` holds, checked by `ready_to_send`: from the
+    /// reading pane or a draft window (MB-047), which the caller closes.
+    pub(super) fn send_composer(
+        &mut self,
+        composer: Entity<Composer>,
+        cx: &mut Context<Self>,
+    ) -> Sent {
         let c = composer.read(cx);
         let content = c.content(cx);
-        if !content.has_recipients() {
-            composer.update(cx, |c, cx| {
-                c.set_error("Add at least one recipient", cx);
-                c.focus_to(window, cx);
-            });
-            return;
-        }
-        if attachments_size(&content.attachments) > ATTACHMENT_LIMIT {
-            composer.update(cx, |c, cx| {
-                c.set_attachment_error(ATTACHMENT_LIMIT_ERROR, cx)
-            });
-            return;
-        }
-        // No subject, or a forgotten file: asked once (ME-019).
-        if !composer.update(cx, |c, cx| c.confirm_send(&content, window, cx)) {
-            return;
-        }
-        let c = composer.read(cx);
         let html = c.html(&content);
         let draft = self.outgoing(c, content, html);
         let message = draft.to_message(vec![gmail::SENT.into()]);
@@ -684,6 +759,7 @@ impl PigeonApp {
             };
             (thread_id, appended, removed_draft)
         });
+        let from_draft = removed_draft.is_some();
         let op = self.backend.update(cx, |b, cx| {
             b.mail(
                 MailOp::Send {
@@ -695,28 +771,14 @@ impl PigeonApp {
             )
         });
 
-        // A reply stays in view, ending with the message just sent.
-        if appended {
-            if let Some(ix) = self.data.thread_ix(&thread_id) {
-                if self.selected != Some(ix) {
-                    self.reveal_thread(ix, window, cx);
-                }
-                self.reader_scroll.scroll_to_bottom();
-            }
-        } else if removed_draft.is_some() {
-            self.selected = None;
-        }
-        composer.update(cx, |c, cx| {
-            c.remember_focus(window, cx);
-            c.set_closed(true);
-        });
-        self.close_composer(window, cx);
+        composer.update(cx, |c, _| c.set_closed(true));
+        self.forget_draft_window(&composer);
         self.sends.push(op);
         self.refresh_queued_sends(cx);
         let undo = self.push_undo(
             "Send",
             UndoAction::Send {
-                thread_id,
+                thread_id: thread_id.clone(),
                 appended,
                 removed_draft,
                 composer,
@@ -750,6 +812,11 @@ impl PigeonApp {
             .ok();
         })
         .detach();
+        Sent {
+            thread_id,
+            appended,
+            from_draft,
+        }
     }
 
     /// ⌘S: save the open draft to Drafts now, and keep writing.
@@ -788,7 +855,23 @@ impl PigeonApp {
             return;
         };
         let composer = composer.clone();
+        composer.update(cx, |c, cx| c.remember_focus(window, cx));
+        self.close_composer(window, cx);
+        if self.discard_composer(composer, cx) {
+            self.selected = None;
+        }
+    }
+
+    /// Throw `composer`'s draft away, with an undo unless it said nothing:
+    /// from the reading pane or a draft window (MB-047), which the caller
+    /// closes. Whether a Drafts thread went with it.
+    pub(super) fn discard_composer(
+        &mut self,
+        composer: Entity<Composer>,
+        cx: &mut Context<Self>,
+    ) -> bool {
         composer.update(cx, |c, _| c.set_closed(true));
+        self.forget_draft_window(&composer);
         let c = composer.read(cx);
         let pristine = c.is_pristine(cx) && c.draft_id.is_none();
         let draft_id = c.draft_id.clone();
@@ -803,11 +886,7 @@ impl PigeonApp {
             self.backend
                 .update(cx, |b, cx| b.mail(MailOp::DeleteDraft { local_id }, cx))
         });
-        if removed_draft.is_some() {
-            self.selected = None;
-        }
-        composer.update(cx, |c, cx| c.remember_focus(window, cx));
-        self.close_composer(window, cx);
+        let from_draft = removed_draft.is_some();
         if pristine {
             let files = composer.read(cx).file_paths();
             self.backend.read(cx).release_files(&files);
@@ -823,6 +902,7 @@ impl PigeonApp {
                 cx,
             );
         }
+        from_draft
     }
 
     /// W3 (LNK-3): a new message from a `mailto:` link.
@@ -865,7 +945,7 @@ impl PigeonApp {
         self.stash_composer(cx);
         let identities = self.data.account.identities();
         content.from = pick_from(ComposeKind::New, None, &identities);
-        content.signature = crate::settings::current(cx).signatures;
+        content.signature = crate::settings::get(cx).signatures;
         self.open_composer(ComposeKind::New, content, None, None, window, cx);
     }
 
@@ -976,6 +1056,8 @@ impl PigeonApp {
             self.reveal_thread(ix, window, cx);
         }
         self.composer = None;
+        // From a draft window, made again in this one (MB-047).
+        let composer = self.adopt_composer(composer, window, cx);
         composer.update(cx, |c, _| c.set_closed(false));
         self.set_composer(composer.clone(), window, cx);
         self.reader_focused = self.composer_inline(cx);

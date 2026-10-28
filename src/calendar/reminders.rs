@@ -65,12 +65,13 @@ pub fn due_between(
     after: NaiveDateTime,
     until: NaiveDateTime,
 ) -> Vec<DueReminder> {
+    // The earliest any reminder comes, without copying them (MC-064).
     let lead = data
         .calendars
         .iter()
-        .flat_map(|c| c.defaults())
-        .chain(data.events.iter().flat_map(|e| e.own_reminders()))
-        .map(|r| r.minutes.min(MAX_REMINDER_MINUTES))
+        .filter_map(|c| c.default_minutes().max())
+        .chain(data.events.iter().filter_map(|e| e.own_minutes().max()))
+        .map(|m| m.min(MAX_REMINDER_MINUTES))
         .max()
         .unwrap_or(0);
     let mut out = Vec::new();

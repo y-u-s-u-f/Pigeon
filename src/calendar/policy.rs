@@ -51,6 +51,25 @@ impl Reminder {
     }
 }
 
+/// `list`, or when it's empty, a popup `fallback` minutes ahead.
+pub fn reminders_or(list: &[Reminder], fallback: Option<u32>) -> Vec<Reminder> {
+    if list.is_empty() {
+        fallback.map(Reminder::popup).into_iter().collect()
+    } else {
+        list.to_vec()
+    }
+}
+
+/// The minutes of `reminders_or`, without building it.
+pub fn reminder_minutes(
+    list: &[Reminder],
+    fallback: Option<u32>,
+) -> impl Iterator<Item = u32> + '_ {
+    list.iter()
+        .map(|r| r.minutes)
+        .chain(fallback.filter(|_| list.is_empty()))
+}
+
 /// Google takes at most this many overrides per event.
 pub const MAX_REMINDERS: usize = 5;
 /// Google's longest reminder: four weeks.
@@ -86,31 +105,43 @@ pub const JOIN_AHEAD: Duration = Duration::hours(24);
 /// The meetings that can be joined at `now` or within `JOIN_AHEAD`: events
 /// that count, aren't all day, and have a video link. Best first: the ones
 /// under way, the one that started most recently first, then the ones to
-/// come, soonest first. The menu bar lists them; `next_joinable` is the
-/// first.
+/// come, soonest first. `next_joinable` is the first; the tests check the
+/// whole order.
+#[cfg(test)]
 pub fn joinable(data: &CalendarData, now: NaiveDateTime) -> Vec<Occurrence> {
-    let mut found: Vec<Occurrence> = occurrences(
-        &data.events,
-        |e| counts(data, e) && !e.all_day && video_link(e).is_some(),
-        now - Duration::days(1),
-        now + JOIN_AHEAD,
-    )
-    .into_iter()
-    .filter(|o| o.end > now)
-    .collect();
-    found.sort_by_key(|o| {
-        if o.start <= now {
-            (0, now - o.start, o.event)
-        } else {
-            (1, o.start - now, o.event)
-        }
-    });
+    let mut found = joinable_unsorted(data, now);
+    found.sort_by_key(|o| join_rank(o, now));
     found
 }
 
 /// The meeting to join: see `joinable`.
 pub fn next_joinable(data: &CalendarData, now: NaiveDateTime) -> Option<Occurrence> {
-    joinable(data, now).into_iter().next()
+    joinable_unsorted(data, now)
+        .into_iter()
+        .min_by_key(|o| join_rank(o, now))
+}
+
+/// `joinable`'s meetings in any order. The video link is looked for only
+/// in occurrences already in the window (MC-061).
+fn joinable_unsorted(data: &CalendarData, now: NaiveDateTime) -> Vec<Occurrence> {
+    occurrences(
+        &data.events,
+        |e| !e.all_day && counts(data, e),
+        now - Duration::days(1),
+        now + JOIN_AHEAD,
+    )
+    .into_iter()
+    .filter(|o| o.end > now && video_link(&data.events[o.event]).is_some())
+    .collect()
+}
+
+/// Under way first, the latest start first; then the soonest to come.
+fn join_rank(o: &Occurrence, now: NaiveDateTime) -> (u8, Duration, usize) {
+    if o.start <= now {
+        (0, now - o.start, o.event)
+    } else {
+        (1, o.start - now, o.event)
+    }
 }
 
 /// The event's video link: Google's conference (CAL-17), the one typed in
@@ -144,7 +175,10 @@ fn is_video_url(url: &str) -> bool {
         .unwrap_or_default()
         .to_ascii_lowercase();
     let path = &rest[host.len()..];
-    let on = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
+    let on = |domain: &str| {
+        host.strip_suffix(domain)
+            .is_some_and(|sub| sub.is_empty() || sub.ends_with('.'))
+    };
     (host == "meet.google.com" && path.len() > 1)
         || (on("zoom.us") && (path.starts_with("/j/") || path.starts_with("/my/")))
         || ((host == "teams.microsoft.com" || host == "teams.live.com") && path.len() > 1)

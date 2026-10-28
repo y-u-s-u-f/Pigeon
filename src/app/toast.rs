@@ -16,6 +16,8 @@ use crate::{actions::Undo, assets::Icon, backend::UNDO_WINDOW, theme::Theme, ui,
 const TOAST_DURATION: Duration = UNDO_WINDOW;
 /// While the pointer rests on a toast, how often it checks again.
 const HOVER_RECHECK: Duration = Duration::from_millis(500);
+/// The widest a toast gets; longer messages wrap.
+const TOAST_MAX: gpui::Pixels = px(560.);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToastKind {
@@ -188,7 +190,7 @@ impl PigeonApp {
                         .id("toast")
                         .occlude()
                         .min_h(CONTROL_LG)
-                        .max_w(px(560.))
+                        .max_w(TOAST_MAX)
                         .py(SPACE_XS)
                         .pl(SPACE_LG)
                         .pr(SPACE_SM)

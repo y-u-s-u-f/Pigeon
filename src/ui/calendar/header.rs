@@ -217,7 +217,8 @@ impl CalendarView {
                         .role(gpui::Role::Dialog)
                         .aria_label("Go to date")
                         .mt(SPACE_2XL + SPACE_SM)
-                        .w(HIT_TARGET * 7. + SPACE_MD * 2. + px(2.))
+                        // Seven days, the padding and the 1px border.
+                        .w(HIT_TARGET * 7. + SPACE_MD * 2. + SPACE_2XS)
                         .p(SPACE_MD)
                         .flex()
                         .flex_col()
@@ -323,7 +324,7 @@ impl CalendarView {
             .enumerate()
             .map(|(ix, c)| {
                 div()
-                    .size(px(10.))
+                    .size(CALENDAR_DOT)
                     .when(ix > 0, |d| d.ml(-SPACE_XS))
                     .rounded_full()
                     .bg(c.color)
@@ -524,4 +525,6 @@ pub(crate) fn full_date(date: NaiveDate) -> String {
 }
 
 const CALENDARS_MENU_WIDTH: Pixels = px(260.);
+/// A calendar's color dot on the Calendars button.
+const CALENDAR_DOT: Pixels = px(10.);
 const CALENDARS_MENU_HEIGHT: Pixels = px(440.);

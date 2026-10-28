@@ -1,8 +1,10 @@
-//! The sync status line under the account card (ACC-5, STA-1/3/4), and the
-//! empty state for a feature whose scope wasn't granted (ACC-6, CAL-1).
+//! The sync status line under the account card (ACC-5, STA-1/3/4), the
+//! card that asks to turn on notifications after the first sync (MA-073),
+//! and the empty state for a feature whose scope wasn't granted (ACC-6,
+//! CAL-1).
 
 use gpui::{
-    AnyElement, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
+    AnyElement, App, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
     StatefulInteractiveElement as _, Styled as _, div,
 };
 
@@ -17,6 +19,7 @@ use crate::{
         Backend, Source, SyncStatus,
         auth::{CALENDAR_SCOPE, CONTACTS_SCOPE, GMAIL_SCOPE},
     },
+    notify,
     theme::Theme,
 };
 
@@ -40,13 +43,13 @@ pub fn label(status: &SyncStatus, now_ms: i64) -> String {
     }
 }
 
-/// "just now", "4 min ago", "2 h ago", "3 days ago".
+/// "just now", "4 min ago", "2 hr ago", "3 days ago".
 pub fn ago(at_ms: i64, now_ms: i64) -> String {
     let minutes = (now_ms - at_ms).max(0) / 60_000;
     match minutes {
         0 => "just now".into(),
         1..60 => format!("{minutes} min ago"),
-        60..1440 => format!("{} h ago", minutes / 60),
+        60..1440 => format!("{} hr ago", minutes / 60),
         1440..2880 => "1 day ago".into(),
         _ => format!("{} days ago", minutes / 1440),
     }
@@ -111,6 +114,68 @@ pub fn status_line(status: &SyncStatus, now_ms: i64, theme: &Theme) -> AnyElemen
         }))
         .child(div().min_w_0().truncate().child(text))
         .into_any_element()
+}
+
+/// MA-073: Pigeon asks before macOS does, once there's something to tell:
+/// after the first sync, or with the demo data. "Turn On" brings up macOS's
+/// prompt; "Not Now" puts it away for good (Settings can still turn it on).
+pub fn notifications_card(backend: &Backend, theme: &Theme, cx: &App) -> Option<AnyElement> {
+    let ready = match backend.source() {
+        Source::Demo => true,
+        Source::Google => backend.last_synced().is_some(),
+        Source::SignedOut => false,
+    };
+    if !ready || !notify::offer_card(cx) {
+        return None;
+    }
+    let title = "Turn on notifications?";
+    Some(
+        div()
+            .id("notifications-card")
+            .role(gpui::Role::Region)
+            .aria_label(title)
+            .p(SPACE_MD)
+            .flex()
+            .flex_col()
+            .gap(SPACE_SM)
+            .rounded(RADIUS_MD)
+            .bg(theme.chip_bg)
+            .line_height(LINE_UI)
+            .child(
+                super::label("notifications-card-title", title)
+                    .text_size(TEXT_SM)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text),
+            )
+            .child(
+                super::label(
+                    "notifications-card-text",
+                    "New mail and event reminders, while Pigeon is in the background.",
+                )
+                .text_size(TEXT_XS)
+                .text_color(theme.text_muted),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(SPACE_XS)
+                    .child(
+                        push_button(
+                            "notifications-turn-on",
+                            "Turn On",
+                            ButtonKind::Primary,
+                            theme,
+                        )
+                        .on_click(|_, _, cx| notify::ask_permission(cx)),
+                    )
+                    .child(
+                        push_button("notifications-not-now", "Not Now", ButtonKind::Quiet, theme)
+                            .on_click(|_, _, cx| notify::dismiss_card(cx)),
+                    ),
+            )
+            .into_any_element(),
+    )
 }
 
 /// Which features Google allowed (ACC-6): "Mail, Calendar and Contacts
@@ -299,8 +364,8 @@ mod tests {
         assert_eq!(ago(now - 59_000, now), "just now");
         assert_eq!(ago(now - min, now), "1 min ago");
         assert_eq!(ago(now - 59 * min, now), "59 min ago");
-        assert_eq!(ago(now - 60 * min, now), "1 h ago");
-        assert_eq!(ago(now - 23 * 60 * min - 59 * min, now), "23 h ago");
+        assert_eq!(ago(now - 60 * min, now), "1 hr ago");
+        assert_eq!(ago(now - 23 * 60 * min - 59 * min, now), "23 hr ago");
         assert_eq!(ago(now - 24 * 60 * min, now), "1 day ago");
         assert_eq!(ago(now - 3 * 24 * 60 * min, now), "3 days ago");
         // A clock that went back reads as now.

@@ -336,24 +336,25 @@ impl Store {
             return Ok(());
         };
         let fetched: Vec<String> = bodies.iter().map(|(id, _)| id.clone()).collect();
+        let mut images = Vec::new();
         for (id, parsed) in bodies {
             let Some(message) = thread.messages.iter_mut().find(|m| m.id == id) else {
                 continue;
             };
             // W2 (ATT-2): inline images, with the body.
-            for image in &parsed.inline_images {
-                let now = chrono::Utc::now().timestamp_millis();
-                self.put_image(
-                    &image.url,
-                    image.mime,
-                    &image.bytes,
-                    now,
-                    super::IMAGE_CACHE_CAP,
-                )
-                .ok();
-            }
+            images.extend(parsed.inline_images);
             message.body = Body::Loaded { html: parsed.html };
             message.attachments = parsed.attachments;
+        }
+        if !images.is_empty() {
+            self.put_images(
+                images
+                    .iter()
+                    .map(|i| (i.url.as_str(), i.mime, i.bytes.as_slice())),
+                chrono::Utc::now().timestamp_millis(),
+                super::IMAGE_CACHE_CAP,
+            )
+            .ok();
         }
         thread.loaded = loaded(&thread);
         thread.reindex();
@@ -376,6 +377,23 @@ impl Store {
         )?;
         let rows = stmt.query_map([account], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// One Drafts thread's Gmail draft id, if known, and message id.
+    pub fn stored_draft(
+        &self,
+        account: &str,
+        local_id: &str,
+    ) -> anyhow::Result<Option<(Option<String>, String)>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT draft_id, COALESCE(message_id, '') FROM drafts
+                 WHERE account = ?1 AND local_id = ?2",
+                params![account, local_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
     }
 
     pub fn set_draft_id(
@@ -505,17 +523,7 @@ pub fn modify_thread(thread: &mut Thread, add: &[String], remove: &[String], me:
             }
         }
     }
-    thread.label_ids = gmail::union_labels(thread.messages.iter().map(|m| &m.label_ids));
-    thread.labels = thread
-        .label_ids
-        .iter()
-        .filter(|l| !gmail::is_system_label(l))
-        .cloned()
-        .collect();
-    let has = |label: &str| thread.label_ids.iter().any(|l| l == label);
-    thread.unread = has(gmail::UNREAD);
-    thread.starred = has(gmail::STARRED);
-    thread.important = has(gmail::IMPORTANT);
+    thread.derive_from_labels();
     if moves && thread.folder != Folder::Drafts {
         thread.folder = gmail::derive_folder(&thread.messages, me);
     }

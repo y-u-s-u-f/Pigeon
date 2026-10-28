@@ -9,7 +9,7 @@ use anyhow::{Context as _, anyhow};
 use serde::Deserialize;
 
 use super::{
-    http::{Request, Response, Transport, TransportError},
+    http::{Request, Response, Transport, TransportError, encode as enc},
     store::Store,
 };
 use crate::contacts::{ContactDetails, Phone};
@@ -250,9 +250,7 @@ fn expired(response: &Response) -> bool {
 
 fn api_error(source: Source, response: &Response) -> anyhow::Error {
     let message = response
-        .json::<serde_json::Value>()
-        .ok()
-        .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
+        .error_message()
         .unwrap_or_else(|| format!("HTTP {}", response.status));
     anyhow!("contacts ({}): {message}", source.as_str())
 }
@@ -260,19 +258,6 @@ fn api_error(source: Source, response: &Response) -> anyhow::Error {
 pub fn is_network(e: &anyhow::Error) -> bool {
     e.downcast_ref::<TransportError>()
         .is_some_and(TransportError::goes_later)
-}
-
-fn enc(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for b in text.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

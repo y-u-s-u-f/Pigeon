@@ -4,9 +4,11 @@ mod attachments;
 mod backend_events;
 mod compose;
 mod contact_card;
+mod draft_window;
 mod labels;
 mod mail;
 pub mod menu_bar;
+mod profile;
 pub mod shell;
 pub(crate) mod toast;
 pub mod today;
@@ -179,6 +181,10 @@ pub struct PigeonApp {
     pub help_focus: FocusHandle,
     /// The open draft, with its event subscription.
     pub composer: Option<(Entity<Composer>, Subscription)>,
+    /// Drafts in windows of their own (MB-047).
+    draft_windows: Vec<draft_window::DraftWindow>,
+    /// Composers made in a draft window, which Undo makes again here.
+    windowed: HashSet<gpui::EntityId>,
     contact_book: SharedContactBook,
     pub search_input: Entity<InputState>,
     pub search_query: Query,
@@ -192,6 +198,8 @@ pub struct PigeonApp {
     /// The outbox's queued sends, by local message id, for the list's
     /// clock (MA-069). Read from the store only when the outbox changes.
     pub(crate) queued_sends: HashSet<String>,
+    /// Google's sign-in had expired at the last status (MB-054).
+    auth_expired: bool,
     // Mail lists and search; see `app/mail.rs`.
     /// Threads picked for a bulk action, by id. While any are, the reader
     /// shows the bulk actions instead of a conversation.
@@ -219,8 +227,6 @@ pub struct PigeonApp {
     /// and the state above.
     pub settings: Settings,
     pub settings_page: SettingsPage,
-    /// The system's Reduce Motion, from before the setting overrode it.
-    pub(crate) system_reduce_motion: bool,
     /// The settings as last handed to the backend to save.
     pub(crate) saved: Saved,
     /// Gmail's unread counts (`ui::sidebar`).
@@ -284,10 +290,12 @@ impl PigeonApp {
             cx.notify();
         });
         // Reduce Motion is read at startup; this catches a change made while
-        // Pigeon was in the background.
+        // Pigeon was in the background (MB-072: the system's alone). So do
+        // the login item and the mail handler (MC-038).
         let activation = cx.observe_window_activation(window, |this, window, cx| {
-            if window.is_window_active() && !this.settings.reduce_motion {
+            if window.is_window_active() {
                 gpui::base::apply_system_reduce_motion(cx);
+                shell::refresh_system_items();
             }
             // Sync on focus; poll less in the background (SYN-2).
             let active = window.is_window_active();
@@ -398,6 +406,8 @@ impl PigeonApp {
             contact_card: None,
             help_focus: cx.focus_handle(),
             composer: None,
+            draft_windows: Vec::new(),
+            windowed: HashSet::new(),
             contact_book,
             search_input,
             search_query: Query::default(),
@@ -406,6 +416,7 @@ impl PigeonApp {
             undo_stack: Default::default(),
             sends: Vec::new(),
             queued_sends: HashSet::new(),
+            auth_expired: false,
             checked: HashSet::new(),
             select_anchor: None,
             context_target: None,
@@ -419,7 +430,6 @@ impl PigeonApp {
             reveal_pending: false,
             settings: Settings::default(),
             settings_page,
-            system_reduce_motion: false,
             saved: saved.clone(),
             server_counts: Default::default(),
             server_search: Default::default(),
@@ -462,6 +472,7 @@ impl PigeonApp {
         this.refresh_server_counts(cx);
         this.queued_sends = this.backend.read(cx).queued_sends();
         window.focus(&this.pane_focus(cx), cx);
+        profile::start(this.backend.read(cx).is_demo(), window, cx);
         this
     }
 
@@ -504,9 +515,6 @@ impl PigeonApp {
         self.list_width = px(saved.list_width).clamp(LIST_WIDTH.0, LIST_WIDTH.1);
         self.archived_expanded = saved.archived_expanded;
         self.set_appearance(saved.appearance, window, cx);
-        if saved.reduce_motion {
-            self.set_reduce_motion(true, cx);
-        }
         self.calendar.update(cx, |c, _| {
             c.view = match saved.calendar_view {
                 CalendarViewSetting::Day => ViewKind::Day,
@@ -518,12 +526,12 @@ impl PigeonApp {
         });
     }
 
-    /// The settings as they are now, wherever they live.
+    /// The settings as they are now, wherever they live: the window's
+    /// here, the app-wide ones as last remembered (MC-046).
     fn current_settings(&self, cx: &gpui::App) -> Saved {
         let calendar = self.calendar.read(cx);
         Saved {
             appearance: self.settings.appearance,
-            reduce_motion: self.settings.reduce_motion,
             auto_advance: self.settings.auto_advance,
             search_all_mail: self.settings.search_all_mail,
             compact_list: self.density == Density::Compact,
@@ -539,15 +547,9 @@ impl PigeonApp {
             },
             week_numbers: calendar.show_week_numbers,
             remote_images: self.saved.remote_images,
-            notifications: crate::settings::current(cx).notifications,
             calendar_date: Some(calendar.anchor),
-            time_format: crate::settings::current(cx).time_format,
             event_minutes: calendar.prefs.event_minutes,
             default_calendar: calendar.prefs.default_calendar.clone(),
-            menu_bar: crate::settings::current(cx).menu_bar,
-            signatures: crate::settings::current(cx).signatures,
-            glass: crate::settings::current(cx).glass,
-            keymap: crate::settings::current(cx).keymap,
             collapsed_labels: {
                 let mut ids: Vec<String> = self.labels_ui.folded.iter().cloned().collect();
                 ids.sort();
@@ -558,6 +560,9 @@ impl PigeonApp {
             nav: self.saved_nav(),
             seen_tip: self.seen_tip,
             recent_commands: self.recent_commands.clone(),
+            // Notifications, time format, menu bar, glass, keymap, the
+            // Dock badge and the rest.
+            ..crate::settings::get(cx).clone()
         }
     }
 
@@ -765,7 +770,11 @@ impl PigeonApp {
         self.reveal_selected();
         // Bodies come on demand, once the selection settles (RDR-6).
         self.backend.update(cx, |b, cx| b.fetch_body(&id, cx));
-        if self.data.threads[ix].folder == Folder::Drafts && !already_open {
+        // A draft in its own window stays there, brought forward (MB-047).
+        if self.data.threads[ix].folder == Folder::Drafts
+            && !already_open
+            && !self.raise_draft_window(&id, cx)
+        {
             self.open_draft(ix, false, window, cx);
         }
         cx.notify();
@@ -2100,6 +2109,15 @@ impl PigeonApp {
 
 impl Render for PigeonApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        profile::frame_start();
+        let root = self.render_root(window, cx);
+        profile::render_end();
+        root
+    }
+}
+
+impl PigeonApp {
+    fn render_root(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Whatever had focus went away (a closed draft, say): back to the panes.
         if window.focused(cx).is_none() {
             window.focus(&self.pane_focus(cx), cx);
@@ -2203,6 +2221,7 @@ impl Render for PigeonApp {
             .on_action(cx.listener(Self::close_draft))
             .on_action(cx.listener(Self::discard_draft))
             .on_action(cx.listener(Self::show_cc_bcc))
+            .on_action(cx.listener(Self::open_draft_in_new_window))
             // W3.
             .on_action(cx.listener(Self::change_from))
             .on_action(cx.listener(Self::toggle_signature))
@@ -2373,6 +2392,7 @@ impl Render for PigeonApp {
             .children(self.render_toast(cx))
             .when(panes, |this| this.children(self.render_tip(cx)))
             .children(self.render_overlay(window, cx))
+            .when(profile::active(), |this| this.child(profile::marker()))
     }
 }
 
