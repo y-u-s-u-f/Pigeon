@@ -567,8 +567,7 @@ pub enum BackendEvent {
     },
     // AI sprint.
     /// Conversations whose bodies were just stored (the background body
-    /// queue and the reader's fetch). W2 sends it.
-    #[allow(dead_code)]
+    /// queue and the reader's fetch).
     BodiesReady(Vec<String>),
     /// Conversations whose AI results changed; empty when only a
     /// provider's status or the activity log did.
@@ -975,6 +974,8 @@ impl Backend {
             this.start_mail_sync(transport, cx);
         }
         this.start_health(cx);
+        // AI-3: with AI on, at startup and after a switch.
+        this.start_ai_pass(cx);
         this
     }
 
@@ -1978,17 +1979,9 @@ impl Backend {
         if self.account.is_none() || threads.is_empty() {
             return;
         }
-        let mut rows = match self.store.ai_results(self.email(), ids) {
-            Ok(rows) => rows,
-            Err(e) => {
-                eprintln!("Pigeon: couldn't read AI results: {e:#}");
-                return;
-            }
-        };
-        for thread in threads {
-            if let Some(ai) = rows.remove(&thread.id) {
-                thread.ai = ai;
-            }
+        match self.store.ai_results(self.email(), ids) {
+            Ok(rows) => apply_ai_rows(threads, rows),
+            Err(e) => eprintln!("Pigeon: couldn't read AI results: {e:#}"),
         }
     }
 
@@ -2033,6 +2026,111 @@ impl Backend {
         self.ai.prefs = prefs.clone();
         cx.emit(BackendEvent::AiChanged(Vec::new()));
         self.ai_pump(cx);
+        // AI-3: turned on, the note confirmed, or a switch turned on.
+        self.ai_pass(cx);
+    }
+
+    /// AI-3, the background pass: Inbox conversations of the last 30 days
+    /// whose results are missing or stale go to the queue, or to the body
+    /// queue first. On AI turned on, startup, new mail, bodies stored and
+    /// every 5 minutes; never on `AiChanged` or `ThreadsChanged`.
+    pub(super) fn ai_pass(&mut self, cx: &mut Context<Self>) {
+        let allowed = ai::pass::Allowed {
+            signals: self.ai_allows(ai::Feature::Signals),
+            line: self.ai_allows(ai::Feature::Line),
+        };
+        let Some(me) = self.account.clone() else {
+            return;
+        };
+        if !allowed.signals && !allowed.line {
+            return;
+        }
+        let email = self.email().to_string();
+        let heads = self.store.load_inbox_heads(&email, &[]).unwrap_or_default();
+        let ids: Vec<String> = heads.iter().map(|t| t.id.clone()).collect();
+        let results = self
+            .store
+            .ai_results(&email, Some(&ids))
+            .unwrap_or_default();
+        let wants = ai::pass::work_list(&heads, &results, &me, now_ms(), allowed, &|f, k| {
+            self.ai_skips(f, k)
+        });
+        if wants.is_empty() {
+            return;
+        }
+        let mut ids: Vec<String> = wants.iter().map(|w| w.thread_id.clone()).collect();
+        ids.dedup();
+        let threads = self.store.load_threads(&email, &ids).unwrap_or_default();
+        let mut bodies = Vec::new();
+        for want in &wants {
+            let Some(thread) = threads.iter().find(|t| t.id == want.thread_id) else {
+                continue;
+            };
+            match ai::pass::job(thread, want) {
+                Some((job, event)) => self.ai_queue_job(job, event, cx),
+                None => bodies.push(want.thread_id.clone()),
+            }
+        }
+        self.queue_bodies(bodies, cx);
+    }
+
+    /// Queue a pass job, with the dates found in its message stored first.
+    fn ai_queue_job(&mut self, job: ai::Job, event: Option<ai::AiRow>, cx: &mut Context<Self>) {
+        if let Some(row) = event
+            && let Err(e) = self.store.put_ai_result(self.email(), &job.thread_id, &row)
+        {
+            eprintln!("Pigeon: couldn't store dates found in mail: {e:#}");
+        }
+        self.ai_enqueue(job, cx);
+    }
+
+    /// New mail: request A for each message (Interactive while Important
+    /// Only waits on it, AI-5), then the pass.
+    pub(super) fn ai_new_mail(&mut self, new: &[new_mail::NewMail], cx: &mut Context<Self>) {
+        if self.ai_allows(ai::Feature::Important) {
+            let priority = match self.ai.prefs.notify_for {
+                ai::NotifyFor::Important => ai::Priority::Interactive,
+                ai::NotifyFor::All => ai::Priority::Background,
+            };
+            for mail in new {
+                self.ai_enqueue(ai::pass::important_job(mail, priority), cx);
+            }
+        }
+        self.ai_pass(cx);
+    }
+
+    /// Request B for a conversation just opened, at Interactive in
+    /// `JobGroup::Open`; false while a body it needs isn't stored yet
+    /// (ask again on `BodiesReady`).
+    pub fn ai_request_b(&mut self, thread_id: &str, cx: &mut Context<Self>) -> bool {
+        let Some(me) = self.account.clone() else {
+            return true;
+        };
+        if !self.ai_allows(ai::Feature::Signals) {
+            return true;
+        }
+        let ids = [thread_id.to_string()];
+        let Some(mut thread) = self
+            .store
+            .load_threads(self.email(), &ids)
+            .ok()
+            .and_then(|mut t| t.pop())
+        else {
+            return true;
+        };
+        self.overlay_ai(std::slice::from_mut(&mut thread), Some(&ids));
+        let mut ready = true;
+        for want in ai::pass::open_wants(&thread, &me) {
+            match ai::pass::job(&thread, &want) {
+                Some((mut job, event)) => {
+                    job.priority = ai::Priority::Interactive;
+                    job.group = Some(ai::JobGroup::Open);
+                    self.ai_queue_job(job, event, cx);
+                }
+                None => ready = false,
+            }
+        }
+        ready
     }
 
     pub fn ai_providers(&self) -> ai::Providers {
@@ -2334,6 +2432,18 @@ impl Backend {
     }
 }
 // end AI sprint ---------------------------------------------------------
+
+/// `Thread::ai` from these rows, by conversation id.
+pub(crate) fn apply_ai_rows(
+    threads: &mut [Thread],
+    mut rows: std::collections::HashMap<String, ai::ThreadAi>,
+) {
+    for thread in threads {
+        if let Some(ai) = rows.remove(&thread.id) {
+            thread.ai = ai;
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -1078,7 +1078,7 @@ impl PigeonApp {
             Nav::Folder(
                 folder @ (Folder::Inbox | Folder::Archive | Folder::Spam | Folder::Trash),
             ) => threads.filter(not_draft).any(|t| t.folder != folder),
-            Nav::Folder(_) | Nav::Snoozed | Nav::Scheduled => false,
+            Nav::Folder(_) | Nav::Snoozed | Nav::Scheduled | Nav::NeedsReply => false,
             Nav::Starred => threads.filter(not_draft).any(|t| !t.starred),
             Nav::Label(ix) => self.data.labels.get(ix).is_some_and(|label| {
                 threads
@@ -1117,7 +1117,7 @@ impl PigeonApp {
             }
             Nav::Label(ix) => self.set_label(ix, movable, false, cx),
             Nav::Category(category) => self.move_to_category(targets, category, cx),
-            Nav::Snoozed | Nav::Scheduled => {}
+            Nav::Snoozed | Nav::Scheduled | Nav::NeedsReply => {}
         }
     }
 
@@ -1645,6 +1645,7 @@ impl PigeonApp {
             // Local views: Archive and Drafts hold their threads.
             Nav::Snoozed => ViewKey::Folder(Folder::Archive),
             Nav::Scheduled => ViewKey::Folder(Folder::Drafts),
+            Nav::NeedsReply => ViewKey::Folder(Folder::Inbox),
             Nav::Label(ix) => ViewKey::Label(self.data.labels[ix].id.clone()),
         }
     }
@@ -1725,7 +1726,7 @@ impl PigeonApp {
         }
         !matches!(
             self.nav,
-            Nav::Folder(Folder::Drafts) | Nav::Snoozed | Nav::Scheduled
+            Nav::Folder(Folder::Drafts) | Nav::Snoozed | Nav::Scheduled | Nav::NeedsReply
         )
     }
 

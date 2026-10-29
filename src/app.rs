@@ -106,6 +106,8 @@ pub enum Nav {
     Snoozed,
     /// CMP-17: drafts scheduled to send, by when they go.
     Scheduled,
+    /// AI-4: Inbox conversations waiting for my answer, newest first.
+    NeedsReply,
 }
 
 /// Whether a view shows the thread. W4b: the Inbox shows Primary, each
@@ -130,6 +132,8 @@ pub fn nav_holds(nav: Nav, thread: &Thread, labels: &[crate::data::Label]) -> bo
         Nav::Starred => thread.starred && !thread.is_hidden(),
         Nav::Label(ix) => !thread.is_hidden() && thread.labels.contains(&labels[ix].id),
         Nav::Category(category) => thread.folder == Folder::Inbox && in_category(thread, category),
+        // Goes by the app's marked set (`PigeonApp::nav_contains`).
+        Nav::NeedsReply => false,
     }
 }
 
@@ -617,6 +621,8 @@ impl PigeonApp {
             ],
         };
         this.labels_ui.folded = saved.collapsed_labels.iter().cloned().collect();
+        // AI-4: whether a saved Needs Reply can open.
+        this.refresh_ai_flags(cx);
         // MA-034: back in Mail or Calendar, on the view last left; nothing
         // is selected, so nothing is marked read or opened.
         if let Some(nav) = this.nav_from_saved(&saved.nav) {
@@ -645,6 +651,7 @@ impl PigeonApp {
             SavedNav::Category(category) => Nav::Category(*category),
             SavedNav::Snoozed => Nav::Snoozed,
             SavedNav::Scheduled => Nav::Scheduled,
+            SavedNav::NeedsReply if self.ai.needs_reply_on => Nav::NeedsReply,
             SavedNav::NeedsReply => Nav::Folder(Folder::Inbox),
         })
     }
@@ -661,6 +668,7 @@ impl PigeonApp {
             Nav::Category(category) => SavedNav::Category(category),
             Nav::Snoozed => SavedNav::Snoozed,
             Nav::Scheduled => SavedNav::Scheduled,
+            Nav::NeedsReply => SavedNav::NeedsReply,
         }
     }
 
@@ -743,7 +751,10 @@ impl PigeonApp {
     }
 
     pub fn nav_contains(&self, nav: Nav, thread: &Thread) -> bool {
-        nav_holds(nav, thread, &self.data.labels)
+        match nav {
+            Nav::NeedsReply => self.ai.needs_reply.contains(&thread.id),
+            _ => nav_holds(nav, thread, &self.data.labels),
+        }
     }
 
     /// Recompute the list rows for the current nav. With `keep_scroll`, only
@@ -757,6 +768,8 @@ impl PigeonApp {
             .filter(|t| t.folder == Folder::Drafts)
             .filter_map(|t| t.origin.as_ref()?.reply_to.clone())
             .collect();
+        // AI-4: the rows' markers and the Needs Reply view.
+        self.refresh_needs_reply();
         let threads = &self.data.threads;
         let searching = self.is_searching();
         let in_view = |thread: &Thread| {

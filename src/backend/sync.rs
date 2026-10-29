@@ -11,6 +11,8 @@
 //! - Partial sync (SYN-2): `history.list` from the stored history id, the
 //!   touched threads refetched; a 404 means it's too old: full sync again.
 //! - Bodies (RDR-6): fetched raw when a thread stays selected for 150 ms.
+//! - Background bodies (AI-3): new Inbox mail's, one conversation at a
+//!   time, for the AI pass; apart from the reader's.
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -42,6 +44,10 @@ const POLL_INACTIVE: Duration = Duration::from_secs(5 * 60);
 /// on (NTF-1).
 const POLL_BACKGROUND: Duration = Duration::from_secs(60);
 const BODY_DEBOUNCE: Duration = Duration::from_millis(150);
+/// AI-3: the background body queue says what it stored this often.
+const BODIES_READY_EVERY: usize = 10;
+/// AI-3: the pass runs at least this often.
+const AI_PASS_EVERY: Duration = Duration::from_secs(5 * 60);
 /// How often the send-as addresses are read again, after the first
 /// partial sync of a launch: signatures and aliases change in Gmail.
 const SEND_AS_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
@@ -76,6 +82,12 @@ pub struct SyncState {
     /// Messages whose bodies are being fetched, and those that failed.
     body_loading: HashSet<String>,
     body_errors: HashMap<String, String>,
+    /// AI-3: conversations whose bodies the pass waits for, in order, and
+    /// those stored since `BodiesReady` last said so.
+    body_queue: VecDeque<String>,
+    body_queue_running: bool,
+    bodies_stored: Vec<String>,
+    _ai_pass: Option<Task<()>>,
     /// The calendar pass (W4): when it last ran, whether one runs now,
     /// and whether the next mail pass should run it early (focus, Sync Now).
     calendar_last: Option<Instant>,
@@ -833,7 +845,10 @@ impl Backend {
             cx.emit(BackendEvent::ThreadsRemoved(outcome.removed));
         }
         if !outcome.new_mail.is_empty() {
+            let new_mail = outcome.new_mail.clone();
             cx.emit(BackendEvent::NewMail(outcome.new_mail));
+            // AI-3, AI-5.
+            self.ai_new_mail(&new_mail, cx);
         }
         if outcome.labels {
             cx.emit(BackendEvent::LabelsChanged);
@@ -1097,11 +1112,108 @@ impl Backend {
                         this.sync.body_loading.remove(id);
                     }
                     this.sync.body_errors.extend(failed);
-                    cx.emit(BackendEvent::ThreadsChanged(vec![thread_id]));
+                    cx.emit(BackendEvent::ThreadsChanged(vec![thread_id.clone()]));
+                    cx.emit(BackendEvent::BodiesReady(vec![thread_id]));
+                    this.ai_pass(cx);
                 })
                 .ok();
             })
             .detach();
+        }));
+    }
+
+    // AI-3: the background body queue.
+
+    /// Fetch these conversations' missing bodies in the background, one
+    /// conversation at a time, after those already waiting.
+    pub(super) fn queue_bodies(&mut self, ids: Vec<String>, cx: &mut Context<Self>) {
+        if self.sync.gmail.is_none() {
+            return;
+        }
+        for id in ids {
+            if !self.sync.body_queue.contains(&id) {
+                self.sync.body_queue.push_back(id);
+            }
+        }
+        self.next_bodies(cx);
+    }
+
+    /// The next conversation with bodies to fetch; `BodiesReady` every
+    /// `BODIES_READY_EVERY` conversations and when the queue is empty.
+    fn next_bodies(&mut self, cx: &mut Context<Self>) {
+        let Some(gmail) = self.sync.gmail.clone() else {
+            return;
+        };
+        if self.sync.body_queue_running {
+            return;
+        }
+        while let Some(id) = self.sync.body_queue.pop_front() {
+            let messages: Vec<(String, u64)> = self
+                .store
+                .load_threads(self.email(), std::slice::from_ref(&id))
+                .unwrap_or_default()
+                .iter()
+                .flat_map(|t| &t.messages)
+                .filter(|m| matches!(m.body, Body::NotLoaded))
+                .filter(|m| {
+                    !self.sync.body_errors.contains_key(&m.id)
+                        && !self.sync.body_loading.contains(&m.id)
+                })
+                .map(|m| (m.id.clone(), m.size_estimate))
+                .collect();
+            if messages.is_empty() {
+                continue;
+            }
+            self.sync.body_queue_running = true;
+            let worker = MailSync {
+                gmail,
+                store: self.store.clone(),
+                account: self.email().to_string(),
+            };
+            let account = worker.account.clone();
+            cx.spawn(async move |this, cx| {
+                let tid = id.clone();
+                let failed = cx
+                    .background_executor()
+                    .spawn(async move { worker.fetch_bodies(&tid, &messages) })
+                    .await;
+                this.update(cx, |this, cx| {
+                    // Signed out or switched meanwhile: the queue went with it.
+                    if this.email() != account {
+                        return;
+                    }
+                    this.sync.body_queue_running = false;
+                    this.sync.body_errors.extend(failed);
+                    this.sync.bodies_stored.push(id);
+                    if this.sync.bodies_stored.len() >= BODIES_READY_EVERY {
+                        let ids = std::mem::take(&mut this.sync.bodies_stored);
+                        cx.emit(BackendEvent::BodiesReady(ids));
+                        this.ai_pass(cx);
+                    }
+                    this.next_bodies(cx);
+                })
+                .ok();
+            })
+            .detach();
+            return;
+        }
+        if !self.sync.bodies_stored.is_empty() {
+            let ids = std::mem::take(&mut self.sync.bodies_stored);
+            cx.emit(BackendEvent::BodiesReady(ids));
+            self.ai_pass(cx);
+        }
+    }
+
+    /// AI-3: the pass every few minutes, with AI on.
+    pub(super) fn start_ai_pass(&mut self, cx: &mut Context<Self>) {
+        self.ai_pass(cx);
+        self.sync._ai_pass = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(AI_PASS_EVERY).await;
+                if this.update(cx, |this, cx| this.ai_pass(cx)).is_err() {
+                    return;
+                }
+            }
         }));
     }
 

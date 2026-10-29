@@ -183,7 +183,6 @@ pub struct CommandPalette {
     /// while there is no query (ME-062).
     recent: usize,
     /// CAL-39: writable calendars as (id, name), for Quick Add's tags.
-    #[allow(dead_code)]
     calendars: Vec<(String, String)>,
     _input_events: Subscription,
 }
@@ -307,8 +306,30 @@ impl CommandPalette {
         self.quick = quick_add::command_text(&query)
             .filter(|text| self.offers_quick_add && !text.is_empty())
             .map(|text| {
+                // CAL-39: a "#work" tag names the calendar. The calendar
+                // reads it again on Enter; this is for the row only.
+                let tag = quick_add::resolve_tag(text, &self.calendars);
+                let word = quick_add::tag_word(text).map_or("", |(_, w)| w);
+                let (parsed, note) = match &tag {
+                    quick_add::Tag::Found(id) => (
+                        quick_add::without_tag(text),
+                        self.calendars
+                            .iter()
+                            .find(|(c, _)| c == id)
+                            .map(|(_, name)| name.clone()),
+                    ),
+                    quick_add::Tag::Unknown => (
+                        text.to_string(),
+                        Some(format!("No calendar matches #{word}")),
+                    ),
+                    quick_add::Tag::Ambiguous => (
+                        text.to_string(),
+                        Some(format!("#{word} matches more than one calendar")),
+                    ),
+                    quick_add::Tag::None => (text.to_string(), None),
+                };
                 let event = quick_add::parse(
-                    text,
+                    &parsed,
                     chrono::Local::now().naive_local(),
                     quick_add::default_minutes(),
                 );
@@ -318,11 +339,13 @@ impl CommandPalette {
                     format!("New event: {}", event.title)
                 };
                 let today = chrono::Local::now().date_naive();
-                // The place it read, so a wrong guess shows before Enter.
-                let when = match &event.location {
-                    Some(place) => format!("{} · {place}", event.when_label(today)),
-                    None => event.when_label(today),
-                };
+                // The place and calendar it read, so a wrong guess shows
+                // before Enter.
+                let when = [Some(event.when_label(today)), event.location.clone(), note]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" · ");
                 (text.to_string(), title.into(), when.into())
             });
         if let Some((verb, hint)) = &self.prompt {

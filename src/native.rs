@@ -1,7 +1,8 @@
 //! The few macOS calls gpui doesn't make (sprint 2, W1): the Dock badge,
 //! handing over to the Pigeon already running, the login item, and the
 //! display options and colors the theme follows. Everything here runs on
-//! the main thread; elsewhere it does nothing.
+//! the main thread, elsewhere it does nothing; except the date detector
+//! (AI-16), which runs anywhere.
 
 pub mod menu_bar;
 
@@ -24,10 +25,10 @@ use objc2_core_foundation::CFString;
 #[allow(deprecated)]
 use objc2_core_services::{LSCopyDefaultHandlerForURLScheme, LSSetDefaultHandlerForURLScheme};
 use objc2_foundation::{
-    NSBundle, NSCurrentLocaleDidChangeNotification, NSDateFormatter,
-    NSDistributedNotificationCenter, NSError, NSLocale, NSNotification, NSNotificationCenter,
-    NSNotificationSuspensionBehavior, NSString, NSSystemTimeZoneDidChangeNotification, NSURL,
-    NSUserDefaults,
+    NSBundle, NSCurrentLocaleDidChangeNotification, NSDataDetector, NSDate, NSDateFormatter,
+    NSDistributedNotificationCenter, NSError, NSLocale, NSMatchingOptions, NSNotification,
+    NSNotificationCenter, NSNotificationSuspensionBehavior, NSRange, NSString,
+    NSSystemTimeZoneDidChangeNotification, NSTextCheckingType, NSTimeZone, NSURL, NSUserDefaults,
 };
 
 /// What the system tells Pigeon.
@@ -479,6 +480,78 @@ pub fn make_default_mail_app() -> Result<(), String> {
         eprintln!("Pigeon: LSSetDefaultHandlerForURLScheme: {status}");
         Err("macOS didn't make Pigeon the default. Try again, or choose it in Mail › Settings › General.".into())
     }
+}
+
+/// AI-16: a date or an address NSDataDetector found, by byte range.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Detected {
+    /// `wall` is the detector's reading on the clock of `zone` when the
+    /// text named one, else of this Mac; `seconds` the length it read.
+    Date {
+        range: std::ops::Range<usize>,
+        wall: chrono::NaiveDateTime,
+        zone: Option<String>,
+        seconds: Option<i64>,
+    },
+    Address {
+        range: std::ops::Range<usize>,
+    },
+}
+
+/// Dates and addresses in `text`. Safe off the main thread.
+pub fn detect_dates(text: &str) -> Vec<Detected> {
+    objc2::rc::autoreleasepool(|_| {
+        let types = NSTextCheckingType::Date | NSTextCheckingType::Address;
+        let Ok(detector) = NSDataDetector::dataDetectorWithTypes_error(types.bits()) else {
+            return Vec::new();
+        };
+        let string = NSString::from_str(text);
+        // The byte offset of each UTF-16 unit, and of the end.
+        let mut bytes: Vec<usize> = Vec::with_capacity(string.length() + 1);
+        for (at, c) in text.char_indices() {
+            bytes.extend(std::iter::repeat_n(at, c.len_utf16()));
+        }
+        bytes.push(text.len());
+        let all = NSRange::new(0, bytes.len() - 1);
+        let matches =
+            detector.matchesInString_options_range(&string, NSMatchingOptions::empty(), all);
+        matches
+            .iter()
+            .filter_map(|m| {
+                let r = m.range();
+                let range = *bytes.get(r.location)?..*bytes.get(r.location + r.length)?;
+                if m.resultType() == NSTextCheckingType::Address {
+                    return Some(Detected::Address { range });
+                }
+                let date = m.date()?;
+                let named = m.timeZone();
+                let zone = named.clone().unwrap_or_else(NSTimeZone::localTimeZone);
+                let offset = zone.secondsFromGMTForDate(&date) as i64;
+                let wall = chrono::DateTime::from_timestamp(
+                    date.timeIntervalSince1970().round() as i64 + offset,
+                    0,
+                )?
+                .naive_utc();
+                let seconds = m.duration().round() as i64;
+                Some(Detected::Date {
+                    range,
+                    wall,
+                    zone: named.map(|z| z.name().to_string()),
+                    seconds: (seconds > 0).then_some(seconds),
+                })
+            })
+            .collect()
+    })
+}
+
+/// Seconds east of UTC in the zone named `name` at `at`; `None` for a
+/// name macOS doesn't know.
+pub fn zone_offset(name: &str, at: chrono::DateTime<chrono::Utc>) -> Option<i32> {
+    objc2::rc::autoreleasepool(|_| {
+        let zone = NSTimeZone::timeZoneWithName(&NSString::from_str(name))?;
+        let date = NSDate::dateWithTimeIntervalSince1970(at.timestamp() as f64);
+        Some(zone.secondsFromGMTForDate(&date) as i32)
+    })
 }
 
 #[cfg(test)]

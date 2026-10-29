@@ -294,7 +294,14 @@ impl CalendarView {
             let slot = ((minutes / 30.).floor() as i64 * 30).clamp(0, DAY_MINUTES - 30);
             let start = time::midnight(day) + Duration::minutes(slot);
             self.drag = None;
-            self.create_event(start, start + Duration::minutes(length), false, window, cx);
+            self.create_event(
+                start,
+                start + Duration::minutes(length),
+                false,
+                None,
+                window,
+                cx,
+            );
             return;
         }
         let slot = floor_snap(minutes).clamp(0, DAY_MINUTES - SNAP_MINUTES);
@@ -315,7 +322,7 @@ impl CalendarView {
         self.focus_grid(window, cx);
         if event.click_count == 2 {
             let start = time::midnight(date);
-            self.create_event(start, start + Duration::days(1), true, window, cx);
+            self.create_event(start, start + Duration::days(1), true, None, window, cx);
         } else {
             self.click_empty(window, cx);
         }
@@ -530,7 +537,7 @@ impl CalendarView {
         cx.notify();
         match (drag.kind, drag.active) {
             (DragKind::Create { .. }, true) => {
-                self.create_event(drag.start, drag.end, false, window, cx);
+                self.create_event(drag.start, drag.end, false, None, window, cx);
                 // The ghost already showed it.
                 self.just_added = None;
             }

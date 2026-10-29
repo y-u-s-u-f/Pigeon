@@ -26,9 +26,9 @@ use super::{
 use crate::ui::style::*;
 use crate::{
     actions::{
-        ApplyLabel, Archive, CloseSearch, Compose, Delete, LoadOlderConversations, MarkRead,
-        MarkUnread, SEARCH, SendLater, Snooze, SyncNow, ToggleArchivedSection, ToggleSearch,
-        ToggleSidebar, ToggleStar,
+        ApplyLabel, Archive, CloseSearch, Compose, Delete, DismissNeedsReply,
+        LoadOlderConversations, MarkRead, MarkUnread, SEARCH, SendLater, Snooze, SyncNow,
+        ToggleArchivedSection, ToggleSearch, ToggleSidebar, ToggleStar,
     },
     app::{Density, Nav, PigeonApp, Row, SearchSuggestion},
     assets::Icon,
@@ -113,6 +113,7 @@ impl PigeonApp {
             Nav::Starred => "Starred".into(),
             Nav::Snoozed => "Snoozed".into(),
             Nav::Scheduled => "Scheduled".into(),
+            Nav::NeedsReply => "Needs Reply".into(),
             Nav::Label(ix) => {
                 let name = &self.data.labels[ix].name;
                 name.rsplit('/').next().unwrap_or(name).to_string().into()
@@ -559,6 +560,15 @@ impl PigeonApp {
                 Icon::Clock,
                 "Nothing scheduled".into(),
                 key("Press", &SendLater, "in a draft to send it later"),
+            ),
+            Nav::NeedsReply => (
+                Icon::Reply,
+                "Nothing waits for your reply".into(),
+                key(
+                    "Press",
+                    &DismissNeedsReply,
+                    "on a conversation to clear its marker",
+                ),
             ),
             Nav::Label(_) => (
                 Icon::Tag,
@@ -1266,6 +1276,12 @@ impl PigeonApp {
             }
             _ => list_date_on(&last.date, row_cx.now),
         };
+        // AI-4, AI-7.
+        let needs_reply = self.ai.needs_reply.contains(&thread.id);
+        let ai_line = (self.ai.lines_on && thread.folder == Folder::Inbox)
+            .then(|| crate::ai::pass::line(thread))
+            .flatten();
+        let snippet: SharedString = ai_line.unwrap_or(&last.snippet).to_string().into();
         let later_mark = if thread.later.snoozed_until.is_some() {
             Some((Icon::AlarmClock, "Snoozed until"))
         } else if thread.later.send_at.is_some() {
@@ -1375,6 +1391,17 @@ impl PigeonApp {
                         .aria_label("Important")
                         .child(icon(Icon::Important, ICON_SM, theme.star))
                         .tooltip(|window, cx| tooltip("Important").build(window, cx)),
+                )
+            })
+            .when(needs_reply, |this| {
+                // AI-4: Jev finds it waits for your answer.
+                this.child(
+                    div()
+                        .id(("needs-reply", thread_ix))
+                        .role(gpui::Role::Image)
+                        .aria_label("Needs reply")
+                        .child(icon(Icon::Reply, ICON_SM, theme.accent))
+                        .tooltip(|window, cx| tooltip("Needs reply").build(window, cx)),
                 )
             })
             .when(thread.starred, |this| {
@@ -1492,6 +1519,7 @@ impl PigeonApp {
         for (on, what) in [
             (thread.starred, "Starred"),
             (thread.important, "Important"),
+            (needs_reply, "Needs reply"),
             (thread.has_attachments(), "Has attachments"),
             (queued, "Waiting to send"),
         ] {
@@ -1502,6 +1530,10 @@ impl PigeonApp {
         if !label_names.is_empty() {
             spoken.push(format!("Labels: {label_names}"));
         }
+        if let Some(line) = ai_line {
+            spoken.push(format!("AI summary: {line}"));
+        }
+        let line_mark = ai_line.map(|_| ai_mark(thread_ix, secondary));
 
         let subject_weight = if unread {
             FontWeight::MEDIUM
@@ -1564,11 +1596,12 @@ impl PigeonApp {
                                     .child(subject_and_snippet(
                                         &subject,
                                         no_subject,
-                                        &last.snippet,
+                                        &snippet,
                                         secondary,
                                         theme.text_faint,
                                     )),
                             )
+                            .children(line_mark)
                             .children(label_dots)
                             .child(trailing),
                     )
@@ -1617,10 +1650,13 @@ impl PigeonApp {
                         )
                         .child(
                             div()
-                                .truncate()
+                                .flex()
+                                .items_center()
+                                .gap(SPACE_XS)
                                 .text_size(TEXT_SM)
                                 .text_color(secondary)
-                                .child(last.snippet.clone()),
+                                .children(line_mark)
+                                .child(div().flex_1().min_w_0().truncate().child(snippet)),
                         )
                 }
             })
@@ -1882,6 +1918,20 @@ fn muted_hint(text: impl Into<SharedString>, theme: &Theme) -> AnyElement {
         .text_size(TEXT_SM)
         .text_color(theme.text_faint)
         .into_any_element()
+}
+
+/// AI-7: the small mark on a row whose snippet is the AI's line.
+fn ai_mark(thread_ix: usize, color: gpui::Hsla) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(("ai-line", thread_ix))
+        .flex_none()
+        .role(gpui::Role::Image)
+        .aria_label("AI summary")
+        .text_size(TEXT_XS)
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(color)
+        .child("AI")
+        .tooltip(|window, cx| tooltip("Summary by AI").build(window, cx))
 }
 
 /// "Subject — snippet", the snippet dimmer, on one line; "(no subject)"

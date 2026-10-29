@@ -39,8 +39,8 @@ To update: change the status cell in the area's table, then the counts below.
 | [Data model](#83-data-model-dat) | 1 | 3 | 3 | 7 |
 | [Accessibility](#85-accessibility-a11y) | 0 | 9 | 1 | 10 |
 | [System integration](#86-system-integration-sys) | 3 | 1 | 0 | 4 |
-| [AI](#10-ai-ai) | 13 | 3 | 0 | 16 |
-| **Overall** | **52** | **46** | **134** | **232** |
+| [AI](#10-ai-ai) | 9 | 7 | 0 | 16 |
+| **Overall** | **48** | **50** | **134** | **232** |
 
 ## Contents
 
@@ -1211,7 +1211,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 - **Today (W5):** In ⌘K, "New event: Lunch with Sam Fri 1pm" (or "new event …") shows a row "New event: Lunch with Sam · Fri, Oct 30 · 1 – 2 PM"; enter opens the event in the panel with the title and times filled in, on that day. `⇧C` in Calendar opens ⌘K with "New event: " typed. ⌘K "New Event" and "New Event from Text…" are offered in Mail too; they switch to Calendar (`Show::NewEvent`, the quick add's own switch). Parsed locally (`calendar::quick_add`: dates and times as the panel reads them, ranges, "for 30 min", "all day"; a date without a time is all day, a time already past is tomorrow, "at 3" is 3 PM); no `events.quickAdd`.
 - **Today (polish W4, ME-099):** A capitalized place after "at" or "@" becomes the location ("Lunch with Sam at Nopa Fri 1pm" → Nopa); times are read first, so "Meet at noon" stays a time. Capitalized names after "with" (joined by "and") are looked up in the contacts by first name and added as guests; they stay in the title. Polish W5: the palette's row ends with the place it read ("Fri, Oct 30 · 1 – 2 PM · Nopa"); guests show only in the title.
 - **Needs:** Done; passed on the real account (sprint 2 T1c). The place and guest parsing (polish W4) waits on a tester pass; guests added this way get invitations on Save (CAL-13).
-- **Notes:** Calendar tags (`#work` picks the Work calendar) are planned in the AI sprint ([`AI_SPRINT.md`](AI_SPRINT.md), W5); a plain parser change, no AI involved.
+- **Notes:** Calendar tags (AI sprint W5): `#work` (letters, digits, `-` and `_`) picks a writable calendar by name, ignoring case, spaces and punctuation; exact name first, else a unique prefix. The ⌘K row shows the calendar, or "No calendar matches #x" / "#x matches more than one calendar" and the tag stays in the title. Resolved again on Enter; the hidden-calendar, default-reminder and Meet logic follow the chosen calendar. No AI, nothing sent. Waits on a user check.
 
 #### CAL-40 Move an event to another calendar
 
@@ -1743,10 +1743,10 @@ AI inside Pigeon, on two models: a **writing model** on the user's own OpenAI-co
 | AI-1 | AI settings and .env | 🟡 Partially done | None (both) |
 | AI-2 | Result cache | 🟡 Partially done | None (both) |
 | AI-3 | Jev client and background pass | 🟡 Partially done | None (Jev); Gmail `messages.get` for background body fetch |
-| AI-4 | Needs Reply marker and view | ⚪ Not done | None (Jev) |
-| AI-5 | Important-only notifications | ⚪ Not done | None (Jev) |
+| AI-4 | Needs Reply marker and view | 🟡 Partially done | None (Jev) |
+| AI-5 | Important-only notifications | 🟡 Partially done | None (Jev) |
 | AI-6 | Label suggestions | ⚪ Not done | None (Jev) |
-| AI-7 | One-line summaries in the list | ⚪ Not done | None (writing model) |
+| AI-7 | One-line summaries in the list | 🟡 Partially done | None (writing model) |
 | AI-8 | Conversation summary | ⚪ Not done | None (writing model) |
 | AI-9 | Catch-up on new messages | ⚪ Not done | None (writing model) |
 | AI-10 | Clean View (AI reading view) | ⚪ Not done | None (both) |
@@ -1755,7 +1755,7 @@ AI inside Pigeon, on two models: a **writing model** on the user's own OpenAI-co
 | AI-13 | Best Matches in search | ⚪ Not done | None (Jev) |
 | AI-14 | Ask Pigeon | ⚪ Not done | None (both) |
 | AI-15 | Do It for Me | ⚪ Not done | None (writing model) |
-| AI-16 | Email to event | ⚪ Not done | None (Jev; Apple's NSDataDetector) |
+| AI-16 | Email to event | 🟡 Partially done | None (Jev; Apple's NSDataDetector) |
 
 #### AI-1 AI settings and .env
 
@@ -1771,20 +1771,20 @@ AI inside Pigeon, on two models: a **writing model** on the user's own OpenAI-co
 
 #### AI-3 Jev client and background pass
 
-- **Today:** Client part done: `src/ai/queue.rs` (Interactive and Background, slots writing 2 / Jev 6, cancel groups, a generation bumped on AI off and every account switch, 3-attempt failures, per-provider stop and backoff, a cap of 200), batched `AiChanged`, streaming with a non-streaming fallback on 400. The check script (`cargo test ai_check -- --ignored --nocapture`) runs the eval set (`src/ai/testdata/eval.json`) and demo data. The pass and background body queue are W2.
-- **Needs:** The Jev and writing-model clients, a priority queue (Interactive before Background, slots per provider, cancel groups, a generation that drops stale work on sign-out or AI off), retries and per-provider backoff. A background body fetch for new Inbox mail, separate from the reader's. A pass on new mail, new bodies and every 5 minutes over Inbox conversations from the last 30 days, newest first, asking Jev whether each needs attention, needs a reply, is a newsletter, or proposes an event.
+- **Today:** Client part (`src/ai/queue.rs`: Interactive and Background, slots writing 2 / Jev 6, cancel groups, a generation bumped on AI off and every account switch, 3-attempt failures, per-provider stop and backoff, a cap of 200; batched `AiChanged`; streaming with a non-streaming fallback on 400) plus the pass. `src/ai/pass.rs` works out what's missing or stale from the heads and `ai_results` (Inbox, last 30 days, newest first, skipping queued and failed keys, up to 100 jobs per run). Request A (`important`) goes on new mail; request B (`needs_reply`, not asked of automated senders, plus `newsletter` and one `event_n` per date found) once the body is stored. A background body queue in `sync.rs` fetches one conversation at a time and sends `BodiesReady` every 10 conversations and when empty. The pass runs when AI is turned on, at startup, after a switch, on new mail, on `BodiesReady` and every 5 minutes. Request B on open (`AiState::request_b`) waits for W3's reader hook. The check script (`cargo test ai_check -- --ignored --nocapture`, `src/ai/check.rs`) runs the eval set and demo data.
+- **Needs:** User check. Thresholds come from the real-Inbox check in Phase 4.
 - **Notes:** The 30-day backfill covers only Inbox conversations already cached (the latest 100); older Inbox mail isn't paged in. No Low Power Mode pause; background AI pauses only on provider errors. A failed job is retried up to 3 times per launch, then left until restart, **Retry** or Test Connection.
 
 #### AI-4 Needs Reply marker and view
 
-- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W2).
-- **Needs:** AI-3's `needs_reply` answers. A marker beside the Important mark when the latest message not from me asks something and I haven't replied or queued a reply; a Needs Reply view in the sidebar (`g r`), a local filter like Snoozed; **Dismiss Needs Reply** / **Restore Needs Reply** (⇧H).
+- **Today:** The marker beside the Important mark comes from the pure `pass::needs_reply` (threshold 0.7: latest message received, no reply from me after it, no queued reply, not dismissed) and is in the spoken label. The Needs Reply view is a local filter with a sidebar row (only while available, with a count), a list title, an empty state and `g r`. ⇧H dismisses and restores through a `needs_reply_dismissed` row. A saved Needs Reply view opens the Inbox when the feature is off.
+- **Needs:** User check. The command title doesn't flip between Dismiss and Restore yet.
 - **Notes:** Dismiss has no ⌘Z; running it again restores the marker. A reply queued while offline hides the marker even if newer mail arrives before it's sent.
 
 #### AI-5 Important-only notifications
 
-- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W2).
-- **Needs:** "Notify for: Important Only" in Settings › AI; each new-mail batch held up to 3 s while Jev judges it, then unimportant messages dropped and the rest notified as one batch (NTF-1).
+- **Today:** With Notify for set to Important Only and Jev set, each new-mail batch waits up to 3 s for request A at Interactive (`src/ai/notice.rs`); messages with `important` below 0.2 are dropped, no answer keeps them, the existing checks run again and the batch goes out as one notification call. AI off or All New Mail during the wait sends everything held; a sign-in or sign-out discards it. The badge is unchanged.
+- **Needs:** User check on real mail; the threshold is set in Phase 4.
 - **Notes:** Fails open: no answer means the message is notified. The Dock badge stays the unread Inbox count.
 
 #### AI-6 Label suggestions
@@ -1794,8 +1794,8 @@ AI inside Pigeon, on two models: a **writing model** on the user's own OpenAI-co
 
 #### AI-7 One-line summaries in the list
 
-- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W2).
-- **Needs:** For Inbox conversations, a one-line summary (≤ 90 characters) from the writing model replaces the snippet in the row, with a small AI mark; snippet until ready; rewritten when a new message arrives. Behind the List Summaries switch.
+- **Today:** The writing model (`-low` effort) writes one line of at most 12 words from the latest 3 messages of each Inbox conversation, in the background, newest first. It replaces the snippet in both densities with a small "AI" mark (tooltip "Summary by AI") and is spoken as "AI summary: …". The snippet shows until a line is ready; a new message makes the line stale and it's rewritten. Only while the List Summaries switch is on.
+- **Needs:** User check. On a home server, 30 days of Inbox can take a while on one background slot.
 - **Notes:** On a home server, 30 days of Inbox can take hours on one background slot; newest first.
 
 #### AI-8 Conversation summary
@@ -1848,8 +1848,8 @@ Formerly PLN-2.
 
 #### AI-16 Email to event
 
-- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W5 and W3).
-- **Needs:** Apple's NSDataDetector finds dates in a message, the Quick Add parser (CAL-39) reads them against the sent date, and Jev confirms the message proposes that event. An "Add to Calendar" bar above the body (⇧T) for the best future candidate opens the event panel to confirm. No writing model.
+- **Today:** Detector part: NSDataDetector (`native::detect_dates`) finds dates and addresses in a message; each date is read again by Quick Add's strict `parse_when` against the sent date (a weekday is the one after it; a date without a year is the next on or after it; no invented times, else all day; the zone named in the text or the Mac's; daylight-saving gaps and folds dropped; other languages kept only with a four-digit year). At most 3 per message, earliest first, with the subject as title, the first address as place and the containing sentence (`ai::events::for_message`); stored as an `event` row by the pass with Jev's `event_n` answers. `CalendarView::add_from_candidate` opens it as a new event to confirm (asking about an unsaved new event first).
+- **Needs:** The reader bar and ⇧T (W3). No writing model.
 - **Notes:** Meeting invites (`text/calendar`) aren't recognized as such; a candidate matching an existing event's start is hidden, which hides most accepted invites.
 
 ---

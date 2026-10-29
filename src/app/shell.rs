@@ -19,6 +19,7 @@ use gpui::{
 use super::{Mode, PigeonApp, RAIL_WIDTH};
 use crate::{
     actions::*,
+    ai::{self, Feature},
     backend::{
         self, Backend, BackendEvent, SyncStatus, categories::Category, http::percent_decode,
     },
@@ -168,6 +169,8 @@ struct Shell {
     badge: Option<u64>,
     /// The Transparency slider's pending save, replaced on every move.
     glass_save: Option<Task<()>>,
+    /// AI-5: new mail waiting for Jev's `important`.
+    notices: ai::notice::Pending,
 }
 
 impl Global for Shell {}
@@ -207,6 +210,7 @@ pub fn init(backend: Entity<Backend>, cx: &mut App) {
         main: None,
         badge: None,
         glass_save: None,
+        notices: Default::default(),
     });
     notify::init(cx);
     cx.subscribe(&backend, on_backend_event).detach();
@@ -705,8 +709,24 @@ fn on_backend_event(backend: Entity<Backend>, event: &BackendEvent, cx: &mut App
                 .filter(|m| !in_view(&m.thread_id, cx))
                 .cloned()
                 .collect();
-            notify::notify_new_mail(&new, cx);
+            if new.is_empty() {
+                return;
+            }
+            if !important_only(cx) {
+                return notify::notify_new_mail(&new, cx);
+            }
+            // AI-5: until Jev has answered for each (the backend asked
+            // already), or the deadline.
+            let now = std::time::Instant::now();
+            cx.global_mut::<Shell>().notices.hold(new, now);
+            cx.spawn(async |cx| {
+                cx.background_executor().timer(ai::notice::DEADLINE).await;
+                cx.update(release_notices);
+            })
+            .detach();
+            release_notices(cx);
         }
+        BackendEvent::AiChanged(_) => release_notices(cx),
         BackendEvent::ThreadsChanged(ids) | BackendEvent::ThreadsRemoved(ids) => {
             for (tag, threads) in notify::showing_for(ids, cx) {
                 if backend.read(cx).threads_done(&threads) {
@@ -744,13 +764,86 @@ fn on_backend_event(backend: Entity<Backend>, event: &BackendEvent, cx: &mut App
                 notify::notify(notify::scheduled_failed(subject, message, *in_drafts), cx);
             }
         }
-        BackendEvent::CountsChanged
-        | BackendEvent::OpCommitted(_)
-        | BackendEvent::Status(_)
-        | BackendEvent::SignedIn
-        | BackendEvent::SignedOut => update_badge(cx),
+        // AI-5: another account's mail waits no more.
+        BackendEvent::SignedIn | BackendEvent::SignedOut => {
+            cx.global_mut::<Shell>().notices.clear();
+            update_badge(cx)
+        }
+        BackendEvent::CountsChanged | BackendEvent::OpCommitted(_) | BackendEvent::Status(_) => {
+            update_badge(cx)
+        }
         _ => {}
     }
+}
+
+/// AI-5: Notify for is Important Only, and Jev may answer.
+fn important_only(cx: &App) -> bool {
+    let b = backend_of(cx).read(cx);
+    b.ai_prefs().notify_for == ai::NotifyFor::Important && b.ai_allows(Feature::Important)
+}
+
+/// AI-5: Jev's answers for the mail waiting, then the batches that are
+/// done go out; all of them unfiltered once Important Only is off.
+fn release_notices(cx: &mut App) {
+    if cx.global::<Shell>().notices.is_empty() {
+        return;
+    }
+    let batches = if important_only(cx) {
+        let waiting = cx.global::<Shell>().notices.waiting();
+        let b = backend_of(cx).read(cx);
+        let ids: Vec<String> = waiting.iter().map(|(t, _)| t.clone()).collect();
+        let rows = b.ai_rows(&ids);
+        let answers: Vec<(String, Option<f64>)> = waiting
+            .into_iter()
+            .filter_map(|(thread, message)| {
+                let yes = rows
+                    .get(&thread)
+                    .and_then(|ai| ai.get(Feature::Important, &message))
+                    .map(|row| {
+                        ai::jev::answers_from(&row.value)
+                            .get("important")
+                            .and_then(|a| a.yes())
+                    });
+                let failed = matches!(
+                    b.ai_done(Feature::Important, &message),
+                    Some(ai::Done::Failed(_))
+                );
+                yes.or(failed.then_some(None)).map(|yes| (message, yes))
+            })
+            .collect();
+        let notices = &mut cx.global_mut::<Shell>().notices;
+        for (message, yes) in answers {
+            notices.answer(&message, yes);
+        }
+        notices.take_ready(std::time::Instant::now())
+    } else {
+        cx.global_mut::<Shell>().notices.take_all()
+    };
+    for batch in batches {
+        notify_checked(batch, cx);
+    }
+}
+
+/// The checks new mail passed when it came, again after the wait:
+/// notifications on, still unread in the Inbox, not in view. One call, so
+/// many at once still become one notice.
+fn notify_checked(batch: Vec<backend::new_mail::NewMail>, cx: &mut App) {
+    if !settings::get(cx).notifications {
+        return;
+    }
+    let ids: Vec<String> = batch.iter().map(|m| m.thread_id.clone()).collect();
+    let threads = backend_of(cx).read(cx).load_threads(&ids);
+    let survivors: Vec<_> = batch
+        .into_iter()
+        .filter(|m| {
+            threads
+                .iter()
+                .find(|t| t.id == m.thread_id)
+                .is_none_or(|t| t.unread && t.folder == crate::data::Folder::Inbox)
+        })
+        .filter(|m| !in_view(&m.thread_id, cx))
+        .collect();
+    notify::notify_new_mail(&survivors, cx);
 }
 
 /// Whether the main window is frontmost on Mail and its view shows the

@@ -17,9 +17,9 @@ use super::{
 use crate::ui::style::*;
 use crate::{
     actions::{
-        GoToArchive, GoToDrafts, GoToForums, GoToInbox, GoToPromotions, GoToScheduled, GoToSent,
-        GoToSnoozed, GoToSocial, GoToSpam, GoToStarred, GoToTrash, GoToUpdates, NewLabel,
-        OpenSettingsSection, SignIn, ToggleHiddenLabels, ToggleSidebar,
+        GoToArchive, GoToDrafts, GoToForums, GoToInbox, GoToNeedsReply, GoToPromotions,
+        GoToScheduled, GoToSent, GoToSnoozed, GoToSocial, GoToSpam, GoToStarred, GoToTrash,
+        GoToUpdates, NewLabel, OpenSettingsSection, SignIn, ToggleHiddenLabels, ToggleSidebar,
     },
     app::{Nav, PigeonApp, nav_holds},
     assets::Icon,
@@ -68,19 +68,22 @@ pub struct NavCounts {
     drafts: usize,
     /// CMP-17: drafts scheduled to send, not counted in `drafts`.
     scheduled: usize,
+    /// AI-4: conversations with the marker (`PigeonApp::nav_counts`).
+    needs_reply: usize,
     /// By `Category as usize`.
     in_inbox: [bool; 5],
 }
 
 /// Where a view's count sits in `NavCounts::unread`.
 fn slot(nav: Nav) -> usize {
-    const CATEGORY: usize = Folder::ALL.len() + 3;
+    const CATEGORY: usize = Folder::ALL.len() + 4;
     const LABEL: usize = CATEGORY + Category::ALL.len();
     match nav {
         Nav::Folder(folder) => folder as usize,
         Nav::Starred => Folder::ALL.len(),
         Nav::Snoozed => Folder::ALL.len() + 1,
         Nav::Scheduled => Folder::ALL.len() + 2,
+        Nav::NeedsReply => Folder::ALL.len() + 3,
         Nav::Category(category) => CATEGORY + category as usize,
         Nav::Label(ix) => LABEL + ix,
     }
@@ -155,6 +158,7 @@ impl NavCounts {
         match nav {
             Nav::Folder(Folder::Drafts) => self.drafts,
             Nav::Scheduled => self.scheduled,
+            Nav::NeedsReply => self.needs_reply,
             Nav::Folder(Folder::Sent | Folder::Archive | Folder::Trash)
             | Nav::Starred
             | Nav::Snoozed => 0,
@@ -185,6 +189,7 @@ fn nav_action(nav: Nav) -> Option<Box<dyn Action>> {
         Nav::Starred => Box::new(GoToStarred),
         Nav::Snoozed => Box::new(GoToSnoozed),
         Nav::Scheduled => Box::new(GoToScheduled),
+        Nav::NeedsReply => Box::new(GoToNeedsReply),
         Nav::Category(Category::Social) => Box::new(GoToSocial),
         Nav::Category(Category::Promotions) => Box::new(GoToPromotions),
         Nav::Category(Category::Updates) => Box::new(GoToUpdates),
@@ -312,8 +317,10 @@ impl gpui::Render for DragGhost {
     }
 }
 
-const FOLDERS: [(Nav, &str, Icon); 9] = [
+const FOLDERS: [(Nav, &str, Icon); 10] = [
     (Nav::Folder(Folder::Inbox), "Inbox", Icon::Inbox),
+    // AI-4: only while it's available.
+    (Nav::NeedsReply, "Needs Reply", Icon::Reply),
     (Nav::Starred, "Starred", Icon::Star),
     (Nav::Snoozed, "Snoozed", Icon::AlarmClock),
     (Nav::Folder(Folder::Sent), "Sent", Icon::Send),
@@ -413,6 +420,13 @@ impl PigeonApp {
             let local = counts.unread(nav);
             counts.unread[slot(nav)] = self.with_server_count(nav, local);
         }
+        counts.needs_reply = self.ai.needs_reply.len();
+        counts.unread[slot(Nav::NeedsReply)] = self
+            .data
+            .threads
+            .iter()
+            .filter(|t| t.unread && self.ai.needs_reply.contains(&t.id))
+            .count();
         counts
     }
 
@@ -487,6 +501,9 @@ impl PigeonApp {
         let mut folders = Vec::new();
         for &(nav, name, glyph) in &FOLDERS {
             if nav == Nav::Scheduled && counts.shown(nav) == 0 && self.nav != nav {
+                continue;
+            }
+            if nav == Nav::NeedsReply && !self.ai.needs_reply_on {
                 continue;
             }
             folders.push(
@@ -839,13 +856,14 @@ impl PigeonApp {
             Nav::Starred => ("nav-starred", 0),
             Nav::Snoozed => ("nav-snoozed", 0),
             Nav::Scheduled => ("nav-scheduled", 0),
+            Nav::NeedsReply => ("nav-needs-reply", 0),
             Nav::Label(ix) => ("nav-label", ix),
             Nav::Category(c) => ("nav-category", c as usize),
         };
         // MA-048: the name carries the count it shows.
         let label = match (count, nav) {
             (0, _) => name.to_string(),
-            (n, Nav::Folder(Folder::Drafts) | Nav::Scheduled) => {
+            (n, Nav::Folder(Folder::Drafts) | Nav::Scheduled | Nav::NeedsReply) => {
                 format!("{name}, {}", thousands(n))
             }
             (n, _) => format!("{name}, {} unread", thousands(n)),

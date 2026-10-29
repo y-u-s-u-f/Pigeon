@@ -254,8 +254,11 @@ pub enum Leave {
         start: NaiveDateTime,
         end: NaiveDateTime,
         all_day: bool,
+        calendar: Option<String>,
     },
     QuickAdd(String),
+    /// A date found in mail (AI-16).
+    FromCandidate(Box<crate::ai::EventCandidate>),
     Restore(Box<Discarded>),
     /// The panel closes; nothing more to do.
     Close,
@@ -1288,10 +1291,12 @@ impl CalendarView {
                 start,
                 end,
                 all_day,
+                calendar,
             } => {
-                self.create_event(start, end, all_day, window, cx);
+                self.create_event(start, end, all_day, calendar, window, cx);
             }
             Leave::QuickAdd(text) => self.quick_add(&text, window, cx),
+            Leave::FromCandidate(candidate) => self.add_from_candidate(*candidate, window, cx),
             Leave::Restore(discarded) => self.restore_discarded(*discarded, window, cx),
             Leave::Close => {}
         }
@@ -1706,14 +1711,16 @@ impl CalendarView {
         cx.notify();
     }
 
-    /// Make an event over `[start, end)` and open it with its title focused.
-    /// All-day events take whole days. Returns the new event's id; `None`
-    /// when an unsaved new event is open, and asking about it comes first.
+    /// Make an event over `[start, end)` on `calendar` (else the default)
+    /// and open it with its title focused. All-day events take whole days.
+    /// Returns the new event's id; `None` when an unsaved new event is
+    /// open, and asking about it comes first.
     pub fn create_event(
         &mut self,
         start: NaiveDateTime,
         end: NaiveDateTime,
         all_day: bool,
+        calendar: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<String> {
@@ -1721,15 +1728,19 @@ impl CalendarView {
             start,
             end,
             all_day,
+            calendar: calendar.clone(),
         };
         if self.ask_to_leave(then, cx) {
             return None;
         }
-        // The default calendar (Settings), else the primary one. Before the
-        // first sync there may be none.
+        // The calendar asked for while it's writable, else the default
+        // (Settings), else the primary one. Before the first sync there may
+        // be none.
         let calendar = crate::calendar::new_event_calendar(
             &self.data.calendars,
-            self.prefs.default_calendar.as_deref(),
+            calendar
+                .as_deref()
+                .or(self.prefs.default_calendar.as_deref()),
         );
         // The calendar's default reminders until the user picks one, as in
         // Google Calendar.
@@ -2799,16 +2810,33 @@ impl CalendarView {
             .filter(|&z| z != LocalZone::system().name)
     }
 
-    /// "New event: Lunch with Sam Fri 1pm" from ⌘K (CAL-39): the event,
-    /// open in the panel to confirm.
+    /// "New event: Lunch with Sam Fri 1pm #work" from ⌘K (CAL-39): the
+    /// event, open in the panel to confirm. The tag is read again here, so
+    /// a calendar list gone stale in the palette never picks the wrong one.
     pub fn quick_add(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.ask_to_leave(Leave::QuickAdd(text.to_string()), cx) {
             return;
         }
-        let quick = quick_add::parse(text, now(), self.event_minutes());
+        let writable: Vec<(String, String)> = self
+            .writable_calendars()
+            .map(|c| (c.id.clone(), c.name.clone()))
+            .collect();
+        let tag = quick_add::resolve_tag(text, &writable);
+        let text = match tag {
+            quick_add::Tag::Found(_) => quick_add::without_tag(text),
+            _ => text.to_string(),
+        };
+        let calendar = quick_add::pick_calendar(
+            &tag,
+            &self.data.calendars,
+            self.prefs.default_calendar.as_deref(),
+        );
+        let quick = quick_add::parse(&text, now(), self.event_minutes());
         self.anchor = quick.start.date();
         self.mini_month = None;
-        let Some(id) = self.create_event(quick.start, quick.end, quick.all_day, window, cx) else {
+        let Some(id) =
+            self.create_event(quick.start, quick.end, quick.all_day, calendar, window, cx)
+        else {
             return;
         };
         let me = self.me().to_string();
@@ -2831,10 +2859,7 @@ impl CalendarView {
                 })
                 .collect()
         };
-        let location = quick.location.clone().unwrap_or_default();
         if let Some(event) = self.event_mut(&id) {
-            event.title = quick.title.clone();
-            event.location = location.clone();
             for guest in guests {
                 if !event
                     .attendees
@@ -2845,9 +2870,65 @@ impl CalendarView {
                 }
             }
         }
+        let location = quick.location.unwrap_or_default();
+        self.fill_new_event(&id, quick.title, location, window, cx);
+    }
+
+    /// AI-16: a date found in mail as a new event on the default calendar,
+    /// open in the panel to confirm. The app switches to Calendar first.
+    pub(crate) fn add_from_candidate(
+        &mut self,
+        candidate: crate::ai::EventCandidate,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.ask_to_leave(Leave::FromCandidate(Box::new(candidate.clone())), cx) {
+            return;
+        }
+        let local = LocalZone::system().to_local;
+        let start = local(candidate.start);
+        let (start, end) = if candidate.all_day {
+            let first = start.date();
+            let end = candidate
+                .end
+                .map(local)
+                .filter(|&end| end > time::midnight(first))
+                .unwrap_or(time::midnight(first + Duration::days(1)));
+            (time::midnight(first), end)
+        } else {
+            let length = Duration::minutes(self.event_minutes() as i64);
+            let end = candidate
+                .end
+                .map(local)
+                .filter(|&end| end > start)
+                .unwrap_or(start + length);
+            (start, end)
+        };
+        self.anchor = start.date();
+        self.mini_month = None;
+        let Some(id) = self.create_event(start, end, candidate.all_day, None, window, cx) else {
+            return;
+        };
+        let location = candidate.location.unwrap_or_default();
+        self.fill_new_event(&id, candidate.title, location, window, cx);
+    }
+
+    /// A new event's title and place, in the event and its open panel.
+    fn fill_new_event(
+        &mut self,
+        id: &str,
+        title: String,
+        location: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(event) = self.event_mut(id) {
+            event.title = title.clone();
+            event.location = location.clone();
+        }
         if let Some(panel) = &self.panel {
-            let (title, place) = (panel.title.clone(), panel.location.clone());
-            title.update(cx, |input, cx| input.set_value(quick.title, window, cx));
+            let (title_input, place) = (panel.title.clone(), panel.location.clone());
+            title_input.update(cx, |input, cx| input.set_value(title, window, cx));
             if !location.is_empty() {
                 place.update(cx, |input, cx| input.set_value(location, window, cx));
             }
@@ -3081,7 +3162,7 @@ impl CalendarView {
             time::at(day, 9, 0)
         };
         let length = Duration::minutes(self.event_minutes() as i64);
-        self.create_event(start, start + length, false, window, cx);
+        self.create_event(start, start + length, false, None, window, cx);
     }
 
     /// Enter: answers an open prompt with its first choice, or opens the

@@ -37,9 +37,13 @@ impl PigeonApp {
             // Sprint 2 W1: handled app-wide (`app::shell`); ACT-11 and
             // CMP-17 too, the rows coming as `ThreadsChanged`.
             BackendEvent::NewMail(_) | BackendEvent::Woke { .. } | BackendEvent::SentLate(_) => {}
-            // AI sprint: the pass (W2) and the rows' overlay come later.
-            BackendEvent::BodiesReady(_) => {}
-            BackendEvent::AiChanged(_) => self.on_ai_changed(cx),
+            // AI sprint: the pass runs in the backend; here, an opened
+            // conversation's request B, and results reaching the rows.
+            BackendEvent::BodiesReady(ids) => self.on_bodies_ready(ids, cx),
+            BackendEvent::AiChanged(ids) => {
+                self.on_ai_results(ids, cx);
+                self.on_ai_changed(cx);
+            }
             // CMP-17: its `OpFailed` comes next; with the draft back in
             // Drafts, the toast offers them like a send's.
             BackendEvent::ScheduledFailed { op, in_drafts, .. } => {
@@ -276,6 +280,10 @@ impl PigeonApp {
     /// The outbox's queued sends, read again (MA-069).
     pub(super) fn refresh_queued_sends(&mut self, cx: &mut Context<Self>) {
         self.queued_sends = self.backend.read(cx).queued_sends();
+        // AI-4: a reply waiting to send hides the marker.
+        if self.ai.needs_reply_on {
+            self.refresh_rows(true);
+        }
     }
 
     fn on_op_committed(&mut self, op: OpId, cx: &mut Context<Self>) {

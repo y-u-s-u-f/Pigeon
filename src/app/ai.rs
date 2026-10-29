@@ -1,31 +1,50 @@
 //! AI in the app (AI-1): Settings › AI's prefs put into effect, the note
-//! and what each row shows, the paused toast, Needs Reply's commands, and
-//! which AI commands ⌘K offers. The reader's commands live in `ai_reader`,
+//! and what each row shows, the paused toast, Needs Reply (AI-4) and the
+//! list's AI results (AI-7), and which AI commands ⌘K offers. The reader's commands live in `ai_reader`,
 //! ⌘K's, Ask Pigeon's and Do It for Me's in `ai_palette`.
 
 use std::{
+    collections::HashSet,
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 
-use gpui::{App, Context, Div, Stateful, Window, prelude::*};
+use gpui::{App, Context, Div, Entity, Stateful, Window, prelude::*};
 
-use super::{Mode, PigeonApp, ToastAction, ToastKind, ai_palette, ai_reader, shell};
+use super::{Mode, Nav, PigeonApp, ToastAction, ToastKind, ai_palette, ai_reader, shell};
 use crate::{
     actions::{AiNeed, DismissNeedsReply, GoToNeedsReply, OpenSettingsSection},
-    ai::{AiPrefs, Feature, Provider, ProviderInfo, queue::Health},
+    ai::{AiPrefs, Feature, Provider, ProviderInfo, pass, queue::Health},
+    backend::Backend,
     data::Folder,
     settings::{self, Section},
 };
 
 #[derive(Default)]
 pub struct AiState {
+    /// AI-4 may show: Jev, and the Needs Reply switch.
+    pub needs_reply_on: bool,
+    /// AI-7 may show: the writing model, and the List Summaries switch.
+    pub lines_on: bool,
+    /// Conversations with the Needs Reply marker, by id (`refresh_rows`).
+    pub needs_reply: HashSet<String>,
+    /// The conversation whose request B waits for its bodies.
+    awaiting_b: Option<String>,
     #[allow(dead_code)]
     pub reader: ai_reader::ReaderAi,
     #[allow(dead_code)]
     pub palette: ai_palette::PaletteAi,
     /// Test Connection was pressed and its answer isn't in yet.
     pub testing: Vec<Provider>,
+}
+
+impl AiState {
+    /// Request B for a conversation just opened (W3's `on_open`): asked
+    /// now when its bodies are stored, else once `BodiesReady` names it.
+    pub fn request_b(&mut self, thread_id: &str, backend: &Entity<Backend>, cx: &mut App) {
+        let ready = backend.update(cx, |b, cx| b.ai_request_b(thread_id, cx));
+        self.awaiting_b = (!ready).then(|| thread_id.to_string());
+    }
 }
 
 /// The paused toast shows once per launch.
@@ -148,14 +167,117 @@ impl PigeonApp {
             .on_action(cx.listener(Self::dismiss_needs_reply))
     }
 
-    fn go_to_needs_reply(&mut self, _: &GoToNeedsReply, _: &mut Window, _: &mut Context<Self>) {}
+    fn go_to_needs_reply(
+        &mut self,
+        _: &GoToNeedsReply,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.ai.needs_reply_on {
+            self.go_to(Nav::NeedsReply, window, cx);
+        }
+    }
 
+    /// ⇧H: the marker goes until new mail comes; on a dismissed one it's
+    /// back.
     fn dismiss_needs_reply(
         &mut self,
         _: &DismissNeedsReply,
         _: &mut Window,
-        _: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
+        let Some(ix) = self.selected.filter(|_| self.ai.needs_reply_on) else {
+            return;
+        };
+        let thread = &self.data.threads[ix];
+        let Some(key) = pass::dismiss_key(thread, &self.data.account) else {
+            return;
+        };
+        let dismissed = thread.ai.get(Feature::NeedsReplyDismissed, &key).is_some();
+        let marked = self.ai.needs_reply.contains(&thread.id);
+        if !marked && !dismissed {
+            return;
+        }
+        let thread_id = thread.id.clone();
+        self.backend.update(cx, |b, cx| {
+            b.ai_mark(
+                Feature::NeedsReplyDismissed,
+                &thread_id,
+                &key,
+                !dismissed,
+                cx,
+            )
+        });
+        let message = if dismissed {
+            "Needs Reply restored"
+        } else {
+            "Needs Reply dismissed"
+        };
+        self.show_toast(ToastKind::Done, message, None, cx);
+    }
+
+    /// What may show now, from the backend; whether it changed. Needs
+    /// Reply turned off leaves its view for the Inbox.
+    pub(super) fn refresh_ai_flags(&mut self, cx: &mut Context<Self>) -> bool {
+        let b = self.backend.read(cx);
+        let needs_reply_on = b.ai_allows(Feature::Signals) && b.ai_prefs().needs_reply;
+        let lines_on = b.ai_allows(Feature::Line);
+        let changed = (needs_reply_on, lines_on) != (self.ai.needs_reply_on, self.ai.lines_on);
+        self.ai.needs_reply_on = needs_reply_on;
+        self.ai.lines_on = lines_on;
+        if !needs_reply_on && self.nav == Nav::NeedsReply {
+            self.set_nav(Nav::Folder(Folder::Inbox), cx);
+        }
+        changed
+    }
+
+    /// AI-4: which conversations carry the marker, for the rows and the
+    /// Needs Reply view.
+    pub(super) fn refresh_needs_reply(&mut self) {
+        self.ai.needs_reply = if self.ai.needs_reply_on {
+            self.data
+                .threads
+                .iter()
+                .filter(|t| {
+                    pass::needs_reply(t, &self.data.account, &self.queued_sends, pass::NEEDS_REPLY)
+                })
+                .map(|t| t.id.clone())
+                .collect()
+        } else {
+            HashSet::new()
+        };
+    }
+
+    /// `AiChanged`: these conversations' rows read again, in place, and
+    /// the list and reader drawn again; empty ids, Settings › AI changed.
+    pub(super) fn on_ai_results(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        let mut changed = self.refresh_ai_flags(cx);
+        if !ids.is_empty() {
+            let mut rows = self.backend.read(cx).ai_rows(ids);
+            for id in ids {
+                if let Some(ix) = self.data.thread_ix(id) {
+                    let ai = rows.remove(id).unwrap_or_default();
+                    if self.data.threads[ix].ai != ai {
+                        self.data.threads[ix].ai = ai;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed {
+            self.refresh_rows(true);
+        }
+        cx.notify();
+    }
+
+    /// `BodiesReady`: an opened conversation's request B can go now.
+    pub(super) fn on_bodies_ready(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        if let Some(id) = self.ai.awaiting_b.clone()
+            && ids.contains(&id)
+        {
+            let backend = self.backend.clone();
+            self.ai.request_b(&id, &backend, cx);
+        }
     }
 
     /// `When::Ai`: whether ⌘K offers an AI command now.
