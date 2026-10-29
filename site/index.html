@@ -53,14 +53,19 @@
   .hero img { width: 96px; height: 96px; }
   h1 { font-size: clamp(36px, 6vw, 56px); line-height: 1.1; letter-spacing: -0.02em; margin: 24px 0 16px; }
   .lead { font-size: 19px; color: var(--muted); max-width: 560px; margin: 0 auto 32px; }
-  .buttons { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
-  .button {
-    display: inline-block; padding: 10px 20px; border-radius: 8px;
-    font-weight: 500; font-size: 15px; text-decoration: none;
-    border: 1px solid var(--border); background: var(--card);
+  .waitlist { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; max-width: 440px; margin: 0 auto; }
+  .waitlist input {
+    flex: 1 1 240px; padding: 10px 14px; border-radius: 8px; font: inherit; font-size: 15px;
+    border: 1px solid var(--border); background: var(--card); color: var(--text);
   }
-  .button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .button:hover { opacity: 0.88; }
+  .waitlist input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .waitlist button {
+    padding: 10px 20px; border-radius: 8px; font: inherit; font-weight: 500; font-size: 15px;
+    border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer;
+  }
+  .waitlist button:hover { opacity: 0.88; }
+  .waitlist button:disabled { opacity: 0.6; cursor: default; }
+  .note { color: var(--muted); font-size: 14px; margin: 12px 0 0; min-height: 1.6em; }
   .shot {
     display: block; width: 100%; height: auto; border-radius: 12px;
     border: 1px solid var(--border);
@@ -76,11 +81,8 @@
     font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
     border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; background: var(--code);
   }
-  pre {
-    background: var(--code); border-radius: 10px; padding: 16px 20px; overflow-x: auto;
-    font: 14px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
-  }
-  .status p { color: var(--muted); max-width: 680px; }
+  .join { text-align: center; }
+  .join p { color: var(--muted); margin: 0 0 24px; }
   footer { max-width: 1040px; margin: 0 auto; padding: 72px 24px 48px; color: var(--muted); font-size: 14px; }
 </style>
 </head>
@@ -94,10 +96,11 @@
     <img src="icon.png" alt="Pigeon app icon">
     <h1>Email and calendar,<br>at the speed of your keyboard.</h1>
     <p class="lead">A fast Gmail and Google Calendar app for macOS. Built in Rust, drawn on the GPU, no web views.</p>
-    <div class="buttons">
-      <a class="button primary" href="#try-it">Try It</a>
-      <a class="button" href="https://github.com/y-u-s-u-f/Pigeon">View on GitHub</a>
-    </div>
+    <form class="waitlist" action="https://docs.google.com/forms/d/e/1FAIpQLSfuTlJVaGQQahPOootENKsLUeIEEUEq4mYIvXSwvVkxBb_9ZQ/formResponse" method="post">
+      <input type="email" name="entry.1444778291" placeholder="you@example.com" required aria-label="Email address">
+      <button type="submit">Join the Waitlist</button>
+    </form>
+    <p class="note" role="status">Get an invite when Pigeon is ready. No spam.</p>
   </div>
 
   <img class="shot" src="screenshot.png" width="2720" height="1720" alt="Pigeon's inbox with folders, labels and a list of conversations">
@@ -132,17 +135,37 @@
     </div>
   </section>
 
-  <section class="status" id="try-it">
-    <h2>Try it</h2>
-    <p>Pigeon is in early development and there's no download yet. To try it, build it from source on a Mac with <a href="https://rustup.rs">Rust</a> installed. Demo mode runs on sample data, so you don't need to sign in.</p>
-<pre>git clone https://github.com/y-u-s-u-f/Pigeon
-cd Pigeon
-PIGEON_DEMO=1 scripts/run.sh</pre>
-    <p>Signing in to your own Google account needs a Google Cloud OAuth client for now.</p>
+  <section class="join">
+    <h2>Be one of the first</h2>
+    <p>Pigeon is in early development. Join the waitlist and we'll email you when it's ready.</p>
+    <form class="waitlist" action="https://docs.google.com/forms/d/e/1FAIpQLSfuTlJVaGQQahPOootENKsLUeIEEUEq4mYIvXSwvVkxBb_9ZQ/formResponse" method="post">
+      <input type="email" name="entry.1444778291" placeholder="you@example.com" required aria-label="Email address">
+      <button type="submit">Join the Waitlist</button>
+    </form>
+    <p class="note" role="status"></p>
   </section>
 </main>
 <footer>
   Pigeon · <a href="https://github.com/y-u-s-u-f/Pigeon">github.com/y-u-s-u-f/Pigeon</a>
 </footer>
+<script>
+  for (const form of document.querySelectorAll(".waitlist")) {
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = form.querySelector("button");
+      const note = form.nextElementSibling;
+      button.disabled = true;
+      try {
+        await fetch(form.action, { method: "POST", mode: "no-cors", body: new FormData(form) });
+        form.reset();
+        note.textContent = "You're on the list. We'll email you when Pigeon is ready.";
+      } catch {
+        note.textContent = "That didn't go through. Check your connection and try again.";
+      } finally {
+        button.disabled = false;
+      }
+    });
+  }
+</script>
 </body>
 </html>
