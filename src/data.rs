@@ -224,6 +224,9 @@ pub struct Thread {
     /// Snooze and Send Later (ACT-11, CMP-17), kept here, not in Gmail.
     #[serde(skip)]
     pub later: Later,
+    /// AI sprint: the conversation's `ai_results` rows (AI-2).
+    #[serde(skip)]
+    pub ai: crate::ai::ThreadAi,
 }
 
 /// When a snoozed conversation comes back, when it last did, and when a
@@ -691,6 +694,7 @@ impl Thread {
             search: SearchIndex::default(),
             origin,
             later: Later::default(),
+            ai: Default::default(),
         };
         thread.reindex();
         thread

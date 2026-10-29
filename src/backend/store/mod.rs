@@ -3,6 +3,7 @@
 //! call is a short transaction, so callers off the main thread hold it
 //! briefly. The tables are in `schema.sql`.
 
+mod ai;
 mod calendar;
 mod contacts;
 mod images;
@@ -161,6 +162,7 @@ impl Store {
             "fired_reminders",
             "draft_tombstones",
             "snoozes",
+            "ai_results",
         ] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE account = ?1"),

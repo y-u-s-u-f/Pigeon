@@ -1084,6 +1084,7 @@ pub fn thread_from_gmail(t: &GThread, me: &Account) -> Option<Thread> {
         origin: None,
         label_ids: Vec::new(),
         later: Default::default(),
+        ai: Default::default(),
     };
     thread.derive_from_labels();
     thread.reindex();

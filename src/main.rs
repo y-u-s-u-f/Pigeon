@@ -1,4 +1,5 @@
 mod actions;
+mod ai;
 mod app;
 mod assets;
 mod backend;

@@ -52,6 +52,7 @@ use self::{
     store::Store,
 };
 use crate::{
+    ai,
     app::ComposeKind,
     calendar::{CalendarData, Event, RsvpStatus, SeriesScope},
     data::{
@@ -564,6 +565,14 @@ pub enum BackendEvent {
         threads: Vec<String>,
         late: Vec<String>,
     },
+    // AI sprint.
+    /// Conversations whose bodies were just stored (the background body
+    /// queue and the reader's fetch). W2 sends it.
+    #[allow(dead_code)]
+    BodiesReady(Vec<String>),
+    /// Conversations whose AI results changed; empty when only a
+    /// provider's status or the activity log did.
+    AiChanged(Vec<String>),
     /// CMP-17: scheduled sends that went out late.
     SentLate(Vec<later::LateSend>),
     /// CMP-17: a scheduled send failed for good (`OpFailed` follows);
@@ -660,6 +669,8 @@ pub struct Backend {
     categories: categories::CategoryState,
     /// ACT-11: wakes the next snoozed conversation.
     _wake: Option<Task<()>>,
+    /// AI sprint: kept across `switch`.
+    ai: ai::AiService,
 }
 
 impl EventEmitter<BackendEvent> for Backend {}
@@ -812,7 +823,20 @@ impl Backend {
                 None => (Source::SignedOut, None),
             }
         };
-        let backend = cx.new(|cx| Backend::new(source, prefs, tokens, session, cx));
+        // AI sprint: results of conversations no longer stored go.
+        let cache = prefs.clone();
+        cx.background_executor()
+            .spawn(async move {
+                if let Err(e) = cache.prune_ai_results() {
+                    eprintln!("Pigeon: couldn't tidy the AI results: {e:#}");
+                }
+            })
+            .detach();
+        let ai = ai::AiService::new(
+            ai::config::AiConfig::load(),
+            Arc::new(ai::UreqTransport::new()),
+        );
+        let backend = cx.new(|cx| Backend::new(source, prefs, tokens, session, ai, cx));
         if source == Source::Google {
             backend.update(cx, |b, cx| b.read_token(cx));
         }
@@ -870,6 +894,7 @@ impl Backend {
         prefs: Store,
         tokens: Arc<dyn TokenStore>,
         session: Option<(AccountRecord, Option<Secret>)>,
+        ai: ai::AiService,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut record = None;
@@ -935,6 +960,7 @@ impl Backend {
             older: Vec::new(),
             categories: Default::default(),
             _wake: None,
+            ai,
         };
         if this.source == Source::Google {
             this.profile_photo = photo::cached(&data_dir(), this.email());
@@ -964,7 +990,18 @@ impl Backend {
             cancel.store(true, Ordering::Relaxed);
         }
         let session = session.map(|(record, token)| (record, Some(token)));
-        *self = Self::new(source, self.prefs.clone(), self.tokens.clone(), session, cx);
+        // AI sprint: nothing queued or running for the old account goes on.
+        self.ai.bump();
+        let placeholder = ai::AiService::new(Default::default(), self.ai.transport.clone());
+        let ai = std::mem::replace(&mut self.ai, placeholder);
+        *self = Self::new(
+            source,
+            self.prefs.clone(),
+            self.tokens.clone(),
+            session,
+            ai,
+            cx,
+        );
     }
 
     pub fn source(&self) -> Source {
@@ -1014,6 +1051,7 @@ impl Backend {
         };
         self.outbox.overlay(&mut data.threads);
         self.overlay_snoozes(&mut data.threads);
+        self.overlay_ai(&mut data.threads, None);
         data.sort_threads();
         data
     }
@@ -1041,6 +1079,7 @@ impl Backend {
         self.outbox.overlay(&mut threads);
         self.overlay_snoozes(&mut threads);
         self.overlay_bodies(&mut threads);
+        self.overlay_ai(&mut threads, Some(ids));
         threads
     }
 
@@ -1928,6 +1967,373 @@ impl Backend {
         }
     }
 }
+
+// AI sprint (AI-1, AI-2, AI-3) ------------------------------------------
+
+/// Parts are for the workstreams that follow (W1b–W5).
+#[allow(dead_code)]
+impl Backend {
+    /// The threads' `ai_results` rows, as `Thread::ai`.
+    fn overlay_ai(&self, threads: &mut [Thread], ids: Option<&[String]>) {
+        if self.account.is_none() || threads.is_empty() {
+            return;
+        }
+        let mut rows = match self.store.ai_results(self.email(), ids) {
+            Ok(rows) => rows,
+            Err(e) => {
+                eprintln!("Pigeon: couldn't read AI results: {e:#}");
+                return;
+            }
+        };
+        for thread in threads {
+            if let Some(ai) = rows.remove(&thread.id) {
+                thread.ai = ai;
+            }
+        }
+    }
+
+    /// These conversations' AI rows, by conversation id: for `AiChanged`.
+    pub fn ai_rows(&self, ids: &[String]) -> std::collections::HashMap<String, ai::ThreadAi> {
+        self.store
+            .ai_results(self.email(), Some(ids))
+            .unwrap_or_default()
+    }
+
+    /// What the note was confirmed for: source kind and both hosts.
+    pub fn ai_fingerprint(&self) -> String {
+        ai::fingerprint(self.is_demo(), &self.ai.config)
+    }
+
+    /// Whether `feature` may send now: AI on, the note confirmed, its
+    /// switch on and its provider set.
+    pub fn ai_allows(&self, feature: ai::Feature) -> bool {
+        self.source != Source::SignedOut
+            && ai::allows(
+                &self.ai.prefs,
+                &self.ai_fingerprint(),
+                &self.ai.config,
+                feature,
+            )
+    }
+
+    pub fn ai_prefs(&self) -> &ai::AiPrefs {
+        &self.ai.prefs
+    }
+
+    /// Settings › AI changed (and at startup). Turning anything off drops
+    /// what's queued and closes what's running.
+    pub fn ai_apply(&mut self, prefs: &ai::AiPrefs, cx: &mut Context<Self>) {
+        if &self.ai.prefs == prefs {
+            return;
+        }
+        let fingerprint = self.ai_fingerprint();
+        if ai::turned_off(&self.ai.prefs, prefs, &fingerprint, &self.ai.config) {
+            self.ai.bump();
+        }
+        self.ai.prefs = prefs.clone();
+        cx.emit(BackendEvent::AiChanged(Vec::new()));
+        self.ai_pump(cx);
+    }
+
+    pub fn ai_providers(&self) -> ai::Providers {
+        self.ai.providers(std::time::Instant::now())
+    }
+
+    /// The last 100 calls, newest first.
+    pub fn ai_activity(&self) -> Vec<ai::log::Entry> {
+        self.ai.log.entries()
+    }
+
+    /// Test Connection: one request, after clearing the provider's stop
+    /// and every failure. Only while AI is on and its note confirmed.
+    pub fn ai_test(&mut self, provider: ai::Provider, cx: &mut Context<Self>) {
+        let configured = match provider {
+            ai::Provider::Writing => self.ai.config.llm.is_some(),
+            ai::Provider::Jev => self.ai.config.jev.is_some(),
+        };
+        if !configured || !self.ai.prefs.consented(&self.ai_fingerprint()) {
+            return;
+        }
+        self.ai.queue.reset(provider);
+        self.ai.queue.clear_failures();
+        self.ai.tests.remove(&provider);
+        let key = match provider {
+            ai::Provider::Writing => "writing",
+            ai::Provider::Jev => "jev",
+        };
+        let job = ai::Job {
+            account: self.email().to_string(),
+            priority: ai::Priority::Interactive,
+            ..ai::Job::new(ai::Feature::Test, key, ai::Work::Test(provider))
+        };
+        self.ai.queue.push(job, std::time::Instant::now());
+        cx.emit(BackendEvent::AiChanged(Vec::new()));
+        self.ai_pump(cx);
+    }
+
+    /// Queue `job` for this account; false when its feature isn't allowed,
+    /// it failed too often, or the queue is full.
+    pub fn ai_enqueue(&mut self, mut job: ai::Job, cx: &mut Context<Self>) -> bool {
+        if !self.ai_allows(job.feature) {
+            return false;
+        }
+        job.account = self.email().to_string();
+        self.ai.done.remove(&(job.feature, job.key.clone()));
+        let pushed = self.ai.queue.push(job, std::time::Instant::now());
+        self.ai_pump(cx);
+        !matches!(pushed, ai::queue::Pushed::Failed | ai::queue::Pushed::Full)
+    }
+
+    pub fn ai_cancel(&mut self, group: ai::JobGroup) {
+        self.ai.queue.cancel(group);
+    }
+
+    /// Retry: the key may run again at once.
+    pub fn ai_retry(&mut self, feature: ai::Feature, key: &str) {
+        let ident = ai::queue::Ident {
+            account: self.email().to_string(),
+            feature,
+            key: key.to_string(),
+        };
+        self.ai.queue.retry(&ident);
+        self.ai.done.remove(&(feature, key.to_string()));
+    }
+
+    /// For the pass: queued, running, failed too often or not due again.
+    pub fn ai_skips(&self, feature: ai::Feature, key: &str) -> bool {
+        let ident = ai::queue::Ident {
+            account: self.email().to_string(),
+            feature,
+            key: key.to_string(),
+        };
+        self.ai.queue.holds(&ident)
+            || self
+                .ai
+                .queue
+                .blocked(&ident, ai::Priority::Background, std::time::Instant::now())
+    }
+
+    /// The streamed text so far of an Interactive writing job.
+    pub fn ai_partial(&self, feature: ai::Feature, key: &str) -> Option<String> {
+        let partial = self.ai.partial.get(&(feature, key.to_string()))?;
+        Some(partial.lock().unwrap_or_else(|e| e.into_inner()).clone())
+    }
+
+    /// The answer of an uncached job (⌘K, search, Ask, Do It), or how any
+    /// job last failed.
+    pub fn ai_done(&self, feature: ai::Feature, key: &str) -> Option<&ai::Done> {
+        self.ai.done.get(&(feature, key.to_string()))
+    }
+
+    /// Rows that aren't model output (`needs_reply_dismissed`,
+    /// `clean_rejected`): written when `on`, else removed.
+    pub fn ai_mark(
+        &mut self,
+        feature: ai::Feature,
+        thread_id: &str,
+        key: &str,
+        on: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let email = self.email().to_string();
+        let result = if on {
+            let row = ai::AiRow {
+                feature,
+                key: key.to_string(),
+                input_hash: String::new(),
+                model: String::new(),
+                value: String::new(),
+                created: now_ms(),
+            };
+            self.store
+                .put_ai_result(&email, thread_id, &row)
+                .map(|_| ())
+        } else {
+            self.store.delete_ai_result(&email, feature, key)
+        };
+        if let Err(e) = result {
+            eprintln!("Pigeon: couldn't write an AI mark: {e:#}");
+        }
+        cx.emit(BackendEvent::AiChanged(vec![thread_id.to_string()]));
+    }
+
+    /// Start what may start; come back when a backoff ends.
+    fn ai_pump(&mut self, cx: &mut Context<Self>) {
+        let now = std::time::Instant::now();
+        while let Some(started) = self.ai.queue.next(now) {
+            self.ai_run(started, cx);
+        }
+        if let Some(wait) = self.ai.queue.next_wake(now)
+            && !self.ai.wake_pending
+        {
+            self.ai.wake_pending = true;
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(wait).await;
+                this.update(cx, |this, cx| {
+                    this.ai.wake_pending = false;
+                    this.ai_pump(cx);
+                })
+                .ok();
+            })
+            .detach();
+        }
+    }
+
+    /// One job, off the main thread; an Interactive writing job shows its
+    /// text as it streams.
+    fn ai_run(&mut self, started: ai::queue::Started, cx: &mut Context<Self>) {
+        let ai::queue::Started {
+            id,
+            job,
+            generation,
+            cancel,
+        } = started;
+        let partial = (job.priority == ai::Priority::Interactive
+            && matches!(job.work, ai::Work::Llm(_)))
+        .then(|| {
+            let partial = Arc::new(std::sync::Mutex::new(String::new()));
+            self.ai
+                .partial
+                .insert((job.feature, job.key.clone()), partial.clone());
+            partial
+        });
+        let transport = self.ai.transport.clone();
+        let config = self.ai.config.clone();
+        let streaming = self.ai.streaming.clone();
+        let current = self.ai.queue.generation();
+        let store = self.store.clone();
+        let finished = Arc::new(AtomicBool::new(false));
+        let ids: Vec<String> = Some(job.thread_id.clone())
+            .filter(|id| !id.is_empty())
+            .into_iter()
+            .collect();
+        let watch = partial.clone();
+        cx.spawn(async move |this, cx| {
+            let done = finished.clone();
+            let work = cx.background_executor().spawn(async move {
+                let ran = ai::execute(
+                    &job,
+                    generation,
+                    &ai::Run {
+                        transport: &*transport,
+                        config: &config,
+                        streaming: &streaming,
+                        generation: &current,
+                        cancel: &cancel,
+                        partial: partial.as_deref(),
+                        store: Some(&store),
+                    },
+                );
+                done.store(true, Ordering::SeqCst);
+                (job, ran)
+            });
+            if let Some(watch) = watch {
+                let mut shown = 0;
+                while !finished.load(Ordering::SeqCst) {
+                    cx.background_executor().timer(ai::STREAM_TICK).await;
+                    let len = watch.lock().map_or(shown, |p| p.len());
+                    if len != shown {
+                        shown = len;
+                        let ids = ids.clone();
+                        this.update(cx, |_, cx| cx.emit(BackendEvent::AiChanged(ids)))
+                            .ok();
+                    }
+                }
+            }
+            let (job, ran) = work.await;
+            this.update(cx, |this, cx| {
+                this.ai_finished(id, job, generation, ran, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn ai_finished(
+        &mut self,
+        id: u64,
+        job: ai::Job,
+        generation: u64,
+        ran: ai::Ran,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self.ai.queue.is_current(generation);
+        let outcome = ran.result.as_ref().map(|_| ()).map_err(|e| {
+            if current {
+                e.kind()
+            } else {
+                ai::queue::ErrorKind::Cancelled
+            }
+        });
+        self.ai.queue.finish(id, outcome, std::time::Instant::now());
+        let key = (job.feature, job.key.clone());
+        if !matches!(ran.result, Err(ai::CallError::Cancelled)) {
+            self.ai.log.push(ai::log::Entry {
+                at: now_ms(),
+                feature: job.feature,
+                model: ran.model.clone(),
+                tokens_in: ran.tokens_in,
+                tokens_out: ran.tokens_out,
+                ms: ran.ms,
+                result: ran.result.as_ref().map(|_| ()).map_err(|e| e.to_string()),
+            });
+            if let ai::Work::Test(provider) = job.work {
+                let result = ran.result.as_ref().map(|_| ()).map_err(|e| e.to_string());
+                self.ai.tests.insert(provider, result);
+            }
+        }
+        if current {
+            self.ai.partial.remove(&key);
+            match ran.result {
+                Ok(_) if job.feature.cached() => {
+                    self.ai.done.remove(&key);
+                }
+                Ok(output) => {
+                    self.ai.done.insert(key, ai::Done::Ready(output));
+                }
+                Err(ai::CallError::Cancelled) => {}
+                Err(e) => {
+                    self.ai.done.insert(key, ai::Done::Failed(e.to_string()));
+                }
+            }
+            let ids: Vec<String> = Some(job.thread_id)
+                .filter(|id| !id.is_empty())
+                .into_iter()
+                .collect();
+            self.ai_changed(ids, job.priority == ai::Priority::Interactive, cx);
+        }
+        self.ai_pump(cx);
+    }
+
+    /// Tell the app: at once for Interactive work, about every second for
+    /// background results.
+    fn ai_changed(&mut self, ids: Vec<String>, now: bool, cx: &mut Context<Self>) {
+        if now {
+            cx.emit(BackendEvent::AiChanged(ids));
+            return;
+        }
+        for id in ids {
+            if !self.ai.changed.contains(&id) {
+                self.ai.changed.push(id);
+            }
+        }
+        if self.ai.flush_pending {
+            return;
+        }
+        self.ai.flush_pending = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(ai::BACKGROUND_TICK).await;
+            this.update(cx, |this, cx| {
+                this.ai.flush_pending = false;
+                let ids = std::mem::take(&mut this.ai.changed);
+                cx.emit(BackendEvent::AiChanged(ids));
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+// end AI sprint ---------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

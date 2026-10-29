@@ -86,6 +86,16 @@ Then I check, each separately: the writing model answers a plain request and a s
 
 **Writing model.** Every call streams (SSE). If a streamed request gets a 400, that job is retried once without streaming and streaming stays off until restart. JSON answers (Ask search terms, Do It) come from a plain prompt asking for JSON: parsed and validated, one retry, then the job fails. No JSON-mode or capability probing. Max output tokens: summary line 60, summary 400, reply chips 200, Clean View 4,000, Ask 800, Do It 200. An answer cut off by the token limit (`finish_reason: "length"`) is a failure and isn't shown.
 
+**Effort.** The endpoint picks reasoning effort from a model-name suffix: `-low`, `-medium`, `-high`, `-xhigh`, `-max`. `PIGEON_AI_MODEL` is the base name (a known suffix on it is stripped); each request appends its feature's effort, so effort is set in code, in one table in `llm.rs`. Measured on a one-line summary: no suffix 2.4 s, `-low` 1.6 s, `-medium` 1.9 s, `-high` 3.7 s (39 reasoning tokens).
+
+| Effort | Features |
+| --- | --- |
+| `-low` | summary line (AI-7), quick replies (AI-11), Ask search terms (AI-14 step 1) |
+| `-medium` | conversation summary and catch-up (AI-8, AI-9), Clean View (AI-10), Do It for Me (AI-15) |
+| `-high` | Ask Pigeon answer (AI-14 step 5) |
+
+The activity log shows the full model name with its suffix.
+
 **Jev.** Typed `Question::{Noul, Choice, Score}` with stable string IDs; choice 2–255 options and score 2–10 levels checked before sending. `Answer` parsed from the fixtures; `Answer::yes()` is the probability of "yes" for a `noul`, `None` when missing or invalid. `None` means "no result" (nothing shown), never "no".
 
 **Text sent** (`text.rs`): `html::plain_text`, quoted history cut at `html::trailing_quote_start`, sender, subject and date as fields. Budgets: writing model `INPUT_BUDGET` per call (tokens estimated as characters / 4), Jev about 4k per message. Trimming is allowed for summaries, lines and Jev; never for Clean View (over budget → no Clean View, no request). Only the Gmail messages a feature is about are sent (plus label-example subjects for AI-6 and compact search records for AI-13/AI-14): never drafts or local unsent messages, keys or settings.

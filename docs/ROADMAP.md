@@ -39,8 +39,8 @@ To update: change the status cell in the area's table, then the counts below.
 | [Data model](#83-data-model-dat) | 1 | 3 | 3 | 7 |
 | [Accessibility](#85-accessibility-a11y) | 0 | 9 | 1 | 10 |
 | [System integration](#86-system-integration-sys) | 3 | 1 | 0 | 4 |
-| [AI](#10-ai-ai) | 16 | 0 | 0 | 16 |
-| **Overall** | **55** | **43** | **134** | **232** |
+| [AI](#10-ai-ai) | 13 | 3 | 0 | 16 |
+| **Overall** | **52** | **46** | **134** | **232** |
 
 ## Contents
 
@@ -1740,9 +1740,9 @@ AI inside Pigeon, on two models: a **writing model** on the user's own OpenAI-co
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |
-| AI-1 | AI settings and .env | ⚪ Not done | None (both) |
-| AI-2 | Result cache | ⚪ Not done | None (both) |
-| AI-3 | Jev client and background pass | ⚪ Not done | None (Jev); Gmail `messages.get` for background body fetch |
+| AI-1 | AI settings and .env | 🟡 Partially done | None (both) |
+| AI-2 | Result cache | 🟡 Partially done | None (both) |
+| AI-3 | Jev client and background pass | 🟡 Partially done | None (Jev); Gmail `messages.get` for background body fetch |
 | AI-4 | Needs Reply marker and view | ⚪ Not done | None (Jev) |
 | AI-5 | Important-only notifications | ⚪ Not done | None (Jev) |
 | AI-6 | Label suggestions | ⚪ Not done | None (Jev) |
@@ -1759,19 +1759,19 @@ AI inside Pigeon, on two models: a **writing model** on the user's own OpenAI-co
 
 #### AI-1 AI settings and .env
 
-- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W1a and W1b).
+- **Today:** `src/ai/config.rs` loads `.env` (repo, then `<data dir>/.env`, then the environment; an empty value unsets; keys print as `<set>`). `src/ai/llm.rs` and `src/ai/jev.rs` are the two clients; the writing model's effort is a model-name suffix set per feature in `llm.rs`. `AiPrefs` (`src/ai/mod.rs`) with the note fingerprint, and `Backend::ai_*` (apply, providers, activity, Test Connection). `src/ai/log.rs` keeps the last 100 calls in memory. No Settings page yet (W1b).
 - **Needs:** A `.env` parser and override order; a Settings › AI page (⌥⌘A) with the main switch and its one-time note on what is sent where, the writing model and Jev rows (host and model, read-only, **Test Connection**), the List Summaries, Clean View for Newsletters and Needs Reply switches, "Notify for", and an Activity log (last 100 calls, in memory). A missing key turns off only the features that need it, with "Needs a writing model key in .env" or "Needs a Jev key in .env". A changed endpoint pauses AI until the note is confirmed again.
 - **Notes:** Text already sent can't be recalled; turning AI off stops everything not yet sent. Google's Limited Use policy (ACC-8): fine for the user's own build; a published app would need more than the note.
 
 #### AI-2 Result cache
 
-- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W1a).
+- **Today:** `ai_results` (migration 210, `src/backend/store/ai.rs`): one row per account, feature and key with a sha256 input hash of the prompt version and message ids. Writes are skipped once the conversation is gone (the same guard now protects `put_bodies`); rows go with the account and rows of gone conversations are dropped at startup; `load_mail_heads` and `load_threads` fill `Thread.ai`. Still needed: the app applying `AiChanged` (W2) and features writing rows (W2–W5).
 - **Needs:** An `ai_results` table in the local store (one row per account, feature and key), keyed by a hash of the prompt version and message ids so staleness is checked from heads without bodies; rows deleted with the account and cleaned at startup; writes skipped once the account is gone.
 - **Notes:** A model or endpoint change doesn't redo old results; new ones use the new model.
 
 #### AI-3 Jev client and background pass
 
-- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W1a and W2).
+- **Today:** Client part done: `src/ai/queue.rs` (Interactive and Background, slots writing 2 / Jev 6, cancel groups, a generation bumped on AI off and every account switch, 3-attempt failures, per-provider stop and backoff, a cap of 200), batched `AiChanged`, streaming with a non-streaming fallback on 400. The check script (`cargo test ai_check -- --ignored --nocapture`) runs the eval set (`src/ai/testdata/eval.json`) and demo data. The pass and background body queue are W2.
 - **Needs:** The Jev and writing-model clients, a priority queue (Interactive before Background, slots per provider, cancel groups, a generation that drops stale work on sign-out or AI off), retries and per-provider backoff. A background body fetch for new Inbox mail, separate from the reader's. A pass on new mail, new bodies and every 5 minutes over Inbox conversations from the last 30 days, newest first, asking Jev whether each needs attention, needs a reply, is a newsletter, or proposes an event.
 - **Notes:** The 30-day backfill covers only Inbox conversations already cached (the latest 100); older Inbox mail isn't paged in. No Low Power Mode pause; background AI pauses only on provider errors. A failed job is retried up to 3 times per launch, then left until restart, **Retry** or Test Connection.
 

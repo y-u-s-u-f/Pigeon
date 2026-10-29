@@ -327,6 +327,24 @@ impl Store {
             message.body = Body::Loaded { html: parsed.html };
             message.attachments = parsed.attachments;
         }
+        thread.loaded = loaded(&thread);
+        thread.reindex();
+        {
+            let mut conn = self.conn();
+            let tx = conn.transaction()?;
+            // AI sprint: the account may have gone (signed out) since the
+            // thread was read; then nothing is written.
+            let stored: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM threads WHERE account = ?1 AND id = ?2)",
+                params![account, thread_id],
+                |r| r.get(0),
+            )?;
+            if !stored {
+                return Ok(());
+            }
+            write_thread(&tx, account, &thread, |m| fetched.contains(&m.id))?;
+            tx.commit()?;
+        }
         if !images.is_empty() {
             self.put_images(
                 images
@@ -337,12 +355,6 @@ impl Store {
             )
             .ok();
         }
-        thread.loaded = loaded(&thread);
-        thread.reindex();
-        let mut conn = self.conn();
-        let tx = conn.transaction()?;
-        write_thread(&tx, account, &thread, |m| fetched.contains(&m.id))?;
-        tx.commit()?;
         Ok(())
     }
 
@@ -666,6 +678,7 @@ fn load_threads_in(
             search: Default::default(),
             origin: origins.remove(&id).flatten(),
             later: Default::default(),
+            ai: Default::default(),
             id,
         };
         thread.set_search(r.get(7)?);

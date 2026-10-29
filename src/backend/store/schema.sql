@@ -252,3 +252,16 @@ CREATE TABLE snoozes (
     woke_at INTEGER,                     -- ms
     PRIMARY KEY (account, thread_id)
 );
+
+-- migration: 210
+-- AI sprint (AI-2): AI results, one row per account, feature and key (a
+-- message or conversation id); a newer one replaces it. `input_hash` is
+-- over the prompt version and the message ids it covers, so staleness
+-- shows from heads alone. Also rows that aren't model output:
+-- needs_reply_dismissed and clean_rejected.
+CREATE TABLE ai_results (
+  account TEXT NOT NULL, feature TEXT NOT NULL, key TEXT NOT NULL,
+  thread_id TEXT NOT NULL, input_hash TEXT NOT NULL, model TEXT NOT NULL,
+  value TEXT NOT NULL, created INTEGER NOT NULL,
+  PRIMARY KEY (account, feature, key));
+CREATE INDEX ai_results_thread ON ai_results (account, thread_id);
