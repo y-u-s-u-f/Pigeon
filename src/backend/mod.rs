@@ -2038,11 +2038,13 @@ impl Backend {
         let allowed = ai::pass::Allowed {
             signals: self.ai_allows(ai::Feature::Signals),
             line: self.ai_allows(ai::Feature::Line),
+            // AI-10: Jev picks the newsletters.
+            clean: self.ai_allows(ai::Feature::Clean) && self.ai_allows(ai::Feature::Signals),
         };
         let Some(me) = self.account.clone() else {
             return;
         };
-        if !allowed.signals && !allowed.line {
+        if !allowed.signals && !allowed.line && !allowed.clean {
             return;
         }
         let email = self.email().to_string();

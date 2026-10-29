@@ -94,6 +94,8 @@ struct Entry {
 /// ME-062: the palette's groups, in their order without a query.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Section {
+    /// AI-12: the command plain words asked for.
+    Suggested,
     Recent,
     Commands,
     Labels,
@@ -105,6 +107,7 @@ enum Section {
 impl Section {
     fn title(self) -> &'static str {
         match self {
+            Section::Suggested => "Suggested",
             Section::Recent => "Recent",
             Section::Commands => "Commands",
             Section::Labels => "Labels",
@@ -135,6 +138,8 @@ enum Row {
     Header(Section),
     /// Quick add (CAL-39), or the prompt's "Create label “…”".
     Quick,
+    /// AI-12: `CommandPalette::suggested`.
+    Suggested,
     Entry {
         entry: usize,
         /// Matched char indices into the haystack, sorted.
@@ -161,6 +166,12 @@ pub enum PaletteEvent {
     QuickAdd(String),
     /// W4b: the text typed into a prompt (`CommandPalette::prompt`).
     Text(String),
+    /// AI sprint: the text changed, as typed.
+    Query(String),
+    /// AI-12: the suggested row ran.
+    Suggested(PaletteCommand),
+    /// AI-15: Enter on a preview (`CommandPalette::preview`).
+    Confirm,
 }
 
 pub struct CommandPalette {
@@ -184,6 +195,13 @@ pub struct CommandPalette {
     recent: usize,
     /// CAL-39: writable calendars as (id, name), for Quick Add's tags.
     calendars: Vec<(String, String)>,
+    /// AI-12: a command the typed words asked for, shown first.
+    suggested: Option<PaletteItem>,
+    /// AI-15: the prompt's hint for now ("Working…"), until the text
+    /// changes.
+    hint_now: Option<SharedString>,
+    /// AI-15: a list to confirm under this header line; Enter confirms.
+    preview: Option<SharedString>,
     _input_events: Subscription,
 }
 
@@ -210,37 +228,22 @@ impl CommandPalette {
             state.insert(query.to_string(), window, cx);
             state
         });
-        let input_events = cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
+        let input_events = cx.subscribe(&input, |this, input, event: &InputEvent, cx| {
             if let InputEvent::Change = event {
+                this.suggested = None;
+                this.hint_now = None;
+                // Editing a previewed request goes back to the prompt.
+                if this.preview.take().is_some() {
+                    this.entries.clear();
+                }
                 this.update_matches(cx);
+                cx.emit(PaletteEvent::Query(input.read(cx).value().to_string()));
             }
         });
         let offers_quick_add = items
             .iter()
             .any(|i| matches!(i.command, PaletteCommand::Action(_)));
-        let entries = items
-            .into_iter()
-            .map(|item| {
-                let mut haystack = item.title.to_string();
-                if let Some(subtitle) = &item.subtitle {
-                    haystack.push(' ');
-                    haystack.push_str(subtitle);
-                }
-                // "Star / Unstar" finds "Unstar" by either word.
-                if let PaletteCommand::Action(action) = item.command
-                    && let Some(name) = static_names().get(action().name())
-                    && *name != item.title.as_ref()
-                {
-                    haystack.push(' ');
-                    haystack.push_str(name);
-                }
-                Entry {
-                    title_chars: item.title.chars().count(),
-                    haystack: haystack.into(),
-                    item,
-                }
-            })
-            .collect();
+        let entries = items.into_iter().map(Entry::new).collect();
 
         let mut this = Self {
             input,
@@ -255,6 +258,9 @@ impl CommandPalette {
             prompt: None,
             recent: 0,
             calendars: Vec::new(),
+            suggested: None,
+            hint_now: None,
+            preview: None,
             _input_events: input_events,
         };
         this.update_matches(cx);
@@ -270,6 +276,51 @@ impl CommandPalette {
 
     pub fn set_calendars(&mut self, calendars: Vec<(String, String)>) {
         self.calendars = calendars;
+    }
+
+    /// AI-12: `item` as the first row, under "Suggested", unless it's the
+    /// top row already. Gone once the text changes.
+    pub fn set_suggested(&mut self, item: PaletteItem, cx: &mut Context<Self>) {
+        let name = |c: PaletteCommand| match c {
+            PaletteCommand::Action(action) => Some(action().name()),
+            _ => None,
+        };
+        let top = self.rows.iter().find_map(|r| match r {
+            Row::Entry { entry, .. } => Some(self.entries[*entry].item.command),
+            _ => None,
+        });
+        if self.quick.is_some()
+            || name(item.command).is_none()
+            || top.is_some_and(|top| name(top) == name(item.command))
+        {
+            return;
+        }
+        self.suggested = Some(item);
+        self.update_matches(cx);
+    }
+
+    /// AI-15: what the prompt's row says for now, until the text changes.
+    pub fn set_hint(&mut self, hint: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.hint_now = Some(hint.into());
+        self.update_matches(cx);
+    }
+
+    pub fn set_empty_text(&mut self, text: impl Into<SharedString>) {
+        self.empty_text = text.into();
+    }
+
+    /// AI-15: `items` under `header`, to confirm with Enter
+    /// (`PaletteEvent::Confirm`); editing the text leaves it.
+    pub fn preview(
+        &mut self,
+        header: impl Into<SharedString>,
+        items: Vec<PaletteItem>,
+        cx: &mut Context<Self>,
+    ) {
+        self.entries = items.into_iter().map(Entry::new).collect();
+        self.preview = Some(header.into());
+        self.hint_now = None;
+        self.update_matches(cx);
     }
 
     /// W4b: a field for a name rather than a list: Enter sends the text
@@ -296,6 +347,18 @@ impl CommandPalette {
     }
 
     fn update_matches(&mut self, cx: &mut Context<Self>) {
+        if self.preview.is_some() {
+            self.rows = (0..self.entries.len())
+                .map(|entry| Row::Entry {
+                    entry,
+                    indices: Vec::new(),
+                })
+                .collect();
+            self.selected = 0;
+            self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+            cx.notify();
+            return;
+        }
         let query = self.input.read(cx).value();
         // Commands match fuzzily; threads only on whole substrings, since a
         // subsequence scattered over a long subject is noise.
@@ -354,9 +417,13 @@ impl CommandPalette {
                 (
                     text.to_string(),
                     format!("{verb} “{text}”").into(),
-                    hint.clone(),
+                    self.hint_now.clone().unwrap_or_else(|| hint.clone()),
                 )
             });
+        }
+        if self.suggested.is_some() && self.quick.is_none() {
+            self.rows.push(Row::Header(Section::Suggested));
+            self.rows.push(Row::Suggested);
         }
         if self.quick.is_some() {
             self.rows.push(Row::Quick);
@@ -494,6 +561,9 @@ impl CommandPalette {
     }
 
     fn confirm(&mut self, _: &Confirm, _: &mut Window, cx: &mut Context<Self>) {
+        if self.preview.is_some() {
+            return cx.emit(PaletteEvent::Confirm);
+        }
         self.run(self.selected, cx);
     }
 
@@ -502,7 +572,16 @@ impl CommandPalette {
     }
 
     fn run(&mut self, ix: usize, cx: &mut Context<Self>) {
+        // A preview's rows are what Enter acts on, not commands.
+        if self.preview.is_some() {
+            return;
+        }
         match self.rows.get(ix) {
+            Some(Row::Suggested) => {
+                if let Some(item) = &self.suggested {
+                    cx.emit(PaletteEvent::Suggested(item.command));
+                }
+            }
             Some(Row::Quick) => {
                 if let Some((text, _, _)) = &self.quick {
                     cx.emit(if self.prompt.is_some() {
@@ -521,8 +600,12 @@ impl CommandPalette {
 
     /// ME-076: what Enter does with the selected row.
     fn enter_label(&self) -> Option<SharedString> {
+        if self.preview.is_some() {
+            return Some("Confirm".into());
+        }
         Some(match self.rows.get(self.selected)? {
             Row::Header(_) => return None,
+            Row::Suggested => "Run".into(),
             Row::Quick => match &self.prompt {
                 Some((verb, _)) => verb
                     .split(' ')
@@ -544,6 +627,7 @@ impl CommandPalette {
     fn render_row(&self, ix: usize, theme: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
         let (entry, indices) = match &self.rows[ix] {
             Row::Quick => return self.render_quick_row(ix, theme, cx),
+            Row::Suggested => return self.render_suggested_row(ix, theme, cx),
             Row::Header(section) => {
                 return div()
                     .id(ix)
@@ -605,6 +689,34 @@ impl CommandPalette {
         )
     }
 
+    /// AI-12: the suggested command, as its own row would show it.
+    fn render_suggested_row(
+        &self,
+        ix: usize,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let Some(item) = &self.suggested else {
+            return div().into_any_element();
+        };
+        let selected = ix == self.selected;
+        let leading = match item.leading {
+            Leading::Icon(glyph) => leading_icon(glyph, selected, theme).into_any_element(),
+            Leading::Nested(color, _) => super::dot_marker(color).into_any_element(),
+        };
+        palette_row(
+            ix,
+            selected,
+            format!("Suggested: {}", item.title).into(),
+            leading,
+            item.title.clone(),
+            None::<SharedString>,
+            item.binding.as_ref(),
+            theme,
+            cx,
+        )
+    }
+
     /// "New event: Lunch with Sam", "Fri, Oct 30 · 1 – 2 PM" (CAL-39).
     fn render_quick_row(
         &self,
@@ -629,6 +741,29 @@ impl CommandPalette {
             theme,
             cx,
         )
+    }
+}
+
+impl Entry {
+    fn new(item: PaletteItem) -> Self {
+        let mut haystack = item.title.to_string();
+        if let Some(subtitle) = &item.subtitle {
+            haystack.push(' ');
+            haystack.push_str(subtitle);
+        }
+        // "Star / Unstar" finds "Unstar" by either word.
+        if let PaletteCommand::Action(action) = item.command
+            && let Some(name) = static_names().get(action().name())
+            && *name != item.title.as_ref()
+        {
+            haystack.push(' ');
+            haystack.push_str(name);
+        }
+        Entry {
+            title_chars: item.title.chars().count(),
+            haystack: haystack.into(),
+            item,
+        }
     }
 }
 
@@ -732,7 +867,7 @@ impl Render for CommandPalette {
         let rows = self.rows.len();
         // In rems like the rows, so the list scales with the text. A prompt
         // has one row at most (ME-077).
-        let visible = if self.prompt.is_some() {
+        let visible = if self.prompt.is_some() && self.preview.is_none() {
             1
         } else {
             VISIBLE_ROWS
@@ -781,7 +916,7 @@ impl Render for CommandPalette {
             .iter()
             .filter(|r| matches!(r, Row::Entry { .. }))
             .count();
-        let count = (query && self.prompt.is_none())
+        let count = (query && self.prompt.is_none() && self.preview.is_none())
             .then(|| super::status::plural(count, "result", "results"));
 
         let hint = |label: SharedString, caps: gpui::Div| {
@@ -827,6 +962,19 @@ impl Render for CommandPalette {
                             .child(Input::new(&self.input).appearance(false)),
                     ),
             )
+            .children(self.preview.clone().map(|header| {
+                div()
+                    .id("palette-preview-header")
+                    .role(gpui::Role::Heading)
+                    .aria_level(2)
+                    .aria_label(header.clone())
+                    .pt(SPACE_MD)
+                    .px(SPACE_LG)
+                    .text_size(TEXT_SM)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_muted)
+                    .child(header)
+            }))
             .child(div().py(SPACE_SM).child(results))
             .child(
                 div()
@@ -839,7 +987,7 @@ impl Render for CommandPalette {
                     .border_color(theme.border)
                     .text_size(TEXT_SM)
                     .text_color(theme.text_faint)
-                    .when(self.prompt.is_none(), |this| {
+                    .when(self.prompt.is_none() || self.preview.is_some(), |this| {
                         this.child(hint(
                             "Navigate".into(),
                             div()

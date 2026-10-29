@@ -618,22 +618,38 @@ impl PigeonApp {
             }
             false
         };
-        tree.iter()
+        // AI-6: the suggested label first, for the open conversation.
+        let suggested = match targets {
+            [ix] if self.selected == Some(*ix) => self.suggested_label(&self.data.threads[*ix]),
+            _ => None,
+        };
+        let mut items: Vec<PaletteItem> = tree
+            .iter()
             .map(|n| {
                 let label = &labels[n.ix];
                 let on = targets
                     .iter()
                     .all(|&t| self.data.threads[t].labels.contains(&label.id));
+                let first = suggested == Some(n.ix);
                 PaletteItem {
                     command: PaletteCommand::ToggleLabel(n.ix),
                     title: label.name.clone().into(),
-                    subtitle: on.then(|| "Applied · ↵ removes it".into()),
-                    leading: Leading::Nested(label.color, n.depth),
+                    subtitle: if first {
+                        Some("Suggested".into())
+                    } else {
+                        on.then(|| "Applied · ↵ removes it".into())
+                    },
+                    leading: Leading::Nested(label.color, if first { 0 } else { n.depth }),
                     binding: None,
-                    search_only: folded_away(n.parent),
+                    search_only: !first && folded_away(n.parent),
                 }
             })
-            .collect()
+            .collect();
+        if let Some(at) = suggested.and_then(|s| tree.iter().position(|n| n.ix == s)) {
+            let item = items.remove(at);
+            items.insert(0, item);
+        }
+        items
     }
 }
 

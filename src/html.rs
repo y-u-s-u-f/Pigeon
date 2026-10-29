@@ -329,6 +329,8 @@ struct Ctx {
     style: Style,
     align: Align,
     pre: bool,
+    /// Inside `NO_AUTOLINK`: bare addresses stay text.
+    plain: bool,
     /// Set by `tr`, `td` and `th` for their cells.
     background: Option<Hsla>,
 }
@@ -412,7 +414,7 @@ impl Parser {
                 let text = contents.borrow();
                 if parent.pre {
                     self.inline.push(&text, &parent.style);
-                } else if parent.style.link.is_some() {
+                } else if parent.style.link.is_some() || parent.plain {
                     self.inline.push_collapsed(&text, &parent.style);
                 } else {
                     self.push_autolinked(&text, &parent.style);
@@ -713,8 +715,14 @@ fn text_len(blocks: &[Block]) -> usize {
 
 /// The context for an element's children: its inline `style`, `color` and
 /// `align` attributes applied over its parent's.
+/// An inline element whose bare addresses aren't made links: Clean View
+/// wraps the links it drops in it (`ai::reading::to_html`). Mail using it
+/// can only make its own text less clickable.
+pub const NO_AUTOLINK: &str = "pigeon-plain";
+
 fn element_ctx(tag: &str, attrs: &[Attribute], parent: &Ctx) -> Ctx {
     let mut ctx = parent.clone();
+    ctx.plain |= tag == NO_AUTOLINK;
     let css = attr(attrs, "style").unwrap_or_default();
     let color =
         css_value(css, "color").or_else(|| (tag == "font").then(|| attr(attrs, "color"))?);
@@ -1069,6 +1077,24 @@ impl InlineBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_autolink_keeps_bare_addresses_as_text() {
+        let doc = parse(&format!(
+            "<p>See https://a.example/x and <a href=\"https://b.example\">b</a>.</p>\
+             <{NO_AUTOLINK}><p>See https://evil.example/x and \
+             <a href=\"https://b.example\">b</a>.</p></{NO_AUTOLINK}>"
+        ));
+        assert_eq!(
+            links(&doc.blocks),
+            [
+                "https://a.example/x",
+                "https://b.example",
+                "https://b.example"
+            ]
+        );
+        assert!(plain_text(&doc).contains("See https://evil.example/x and b."));
+    }
 
     fn texts(blocks: &[Block]) -> Vec<String> {
         blocks

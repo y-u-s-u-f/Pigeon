@@ -203,6 +203,24 @@ impl Query {
         self.terms.is_empty() && self.scope.is_none()
     }
 
+    /// AI-13: its words, when it's words alone: no operator, no `in:`,
+    /// nothing only Gmail reads.
+    pub fn plain_words(&self) -> Option<Vec<String>> {
+        if self.scope.is_some() || self.gmail_only() {
+            return None;
+        }
+        self.terms
+            .iter()
+            .flat_map(|term| match term {
+                Term::Text(text) => text
+                    .split_whitespace()
+                    .map(|w| (!w.contains(':')).then(|| w.to_string()))
+                    .collect(),
+                _ => vec![None],
+            })
+            .collect()
+    }
+
     /// W4b (SRC-9): only Gmail can answer it, so only Gmail's results show.
     pub fn gmail_only(&self) -> bool {
         self.gmail_q.is_some()
@@ -567,6 +585,19 @@ fn tokenize(input: &str, keep_quotes: bool) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_words_only_without_operators() {
+        let words = |q: &str| Query::parse(q).plain_words();
+        assert_eq!(
+            words(r#"notes from "the offsite" review"#).unwrap(),
+            ["notes", "from", "the", "offsite", "review"]
+        );
+        assert_eq!(words("from:sarah budget review"), None);
+        assert_eq!(words("budget review in:all"), None);
+        assert_eq!(words("budget review -draft"), None);
+        assert_eq!(words("re: budget review"), None);
+    }
 
     #[test]
     fn operators_and_phrases() {

@@ -39,8 +39,8 @@ To update: change the status cell in the area's table, then the counts below.
 | [Data model](#83-data-model-dat) | 1 | 3 | 3 | 7 |
 | [Accessibility](#85-accessibility-a11y) | 0 | 9 | 1 | 10 |
 | [System integration](#86-system-integration-sys) | 3 | 1 | 0 | 4 |
-| [AI](#10-ai-ai) | 9 | 7 | 0 | 16 |
-| **Overall** | **48** | **50** | **134** | **232** |
+| [AI](#10-ai-ai) | 0 | 16 | 0 | 16 |
+| **Overall** | **39** | **59** | **134** | **232** |
 
 ## Contents
 
@@ -1745,16 +1745,16 @@ AI inside Pigeon, on two models: a **writing model** on the user's own OpenAI-co
 | AI-3 | Jev client and background pass | 🟡 Partially done | None (Jev); Gmail `messages.get` for background body fetch |
 | AI-4 | Needs Reply marker and view | 🟡 Partially done | None (Jev) |
 | AI-5 | Important-only notifications | 🟡 Partially done | None (Jev) |
-| AI-6 | Label suggestions | ⚪ Not done | None (Jev) |
+| AI-6 | Label suggestions | 🟡 Partially done | None (Jev) |
 | AI-7 | One-line summaries in the list | 🟡 Partially done | None (writing model) |
-| AI-8 | Conversation summary | ⚪ Not done | None (writing model) |
-| AI-9 | Catch-up on new messages | ⚪ Not done | None (writing model) |
-| AI-10 | Clean View (AI reading view) | ⚪ Not done | None (both) |
-| AI-11 | Quick replies | ⚪ Not done | None (both) |
-| AI-12 | ⌘K understands plain words | ⚪ Not done | None (Jev) |
-| AI-13 | Best Matches in search | ⚪ Not done | None (Jev) |
-| AI-14 | Ask Pigeon | ⚪ Not done | None (both) |
-| AI-15 | Do It for Me | ⚪ Not done | None (writing model) |
+| AI-8 | Conversation summary | 🟡 Partially done | None (writing model) |
+| AI-9 | Catch-up on new messages | 🟡 Partially done | None (writing model) |
+| AI-10 | Clean View (AI reading view) | 🟡 Partially done | None (both) |
+| AI-11 | Quick replies | 🟡 Partially done | None (both) |
+| AI-12 | ⌘K understands plain words | 🟡 Partially done | None (Jev) |
+| AI-13 | Best Matches in search | 🟡 Partially done | None (Jev) |
+| AI-14 | Ask Pigeon | 🟡 Partially done | None (both) |
+| AI-15 | Do It for Me | 🟡 Partially done | None (writing model) |
 | AI-16 | Email to event | 🟡 Partially done | None (Jev; Apple's NSDataDetector) |
 
 #### AI-1 AI settings and .env
@@ -1771,7 +1771,7 @@ AI inside Pigeon, on two models: a **writing model** on the user's own OpenAI-co
 
 #### AI-3 Jev client and background pass
 
-- **Today:** Client part (`src/ai/queue.rs`: Interactive and Background, slots writing 2 / Jev 6, cancel groups, a generation bumped on AI off and every account switch, 3-attempt failures, per-provider stop and backoff, a cap of 200; batched `AiChanged`; streaming with a non-streaming fallback on 400) plus the pass. `src/ai/pass.rs` works out what's missing or stale from the heads and `ai_results` (Inbox, last 30 days, newest first, skipping queued and failed keys, up to 100 jobs per run). Request A (`important`) goes on new mail; request B (`needs_reply`, not asked of automated senders, plus `newsletter` and one `event_n` per date found) once the body is stored. A background body queue in `sync.rs` fetches one conversation at a time and sends `BodiesReady` every 10 conversations and when empty. The pass runs when AI is turned on, at startup, after a switch, on new mail, on `BodiesReady` and every 5 minutes. Request B on open (`AiState::request_b`) waits for W3's reader hook. The check script (`cargo test ai_check -- --ignored --nocapture`, `src/ai/check.rs`) runs the eval set and demo data.
+- **Today:** Client part (`src/ai/queue.rs`: Interactive and Background, slots writing 2 / Jev 6, cancel groups, a generation bumped on AI off and every account switch, 3-attempt failures, per-provider stop and backoff, a cap of 200; batched `AiChanged`; streaming with a non-streaming fallback on 400) plus the pass. `src/ai/pass.rs` works out what's missing or stale from the heads and `ai_results` (Inbox, last 30 days, newest first, skipping queued and failed keys, up to 100 jobs per run). Request A (`important`) goes on new mail; request B (`needs_reply`, not asked of automated senders, plus `newsletter` and one `event_n` per date found) once the body is stored. A background body queue in `sync.rs` fetches one conversation at a time and sends `BodiesReady` every 10 conversations and when empty. The pass runs when AI is turned on, at startup, after a switch, on new mail, on `BodiesReady` and every 5 minutes. Opening a conversation asks request B for it at Interactive (`ReaderAi::on_open`); the pass also queues Clean View for newsletters. The check script (`cargo test ai_check -- --ignored --nocapture`, `src/ai/check.rs`) runs the eval set and demo data.
 - **Needs:** User check. Thresholds come from the real-Inbox check in Phase 4.
 - **Notes:** The 30-day backfill covers only Inbox conversations already cached (the latest 100); older Inbox mail isn't paged in. No Low Power Mode pause; background AI pauses only on provider errors. A failed job is retried up to 3 times per launch, then left until restart, **Retry** or Test Connection.
 
@@ -1789,8 +1789,8 @@ AI inside Pigeon, on two models: a **writing model** on the user's own OpenAI-co
 
 #### AI-6 Label suggestions
 
-- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W3).
-- **Needs:** On opening a conversation, one Jev choice among the user's 12 most used labels; a confident pick shows as a ghost chip in the label row and first in the `l` picker, applied by click or ⌥L with Undo. Never applied on its own.
+- **Today:** One Jev choice when a conversation opens, over up to 12 labels used in the last 90 days ("none" first, each with recent subjects); a sure pick (confidence ≥ 0.6) shows as a ghost chip in the reader's label row and first in `l` ("Suggested"); click or ⌥L applies it with Undo; never applied on its own; cached per conversation (`src/ai/reading.rs`, `src/app/ai_reader.rs`).
+- **Needs:** User check; threshold from the real-Inbox check (Phase 4).
 
 #### AI-7 One-line summaries in the list
 
@@ -1800,56 +1800,56 @@ AI inside Pigeon, on two models: a **writing model** on the user's own OpenAI-co
 
 #### AI-8 Conversation summary
 
-- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W3).
-- **Needs:** A streamed, cached summary block under the subject for conversations with 4+ messages or 1,500+ words; **Summarize Conversation** (⇧S) toggles it on any conversation.
+- **Today:** A block under the subject for conversations with 4+ messages or 1,500+ words, streamed at Interactive (`-medium` effort), cached by message ids; ⇧S toggles it on any conversation; spoken as "AI summary: …".
+- **Needs:** User check.
 
 #### AI-9 Catch-up on new messages
 
-- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W3).
-- **Needs:** When a conversation opens with unread messages after read ones, the summary block covers only the unread ones plus "Asked of you" points, instead of AI-8.
+- **Today:** When a conversation opens with new messages after read ones, the block summarizes only those, plus "Asked of you", in place of AI-8; the snapshot holds until another conversation opens; cached under the conversation with the snapshot ids in its hash.
+- **Needs:** User check.
 - **Notes:** Mail arriving while the conversation is open isn't added.
 
 #### AI-10 Clean View (AI reading view)
 
 Formerly PLN-2.
 
-- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W3).
+- **Today:** Newsletters (Jev `newsletter` ≥ 0.8) get a Markdown Clean View (`-medium` effort) from the background pass and on open, never when over budget. Only links and images that are in the original stay; everything else is plain, non-clickable text (rendered inside `html::NO_AUTOLINK`). "Clean view" label and ⇧V per message; "Clean view ready" bar (**Show**); "Clean view failed" with **Retry** (⌥⌘R); **Report Bad Clean View** (⌥⇧⌘B) writes `clean_rejected`, which the pass and opening skip.
 - **Idea:** The writing model turns a message into a clean, consistent reading format: messy HTML, newsletters and forwarded chains become tidy text with the useful structure kept, then go through the existing renderer.
 - **Decisions:** Automatic for newsletters (Jev picks them), made ahead of time in the background pass and on open. Not ready yet: the original, with a "Clean view ready" bar (**Show**). A "Clean view" label on every message shown this way; **Toggle Clean View** (⇧V) switches to the original and back, remembered per message. Failed: the original, with "Clean view failed" and **Retry** (⌥⌘R). **Report Bad Clean View** (⌥⇧⌘B) shows the original and stops Clean View for that message. Behind the Clean View for Newsletters switch.
-- **Needs:** Off until the user opts in (AI-1's note); the original renderer as the fallback whenever the model fails or is slow; links and images not in the original become plain text; remote images follow the existing setting. Check against Google's Limited Use policy for Gmail data (ACC-8) before a published app sends mail off the Mac.
+- **Needs:** User check; newsletter threshold from the real-Inbox check (Phase 4).
 - **Notes:** A message over the input budget gets no Clean View (never trimmed). A crafted mail can still change its own Clean View.
 
 #### AI-11 Quick replies
 
-- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W3).
-- **Needs:** When the Needs Reply marker shows, three short reply chips under the last message; a chip or ⌥1–⌥3 opens a reply draft with that text. Never sends. Not shown if a reply draft exists.
+- **Today:** While the Needs Reply marker shows, three reply chips (validated JSON, `-low` effort) under the last message, in the mail's language; a chip or ⌥1–⌥3 opens a reply draft with that text; never sends; hidden when a reply draft exists.
+- **Needs:** User check.
 
 #### AI-12 ⌘K understands plain words
 
-- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W4).
-- **Needs:** For 3+ words typed in the main palette (not Quick Add), one Jev choice over the commands available now; a confident pick shows as a top "Suggested" row. Only the typed text is sent.
+- **Today:** In the main ⌘K, text of 3+ words that isn't Quick Add asks Jev after 250 ms which available command fits (state is the typed text only, "none" first); a sure answer (≥ 0.6) shows as a top "Suggested" row; a suggested Do It for Me opens its prompt with the text.
+- **Needs:** User check; threshold from the real-Inbox check (Phase 4).
 
 #### AI-13 Best Matches in search
 
-- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W4).
-- **Needs:** For mail searches of 3+ words with no operators, local candidates reranked by Jev in batches of 10; up to 5 shown in a "Best Matches" section above the exact results.
+- **Today:** Mail searches of 3+ plain words rerank up to 50 local candidates (any non-stop word, simple suffix strip, topped up with recent mail) with Jev in batches of 10; score ≥ 3 shows up to 5 under "Best Matches" above "Results"; dropped if the selection moved.
+- **Needs:** User check; threshold from the real-Inbox check (Phase 4). Finds only conversations cached on this Mac.
 - **Notes:** Finds conversations that share a word with the query or are recent, not synonym-only matches.
 
 #### AI-14 Ask Pigeon
 
-- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W4).
-- **Needs:** A floating panel (⇧⌘J): the writing model turns the question into search terms, Jev reranks matching mail, calendar events in range are added, and the writing model answers from those only with numbered sources that open the conversation or event. Bodies not stored are fetched through RDR-6. Footer: "Searched mail and events on this Mac".
+- **Today:** ⇧⌘J opens a floating panel: the writing model turns the question into search terms (`-low`), Jev reranks mail (top 6) and up to 10 calendar occurrences in range are added; missing bodies are fetched (snippet after 5 s); the answer (`-high`) streams with checked [n] citations and clickable sources (mail opens the conversation, events open in Calendar); "Searched mail and events on this Mac".
+- **Needs:** User check. Mail and events cached on this Mac only.
 
 #### AI-15 Do It for Me
 
-- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W4).
-- **Needs:** **Do It for Me…** (⇧⌘L): the writing model turns a request into one search plus one bulk action (archive, move to Inbox, trash, mark read or unread, star, unstar, add or remove a label), validated, previewed as a list, and run on exactly the previewed conversations with the normal Undo toast and ⌘Z.
+- **Today:** ⇧⌘L, or a suggested row, opens a prompt; the writing model (`-medium`) proposes one search plus one action, checked against the allowed actions, your labels and a restricted query grammar (`src/ai/do_it.rs`); it matches mail on this Mac (no Spam, Trash, Drafts or scheduled sends; at most 500), previews the list under a header, and on Enter acts on exactly the previewed conversations still present through the normal mail functions, with Undo and ⌘Z.
+- **Needs:** User check. The confirm step checks account and availability, not the exact AI generation.
 - **Notes:** Acts only on mail cached on this Mac, never on drafts or scheduled sends; over 500 matches is refused.
 
 #### AI-16 Email to event
 
-- **Today:** Detector part: NSDataDetector (`native::detect_dates`) finds dates and addresses in a message; each date is read again by Quick Add's strict `parse_when` against the sent date (a weekday is the one after it; a date without a year is the next on or after it; no invented times, else all day; the zone named in the text or the Mac's; daylight-saving gaps and folds dropped; other languages kept only with a four-digit year). At most 3 per message, earliest first, with the subject as title, the first address as place and the containing sentence (`ai::events::for_message`); stored as an `event` row by the pass with Jev's `event_n` answers. `CalendarView::add_from_candidate` opens it as a new event to confirm (asking about an unsaved new event first).
-- **Needs:** The reader bar and ⇧T (W3). No writing model.
+- **Today:** NSDataDetector (`native::detect_dates`) finds dates and addresses; each date is read again by Quick Add's strict `parse_when` against the sent date (no invented times, else all day; zone from the text or the Mac; daylight-saving gaps and folds dropped); at most 3 per message (`ai::events::for_message`), each checked by a Jev `event_n` question in the background pass. An "Add to Calendar" bar above the message body shows the best candidate (yes ≥ 0.7, still to come, not at the start of an existing event); **Add to Calendar** (⇧T) switches to Calendar and opens it as a new event to confirm (`add_from_candidate`, asking about an unsaved event first).
+- **Needs:** User check; event threshold from the real-Inbox check (Phase 4). The bar sits in the message that holds the date, so it isn't visible while that message is collapsed.
 - **Notes:** Meeting invites (`text/calendar`) aren't recognized as such; a candidate matching an existing event's start is hidden, which hides most accepted invites.
 
 ---

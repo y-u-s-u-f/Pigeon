@@ -134,6 +134,14 @@ pub struct ReaderUi {
     /// Bodies on their way, by message id: since when (MA-066). A body
     /// whose placeholder showed fades in over it.
     pub(crate) body_waits: HashMap<String, BodyWait>,
+    /// AI-10: messages shown while their Clean View was still being made,
+    /// since the conversation opened; it arrives as a bar.
+    pub(crate) clean_waiting: HashSet<String>,
+    /// ⇧V and the bar's Show: true for the Clean View, by message.
+    pub(crate) clean_choice: HashMap<String, bool>,
+    /// Clean Views as HTML, by message, with the `created` of the answer
+    /// they're from.
+    pub(crate) clean_html: HashMap<String, (i64, SharedString)>,
 }
 
 impl gpui::Global for ReaderUi {}
@@ -604,6 +612,13 @@ impl PigeonApp {
             .filter_map(|id| self.data.labels.iter().position(|l| l.id == *id))
             .map(|ix| self.render_label_chip(ix, theme, cx))
             .collect::<Vec<_>>();
+        // AI-6, AI-8, AI-9.
+        let suggested = self
+            .suggested_label(thread)
+            .map(|ix| self.render_suggested_label(ix, theme));
+        let summary = self
+            .summary_view(thread, cx)
+            .map(|view| render_summary(&view, theme));
         let last = thread.messages.len() - 1;
         let layout = self.pane_layout(window.viewport_size().width);
         let narrow =
@@ -772,25 +787,34 @@ impl PigeonApp {
                                 .heading(1),
                             ),
                     )
-                    .children(render_later_bar(thread, theme))
+                    // One child, so `MESSAGES_START` holds with the bars.
                     .child(
                         div()
                             .w_full()
-                            .max_w(READER_MAX)
-                            .mt(SPACE_MD)
-                            .mb(SPACE_LG)
                             .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap(SPACE_SM)
-                            .children(chips)
-                            // The count only where there's more than one (ME-026).
-                            .children((thread.messages.len() > 1).then(|| {
+                            .flex_col()
+                            .children(render_later_bar(thread, theme))
+                            .children(summary)
+                            .child(
                                 div()
-                                    .text_size(TEXT_SM)
-                                    .text_color(theme.text_faint)
-                                    .child(format!("{} messages", thread.messages.len()))
-                            })),
+                                    .w_full()
+                                    .max_w(READER_MAX)
+                                    .mt(SPACE_MD)
+                                    .mb(SPACE_LG)
+                                    .flex()
+                                    .flex_wrap()
+                                    .items_center()
+                                    .gap(SPACE_SM)
+                                    .children(chips)
+                                    .children(suggested)
+                                    // The count only where there's more than one (ME-026).
+                                    .children((thread.messages.len() > 1).then(|| {
+                                        div()
+                                            .text_size(TEXT_SM)
+                                            .text_color(theme.text_faint)
+                                            .child(format!("{} messages", thread.messages.len()))
+                                    })),
+                            ),
                     )
                     .children(messages)
                     .children(composer),
@@ -818,6 +842,37 @@ impl PigeonApp {
             .child(super::label_chip(&shown, theme))
             .tooltip(move |window, cx| super::tooltip(tip.clone()).build(window, cx))
             .on_click(cx.listener(move |this, _, _, cx| this.set_nav(Nav::Label(ix), cx)))
+            .into_any_element()
+    }
+
+    /// AI-6: the label Jev suggests, as a ghost chip; a click or ⌥L
+    /// applies it, with Undo.
+    fn render_suggested_label(&self, ix: usize, theme: &Theme) -> AnyElement {
+        let label = &self.data.labels[ix];
+        let path = label.name.replace('/', " › ");
+        focusable_control(div().id("suggested-label"), theme)
+            .role(gpui::Role::Button)
+            .aria_label(format!("Apply suggested label {path}"))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(SPACE_2XS)
+            .py(SPACE_2XS)
+            .px(SPACE_SM)
+            .rounded(RADIUS_SM)
+            .border_1()
+            .border_color(theme.border)
+            .line_height(LINE_UI)
+            .text_size(TEXT_XS)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme.text_muted)
+            .hover(|s| s.bg(theme.hover_bg))
+            .child(icon(Icon::Plus, ICON_SM, theme.text_faint))
+            .child(leaf(&label.name).to_string())
+            .tooltip(move |window, cx| {
+                super::tooltip(format!("Suggested label {path} · ⌥L")).build(window, cx)
+            })
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(ApplySuggestedLabel), cx))
             .into_any_element()
     }
 
@@ -1029,10 +1084,31 @@ impl PigeonApp {
             }
             body => body_reveal(&message.id, matches!(body, Body::Loaded { .. }), cx),
         };
-        let body = match &message.body {
-            Body::Loaded { .. } => self.parsed(message, cx),
+        // AI-10: a newsletter's Clean View, in place of its body.
+        let clean = match &message.body {
+            Body::Loaded { .. } => self.clean_view(thread, ix, cx),
+            _ => crate::app::ai_reader::CleanView::Off,
+        };
+        let body = match (&message.body, &clean) {
+            (Body::Loaded { .. }, crate::app::ai_reader::CleanView::Clean(html)) => {
+                self.parsed_html(&format!("clean-{}", message.id), html, cx)
+            }
+            (Body::Loaded { .. }, _) => self.parsed(message, cx),
             _ => None,
         };
+        // AI-16, AI-11.
+        let event = self
+            .event_offer(thread, cx)
+            .filter(|(m, _)| *m == ix)
+            .map(|(_, candidate)| render_event_bar(ix, &candidate, theme));
+        let replies = if ix + 1 == thread.messages.len() {
+            self.quick_replies(thread)
+        } else {
+            Vec::new()
+        };
+        let clean_label = render_clean_label(ix, &message.id, &clean, theme, cx);
+        let clean_bar = (clean == crate::app::ai_reader::CleanView::Ready)
+            .then(|| render_clean_bar(ix, &message.id, theme, cx));
         let images = body
             .as_ref()
             .map(|body| self.message_images(message, body, cx))
@@ -1124,6 +1200,7 @@ impl PigeonApp {
                     .flex()
                     .items_center()
                     .gap(SPACE_XS)
+                    .children(clean_label)
                     .child(
                         div()
                             .flex()
@@ -1251,6 +1328,8 @@ impl PigeonApp {
             .child(header)
             .child(
                 indent(div().mt(SPACE_LG))
+                    .children(event)
+                    .children(clean_bar)
                     .when_some(images.ask, |this, hidden| {
                         this.child(render_images_bar(ix, &message.id, hidden, theme, cx))
                     })
@@ -1290,18 +1369,26 @@ impl PigeonApp {
                         .children(attachments),
                 )
             })
+            .when(!replies.is_empty(), |this| {
+                this.child(indent(div().mt(SPACE_LG)).child(render_quick_replies(&replies, theme)))
+            })
             .into_any_element()
     }
 
     /// The message's body, parsed; a big one is parsed off the main thread
     /// first (MC-054), and shows as loading until it is.
     fn parsed(&self, message: &Message, cx: &mut Context<Self>) -> Option<Rc<Document>> {
-        if let Some(doc) = self.html_cache.get(&message.id, message.html()) {
+        self.parsed_html(&message.id, message.html(), cx)
+    }
+
+    /// `parsed` for any HTML kept under `id`: a body, or its Clean View.
+    fn parsed_html(&self, id: &str, html: &str, cx: &mut Context<Self>) -> Option<Rc<Document>> {
+        if let Some(doc) = self.html_cache.get(id, html) {
             return Some(doc);
         }
-        let key = crate::html::HtmlCache::key(&message.id, message.html());
+        let key = crate::html::HtmlCache::key(id, html);
         if self.html_cache.start_parse(&key) {
-            let html = message.html().to_string();
+            let html = html.to_string();
             cx.spawn(async move |this, cx| {
                 let doc = cx
                     .background_executor()
@@ -1995,6 +2082,290 @@ fn render_images_bar(
                 .child(super::keys_caps("cmd-shift-i", theme))
                 .on_click(cx.listener(move |this, _, _, cx| this.allow_images(&id, cx))),
         )
+        .into_any_element()
+}
+
+// The reader's AI (W3, AI-6 to AI-16); what shows is decided in
+// `app::ai_reader`.
+
+/// AI-8, AI-9: the summary or catch-up under the subject, as it streams.
+fn render_summary(view: &crate::app::ai_reader::SummaryView, theme: &Theme) -> AnyElement {
+    let title = match view.catch_up {
+        Some(1) => "Catch-up: 1 new message".to_string(),
+        Some(n) => format!("Catch-up: {n} new messages"),
+        None => "Summary".to_string(),
+    };
+    let (spoken, lines): (String, Vec<AnyElement>) = match &view.text {
+        Some(text) => (
+            text.replace("**", ""),
+            text.lines()
+                .map(|l| l.trim().replace("**", ""))
+                .filter(|l| !l.is_empty())
+                .map(|line| {
+                    let bullet = ["- ", "* ", "• "]
+                        .iter()
+                        .find_map(|b| line.strip_prefix(b))
+                        .map(str::to_string);
+                    match bullet {
+                        Some(point) => div()
+                            .flex()
+                            .gap(SPACE_SM)
+                            .child(div().flex_none().text_color(theme.text_faint).child("•"))
+                            .child(div().flex_1().min_w_0().child(point))
+                            .into_any_element(),
+                        None if line
+                            .starts_with(crate::ai::reading::ASKED.trim_end_matches(':')) =>
+                        {
+                            div()
+                                .mt(SPACE_XS)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(line)
+                                .into_any_element()
+                        }
+                        None => div().child(line).into_any_element(),
+                    }
+                })
+                .collect(),
+        ),
+        None => {
+            let status = if view.failed {
+                "Couldn't write a summary"
+            } else {
+                "Summarizing…"
+            };
+            (
+                status.to_string(),
+                vec![
+                    super::live_text("ai-summary-status", status, gpui::accesskit::Live::Polite)
+                        .text_color(theme.text_faint)
+                        .into_any_element(),
+                ],
+            )
+        }
+    };
+    super::motion::enter(
+        "ai-summary-in",
+        super::motion::Rise::None,
+        div()
+            .id("ai-summary")
+            .role(gpui::Role::Region)
+            .aria_label(format!("AI summary: {spoken}"))
+            .w_full()
+            .max_w(READER_MAX)
+            .mt(SPACE_MD)
+            .px(SPACE_MD)
+            .py(SPACE_SM)
+            .flex()
+            .flex_col()
+            .gap(SPACE_XS)
+            .rounded(RADIUS_MD)
+            .bg(theme.chip_bg)
+            .text_size(TEXT_SM)
+            .line_height(LINE_READING)
+            .text_color(theme.text)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_XS)
+                    .text_size(TEXT_XS)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_muted)
+                    .child(icon(Icon::TextQuote, ICON_SM, theme.accent))
+                    .child(div().flex_1().child(title))
+                    .child(super::keys_caps("shift-s", theme)),
+            )
+            .children(lines),
+    )
+    .into_any_element()
+}
+
+/// AI-10: what the message header says about its Clean View.
+fn render_clean_label(
+    ix: usize,
+    message_id: &str,
+    view: &crate::app::ai_reader::CleanView,
+    theme: &Theme,
+    cx: &mut Context<PigeonApp>,
+) -> Option<AnyElement> {
+    use crate::app::ai_reader::CleanView;
+    let id = message_id.to_string();
+    let chip = |label: &'static str, tip: &'static str, clean: bool, color| {
+        focusable_control(div().id(("clean-label", ix)), theme)
+            .role(gpui::Role::Button)
+            .aria_label(tip)
+            .flex_none()
+            .px(SPACE_SM)
+            .py(SPACE_2XS)
+            .rounded(RADIUS_SM)
+            .bg(theme.chip_bg)
+            .hover(|s| s.bg(theme.hover_bg))
+            .text_size(TEXT_XS)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(color)
+            .child(label)
+            .tooltip(move |window, cx| super::tooltip(format!("{tip} · ⇧V")).build(window, cx))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                this.set_clean_choice(&id, clean, cx);
+            }))
+            .into_any_element()
+    };
+    match view {
+        CleanView::Clean(_) => Some(chip(
+            "Clean view",
+            "AI rewrite of this newsletter. Show the original",
+            false,
+            theme.accent,
+        )),
+        CleanView::Original => Some(chip(
+            "Original",
+            "Show the clean view",
+            true,
+            theme.text_muted,
+        )),
+        CleanView::Failed => Some(
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(SPACE_XS)
+                .child(
+                    super::label(("clean-failed", ix), "Clean view failed")
+                        .text_size(TEXT_XS)
+                        .text_color(theme.text_faint),
+                )
+                .child(
+                    push_button(("clean-retry", ix), "Retry", ButtonKind::Quiet, theme).on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.focus_message(ix, cx);
+                            window.dispatch_action(Box::new(RetryCleanView), cx);
+                        }),
+                    ),
+                )
+                .into_any_element(),
+        ),
+        _ => None,
+    }
+}
+
+/// AI-10: a Clean View made while the original showed.
+fn render_clean_bar(
+    ix: usize,
+    message_id: &str,
+    theme: &Theme,
+    cx: &mut Context<PigeonApp>,
+) -> AnyElement {
+    let id = message_id.to_string();
+    super::motion::enter(
+        ("clean-bar-in", ix),
+        super::motion::Rise::Down,
+        div()
+            .id(("clean-bar", ix))
+            .role(gpui::Role::Region)
+            .aria_label("Clean view ready")
+            .mb(SPACE_MD)
+            .px(SPACE_MD)
+            .py(SPACE_SM)
+            .flex()
+            .items_center()
+            .gap(SPACE_SM)
+            .rounded(RADIUS_MD)
+            .bg(theme.chip_bg)
+            .text_size(TEXT_SM)
+            .text_color(theme.text_muted)
+            .child(icon(Icon::FileText, ICON_MD, theme.accent))
+            .child(div().flex_1().min_w_0().child("Clean view ready"))
+            .child(
+                push_button(("clean-show", ix), "Show", ButtonKind::Plain, theme)
+                    .child(super::keys_caps("shift-v", theme))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.set_clean_choice(&id, true, cx)),
+                    ),
+            ),
+    )
+    .into_any_element()
+}
+
+/// AI-16: a date in this message, offered as an event.
+fn render_event_bar(ix: usize, candidate: &crate::ai::EventCandidate, theme: &Theme) -> AnyElement {
+    let start = candidate.start.with_timezone(&Local);
+    let when = if candidate.all_day {
+        start.format("%A, %B %-d").to_string()
+    } else {
+        start.format("%A, %B %-d at %-I:%M %p").to_string()
+    };
+    let text = match &candidate.location {
+        Some(place) if !place.trim().is_empty() => format!("{when} · {}", place.trim()),
+        _ => when,
+    };
+    div()
+        .id(("event-bar", ix))
+        .role(gpui::Role::Region)
+        .aria_label(format!("Event in this message: {text}"))
+        .mb(SPACE_MD)
+        .px(SPACE_MD)
+        .py(SPACE_SM)
+        .flex()
+        .items_center()
+        .gap(SPACE_SM)
+        .rounded(RADIUS_MD)
+        .bg(theme.chip_bg)
+        .text_size(TEXT_SM)
+        .text_color(theme.text_muted)
+        .child(icon(Icon::Calendar, ICON_MD, theme.accent))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .truncate()
+                        .text_color(theme.text)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(candidate.title.clone()),
+                )
+                .child(div().truncate().child(text)),
+        )
+        .child(
+            push_button(
+                ("event-add", ix),
+                "Add to Calendar",
+                ButtonKind::Plain,
+                theme,
+            )
+            .child(super::keys_caps("shift-t", theme))
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(AddToCalendar), cx)),
+        )
+        .into_any_element()
+}
+
+/// AI-11: three short replies; each opens a reply draft with its text.
+fn render_quick_replies(replies: &[String], theme: &Theme) -> AnyElement {
+    div()
+        .id("quick-replies")
+        .role(gpui::Role::Group)
+        .aria_label("AI quick replies")
+        .flex()
+        .flex_wrap()
+        .gap(SPACE_SM)
+        .children(replies.iter().take(3).enumerate().map(|(n, reply)| {
+            let tip: SharedString = reply.clone().into();
+            push_button(("quick-reply", n), reply.clone(), ButtonKind::Plain, theme)
+                .aria_label(format!("AI reply: {reply}"))
+                // A long one wraps rather than running out of the card.
+                .flex_shrink(1.)
+                .h_auto()
+                .min_h(CONTROL_MD)
+                .py(SPACE_XS)
+                .max_w(relative(1.))
+                .child(super::keys_caps(&format!("alt-{}", n + 1), theme))
+                .tooltip(move |window, cx| super::tooltip(tip.clone()).build(window, cx))
+                .on_click(move |_, window, cx| window.dispatch_action(Box::new(QuickReply(n)), cx))
+        }))
         .into_any_element()
 }
 

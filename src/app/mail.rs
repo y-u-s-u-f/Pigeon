@@ -844,6 +844,11 @@ impl PigeonApp {
 
     pub(crate) fn star_threads(&mut self, targets: Vec<usize>, cx: &mut Context<Self>) {
         let star = targets.iter().any(|&ix| !self.data.threads[ix].starred);
+        self.set_starred(targets, star, cx);
+    }
+
+    /// Star `targets`, or take their stars off.
+    pub(crate) fn set_starred(&mut self, targets: Vec<usize>, star: bool, cx: &mut Context<Self>) {
         let changed = self.ids_where(&targets, |t| t.starred != star);
         for &ix in &targets {
             self.data.threads[ix].starred = star;

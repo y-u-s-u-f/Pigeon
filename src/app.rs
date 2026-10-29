@@ -150,6 +150,8 @@ pub enum Row {
     /// A conversation that just left the view, collapsing (MD-017): its
     /// key in `PigeonApp::leaving_rows`. Never selected, picked or counted.
     Leaving(u64),
+    /// AI-13: a section's title in search results ("Best Matches").
+    SectionHeader(&'static str),
 }
 
 impl Row {
@@ -379,6 +381,8 @@ enum LeavingOverlay {
     Help,
     Card(Entity<ui::contact_card::ContactCardView>),
     Later(Entity<ui::later_picker::LaterPicker>),
+    /// AI-14.
+    Ask(Entity<ui::ask_panel::AskPanel>),
 }
 
 impl PigeonApp {
@@ -443,6 +447,11 @@ impl PigeonApp {
             this.with_row_cause(RowCause::Sync, |this| {
                 this.on_backend_event(backend, event, cx)
             })
+        });
+        // ⌘K's, search's and Ask's AI answers, after the app has read the
+        // event (bodies Ask waits for are in by then).
+        let ai_palette_events = cx.subscribe_in(&backend, window, |this, _, _, window, cx| {
+            this.on_palette_backend(window, cx)
         });
         // Settings are saved whenever they change, here or in the calendar.
         let settings_changed = cx.observe_self(|this, cx| this.save_settings(cx));
@@ -618,6 +627,7 @@ impl PigeonApp {
                 escape,
                 bounds,
                 retimed,
+                ai_palette_events,
             ],
         };
         this.labels_ui.folded = saved.collapsed_labels.iter().cloned().collect();
@@ -806,6 +816,20 @@ impl PigeonApp {
                 .map(Row::Thread)
                 .collect()
         };
+
+        // AI-13: Best Matches lead a search, under their own header.
+        if searching {
+            let best = self.best_match_rows();
+            if !best.is_empty() {
+                rows.retain(|row| !matches!(row, Row::Thread(ix) if best.contains(ix)));
+                let mut top = vec![Row::SectionHeader("Best Matches")];
+                top.extend(best.into_iter().map(Row::Thread));
+                if !rows.is_empty() {
+                    top.push(Row::SectionHeader("Results"));
+                }
+                rows.splice(0..0, top);
+            }
+        }
 
         // Soonest first (ACT-11, CMP-17).
         if !searching {
@@ -1070,6 +1094,8 @@ impl PigeonApp {
             self.reader_glide = None;
             self.reader_scroll.set_offset(point(px(0.), px(0.)));
             self.expand_unread(ix);
+            // AI: before its messages are marked read (AI-9's snapshot).
+            self.reader_ai_open(ix, cx);
         }
         self.selected = Some(ix);
         if std::mem::take(&mut self.data.threads[ix].unread) {
@@ -1432,6 +1458,7 @@ impl PigeonApp {
             || self.help_open
             || self.contact_card.is_some()
             || self.later_picker.is_some()
+            || self.ai.palette.ask_panel.is_some()
     }
 
     /// MB-008: the standard About panel; the unbundled dev build, which
@@ -1624,6 +1651,7 @@ impl PigeonApp {
         self.search_query = Query::default();
         self.search_input
             .update(cx, |input, cx| input.set_value("", window, cx));
+        self.search_changed(cx);
         self.search_gmail(cx);
         self.refresh_rows(false);
         self.reveal_selected();
@@ -1642,6 +1670,7 @@ impl PigeonApp {
             InputEvent::Change => {
                 self.search_query = Query::parse(&input.read(cx).value());
                 self.search_highlight = None;
+                self.search_changed(cx);
                 self.refresh_rows(false);
                 self.search_gmail(cx);
                 cx.notify();
@@ -2038,11 +2067,12 @@ impl PigeonApp {
             .writable_calendars()
             .map(|c| (c.id.clone(), c.name.clone()))
             .collect();
-        if let Some((palette, _)) = &self.palette {
+        if let Some(palette) = self.palette.as_ref().map(|(p, _)| p.clone()) {
             palette.update(cx, |p, cx| {
                 p.set_calendars(calendars);
                 p.set_recent(recent, cx);
             });
+            self.palette_opened(palette.entity_id());
         }
     }
 
@@ -2081,14 +2111,7 @@ impl PigeonApp {
                 window.highest_precedence_binding_for_action_in_context(action, context.clone())
             })
         };
-        let mut available = COMMANDS
-            .iter()
-            .filter(|c| {
-                !c.help_only
-                    && (c.scope() == Scope::Global || c.scope() == scope)
-                    && self.command_available(c.when, cx)
-            })
-            .collect::<Vec<_>>();
+        let mut available = self.available_commands(cx);
         // The few used last first; the rest keep their order.
         let recent_rank = |c: &Command| {
             let name = (c.action_name)();
@@ -2146,26 +2169,24 @@ impl PigeonApp {
                 binding: None,
                 search_only: false,
             });
-        let threads = self.data.threads.iter().enumerate().map(|(ix, thread)| {
-            let from = thread
-                .messages
-                .iter()
-                .rev()
-                .map(|m| &m.from)
-                .find(|c| !self.data.is_me(c))
-                .unwrap_or(&thread.last_message().from);
-            // Same-subject conversations tell apart by date (ME-078).
-            let date = crate::data::list_date(&thread.last_message().date);
-            PaletteItem {
-                command: PaletteCommand::Thread(ix),
-                title: thread.subject.clone().into(),
-                subtitle: Some(format!("{} · {date}", from.display_name()).into()),
-                leading: Leading::Icon(Icon::Mail),
-                binding: None,
-                search_only: true,
-            }
-        });
+        let threads = (0..self.data.threads.len()).map(|ix| self.thread_item(ix));
         (commands.chain(labels).chain(threads).collect(), recent)
+    }
+
+    /// AI-12: a command as its palette row shows it.
+    fn command_item(&self, c: &Command, window: &Window, cx: &gpui::App) -> PaletteItem {
+        let contexts = lookup_contexts(self.scope(), self.reader_focused);
+        let action = (c.action)();
+        PaletteItem {
+            command: PaletteCommand::Action(c.action),
+            title: self.command_title(c, window, cx),
+            subtitle: None,
+            leading: Leading::Icon(c.icon),
+            binding: contexts.iter().find_map(|context| {
+                window.highest_precedence_binding_for_action_in_context(&*action, context.clone())
+            }),
+            search_only: false,
+        }
     }
 
     /// The calendar's events as palette rows; `search_only` rows show only
@@ -2212,11 +2233,15 @@ impl PigeonApp {
 
     fn on_palette_event(
         &mut self,
-        _: &Entity<CommandPalette>,
+        palette: &Entity<CommandPalette>,
         event: &PaletteEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // AI-12, AI-15: these keep the palette open.
+        if self.on_ai_palette_event(palette, event, window, cx) {
+            return;
+        }
         if matches!(event, PaletteEvent::Dismiss) {
             self.close_overlays(window, cx);
         } else {
@@ -2290,6 +2315,10 @@ impl PigeonApp {
     ) {
         let events = cx.subscribe_in(&palette, window, Self::on_palette_event);
         window.focus(&palette.focus_handle(cx), cx);
+        self.ask_closed(cx);
+        if self.palette.take().is_some() {
+            self.palette_closed(cx);
+        }
         self.palette = Some((palette, events));
         cx.notify();
     }
@@ -2332,6 +2361,8 @@ impl PigeonApp {
             Some(LeavingOverlay::Help)
         } else if let Some((picker, ..)) = &self.later_picker {
             Some(LeavingOverlay::Later(picker.clone()))
+        } else if let Some((panel, _)) = &self.ai.palette.ask_panel {
+            Some(LeavingOverlay::Ask(panel.clone()))
         } else {
             self.contact_card
                 .as_ref()
@@ -2345,7 +2376,10 @@ impl PigeonApp {
     /// A command ran from the palette: it goes at once, so its result
     /// shows with nothing on top (MD-Q3).
     fn close_overlays_at_once(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.palette = None;
+        if self.palette.take().is_some() {
+            self.palette_closed(cx);
+        }
+        self.ask_closed(cx);
         self.contact_card = None;
         self.later_picker = None;
         self.help_open = false;
@@ -2397,6 +2431,8 @@ impl PigeonApp {
             (div().child(card.clone()).into_any_element(), false)
         } else if let Some((picker, ..)) = &self.later_picker {
             (div().child(picker.clone()).into_any_element(), false)
+        } else if let Some((panel, _)) = &self.ai.palette.ask_panel {
+            (div().child(panel.clone()).into_any_element(), false)
         } else {
             match self.leaving_overlay.as_ref()? {
                 LeavingOverlay::Palette(palette) => {
@@ -2409,6 +2445,9 @@ impl PigeonApp {
                 LeavingOverlay::Card(card) => (div().child(card.clone()).into_any_element(), false),
                 LeavingOverlay::Later(picker) => {
                     (div().child(picker.clone()).into_any_element(), false)
+                }
+                LeavingOverlay::Ask(panel) => {
+                    (div().child(panel.clone()).into_any_element(), false)
                 }
             }
         };

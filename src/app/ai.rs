@@ -30,9 +30,7 @@ pub struct AiState {
     pub needs_reply: HashSet<String>,
     /// The conversation whose request B waits for its bodies.
     awaiting_b: Option<String>,
-    #[allow(dead_code)]
     pub reader: ai_reader::ReaderAi,
-    #[allow(dead_code)]
     pub palette: ai_palette::PaletteAi,
     /// Test Connection was pressed and its answer isn't in yet.
     pub testing: Vec<Provider>,
@@ -267,6 +265,7 @@ impl PigeonApp {
         if changed {
             self.refresh_rows(true);
         }
+        self.reader_ai_changed(ids, cx);
         cx.notify();
     }
 
@@ -277,6 +276,9 @@ impl PigeonApp {
         {
             let backend = self.backend.clone();
             self.ai.request_b(&id, &backend, cx);
+        }
+        if !ids.is_empty() {
+            self.reader_ai_changed(ids, cx);
         }
     }
 

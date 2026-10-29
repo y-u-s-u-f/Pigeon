@@ -1071,6 +1071,7 @@ impl PigeonApp {
             }
             Row::ArchivedHeader { count } => self.render_archived_header(count, theme, cx),
             Row::LoadOlder => self.render_load_older(theme, cx),
+            Row::SectionHeader(title) => render_section_header(title, theme),
             Row::Leaving(key) => self.render_leaving_row(key, row_cx, theme, window, cx),
         }
     }
@@ -2080,6 +2081,31 @@ fn result_count(count: usize, estimate: Option<usize>, more: bool) -> String {
         _ if more => format!("{}+ results", thousands(count)),
         _ => plural(count, "result", "results"),
     }
+}
+
+/// AI-13: a section of search results ("Best Matches"), drawn like the
+/// Archived header, without its control.
+fn render_section_header(title: &'static str, theme: &Theme) -> AnyElement {
+    div()
+        .id(title)
+        .role(gpui::Role::Heading)
+        .aria_level(2)
+        .aria_label(title)
+        .px(ROW_MARGIN)
+        .pt(SPACE_SM)
+        .child(
+            div()
+                .h(ROW_SM)
+                .pl(ROW_INSET)
+                .pr(SPACE_MD)
+                .flex()
+                .items_center()
+                .text_size(TEXT_SM)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text_muted)
+                .child(title),
+        )
+        .into_any_element()
 }
 
 #[cfg(test)]

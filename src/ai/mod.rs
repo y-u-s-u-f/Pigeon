@@ -11,6 +11,7 @@
 #![allow(dead_code)]
 
 pub mod config;
+pub mod do_it;
 pub mod events;
 pub mod jev;
 pub mod llm;
@@ -1001,3 +1002,5 @@ mod tests {
 
 #[cfg(test)]
 mod check;
+#[cfg(test)]
+mod check_palette;

@@ -314,8 +314,7 @@ mod tests {
         e.conference_uri = "https://meet.google.com/abc-defg-hij".into();
         assert_eq!(video_link(&e), Some("https://meet.google.com/abc-defg-hij"));
         // A bare Zoom link in the notes, with a query and a fragment.
-        let zoom =
-            "https://acme.zoom.us/j/12345678901?pwd=AbCdEf123456.1#success";
+        let zoom = "https://acme.zoom.us/j/12345678901?pwd=AbCdEf123456.1#success";
         let e = Event {
             description: zoom.into(),
             ..Event::default()

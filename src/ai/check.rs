@@ -41,10 +41,6 @@ fn message(e: &Example) -> text::Message {
     }
 }
 
-fn state(e: &Example) -> String {
-    message(e).render_within(text::JEV_BUDGET)
-}
-
 fn write(dir: &Path, name: &str, text: &str) {
     let path = dir.join(format!("{name}.md"));
     std::fs::write(&path, text).unwrap();
@@ -174,6 +170,7 @@ fn ai_check() {
     write(dir, "writing-model", &md);
     if let Some(endpoint) = &config.llm {
         lines(dir, &transport, endpoint, &eval);
+        reader(dir, &transport, endpoint, &eval);
     }
 
     let Some(jev_endpoint) = &config.jev else {
@@ -207,17 +204,11 @@ fn ai_check() {
                     e.adversarial.as_deref().unwrap_or("")
                 )
             }
-            // The writing model's; done in `lines`.
-            "line" => continue,
+            // The writing model's; done in `lines` and `reader`.
+            "line" | "clean" | "summary" | "catch_up" | "replies" => continue,
             "label" => {
                 let ask = |options: Vec<(String, String)>| {
-                    let request = jev::Request::new(state(e)).ask(
-                        "label",
-                        jev::Question::Choice {
-                            instructions: "Which of these labels fits this message best? \"none\" when none clearly fits.".into(),
-                            options,
-                        },
-                    );
+                    let request = reading::label_request(&message(e), options);
                     jev::run(&transport, jev_endpoint, &request)
                         .ok()
                         .and_then(|r| {
@@ -345,6 +336,7 @@ fn lines(dir: &Path, transport: &UreqTransport, endpoint: &config::Endpoint, eva
     let only_lines = pass::Allowed {
         signals: false,
         line: true,
+        clean: false,
     };
     // As of the newest demo mail, however old it is.
     let now = threads
@@ -397,6 +389,128 @@ fn lines(dir: &Path, transport: &UreqTransport, endpoint: &config::Endpoint, eva
         );
     }
     write(dir, "demo-line", &md);
+}
+
+/// One writing-model answer for the check, or why there's none.
+fn ask_llm(
+    transport: &dyn Transport,
+    endpoint: &config::Endpoint,
+    feature: Feature,
+    request: &llm::Request,
+) -> Result<String, String> {
+    llm::run(
+        transport,
+        endpoint,
+        &llm::model_for(&endpoint.model, feature),
+        request,
+        &AtomicBool::new(true),
+        &|| false,
+        &mut |_| {},
+    )
+    .map(|r| r.text)
+    .map_err(|e| e.to_string())
+}
+
+/// W3: Clean View (links kept and dropped), summaries, catch-ups and
+/// quick replies over the eval set.
+fn reader(dir: &Path, transport: &UreqTransport, endpoint: &config::Endpoint, eval: &Eval) {
+    let cell = |s: &str| s.replace('|', "/").replace('\n', " ");
+    let mut md = String::from(
+        "# Eval: clean\n\n| Example | Expected links | Links kept | OK | Adversarial |\n| --- | --- | --- | --- | --- |\n",
+    );
+    for e in eval.examples.iter().filter(|e| e.feature == "clean") {
+        let mut m = message(e);
+        m.body = reading::source(&e.body);
+        let want: Vec<&str> = e.expect["links"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        let (kept, ok) = match reading::request(&m) {
+            None => ("over budget".to_string(), "–"),
+            Some(request) => match ask_llm(transport, endpoint, Feature::Clean, &request) {
+                Err(why) => (why, "**no**"),
+                Ok(answer) => {
+                    let html = reading::to_html(&reading::clean(&answer, &e.body));
+                    let links: Vec<String> = crate::html::links(&crate::html::parse(&html).blocks)
+                        .iter()
+                        .map(|l| l.to_string())
+                        .collect();
+                    let ok = links.iter().all(|l| want.contains(&l.as_str()));
+                    (links.join(", "), if ok { "yes" } else { "**no**" })
+                }
+            },
+        };
+        let _ = writeln!(
+            md,
+            "| {} | {} | {} | {ok} | {} |",
+            e.id,
+            want.join(", "),
+            cell(&kept),
+            e.adversarial.as_deref().unwrap_or("")
+        );
+    }
+    write(dir, "eval-clean", &md);
+
+    let mut md = String::from(
+        "# Eval: summary, catch_up, replies\n\n| Example | Feature | About | Answer | OK | Adversarial |\n| --- | --- | --- | --- | --- | --- |\n",
+    );
+    for e in &eval.examples {
+        let mut t = crate::data::Thread::local(
+            "t-check".into(),
+            e.subject.clone(),
+            crate::data::Folder::Inbox,
+            Vec::new(),
+            None,
+        );
+        let mut m = crate::data::Message::new(crate::data::Contact {
+            name: String::new(),
+            email: e.from.clone(),
+        });
+        m.id = e.id.clone();
+        m.body = crate::data::Body::Loaded {
+            html: crate::html::from_plain_text(&e.body),
+        };
+        t.messages.push(m);
+        let (feature, job) = match e.feature.as_str() {
+            "summary" => (Feature::Summary, reading::summary_job(&t)),
+            "catch_up" => (
+                Feature::CatchUp,
+                reading::catch_up_job(&t, std::slice::from_ref(&e.id)),
+            ),
+            "replies" => (Feature::Replies, reading::replies_job(&t)),
+            _ => continue,
+        };
+        let Some(Job {
+            work: Work::Llm(request),
+            ..
+        }) = job
+        else {
+            continue;
+        };
+        let got = ask_llm(transport, endpoint, feature, &request);
+        let ok = match (&got, feature) {
+            (Err(_), _) => "**no**",
+            (Ok(text), Feature::CatchUp) => {
+                let asks = e.expect["asked"].as_bool().unwrap_or(false);
+                if text.contains(reading::ASKED) == asks {
+                    "yes"
+                } else {
+                    "**no**"
+                }
+            }
+            (Ok(_), _) => "yes",
+        };
+        let _ = writeln!(
+            md,
+            "| {} | {} | {} | {} | {ok} | {} |",
+            e.id,
+            e.feature,
+            e.expect["about"].as_str().unwrap_or(""),
+            cell(&got.unwrap_or_else(|why| why)),
+            e.adversarial.as_deref().unwrap_or("")
+        );
+    }
+    write(dir, "eval-reader", &md);
 }
 
 /// The latest 200 cached Inbox messages of the real store, each
@@ -454,4 +568,23 @@ fn real_inbox(dir: &Path, transport: &UreqTransport, endpoint: &config::Endpoint
     }
     write(dir, "real-inbox-jev", &md);
     println!("ai_check: {} real messages", messages.len());
+
+    // AI-10: the Clean Views reported as bad.
+    let mut md = String::from(
+        "# Real store: Clean Views reported as bad\n\n| Subject | Message |\n| --- | --- |\n",
+    );
+    for (thread_id, ai) in store.ai_results(&record.email, None).unwrap_or_default() {
+        for row in ai
+            .rows
+            .iter()
+            .filter(|r| r.feature == Feature::CleanRejected)
+        {
+            let subject = threads
+                .iter()
+                .find(|t| t.id == thread_id)
+                .map_or("(not in the Inbox)", |t| t.subject.as_str());
+            let _ = writeln!(md, "| {} | {} |", subject.replace('|', "/"), row.key);
+        }
+    }
+    write(dir, "real-clean-rejected", &md);
 }

@@ -15,7 +15,7 @@ use chrono::Utc;
 
 use super::{
     AiRow, EventCandidate, Feature, Job, Priority, ThreadAi, Work, events, input_hash, jev, llm,
-    text,
+    reading, text,
 };
 use crate::{
     backend::new_mail::NewMail,
@@ -70,6 +70,9 @@ pub struct Allowed {
     pub signals: bool,
     /// The writing model and the List Summaries switch: the line.
     pub line: bool,
+    /// The writing model and the Clean View switch: newsletters' Clean
+    /// View (AI-10).
+    pub clean: bool,
 }
 
 /// One result missing or stale: what to ask, before its text is read.
@@ -203,6 +206,12 @@ pub fn work_list(
         {
             want(Feature::Signals, &m.id, signals_hash(&m.id));
         }
+        if allowed.clean
+            && let Some((_, m)) = latest_received(thread, me)
+            && reading::wants_clean(ai, &m.id)
+        {
+            want(Feature::Clean, &m.id, reading::clean_hash(&m.id));
+        }
         if allowed.line
             && let Some(hash) = line_hash(thread)
         {
@@ -267,6 +276,12 @@ pub fn job(thread: &Thread, want: &Want) -> Option<(Job, Option<AiRow>)> {
                 .map(|ix| text::Message::from_thread(thread, ix))
                 .collect::<Option<Vec<_>>>()?;
             (Work::Llm(line_request(&messages)), None)
+        }
+        // AI-10: `None` over budget too; never trimmed.
+        Feature::Clean => {
+            let ix = thread.messages.iter().position(|m| m.id == want.key)?;
+            let request = reading::request(&reading::message(thread, ix)?)?;
+            (Work::Llm(request), None)
         }
         _ => return None,
     };
@@ -451,6 +466,7 @@ mod tests {
     const ON: Allowed = Allowed {
         signals: true,
         line: true,
+        clean: true,
     };
 
     #[test]
@@ -522,12 +538,52 @@ mod tests {
         let jev_only = Allowed {
             signals: true,
             line: false,
+            clean: false,
         };
         assert!(
             work_list(&heads, &results, &me(), NOW, jev_only, &skip)
                 .iter()
                 .all(|w| w.feature == Feature::Signals)
         );
+    }
+
+    #[test]
+    fn newsletters_get_a_clean_view_until_reported() {
+        let heads = vec![thread("t1", vec![message("m1", "news@shop.com", NOW)])];
+        let newsletter = r#"{"newsletter":{"type":"noul","noul":0.95}}"#;
+        let mut ai = ThreadAi::default();
+        ai.rows.push(answer_row(
+            "m1",
+            Feature::Signals,
+            signals_hash("m1"),
+            newsletter,
+        ));
+        let clean_wants = |ai: &ThreadAi| -> Vec<String> {
+            let results = HashMap::from([("t1".to_string(), ai.clone())]);
+            work_list(&heads, &results, &me(), NOW, ON, &|_, _| false)
+                .into_iter()
+                .filter(|w| w.feature == Feature::Clean)
+                .map(|w| w.key)
+                .collect()
+        };
+        assert_eq!(clean_wants(&ai), ["m1"]);
+        let want = &work_list(
+            &heads,
+            &HashMap::from([("t1".to_string(), ai.clone())]),
+            &me(),
+            NOW,
+            ON,
+            &|_, _| false,
+        )
+        .into_iter()
+        .find(|w| w.feature == Feature::Clean)
+        .unwrap();
+        let (job, _) = job(&heads[0], want).unwrap();
+        assert!(matches!(job.work, Work::Llm(_)));
+        assert_eq!(job.input_hash, reading::clean_hash("m1"));
+        ai.rows
+            .push(answer_row("m1", Feature::CleanRejected, String::new(), ""));
+        assert!(clean_wants(&ai).is_empty());
     }
 
     #[test]

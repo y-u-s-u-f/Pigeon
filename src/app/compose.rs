@@ -315,6 +315,18 @@ impl PigeonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.compose_with_body(kind, None, window, cx);
+    }
+
+    /// `compose`, with the draft's text already written (AI-11's quick
+    /// replies). A reply draft already there opens as it is.
+    pub(super) fn compose_with_body(
+        &mut self,
+        kind: ComposeKind,
+        body: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.stash_composer(cx);
         if kind != ComposeKind::New && !self.checked.is_empty() {
             return;
@@ -376,6 +388,9 @@ impl PigeonApp {
         let answered = thread.map(|t| self.answered(t));
         content.from = pick_from(kind, answered, &identities);
         content.signature = crate::settings::get(cx).signatures;
+        if let Some(body) = body {
+            content.body = body;
+        }
         let answers = match (&reply_to, answered) {
             (Some(_), Some(m)) => m.id.clone(),
             _ => String::new(),
