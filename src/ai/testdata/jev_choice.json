@@ -1,0 +1,23 @@
+{
+  "model": "test-model",
+  "answers": {
+    "label": {
+      "type": "choice",
+      "choice": "social",
+      "probabilities": {
+        "none": 0,
+        "receipts": 0,
+        "social": 1,
+        "work": 0
+      },
+      "confidence": 1
+    }
+  },
+  "usage": {
+    "input_tokens": 386,
+    "output_tokens": 46,
+    "cost": 1.6212e-05
+  },
+  "id": "test-id",
+  "provider": "test"
+}

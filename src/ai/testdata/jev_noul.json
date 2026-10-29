@@ -1,0 +1,16 @@
+{
+  "model": "test-model",
+  "answers": {
+    "needs_reply": {
+      "type": "noul",
+      "noul": 0.98
+    }
+  },
+  "usage": {
+    "input_tokens": 317,
+    "output_tokens": 21,
+    "cost": 1.3314e-05
+  },
+  "id": "test-id",
+  "provider": "test"
+}

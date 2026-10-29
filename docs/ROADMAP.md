@@ -16,7 +16,7 @@ To update: change the status cell in the area's table, then the counts below.
 
 | Section | ⚪ Not done | 🟡 Partially done | 🟢 Fully linked | Total |
 | --- | --- | --- | --- | --- |
-| [Planned features](#3-planned-features-pln) | 3 | 0 | 0 | 3 |
+| [Planned features](#3-planned-features-pln) | 2 | 0 | 0 | 2 |
 | [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 2 | 4 | 3 | 9 |
 | [Folders and labels](#51-folders-and-labels-fol) | 1 | 2 | 11 | 14 |
 | [Thread list](#52-thread-list-lst) | 0 | 1 | 9 | 10 |
@@ -39,7 +39,8 @@ To update: change the status cell in the area's table, then the counts below.
 | [Data model](#83-data-model-dat) | 1 | 3 | 3 | 7 |
 | [Accessibility](#85-accessibility-a11y) | 0 | 9 | 1 | 10 |
 | [System integration](#86-system-integration-sys) | 3 | 1 | 0 | 4 |
-| **Overall** | **40** | **43** | **134** | **217** |
+| [AI](#10-ai-ai) | 16 | 0 | 0 | 16 |
+| **Overall** | **55** | **43** | **134** | **232** |
 
 ## Contents
 
@@ -52,7 +53,8 @@ To update: change the status cell in the area's table, then the counts below.
 7. Sync and states: [SYN](#71-sync-and-push-syn) · [NTF](#72-notifications-and-background-ntf) · [STA](#73-loading-error-and-offline-states-sta)
 8. App-wide: [PER](#81-storage-and-persistence-per) · [PAL](#82-command-palette-pal) · [DAT](#83-data-model-dat) · [No backend need](#84-features-with-no-backend-need) · [A11Y](#85-accessibility-a11y) · [SYS](#86-system-integration-sys)
 9. [Adjacent Google APIs (later)](#9-adjacent-google-apis-optional-later)
-10. [Not planned or out of scope](#10-not-planned-or-out-of-scope)
+10. [AI (AI)](#10-ai-ai)
+11. [Not planned or out of scope](#11-not-planned-or-out-of-scope)
 
 ---
 
@@ -60,7 +62,7 @@ To update: change the status cell in the area's table, then the counts below.
 
 Principles are in [`AGENTS.md`](../AGENTS.md): blazing fast and light (no webviews, no heavy dependencies), keyboard-centric (every action has a shortcut and is in ⌘K), minimal and flat on translucent glass, YAGNI.
 
-**Current phase: linked to Google; demo mode on placeholder data.** Backend sprint 1 ([`BACKEND_SPRINT_1.md`](BACKEND_SPRINT_1.md)) linked sign-in, Gmail read and write, compose and drafts, Calendar read and write, contacts, search and paging, remote images, offline queueing and status. Backend sprint 2, "Pigeon as a daily driver" ([`BACKEND_SPRINT_2.md`](BACKEND_SPRINT_2.md)), is complete: the app stays open with a menu bar panel, notifications and a Dock badge; attachments; Gmail categories; labels; aliases and signatures; repeat rules, reminders and Meet in the calendar. Everything a tester can drive passed real-account test rounds. `PIGEON_DEMO=1` runs on the placeholder data.
+**Current phase: linked to Google; demo mode on placeholder data.** Backend sprint 1 ([`BACKEND_SPRINT_1.md`](BACKEND_SPRINT_1.md)) linked sign-in, Gmail read and write, compose and drafts, Calendar read and write, contacts, search and paging, remote images, offline queueing and status. Backend sprint 2, "Pigeon as a daily driver" ([`BACKEND_SPRINT_2.md`](BACKEND_SPRINT_2.md)), is complete: the app stays open with a menu bar panel, notifications and a Dock badge; attachments; Gmail categories; labels; aliases and signatures; repeat rules, reminders and Meet in the calendar. Everything a tester can drive passed real-account test rounds. `PIGEON_DEMO=1` runs on the placeholder data. The AI sprint ([`AI_SPRINT.md`](AI_SPRINT.md)) is in progress: AI inside Pigeon on two models, tracked in [section 10](#10-ai-ai).
 
 **What's left:** items still 🟡 wait on checks only the user can do (allowing notifications, the menu bar status item and global shortcuts, making Pigeon the default mail app, open at login, the sign-in flow, attaching a file), an account with a second verified address (MST-1, ACC-2), or a part not built yet. The user signs in again around Nov 2, unless the Google app is published first. **Candidate next work:** multiple accounts (ACC-4) and the items still ⚪.
 
@@ -86,7 +88,8 @@ The user's own plans, not driven by Google's APIs.
 | --- | --- | --- | --- |
 | PLN-1a | Vim mode: composing and editing | ⚪ Not done | None |
 | PLN-1b | Vim mode: navigating the app | ⚪ Not done | None |
-| PLN-2 | AI reading view | ⚪ Not done | None (an LLM API) |
+
+PLN-2 moved to [AI-10](#ai-10-clean-view-ai-reading-view).
 
 #### PLN-1a Vim mode while composing
 
@@ -97,12 +100,6 @@ The user's own plans, not driven by Google's APIs.
 
 - **Idea:** Vim-style keys across the list, reader, calendar and settings: `hjkl`, `gg`/`G`, counts (`5j`), `/` search, building on the existing Gmail-style `j`/`k`. Same Settings toggle as PLN-1a, or its own.
 - **Open questions:** Conflicts with single-letter Gmail shortcuts (`e`, `s`, `l`, `v`, `x`, `a`, `r`, `c`, `n`/`p`, `g …` chords) in `src/actions.rs`; whether Vim mode replaces or layers over them; showing Vim bindings in ⌘K and the `?` sheet.
-
-#### PLN-2 AI reading view
-
-- **Idea:** A small model (Claude Haiku) turns each email into a clean, consistent reading format for Pigeon: messy HTML, newsletters and forwarded chains become tidy text with the useful structure kept. Later, not in backend sprint 1. During that sprint a Haiku agent may be used offline on sample mails to tune the native renderer (see `docs/BACKEND_SPRINT_1.md` 6.4).
-- **Open questions:** On by default or per message; where the model runs and who pays for it; privacy (mail content leaves the Mac); caching results; always keeping the original one keystroke away.
-- **Needs (HIG, Generative AI):** Off until the user opts in, with a one-time explanation of what is sent and where; a visible "AI view" label on every message shown this way and one key to toggle back to the original; the original renderer as the fallback whenever the model fails or is slow; Retry; Report a Bad Result. Check against Google's Limited Use policy for Gmail data (ACC-8) before any mail leaves the Mac.
 
 > **More user features go here.** Add each as PLN-3, PLN-4, … with status ⚪ Not done.
 
@@ -1214,6 +1211,7 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 - **Today (W5):** In ⌘K, "New event: Lunch with Sam Fri 1pm" (or "new event …") shows a row "New event: Lunch with Sam · Fri, Oct 30 · 1 – 2 PM"; enter opens the event in the panel with the title and times filled in, on that day. `⇧C` in Calendar opens ⌘K with "New event: " typed. ⌘K "New Event" and "New Event from Text…" are offered in Mail too; they switch to Calendar (`Show::NewEvent`, the quick add's own switch). Parsed locally (`calendar::quick_add`: dates and times as the panel reads them, ranges, "for 30 min", "all day"; a date without a time is all day, a time already past is tomorrow, "at 3" is 3 PM); no `events.quickAdd`.
 - **Today (polish W4, ME-099):** A capitalized place after "at" or "@" becomes the location ("Lunch with Sam at Nopa Fri 1pm" → Nopa); times are read first, so "Meet at noon" stays a time. Capitalized names after "with" (joined by "and") are looked up in the contacts by first name and added as guests; they stay in the title. Polish W5: the palette's row ends with the place it read ("Fri, Oct 30 · 1 – 2 PM · Nopa"); guests show only in the title.
 - **Needs:** Done; passed on the real account (sprint 2 T1c). The place and guest parsing (polish W4) waits on a tester pass; guests added this way get invitations on Save (CAL-13).
+- **Notes:** Calendar tags (`#work` picks the Work calendar) are planned in the AI sprint ([`AI_SPRINT.md`](AI_SPRINT.md), W5); a plain parser change, no AI involved.
 
 #### CAL-40 Move an event to another calendar
 
@@ -1736,7 +1734,127 @@ Not catalogued in depth; each would be its own item when picked up.
 
 ---
 
-## 10. Not planned or out of scope
+## 10. AI (AI)
+
+AI inside Pigeon, on two models: a **writing model** on the user's own OpenAI-compatible endpoint (summaries, answers, replies, Clean View) and **Jev** through OpenRouter's System One API (fast, cheap yes/no, pick-one and score decisions). Off by default; nothing is sent until Settings › AI is switched on and its note confirmed. Endpoints and keys come from `.env`, read at startup (repo `.env`, then `<data dir>/.env`, then real environment variables), never shown or editable in Settings; a change takes effect on restart. No new Google API is needed; everything works on mail and events already cached on the Mac (AI-3 only adds a background body fetch). The full plan, contracts and limits are in [`AI_SPRINT.md`](AI_SPRINT.md).
+
+| ID | Feature | Status | Google API |
+| --- | --- | --- | --- |
+| AI-1 | AI settings and .env | ⚪ Not done | None (both) |
+| AI-2 | Result cache | ⚪ Not done | None (both) |
+| AI-3 | Jev client and background pass | ⚪ Not done | None (Jev); Gmail `messages.get` for background body fetch |
+| AI-4 | Needs Reply marker and view | ⚪ Not done | None (Jev) |
+| AI-5 | Important-only notifications | ⚪ Not done | None (Jev) |
+| AI-6 | Label suggestions | ⚪ Not done | None (Jev) |
+| AI-7 | One-line summaries in the list | ⚪ Not done | None (writing model) |
+| AI-8 | Conversation summary | ⚪ Not done | None (writing model) |
+| AI-9 | Catch-up on new messages | ⚪ Not done | None (writing model) |
+| AI-10 | Clean View (AI reading view) | ⚪ Not done | None (both) |
+| AI-11 | Quick replies | ⚪ Not done | None (both) |
+| AI-12 | ⌘K understands plain words | ⚪ Not done | None (Jev) |
+| AI-13 | Best Matches in search | ⚪ Not done | None (Jev) |
+| AI-14 | Ask Pigeon | ⚪ Not done | None (both) |
+| AI-15 | Do It for Me | ⚪ Not done | None (writing model) |
+| AI-16 | Email to event | ⚪ Not done | None (Jev; Apple's NSDataDetector) |
+
+#### AI-1 AI settings and .env
+
+- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W1a and W1b).
+- **Needs:** A `.env` parser and override order; a Settings › AI page (⌥⌘A) with the main switch and its one-time note on what is sent where, the writing model and Jev rows (host and model, read-only, **Test Connection**), the List Summaries, Clean View for Newsletters and Needs Reply switches, "Notify for", and an Activity log (last 100 calls, in memory). A missing key turns off only the features that need it, with "Needs a writing model key in .env" or "Needs a Jev key in .env". A changed endpoint pauses AI until the note is confirmed again.
+- **Notes:** Text already sent can't be recalled; turning AI off stops everything not yet sent. Google's Limited Use policy (ACC-8): fine for the user's own build; a published app would need more than the note.
+
+#### AI-2 Result cache
+
+- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W1a).
+- **Needs:** An `ai_results` table in the local store (one row per account, feature and key), keyed by a hash of the prompt version and message ids so staleness is checked from heads without bodies; rows deleted with the account and cleaned at startup; writes skipped once the account is gone.
+- **Notes:** A model or endpoint change doesn't redo old results; new ones use the new model.
+
+#### AI-3 Jev client and background pass
+
+- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W1a and W2).
+- **Needs:** The Jev and writing-model clients, a priority queue (Interactive before Background, slots per provider, cancel groups, a generation that drops stale work on sign-out or AI off), retries and per-provider backoff. A background body fetch for new Inbox mail, separate from the reader's. A pass on new mail, new bodies and every 5 minutes over Inbox conversations from the last 30 days, newest first, asking Jev whether each needs attention, needs a reply, is a newsletter, or proposes an event.
+- **Notes:** The 30-day backfill covers only Inbox conversations already cached (the latest 100); older Inbox mail isn't paged in. No Low Power Mode pause; background AI pauses only on provider errors. A failed job is retried up to 3 times per launch, then left until restart, **Retry** or Test Connection.
+
+#### AI-4 Needs Reply marker and view
+
+- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W2).
+- **Needs:** AI-3's `needs_reply` answers. A marker beside the Important mark when the latest message not from me asks something and I haven't replied or queued a reply; a Needs Reply view in the sidebar (`g r`), a local filter like Snoozed; **Dismiss Needs Reply** / **Restore Needs Reply** (⇧H).
+- **Notes:** Dismiss has no ⌘Z; running it again restores the marker. A reply queued while offline hides the marker even if newer mail arrives before it's sent.
+
+#### AI-5 Important-only notifications
+
+- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W2).
+- **Needs:** "Notify for: Important Only" in Settings › AI; each new-mail batch held up to 3 s while Jev judges it, then unimportant messages dropped and the rest notified as one batch (NTF-1).
+- **Notes:** Fails open: no answer means the message is notified. The Dock badge stays the unread Inbox count.
+
+#### AI-6 Label suggestions
+
+- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W3).
+- **Needs:** On opening a conversation, one Jev choice among the user's 12 most used labels; a confident pick shows as a ghost chip in the label row and first in the `l` picker, applied by click or ⌥L with Undo. Never applied on its own.
+
+#### AI-7 One-line summaries in the list
+
+- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W2).
+- **Needs:** For Inbox conversations, a one-line summary (≤ 90 characters) from the writing model replaces the snippet in the row, with a small AI mark; snippet until ready; rewritten when a new message arrives. Behind the List Summaries switch.
+- **Notes:** On a home server, 30 days of Inbox can take hours on one background slot; newest first.
+
+#### AI-8 Conversation summary
+
+- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W3).
+- **Needs:** A streamed, cached summary block under the subject for conversations with 4+ messages or 1,500+ words; **Summarize Conversation** (⇧S) toggles it on any conversation.
+
+#### AI-9 Catch-up on new messages
+
+- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W3).
+- **Needs:** When a conversation opens with unread messages after read ones, the summary block covers only the unread ones plus "Asked of you" points, instead of AI-8.
+- **Notes:** Mail arriving while the conversation is open isn't added.
+
+#### AI-10 Clean View (AI reading view)
+
+Formerly PLN-2.
+
+- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W3).
+- **Idea:** The writing model turns a message into a clean, consistent reading format: messy HTML, newsletters and forwarded chains become tidy text with the useful structure kept, then go through the existing renderer.
+- **Decisions:** Automatic for newsletters (Jev picks them), made ahead of time in the background pass and on open. Not ready yet: the original, with a "Clean view ready" bar (**Show**). A "Clean view" label on every message shown this way; **Toggle Clean View** (⇧V) switches to the original and back, remembered per message. Failed: the original, with "Clean view failed" and **Retry** (⌥⌘R). **Report Bad Clean View** (⌥⇧⌘B) shows the original and stops Clean View for that message. Behind the Clean View for Newsletters switch.
+- **Needs:** Off until the user opts in (AI-1's note); the original renderer as the fallback whenever the model fails or is slow; links and images not in the original become plain text; remote images follow the existing setting. Check against Google's Limited Use policy for Gmail data (ACC-8) before a published app sends mail off the Mac.
+- **Notes:** A message over the input budget gets no Clean View (never trimmed). A crafted mail can still change its own Clean View.
+
+#### AI-11 Quick replies
+
+- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W3).
+- **Needs:** When the Needs Reply marker shows, three short reply chips under the last message; a chip or ⌥1–⌥3 opens a reply draft with that text. Never sends. Not shown if a reply draft exists.
+
+#### AI-12 ⌘K understands plain words
+
+- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W4).
+- **Needs:** For 3+ words typed in the main palette (not Quick Add), one Jev choice over the commands available now; a confident pick shows as a top "Suggested" row. Only the typed text is sent.
+
+#### AI-13 Best Matches in search
+
+- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W4).
+- **Needs:** For mail searches of 3+ words with no operators, local candidates reranked by Jev in batches of 10; up to 5 shown in a "Best Matches" section above the exact results.
+- **Notes:** Finds conversations that share a word with the query or are recent, not synonym-only matches.
+
+#### AI-14 Ask Pigeon
+
+- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W4).
+- **Needs:** A floating panel (⇧⌘J): the writing model turns the question into search terms, Jev reranks matching mail, calendar events in range are added, and the writing model answers from those only with numbered sources that open the conversation or event. Bodies not stored are fetched through RDR-6. Footer: "Searched mail and events on this Mac".
+
+#### AI-15 Do It for Me
+
+- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W4).
+- **Needs:** **Do It for Me…** (⇧⌘L): the writing model turns a request into one search plus one bulk action (archive, move to Inbox, trash, mark read or unread, star, unstar, add or remove a label), validated, previewed as a list, and run on exactly the previewed conversations with the normal Undo toast and ⌘Z.
+- **Notes:** Acts only on mail cached on this Mac, never on drafts or scheduled sends; over 500 matches is refused.
+
+#### AI-16 Email to event
+
+- **Today:** Not built yet; planned in the AI sprint (docs/AI_SPRINT.md, W5 and W3).
+- **Needs:** Apple's NSDataDetector finds dates in a message, the Quick Add parser (CAL-39) reads them against the sent date, and Jev confirms the message proposes that event. An "Add to Calendar" bar above the body (⇧T) for the best future candidate opens the event panel to confirm. No writing model.
+- **Notes:** Meeting invites (`text/calendar`) aren't recognized as such; a candidate matching an existing event's start is hidden, which hides most accepted invites.
+
+---
+
+## 11. Not planned or out of scope
 
 - **Delegates, alias creation, forwarding-address creation and auto-forwarding changes** (`settings.delegates.*`, `sendAs.create`/`delete`/`verify`, `forwardingAddresses.create`/`delete`, `updateAutoForwarding`): only usable by Workspace service accounts with domain-wide delegation. Pigeon shows what it can read (MST-1, MST-5, MST-8) and links to Gmail for the rest.
 - **Client-side encryption** (`settings.cse.*`, MST-10): Workspace Enterprise with an external key service; the client must do the crypto. Not before everything else.

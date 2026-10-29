@@ -1,0 +1,29 @@
+{
+  "model": "test-model",
+  "answers": {
+    "urgency": {
+      "type": "score",
+      "score": 1.19,
+      "legend": {
+        "0": "Can wait",
+        "1": "This week",
+        "2": "Today",
+        "3": "Right now"
+      },
+      "probabilities": {
+        "0": 0.01,
+        "1": 0.79,
+        "2": 0.2,
+        "3": 0
+      },
+      "confidence": 0.79
+    }
+  },
+  "usage": {
+    "input_tokens": 345,
+    "output_tokens": 18,
+    "cost": 1.449e-05
+  },
+  "id": "test-id",
+  "provider": "test"
+}
