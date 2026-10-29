@@ -63,8 +63,12 @@ pub(crate) const SIDEBAR_DEFAULT: Pixels = px(236.);
 const RECENT_SHOWN: usize = 5;
 /// How far past its minimum the sidebar's divider is dragged to hide it.
 const SIDEBAR_COLLAPSE: Pixels = px(60.);
-const LIST_WIDTH: (Pixels, Pixels) = (px(300.), px(640.));
-pub(crate) const LIST_DEFAULT: Pixels = px(400.);
+const LIST_MIN: Pixels = px(300.);
+/// The list's share of the width it splits with the reader: 400 of the
+/// 1044 left in the default window beside the default sidebar.
+pub(crate) const LIST_SHARE_DEFAULT: f32 = 0.38;
+/// The shares a saved setting may hold.
+const LIST_SHARE: (f32, f32) = (0.15, 0.85);
 /// How narrow the list gets when the user keeps the sidebar open in a narrow
 /// window.
 const LIST_SQUEEZED: Pixels = px(220.);
@@ -234,7 +238,9 @@ pub struct PigeonApp {
     /// Shown by the user while the window is too narrow for it.
     sidebar_forced: bool,
     pub sidebar_width: Pixels,
-    pub list_width: Pixels,
+    /// The list's share of the width it splits with the reader, so both
+    /// scale with the window.
+    pub list_share: f32,
     /// The divider being dragged, for its highlight.
     resizing: Option<PaneResize>,
     /// The panes' widths as drawn this frame: `pane_layout`, but gliding
@@ -545,11 +551,11 @@ impl PigeonApp {
             sidebar_open: true,
             sidebar_forced: false,
             sidebar_width: SIDEBAR_DEFAULT,
-            list_width: LIST_DEFAULT,
+            list_share: LIST_SHARE_DEFAULT,
             resizing: None,
             shown: PaneLayout {
                 sidebar: px(0.),
-                list: LIST_DEFAULT,
+                list: px(400.),
             },
             gliding: None,
             sidebar_progress: 0.,
@@ -695,7 +701,7 @@ impl PigeonApp {
         self.set_text_scale(saved.text_scale, cx);
         self.sidebar_open = saved.sidebar_open;
         self.sidebar_width = px(saved.sidebar_width).clamp(SIDEBAR_WIDTH.0, SIDEBAR_WIDTH.1);
-        self.list_width = px(saved.list_width).clamp(LIST_WIDTH.0, LIST_WIDTH.1);
+        self.list_share = saved.list_share.clamp(LIST_SHARE.0, LIST_SHARE.1);
         self.archived_expanded = saved.archived_expanded;
         self.set_appearance(saved.appearance, window, cx);
         self.calendar.update(cx, |c, _| {
@@ -721,7 +727,7 @@ impl PigeonApp {
             text_scale: self.text_scale,
             sidebar_open: self.sidebar_open,
             sidebar_width: f32::from(self.sidebar_width),
-            list_width: f32::from(self.list_width),
+            list_share: self.list_share,
             archived_expanded: self.archived_expanded,
             calendar_view: match calendar.view {
                 ViewKind::Day => CalendarViewSetting::Day,
@@ -1286,8 +1292,8 @@ impl PigeonApp {
 
     /// The panes' widths in a window `width` wide. The sidebar hides while
     /// it would squeeze the list under its minimum, unless the user showed it
-    /// anyway; then the list squeezes further. The reader takes the rest,
-    /// never less than `READER_MIN`.
+    /// anyway; then the list squeezes further. The list takes its share of
+    /// what's left and the reader the rest, never less than `READER_MIN`.
     pub fn pane_layout(&self, width: Pixels) -> PaneLayout {
         let room = width - RAIL_WIDTH - READER_MIN;
         let sidebar = if self.sidebar_open && (self.sidebar_fits(width) || self.sidebar_forced) {
@@ -1297,12 +1303,12 @@ impl PigeonApp {
         } else {
             px(0.)
         };
-        let list = self.list_width.min(room - sidebar).max(LIST_SQUEEZED);
+        let list = list_width(self.list_share, width - RAIL_WIDTH - sidebar);
         PaneLayout { sidebar, list }
     }
 
     fn sidebar_fits(&self, width: Pixels) -> bool {
-        width - RAIL_WIDTH - READER_MIN - self.sidebar_width >= LIST_WIDTH.0
+        width - RAIL_WIDTH - READER_MIN - self.sidebar_width >= LIST_MIN
     }
 
     pub(crate) fn toggle_sidebar(
@@ -2595,7 +2601,7 @@ impl PigeonApp {
         let (min, max) = self.pane_range(kind, width);
         let before = match kind {
             PaneResize::Sidebar => self.sidebar_width,
-            PaneResize::List => self.list_width,
+            PaneResize::List => self.pane_layout(width).list,
         };
         match kind {
             // Dragged well past its minimum, the sidebar hides, keeping its
@@ -2607,12 +2613,17 @@ impl PigeonApp {
             PaneResize::Sidebar => self.sidebar_width = x.min(max).max(min),
             PaneResize::List => {
                 let sidebar = self.pane_layout(width).sidebar;
-                self.list_width = (x - sidebar).min(max).max(min);
+                let split = width - RAIL_WIDTH - sidebar;
+                self.list_share = (x - sidebar).min(max).max(min) / split;
             }
         }
         let (after, default) = match kind {
             PaneResize::Sidebar => (self.sidebar_width, SIDEBAR_DEFAULT),
-            PaneResize::List => (self.list_width, LIST_DEFAULT),
+            PaneResize::List => {
+                let layout = self.pane_layout(width);
+                let split = width - RAIL_WIDTH - layout.sidebar;
+                (layout.list, list_width(LIST_SHARE_DEFAULT, split))
+            }
         };
         // MA-074: a tap as the pane reaches a limit or its default width.
         if crosses_mark(before, after, &[min, max, default]) {
@@ -2629,11 +2640,8 @@ impl PigeonApp {
     fn pane_range(&self, kind: PaneResize, width: Pixels) -> (Pixels, Pixels) {
         let room = width - RAIL_WIDTH - READER_MIN;
         match kind {
-            PaneResize::Sidebar => (SIDEBAR_WIDTH.0, (room - LIST_WIDTH.0).min(SIDEBAR_WIDTH.1)),
-            PaneResize::List => (
-                LIST_WIDTH.0,
-                (room - self.pane_layout(width).sidebar).min(LIST_WIDTH.1),
-            ),
+            PaneResize::Sidebar => (SIDEBAR_WIDTH.0, (room - LIST_MIN).min(SIDEBAR_WIDTH.1)),
+            PaneResize::List => (LIST_MIN, room - self.pane_layout(width).sidebar),
         }
     }
 
@@ -2659,7 +2667,7 @@ impl PigeonApp {
     pub fn reset_pane(&mut self, kind: PaneResize, cx: &mut Context<Self>) {
         match kind {
             PaneResize::Sidebar => self.sidebar_width = SIDEBAR_DEFAULT,
-            PaneResize::List => self.list_width = LIST_DEFAULT,
+            PaneResize::List => self.list_share = LIST_SHARE_DEFAULT,
         }
         self.gliding = Some(kind);
         cx.notify();
@@ -3083,6 +3091,16 @@ fn crosses_mark(before: Pixels, after: Pixels, marks: &[Pixels]) -> bool {
         .any(|&m| (before < m && after >= m) || (before > m && after <= m))
 }
 
+/// The list's width at `share` of the `split` it shares with the reader:
+/// at least `LIST_MIN`, leaving the reader `READER_MIN`, and never under
+/// `LIST_SQUEEZED`.
+fn list_width(share: f32, split: Pixels) -> Pixels {
+    (split * share)
+        .max(LIST_MIN)
+        .min(split - READER_MIN)
+        .max(LIST_SQUEEZED)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3098,6 +3116,21 @@ mod tests {
         assert!(!crosses_mark(px(360.), px(360.), &marks));
         assert!(!crosses_mark(px(360.), px(350.), &marks));
         assert!(!crosses_mark(px(200.), px(210.), &marks));
+    }
+
+    #[test]
+    fn list_keeps_its_share_within_limits() {
+        // The default window beside the default sidebar.
+        let split = px(1044.);
+        assert!((list_width(LIST_SHARE_DEFAULT, split) - px(400.)).abs() < px(5.));
+        // Twice as wide, twice the list: no fixed cap.
+        assert_eq!(list_width(0.5, px(2000.)), px(1000.));
+        // The reader keeps its minimum, the list its own.
+        assert_eq!(list_width(0.85, px(1000.)), px(640.));
+        assert_eq!(list_width(0.15, px(1000.)), LIST_MIN);
+        // Squeezed beside a sidebar shown in a narrow window.
+        assert_eq!(list_width(0.38, px(600.)), px(240.));
+        assert_eq!(list_width(0.38, px(500.)), LIST_SQUEEZED);
     }
 
     fn rect(top: f32, height: f32) -> Bounds<Pixels> {

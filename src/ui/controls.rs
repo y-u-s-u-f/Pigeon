@@ -49,6 +49,17 @@ pub fn push_button(
     theme: &Theme,
 ) -> Stateful<Div> {
     let label = label.into();
+    push_button_frame(id, label.clone(), kind, theme).child(label)
+}
+
+/// `push_button` without its label, for a caller that lays out its own.
+pub fn push_button_frame(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    kind: ButtonKind,
+    theme: &Theme,
+) -> Stateful<Div> {
+    let label = label.into();
     let el = focusable_control(div().id(id), theme)
         .role(gpui::Role::Button)
         .aria_label(label.clone())
@@ -87,8 +98,7 @@ pub fn push_button(
                 .text_color(theme.text_muted)
                 .hover(|s| s.bg(theme.hover_bg).text_color(theme.text))
                 .active(|s| s.bg(theme.selected_bg).text_color(theme.text)),
-        })
-        .child(label);
+        });
     stop_mouse_down(el)
 }
 

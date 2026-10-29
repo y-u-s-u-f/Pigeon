@@ -20,7 +20,7 @@ use gpui::{
 
 use super::{
     HEADER_HEIGHT, avatar,
-    controls::{ButtonKind, push_button},
+    controls::{ButtonKind, push_button, push_button_frame},
     html_view, icon, icon_button, icon_button_tinted, icon_button_with,
     selectable::{ORDER_BASE, OnClear, Selectable},
     window_drag_area,
@@ -1170,9 +1170,12 @@ impl PigeonApp {
                             )
                             // Others' addresses on hover and while the
                             // message has the keys (MA-047); never my own.
+                            // Takes only the space the name leaves, so the
+                            // hidden address never squeezes the name.
                             .when(!mine, |this| {
                                 this.child(
                                     div()
+                                        .flex_1()
                                         .min_w_0()
                                         .truncate()
                                         .text_size(TEXT_SM)
@@ -2354,15 +2357,21 @@ fn render_quick_replies(replies: &[String], theme: &Theme) -> AnyElement {
         .gap(SPACE_SM)
         .children(replies.iter().take(3).enumerate().map(|(n, reply)| {
             let tip: SharedString = reply.clone().into();
-            push_button(("quick-reply", n), reply.clone(), ButtonKind::Plain, theme)
+            push_button_frame(("quick-reply", n), reply.clone(), ButtonKind::Plain, theme)
                 .aria_label(format!("AI reply: {reply}"))
-                // A long one wraps rather than running out of the card.
+                // A long one wraps inside the pill rather than running out of the card.
                 .flex_shrink(1.)
+                .min_w_0()
                 .h_auto()
                 .min_h(CONTROL_MD)
                 .py(SPACE_XS)
                 .max_w(relative(1.))
-                .child(super::keys_caps(&format!("alt-{}", n + 1), theme))
+                .child(div().flex_shrink(1.).min_w_0().child(reply.clone()))
+                .child(
+                    div()
+                        .flex_none()
+                        .child(super::keys_caps(&format!("alt-{}", n + 1), theme)),
+                )
                 .tooltip(move |window, cx| super::tooltip(tip.clone()).build(window, cx))
                 .on_click(move |_, window, cx| window.dispatch_action(Box::new(QuickReply(n)), cx))
         }))

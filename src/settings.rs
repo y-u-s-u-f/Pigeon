@@ -126,7 +126,8 @@ pub struct Saved {
     pub text_scale: f32,
     pub sidebar_open: bool,
     pub sidebar_width: f32,
-    pub list_width: f32,
+    /// The list's share of the width beside the sidebar.
+    pub list_share: f32,
     pub archived_expanded: bool,
     /// "day", "week" or "month".
     pub calendar_view: CalendarViewSetting,
@@ -318,7 +319,7 @@ impl Default for Saved {
             text_scale: 1.,
             sidebar_open: true,
             sidebar_width: f32::from(crate::app::SIDEBAR_DEFAULT),
-            list_width: f32::from(crate::app::LIST_DEFAULT),
+            list_share: crate::app::LIST_SHARE_DEFAULT,
             archived_expanded: false,
             calendar_view: CalendarViewSetting::Week,
             week_numbers: false,
