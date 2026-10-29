@@ -2100,6 +2100,8 @@ impl Composer {
             .role(gpui::Role::Toolbar)
             .aria_label("Formatting")
             .flex()
+            // A narrow reader wraps it onto a second row.
+            .flex_wrap()
             .items_center()
             .gap(SPACE_2XS)
             .children(Format::TOOLBAR.iter().enumerate().flat_map(
@@ -2495,8 +2497,11 @@ impl Render for Composer {
 
         let send_row = div()
             .flex()
+            // A narrow reader wraps the hints and the rest onto more rows.
+            .flex_wrap()
             .items_center()
-            .gap(SPACE_MD)
+            .gap_x(SPACE_MD)
+            .gap_y(SPACE_SM)
             .child(
                 focusable_control(div().id("send"), &theme)
                     .role(gpui::Role::Button)
@@ -2532,8 +2537,10 @@ impl Render for Composer {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
-                    .gap(SPACE_MD)
+                    .gap_x(SPACE_MD)
+                    .gap_y(SPACE_SM)
                     .text_size(TEXT_SM)
                     .text_color(theme.text_faint)
                     .child(hint("cmd-enter", "Send"))
