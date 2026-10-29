@@ -1199,6 +1199,7 @@ impl PigeonApp {
             )
             .child(
                 div()
+                    .relative()
                     .flex_none()
                     .flex()
                     .items_center()
@@ -1212,18 +1213,38 @@ impl PigeonApp {
                             .text_size(TEXT_SM)
                             .text_color(theme.text_faint)
                             .font_features(tabular_figures())
+                            // The buttons cover the date while they show.
+                            .when(!draft, |d| {
+                                if focused {
+                                    d.opacity(0.)
+                                } else {
+                                    d.group_hover("message-header", |s| s.opacity(0.))
+                                }
+                            })
                             .child(date)
                             .children(age.map(|age| div().text_size(TEXT_XS).child(age))),
                     )
                     // Reply to this message, rather than the newest (ME-010).
+                    // Over the date, so they take no room from the name.
                     .when(!draft, |this| {
                         this.child(
                             div()
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .right_0()
                                 .flex()
-                                .when(!focused, |d| {
-                                    d.opacity(0.)
-                                        .group_hover("message-header", |s| s.opacity(1.))
-                                })
+                                .items_center()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .rounded(RADIUS_SM)
+                                        .bg(theme.overlay_bg)
+                                        .when(!focused, |d| {
+                                            d.invisible().group_hover("message-header", |s| {
+                                                s.visible()
+                                            })
+                                        })
                                 .child(
                                     super::icon_button_small(
                                         ("message-reply", ix),
@@ -1257,6 +1278,7 @@ impl PigeonApp {
                                             );
                                         },
                                     )),
+                                ),
                                 ),
                         )
                     }),
