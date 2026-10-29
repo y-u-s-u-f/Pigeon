@@ -36,7 +36,12 @@ use super::{
 use crate::ui::style::*;
 use crate::{
     actions::{COMMANDS, Scope, SignOut, SyncNow},
-    app::{Density, PigeonApp, ToastKind, menu_bar, shell},
+    ai::{NotifyFor, Provider},
+    app::{
+        Density, PigeonApp, ToastKind,
+        ai::{self as app_ai, MainRow},
+        menu_bar, shell,
+    },
     assets::Icon,
     backend::Source,
     data::Contact,
@@ -104,6 +109,10 @@ const JOIN_KEYS: &[&str] = &["⌃⌥⌘J", "⌃⌥⌘M", "Off"];
 const KEYMAPS: &[&str] = &["Gmail", "Apple Mail"];
 // As `DockBadge::ALL`.
 const DOCK_BADGES: &[&str] = &["Off", "Primary", "All Inbox"];
+// AI-1: as `[NotifyFor::All, NotifyFor::Important]`.
+const NOTIFY_FOR: &[&str] = &["All New Mail", "Important Only"];
+const NEEDS_WRITING: &str = "Needs a writing model key in .env.";
+const NEEDS_JEV: &str = "Needs a Jev key in .env.";
 /// A slider's keyboard step.
 const SLIDER_STEP: f32 = 0.1;
 
@@ -548,9 +557,8 @@ impl PigeonApp {
             Control::Slider { locked, .. } if !locked => Change::Reset,
             // Return on the confirmation is Cancel unless → moved to Sign
             // Out or Regenerate (MB-028).
-            _ if self.settings_page.confirm == Some(id) && !self.settings_page.confirm_armed => {
-                self.settings_page.confirm = None;
-                return cx.notify();
+            _ if self.setting_confirming(id, cx) && !self.settings_page.confirm_armed => {
+                return self.cancel_setting_confirm(id, cx);
             }
             Control::Text { .. } if self.settings_page.confirm == Some(id) => {
                 return self.press_text_button(id, 1, window, cx);
@@ -572,10 +580,12 @@ impl PigeonApp {
 
     /// A row's confirmation: Cancel, and `label` doing the thing. The
     /// keyboard ring (`keyboard`) is on whichever ← and → chose.
+    #[allow(clippy::too_many_arguments)]
     fn confirm_buttons(
         &self,
+        id: SettingId,
         ix: usize,
-        label: &'static str,
+        (cancel, label, kind): (&'static str, &'static str, ButtonKind),
         keyboard: bool,
         confirm: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         theme: &Theme,
@@ -593,26 +603,20 @@ impl PigeonApp {
             .items_center()
             .gap(SPACE_SM)
             .child(
-                push_button(("settings-cancel", ix), "Cancel", ButtonKind::Plain, theme)
+                push_button(("settings-cancel", ix), cancel, ButtonKind::Plain, theme)
                     .map(keyboard_ring(keyboard && !armed))
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         cx.stop_propagation();
-                        this.settings_page.confirm = None;
-                        cx.notify();
+                        this.cancel_setting_confirm(id, cx);
                     })),
             )
             .child(
-                push_button(
-                    ("settings-confirm", ix),
-                    label,
-                    ButtonKind::Destructive,
-                    theme,
-                )
-                .map(keyboard_ring(keyboard && armed))
-                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                    cx.stop_propagation();
-                    confirm(this, window, cx);
-                })),
+                push_button(("settings-confirm", ix), label, kind, theme)
+                    .map(keyboard_ring(keyboard && armed))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        cx.stop_propagation();
+                        confirm(this, window, cx);
+                    })),
             )
             .into_any_element()
     }
@@ -635,6 +639,14 @@ impl PigeonApp {
             (SettingId::McpToken, 1) if self.settings_page.confirm != Some(id) => {
                 self.settings_page.confirm = Some(id);
                 self.settings_page.confirm_armed = false;
+                None
+            }
+            (SettingId::AiWriting, 0) => {
+                self.test_ai_connection(Provider::Writing, cx);
+                None
+            }
+            (SettingId::AiJev, 0) => {
+                self.test_ai_connection(Provider::Jev, cx);
                 None
             }
             (SettingId::McpToken, 1) => {
@@ -676,6 +688,14 @@ impl PigeonApp {
                 _ => {}
             },
             SettingId::DefaultMailApp => shell::make_default_mail_app(cx),
+            // Turn On, under the note: confirmed for where text goes now.
+            SettingId::Ai => {
+                self.settings_page.confirm = None;
+                let mut prefs = settings::get(cx).ai.clone();
+                prefs.enabled = true;
+                prefs.note_ack = Some(self.backend.read(cx).ai_fingerprint());
+                app_ai::set_prefs(prefs, cx);
+            }
             SettingId::SignOut => {
                 let google = self.backend.read(cx).source() == Source::Google;
                 if google && self.settings_page.confirm != Some(id) {
@@ -710,7 +730,7 @@ impl PigeonApp {
             }
             return;
         };
-        if self.settings_page.confirm == Some(id) {
+        if self.setting_confirming(id, cx) {
             self.settings_page.confirm_armed = up;
             return cx.notify();
         }
@@ -974,7 +994,166 @@ impl PigeonApp {
             | SettingId::McpEditCalendar => {
                 Control::Switch(mcp_capability(id).is_some_and(|c| settings::get(cx).mcp.allows(c)))
             }
+            // AI-1.
+            SettingId::Ai => match self.ai_main_row(cx) {
+                MainRow::Unavailable => {
+                    Control::Info("Needs a writing model or Jev key in .env.".into())
+                }
+                MainRow::Off => Control::Switch(false),
+                MainRow::On => Control::Switch(true),
+                MainRow::Asking | MainRow::Paused => Control::Button {
+                    label: "Turn On",
+                    danger: false,
+                },
+            },
+            SettingId::AiWriting | SettingId::AiJev => {
+                let providers = self.backend.read(cx).ai_providers();
+                let (info, unset) = if id == SettingId::AiWriting {
+                    (
+                        providers.writing,
+                        "Not set. Add PIGEON_AI_BASE_URL, PIGEON_AI_API_KEY and PIGEON_AI_MODEL \
+                         to .env, then restart Pigeon.",
+                    )
+                } else {
+                    (
+                        providers.jev,
+                        "Not set. Add PIGEON_JEV_API_KEY to .env, then restart Pigeon.",
+                    )
+                };
+                match (info.health, info.host, info.model) {
+                    (Some(_), Some(host), Some(model)) => Control::Text {
+                        text: format!("{host} · {model}"),
+                        mono: true,
+                        // Test Connection sends, so only once the note is
+                        // confirmed; the status line says so meanwhile.
+                        buttons: if self.ai_main_row(cx) == MainRow::On {
+                            &["Test Connection"]
+                        } else {
+                            &[]
+                        },
+                    },
+                    _ => Control::Info(unset.into()),
+                }
+            }
+            SettingId::AiListSummaries | SettingId::AiCleanView | SettingId::AiNeedsReply => {
+                let providers = self.backend.read(cx).ai_providers();
+                let writing = providers.writing.health.is_some();
+                let jev = providers.jev.health.is_some();
+                let prefs = &settings::get(cx).ai;
+                let (on, missing) = match id {
+                    SettingId::AiListSummaries => {
+                        (prefs.list_summaries, (!writing).then_some(NEEDS_WRITING))
+                    }
+                    SettingId::AiCleanView => (
+                        prefs.clean_view,
+                        (!writing)
+                            .then_some(NEEDS_WRITING)
+                            .or((!jev).then_some(NEEDS_JEV)),
+                    ),
+                    _ => (prefs.needs_reply, (!jev).then_some(NEEDS_JEV)),
+                };
+                match missing {
+                    Some(why) => Control::Info(why.into()),
+                    None => Control::Switch(on),
+                }
+            }
+            SettingId::AiNotifyFor => {
+                let jev = self.backend.read(cx).ai_providers().jev.health.is_some();
+                match () {
+                    _ if !jev => Control::Info(
+                        "All new mail. Important Only needs a Jev key in .env.".into(),
+                    ),
+                    _ if self.ai_main_row(cx) != MainRow::On => {
+                        Control::Info("All new mail. Important Only needs AI on.".into())
+                    }
+                    _ => Control::Choice(
+                        (settings::get(cx).ai.notify_for == NotifyFor::Important) as usize,
+                        NOTIFY_FOR,
+                    ),
+                }
+            }
+            SettingId::AiActivity => {
+                let lines: Vec<String> = self
+                    .backend
+                    .read(cx)
+                    .ai_activity()
+                    .iter()
+                    .map(|a| {
+                        let at = chrono::DateTime::from_timestamp_millis(a.at)
+                            .map(|t| t.with_timezone(&chrono::Local).time())
+                            .map(crate::calendar::time::time_label)
+                            .unwrap_or_default();
+                        format!(
+                            "{at}  {} · {} · {} in, {} out · {} ms · {}",
+                            app_ai::feature_label(a.feature),
+                            a.model,
+                            a.tokens_in,
+                            a.tokens_out,
+                            a.ms,
+                            match &a.result {
+                                Ok(()) => "OK".to_string(),
+                                Err(why) => format!("Error: {why}"),
+                            }
+                        )
+                    })
+                    .collect();
+                Control::Text {
+                    text: if lines.is_empty() {
+                        "No calls yet.".into()
+                    } else {
+                        lines.join("\n")
+                    },
+                    mono: false,
+                    buttons: &[],
+                }
+            }
         }
+    }
+
+    /// Settings › AI's main row as it stands.
+    fn ai_main_row(&self, cx: &App) -> MainRow {
+        let b = self.backend.read(cx);
+        let providers = b.ai_providers();
+        app_ai::main_row(
+            &settings::get(cx).ai,
+            &b.ai_fingerprint(),
+            providers.writing.health.is_some() || providers.jev.health.is_some(),
+            self.settings_page.confirm == Some(SettingId::Ai),
+        )
+    }
+
+    /// The row asks to confirm: Sign Out, Regenerate, and AI's note,
+    /// which shows while it's paused too.
+    fn setting_confirming(&self, id: SettingId, cx: &App) -> bool {
+        self.settings_page.confirm == Some(id)
+            || (id == SettingId::Ai && self.ai_main_row(cx) == MainRow::Paused)
+    }
+
+    /// Cancel on a confirmation; on AI's paused note, it turns AI off.
+    fn cancel_setting_confirm(&mut self, id: SettingId, cx: &mut Context<Self>) {
+        let paused = id == SettingId::Ai && self.ai_main_row(cx) == MainRow::Paused;
+        self.settings_page.confirm = None;
+        if paused {
+            let mut prefs = settings::get(cx).ai.clone();
+            prefs.enabled = false;
+            app_ai::set_prefs(prefs, cx);
+        }
+        cx.notify();
+    }
+
+    /// A model row's status line, and whether it's a problem.
+    fn ai_provider_status(&self, id: SettingId, cx: &App) -> Option<(String, bool)> {
+        let providers = self.backend.read(cx).ai_providers();
+        let (info, provider) = match id {
+            SettingId::AiWriting => (providers.writing, Provider::Writing),
+            SettingId::AiJev => (providers.jev, Provider::Jev),
+            _ => return None,
+        };
+        app_ai::provider_status(
+            &info,
+            self.ai_main_row(cx) == MainRow::On,
+            self.ai.testing.contains(&provider),
+        )
     }
 
     fn change_setting(
@@ -1103,6 +1282,31 @@ impl PigeonApp {
                     mcp::set_capability(capability, on, cx);
                 }
             }
+            SettingId::Ai => {
+                let mut prefs = settings::get(cx).ai.clone();
+                let fingerprint = self.backend.read(cx).ai_fingerprint();
+                if on && prefs.note_ack.as_deref() != Some(fingerprint.as_str()) {
+                    self.settings_page.confirm = Some(id);
+                    self.settings_page.confirm_armed = false;
+                } else {
+                    prefs.enabled = on;
+                    app_ai::set_prefs(prefs, cx);
+                }
+            }
+            SettingId::AiListSummaries
+            | SettingId::AiCleanView
+            | SettingId::AiNeedsReply
+            | SettingId::AiNotifyFor => {
+                let mut prefs = settings::get(cx).ai.clone();
+                match id {
+                    SettingId::AiListSummaries => prefs.list_summaries = on,
+                    SettingId::AiCleanView => prefs.clean_view = on,
+                    SettingId::AiNeedsReply => prefs.needs_reply = on,
+                    _ => prefs.notify_for = [NotifyFor::All, NotifyFor::Important][choice],
+                }
+                app_ai::set_prefs(prefs, cx);
+            }
+            SettingId::AiWriting | SettingId::AiJev | SettingId::AiActivity => {}
             SettingId::ShortcutPreset => {
                 let preset = KeymapPreset::ALL[choice];
                 shell::change_app_settings(cx, |s| s.keymap = preset);
@@ -1570,8 +1774,13 @@ impl PigeonApp {
             }
             _ => entry.description(),
         };
-        let confirming = matches!(entry, Entry::Setting(id) if self.settings_page.confirm == Some(id))
-            && !in_results;
+        let confirming =
+            matches!(entry, Entry::Setting(id) if self.setting_confirming(id, cx)) && !in_results;
+        // AI-1: a model row's status, a problem in red.
+        let ai_status = match entry {
+            Entry::Setting(id) if !in_results => self.ai_provider_status(id, cx),
+            _ => None,
+        };
         // Why Make Default failed, until it works (ME-074); why the MCP
         // token won't last (SYS-4).
         let error = match entry {
@@ -1582,8 +1791,23 @@ impl PigeonApp {
                 _ => None,
             },
             Entry::Setting(SettingId::McpToken) => mcp::warning(cx),
+            Entry::Setting(SettingId::AiWriting | SettingId::AiJev) => ai_status
+                .as_ref()
+                .filter(|(_, problem)| *problem)
+                .map(|(text, _)| text.clone()),
             _ => None,
         };
+        let ai_note = ai_status
+            .filter(|(_, problem)| !problem)
+            .map(|(text, _)| text);
+        // AI-1: the note on what is sent where, before AI turns on.
+        let ai_confirm_note = (confirming && entry == Entry::Setting(SettingId::Ai)).then(|| {
+            let providers = self.backend.read(cx).ai_providers();
+            app_ai::note(
+                providers.writing.host.as_deref(),
+                providers.jev.host.as_deref(),
+            )
+        });
 
         // MA-073: what macOS says, above Turn On or Open System Settings.
         let permission = (entry == Entry::Setting(SettingId::NotificationPermission)
@@ -1659,6 +1883,7 @@ impl PigeonApp {
                                     .silent(),
                                 ),
                         )
+                        .children(ai_note.clone())
                         .children(
                             error
                                 .clone()
@@ -1687,6 +1912,17 @@ impl PigeonApp {
                         .into_any_element(),
                 ),
             ),
+            _ if let Some(note) = &ai_confirm_note => {
+                let title = if self.ai_main_row(cx) == MainRow::Paused {
+                    "AI is paused until you review what is sent"
+                } else {
+                    "Turn on AI?"
+                };
+                (
+                    div().child(title).into_any_element(),
+                    Some(div().child(note.clone()).into_any_element()),
+                )
+            }
             _ if confirming && entry == Entry::Setting(SettingId::McpToken) => (
                 div().child("Regenerate the token?").into_any_element(),
                 Some(
@@ -1821,8 +2057,9 @@ impl PigeonApp {
                     unreachable!()
                 };
                 Some(self.confirm_buttons(
+                    id,
                     ix,
-                    "Regenerate",
+                    ("Cancel", "Regenerate", ButtonKind::Destructive),
                     cursor && ring,
                     move |this, window, cx| this.press_text_button(id, 1, window, cx),
                     &theme,
@@ -1862,9 +2099,17 @@ impl PigeonApp {
                     unreachable!()
                 };
                 Some(if confirming {
+                    let buttons = match self.ai_main_row(cx) {
+                        MainRow::Paused if id == SettingId::Ai => {
+                            ("Turn Off", label, ButtonKind::Primary)
+                        }
+                        _ if id == SettingId::Ai => ("Cancel", label, ButtonKind::Primary),
+                        _ => ("Cancel", label, ButtonKind::Destructive),
+                    };
                     self.confirm_buttons(
+                        id,
                         ix,
-                        label,
+                        buttons,
                         cursor && ring,
                         move |this, window, cx| this.press_setting(id, window, cx),
                         &theme,
@@ -1905,6 +2150,7 @@ impl PigeonApp {
                 this.aria_description(description)
             })
             .when_some(error, |this, error| this.aria_description(error))
+            .when_some(ai_confirm_note, |this, note| this.aria_description(note))
             .min_h(if compact { ROW_MIN_COMPACT } else { ROW_MIN })
             .px(SPACE_MD)
             .py(if compact { SPACE_XS } else { SPACE_SM })
@@ -2150,6 +2396,8 @@ fn text_button_label(id: SettingId, button: usize, label: &str) -> String {
         (SettingId::McpToken, 0) => "Copy Access Token".into(),
         (SettingId::McpToken, 1) => "Regenerate Access Token".into(),
         (SettingId::McpConfig, 0) => "Copy Agent Config".into(),
+        (SettingId::AiWriting, 0) => "Test Writing Model Connection".into(),
+        (SettingId::AiJev, 0) => "Test Jev Connection".into(),
         _ => label.to_string(),
     }
 }

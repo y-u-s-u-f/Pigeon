@@ -223,8 +223,25 @@ actions!(
         GoToScheduled,
         EditScheduledSend,
         CancelScheduledSend,
+        // AI sprint (AI-1): declared here, handled by their owners in
+        // `app/ai.rs`, `app/ai_reader.rs` and `app/ai_palette.rs`.
+        GoToNeedsReply,
+        DismissNeedsReply,
+        ApplySuggestedLabel,
+        SummarizeConversation,
+        ToggleCleanView,
+        RetryCleanView,
+        ReportBadCleanView,
+        AddToCalendar,
+        AskPigeon,
+        DoItForMe,
     ]
 );
+
+/// AI-11: start a reply from quick reply 0, 1 or 2 (⌥1–⌥3).
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(namespace = pigeon, no_json)]
+pub struct QuickReply(pub usize);
 
 /// ME-060: open Settings at one section; one ⌘K row each.
 #[derive(Clone, PartialEq, gpui::Action)]
@@ -751,6 +768,21 @@ fn shared_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-.", later_picker::Dismiss, Some(LATER)),
         KeyBinding::new("cmd-.", later_picker::Dismiss, Some(LATER_INPUT)),
         KeyBinding::new("cmd-w", later_picker::Dismiss, Some(LATER)),
+        // AI sprint (AI-1).
+        KeyBinding::new("alt-cmd-a", OpenSettingsSection(Section::Ai), Some(CONTEXT)),
+        KeyBinding::new("g r", GoToNeedsReply, Some(MAIL)),
+        KeyBinding::new("shift-h", DismissNeedsReply, Some(MAIL)),
+        KeyBinding::new("alt-l", ApplySuggestedLabel, Some(MAIL)),
+        KeyBinding::new("shift-s", SummarizeConversation, Some(MAIL)),
+        KeyBinding::new("shift-v", ToggleCleanView, Some(MAIL)),
+        KeyBinding::new("alt-cmd-r", RetryCleanView, Some(MAILBOX)),
+        KeyBinding::new("alt-shift-cmd-b", ReportBadCleanView, Some(MAILBOX)),
+        KeyBinding::new("alt-1", QuickReply(0), Some(MAIL)),
+        KeyBinding::new("alt-2", QuickReply(1), Some(MAIL)),
+        KeyBinding::new("alt-3", QuickReply(2), Some(MAIL)),
+        KeyBinding::new("shift-t", AddToCalendar, Some(MAIL)),
+        KeyBinding::new("cmd-shift-j", AskPigeon, Some(CONTEXT)),
+        KeyBinding::new("cmd-shift-l", DoItForMe, Some(MAILBOX)),
     ]
 }
 
@@ -983,10 +1015,32 @@ pub enum When {
     Scheduled,
     /// Signed in, or on demo data picked on the sign-in screen (ME-050).
     CanSignOut,
+    /// AI-1: an AI feature may run, with what else it needs.
+    Ai(AiNeed),
+}
+
+/// What an AI command needs (`When::Ai`): its feature allowed now
+/// (`Backend::ai_allows`), and for the reader's commands, in Mail, one
+/// selected conversation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AiNeed {
+    /// Needs Reply is on.
+    NeedsReply,
+    /// Needs Reply, on the selected conversation.
+    NeedsReplyThread,
+    Label,
+    Summary,
+    CleanView,
+    /// Quick replies, on a conversation that can be replied to.
+    QuickReply,
+    /// Email to event.
+    Event,
+    Ask,
+    DoIt,
 }
 
 macro_rules! commands {
-    ($($group:ident: $name:literal, $icon:ident, $action:ident $(($arg:expr))? $(, $flag:ident)? $(if $when:ident)? $(=> $toggle:ident)?;)*) => {
+    ($($group:ident: $name:literal, $icon:ident, $action:ident $(($arg:expr))? $(, $flag:ident)? $(if $when:ident $(($need:ident))?)? $(=> $toggle:ident)?;)*) => {
         &[$(Command {
             name: $name,
             group: Group::$group,
@@ -995,7 +1049,7 @@ macro_rules! commands {
             action_name: <$action as Action>::name_for_type,
             help_only: commands!(@help $($flag)?),
             global: commands!(@global $($flag)?),
-            when: commands!(@when $($when)?),
+            when: commands!(@when $($when $($need)?)?),
             toggle: commands!(@toggle $($toggle)?),
         }),*]
     };
@@ -1009,6 +1063,7 @@ macro_rules! commands {
     (@global help_only) => { false };
     (@when) => { When::Always };
     (@when $when:ident) => { When::$when };
+    (@when $when:ident $need:ident) => { When::$when(AiNeed::$need) };
 }
 
 /// Every command, in palette order.
@@ -1197,6 +1252,21 @@ pub const COMMANDS: &[Command] = commands! {
     Compose: "Cancel Scheduled Send", X, CancelScheduledSend if Scheduled;
     GoTo: "Go to Snoozed", AlarmClock, GoToSnoozed;
     GoTo: "Go to Scheduled", Clock, GoToScheduled;
+    // AI sprint (AI-1).
+    App: "AI Settings", Settings, OpenSettingsSection(Section::Ai);
+    GoTo: "Go to Needs Reply", Reply, GoToNeedsReply if Ai(NeedsReply);
+    Conversation: "Dismiss / Restore Needs Reply", Check, DismissNeedsReply if Ai(NeedsReplyThread);
+    Conversation: "Apply Suggested Label", Tag, ApplySuggestedLabel if Ai(Label);
+    Conversation: "Summarize Conversation", TextQuote, SummarizeConversation if Ai(Summary);
+    Conversation: "Toggle Clean View", FileText, ToggleCleanView if Ai(CleanView);
+    Conversation: "Retry Clean View", RefreshCw, RetryCleanView if Ai(CleanView);
+    Conversation: "Report Bad Clean View", OctagonAlert, ReportBadCleanView if Ai(CleanView);
+    Conversation: "Quick Reply 1", Reply, QuickReply(0) if Ai(QuickReply);
+    Conversation: "Quick Reply 2", Reply, QuickReply(1) if Ai(QuickReply);
+    Conversation: "Quick Reply 3", Reply, QuickReply(2) if Ai(QuickReply);
+    Conversation: "Add to Calendar", Calendar, AddToCalendar if Ai(Event);
+    App: "Ask Pigeon", MessagesSquare, AskPigeon if Ai(Ask);
+    Conversation: "Do It for Me…", Check, DoItForMe if Ai(DoIt);
 };
 
 #[cfg(test)]
@@ -1238,6 +1308,132 @@ mod tests {
         let gmail = preset_bindings(KeymapPreset::Gmail);
         assert_eq!(keys_of(&gmail, &DiscardDraft), [send]);
         assert!(keys_of(&gmail, &SendMessage).is_empty());
+    }
+
+    /// Where the bindings can be active together, innermost last.
+    fn context_stacks() -> Vec<Vec<KeyContext>> {
+        let stack = |names: &[&str]| -> Vec<KeyContext> {
+            names
+                .iter()
+                .map(|n| KeyContext::parse(n).expect("context parses"))
+                .collect()
+        };
+        [
+            &["Pigeon", "Mailbox"][..],
+            &["Pigeon", "Mailbox Reader"],
+            &["Pigeon", "Mailbox Reader", "Control"],
+            &["Pigeon", "Mailbox Reader", "Attachment"],
+            &["Pigeon", "Mailbox", "Composer"],
+            &["Pigeon", "Mailbox", "Composer", "Input"],
+            &["Pigeon", "Mailbox", "Composer", "Recipients", "Input"],
+            &["Pigeon", "Mailbox", "SearchBar", "Input"],
+            &["Pigeon", "Mailbox Reader", "Original"],
+            &["Pigeon", "Calendar"],
+            &["Pigeon", "Calendar", "EventPanel", "Input"],
+            &["Pigeon", "Settings"],
+            &["Pigeon", "Settings", "SettingsSearch", "Input"],
+            &["Pigeon", "CommandPalette", "Input"],
+            &["Pigeon", "ShortcutsHelp"],
+            &["Pigeon", "ContactCard"],
+            &["Pigeon", "LaterPicker", "Input"],
+        ]
+        .iter()
+        .map(|names| stack(names))
+        .collect()
+    }
+
+    fn strokes(binding: &KeyBinding) -> Vec<String> {
+        binding.keystrokes().iter().map(|k| k.unparse()).collect()
+    }
+
+    /// AI-1: none of the AI bindings is another binding, a prefix of one,
+    /// or starts with one, wherever both can be active.
+    #[test]
+    fn ai_bindings_clash_with_nothing() {
+        let ai: [&dyn Action; 14] = [
+            &OpenSettingsSection(Section::Ai),
+            &GoToNeedsReply,
+            &DismissNeedsReply,
+            &ApplySuggestedLabel,
+            &SummarizeConversation,
+            &ToggleCleanView,
+            &RetryCleanView,
+            &ReportBadCleanView,
+            &QuickReply(0),
+            &QuickReply(1),
+            &QuickReply(2),
+            &AddToCalendar,
+            &AskPigeon,
+            &DoItForMe,
+        ];
+        let is_ai = |b: &KeyBinding| ai.iter().any(|a| b.action().partial_eq(*a));
+        for preset in KeymapPreset::ALL {
+            let all: Vec<KeyBinding> = preset_bindings(preset)
+                .into_iter()
+                .chain(shared_bindings())
+                .collect();
+            for action in ai {
+                assert!(
+                    all.iter().any(|b| b.action().partial_eq(action)),
+                    "{} has no binding",
+                    action.name()
+                );
+            }
+            for stack in context_stacks() {
+                let active: Vec<&KeyBinding> = all
+                    .iter()
+                    // As the keymap does: at any depth of the stack.
+                    .filter(|b| {
+                        b.predicate().is_none_or(|p| {
+                            (1..=stack.len()).any(|n| p.eval_inner(&stack[..n], &stack))
+                        })
+                    })
+                    .collect();
+                for new in active.iter().filter(|b| is_ai(b)) {
+                    let keys = strokes(new);
+                    for other in &active {
+                        if std::ptr::eq(*new, *other) {
+                            continue;
+                        }
+                        let theirs = strokes(other);
+                        let n = keys.len().min(theirs.len());
+                        assert!(
+                            keys[..n] != theirs[..n],
+                            "{preset:?}: {} ({}) clashes with {} ({}) in {stack:?}",
+                            new.action().name(),
+                            keys.join(" "),
+                            other.action().name(),
+                            theirs.join(" "),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ai_commands_are_in_the_table() {
+        for name in [
+            "AI Settings",
+            "Go to Needs Reply",
+            "Dismiss / Restore Needs Reply",
+            "Apply Suggested Label",
+            "Summarize Conversation",
+            "Toggle Clean View",
+            "Retry Clean View",
+            "Report Bad Clean View",
+            "Quick Reply 1",
+            "Quick Reply 2",
+            "Quick Reply 3",
+            "Add to Calendar",
+            "Ask Pigeon",
+            "Do It for Me…",
+        ] {
+            let command = COMMANDS.iter().find(|c| c.name == name);
+            assert!(command.is_some_and(|c| !c.help_only), "{name}");
+        }
+        let ask = COMMANDS.iter().find(|c| c.name == "Ask Pigeon").unwrap();
+        assert_eq!(ask.when, When::Ai(AiNeed::Ask));
     }
 
     #[test]

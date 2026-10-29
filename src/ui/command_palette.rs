@@ -182,6 +182,9 @@ pub struct CommandPalette {
     /// How many of the first entries were used last, shown under "Recent"
     /// while there is no query (ME-062).
     recent: usize,
+    /// CAL-39: writable calendars as (id, name), for Quick Add's tags.
+    #[allow(dead_code)]
+    calendars: Vec<(String, String)>,
     _input_events: Subscription,
 }
 
@@ -252,6 +255,7 @@ impl CommandPalette {
             quick: None,
             prompt: None,
             recent: 0,
+            calendars: Vec::new(),
             _input_events: input_events,
         };
         this.update_matches(cx);
@@ -263,6 +267,10 @@ impl CommandPalette {
     pub fn set_recent(&mut self, recent: usize, cx: &mut Context<Self>) {
         self.recent = recent;
         self.update_matches(cx);
+    }
+
+    pub fn set_calendars(&mut self, calendars: Vec<(String, String)>) {
+        self.calendars = calendars;
     }
 
     /// W4b: a field for a name rather than a list: Enter sends the text

@@ -579,7 +579,7 @@ impl PigeonApp {
     /// Move threads to the folder `to` says (none: leave it), with an undo
     /// toast. When the selected thread goes, the selection moves on to the
     /// next thread that stays, like Gmail's auto-advance.
-    fn move_threads(
+    pub(crate) fn move_threads(
         &mut self,
         targets: Vec<usize>,
         to: impl Fn(&Thread) -> Option<Folder>,
@@ -908,7 +908,7 @@ impl PigeonApp {
     }
 
     /// Add the label to `targets`, or take it off them.
-    fn set_label(
+    pub(crate) fn set_label(
         &mut self,
         label: usize,
         targets: Vec<usize>,
@@ -1388,6 +1388,7 @@ impl PigeonApp {
                     .any(|&ix| self.data.threads[ix].later.snoozed_until.is_some())
             }
             When::Scheduled => mail && thread.is_some_and(|t| t.later.send_at.is_some()),
+            When::Ai(need) => self.ai_command_available(need, cx),
         }
     }
 

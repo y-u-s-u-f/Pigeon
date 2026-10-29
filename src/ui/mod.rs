@@ -1,5 +1,6 @@
 //! Panes and the small building blocks they share.
 
+pub mod ask_panel;
 pub mod calendar;
 pub mod command_palette;
 pub mod composer;

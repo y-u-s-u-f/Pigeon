@@ -175,6 +175,8 @@ pub struct Saved {
     pub dock_badge: DockBadge,
     /// SYS-4: the MCP server and what agents may do.
     pub mcp: crate::mcp::McpPrefs,
+    /// AI-1: Settings › AI.
+    pub ai: crate::ai::AiPrefs,
 }
 
 /// How many recent palette commands are kept (ME-062).
@@ -203,6 +205,8 @@ pub enum SavedNav {
     Category(crate::backend::categories::Category),
     Snoozed,
     Scheduled,
+    /// AI-4; the Inbox while Needs Reply is off.
+    NeedsReply,
 }
 
 impl Default for SavedNav {
@@ -338,6 +342,7 @@ impl Default for Saved {
             event_reminders: true,
             dock_badge: DockBadge::Primary,
             mcp: crate::mcp::McpPrefs::default(),
+            ai: crate::ai::AiPrefs::default(),
         }
     }
 }
@@ -418,6 +423,7 @@ pub enum Section {
     Calendar,
     Notifications,
     MenuBar,
+    Ai,
     Mcp,
     Accounts,
     Shortcuts,
@@ -425,13 +431,14 @@ pub enum Section {
 
 impl Section {
     /// General first (ME-067).
-    pub const ALL: [Section; 9] = [
+    pub const ALL: [Section; 10] = [
         Section::General,
         Section::Appearance,
         Section::Mail,
         Section::Calendar,
         Section::Notifications,
         Section::MenuBar,
+        Section::Ai,
         Section::Mcp,
         Section::Accounts,
         Section::Shortcuts,
@@ -444,6 +451,7 @@ impl Section {
             Section::Calendar => "Calendar",
             Section::Notifications => "Notifications",
             Section::MenuBar => "Menu Bar",
+            Section::Ai => "AI",
             Section::Mcp => "MCP",
             Section::General => "General",
             Section::Accounts => "Accounts",
@@ -458,6 +466,7 @@ impl Section {
             Section::Calendar => Icon::Calendar,
             Section::Notifications => Icon::Bell,
             Section::MenuBar => Icon::PanelTop,
+            Section::Ai => Icon::MessagesSquare,
             Section::Mcp => Icon::Code,
             Section::General => Icon::Settings,
             Section::Accounts => Icon::User,
@@ -472,14 +481,16 @@ impl Section {
             Section::Calendar => &["events", "schedule"],
             Section::Notifications => &["alerts", "banners", "badge", "notify"],
             Section::MenuBar => &["status bar", "status item", "tray", "menubar", "panel"],
-            Section::Mcp => &[
+            Section::Ai => &[
                 "ai",
-                "agents",
-                "model context protocol",
                 "llm",
-                "claude",
-                "integrations",
+                "model",
+                "assistant",
+                "summary",
+                "summaries",
+                "jev",
             ],
+            Section::Mcp => &["agents", "model context protocol", "claude", "integrations"],
             Section::General => &["startup", "launch", "app"],
             Section::Accounts => &["profile", "user", "sign in", "login"],
             Section::Shortcuts => &["keys", "keymap", "hotkeys", "keybindings", "shortcuts"],
@@ -542,6 +553,15 @@ pub enum SettingId {
     McpEditCalendar,
     McpConfig,
     McpActivity,
+    // AI-1.
+    Ai,
+    AiWriting,
+    AiJev,
+    AiListSummaries,
+    AiCleanView,
+    AiNeedsReply,
+    AiNotifyFor,
+    AiActivity,
 }
 
 pub struct SettingMeta {
@@ -640,7 +660,7 @@ pub const SETTINGS: &[SettingMeta] = settings! {
     Shortcuts: ShortcutPreset, "Shortcut preset", "Gmail's or Apple Mail's ⌘ shortcuts. Single-key shortcuts are the same in both.",
         ["apple mail", "gmail", "preset", "keymap", "command", "bindings"];
     Mcp: McpServer, "MCP server", "Lets AI agents on this Mac use your mail and calendar while Pigeon is open, as far as the switches below allow.",
-        ["ai", "agent", "assistant", "llm", "claude", "codex", "cursor", "model context protocol", "server", "automation"];
+        ["agent", "claude", "codex", "cursor", "model context protocol", "server", "automation"];
     Mcp: McpAddress, "Server address", "The URL agents connect to. Only apps on this Mac can reach it.",
         ["url", "port", "localhost", "endpoint", "http"];
     Mcp: McpToken, "Access token", "Agents send it with every request. A new one disconnects them until they have it.",
@@ -661,6 +681,22 @@ pub const SETTINGS: &[SettingMeta] = settings! {
         ["config", "json", "setup", "connect", "install", "claude", "cursor", "codex"];
     Mcp: McpActivity, "Activity", "The last 50 tool calls since Pigeon opened.",
         ["log", "history", "calls", "audit", "requests"];
+    Ai: Ai, "AI", "Summaries, Needs Reply, Clean View, Ask Pigeon and more, from the models set in .env. Nothing is sent while it's off.",
+        ["ai", "llm", "consent", "privacy", "turn on", "enable", "assistant"];
+    Ai: AiWriting, "Writing model", "Writes summaries, replies and answers. Set in .env; a change there takes effect on restart.",
+        ["llm", "openai", "endpoint", "host", "server", "model", "test connection", "key"];
+    Ai: AiJev, "Jev", "Makes quick yes-or-no and pick-one decisions, through OpenRouter. Set in .env; a change there takes effect on restart.",
+        ["openrouter", "typesafe", "classifier", "endpoint", "host", "model", "test connection", "key"];
+    Ai: AiListSummaries, "List summaries", "One line on what each Inbox conversation is about now, in place of its snippet.",
+        ["summary", "snippet", "line", "inbox", "list"];
+    Ai: AiCleanView, "Clean View for newsletters", "Newsletters open as plain, readable text. ⇧V shows the original.",
+        ["newsletter", "reader", "reading view", "clean", "original", "simplify"];
+    Ai: AiNeedsReply, "Needs Reply", "Marks Inbox conversations that wait for your answer, with quick replies to start from.",
+        ["reply", "answer", "follow up", "marker", "quick reply", "todo"];
+    Ai: AiNotifyFor, "Notify for", "Important Only leaves out new mail Jev finds unimportant. The Dock still counts all unread mail.",
+        ["notifications", "important", "filter", "alerts", "quiet"];
+    Ai: AiActivity, "Activity", "The last 100 AI calls since Pigeon opened. Never the text sent.",
+        ["log", "history", "calls", "audit", "requests", "tokens"];
 };
 
 pub fn meta(id: SettingId) -> &'static SettingMeta {
@@ -878,6 +914,14 @@ mod tests {
             notification_sound: false,
             event_reminders: false,
             dock_badge: DockBadge::AllInbox,
+            ai: crate::ai::AiPrefs {
+                enabled: true,
+                note_ack: Some("gmail|ai.example.com|openrouter.ai".into()),
+                list_summaries: false,
+                clean_view: true,
+                needs_reply: false,
+                notify_for: crate::ai::NotifyFor::Important,
+            },
             ..Saved::default()
         };
         assert_eq!(Saved::from_map(saved.to_map()), saved);
@@ -895,6 +939,39 @@ mod tests {
         map.remove("default_calendar");
         assert_eq!(Saved::from_map(map).default_calendar, None);
         assert_eq!(Saved::from_map(Default::default()), Saved::default());
+    }
+
+    #[test]
+    fn ai_prefs_round_trip_and_default_off() {
+        let mut saved = Saved {
+            nav: SavedNav::NeedsReply,
+            ..Saved::default()
+        };
+        saved.ai.enabled = true;
+        saved.ai.note_ack = Some("demo|-|openrouter.ai".into());
+        saved.ai.clean_view = false;
+        let restored = Saved::from_map(saved.to_map());
+        assert_eq!(restored.ai, saved.ai);
+        assert_eq!(restored.nav, SavedNav::NeedsReply);
+        // Saved before AI-1: off, with nothing confirmed.
+        let mut map = saved.to_map();
+        map.remove("ai");
+        let old = Saved::from_map(map);
+        assert!(!old.ai.enabled && old.ai.note_ack.is_none());
+        // A broken value keeps the default rather than losing the rest.
+        let mut map = saved.to_map();
+        map.insert("ai".into(), "on".into());
+        assert_eq!(Saved::from_map(map).ai, crate::ai::AiPrefs::default());
+    }
+
+    #[test]
+    fn ai_words_find_the_ai_section_not_mcp() {
+        for word in ["ai", "llm"] {
+            let results = found(word);
+            assert!(results.contains(&Entry::Section(Section::Ai)), "{word}");
+            assert!(!results.contains(&Entry::Section(Section::Mcp)), "{word}");
+        }
+        assert!(settings_found("test connection").contains(&SettingId::AiWriting));
     }
 
     #[test]

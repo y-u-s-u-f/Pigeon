@@ -38,7 +38,8 @@ impl PigeonApp {
             // CMP-17 too, the rows coming as `ThreadsChanged`.
             BackendEvent::NewMail(_) | BackendEvent::Woke { .. } | BackendEvent::SentLate(_) => {}
             // AI sprint: the pass (W2) and the rows' overlay come later.
-            BackendEvent::BodiesReady(_) | BackendEvent::AiChanged(_) => {}
+            BackendEvent::BodiesReady(_) => {}
+            BackendEvent::AiChanged(_) => self.on_ai_changed(cx),
             // CMP-17: its `OpFailed` comes next; with the draft back in
             // Drafts, the toast offers them like a send's.
             BackendEvent::ScheduledFailed { op, in_drafts, .. } => {

@@ -201,6 +201,7 @@ pub fn init(backend: Entity<Backend>, cx: &mut App) {
     cx.set_global(Display::read());
     apply_time_format(saved.time_format);
     backend.update(cx, |b, _| b.set_notifications(saved.notifications));
+    backend.update(cx, |b, cx| b.ai_apply(&saved.ai, cx));
     cx.set_global(Shell {
         backend: backend.clone(),
         main: None,

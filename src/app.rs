@@ -1,5 +1,8 @@
 //! The root view. It owns all app state; the panes in `ui/` render from it.
 
+pub(crate) mod ai;
+pub(crate) mod ai_palette;
+pub(crate) mod ai_reader;
 mod attachments;
 mod backend_events;
 mod compose;
@@ -353,6 +356,8 @@ pub struct PigeonApp {
     /// Threads a reply draft answers, by id (ME-011); kept by
     /// `refresh_rows`.
     pub draft_replies: HashSet<String>,
+    /// AI sprint: the reader's and ⌘K's AI state (`app/ai.rs`).
+    pub(crate) ai: ai::AiState,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -593,6 +598,7 @@ impl PigeonApp {
             window_title: "Pigeon".into(),
             seen_tip: saved.seen_tip,
             draft_replies: HashSet::new(),
+            ai: Default::default(),
             _subscriptions: vec![
                 settings_events,
                 appearance,
@@ -626,6 +632,7 @@ impl PigeonApp {
         this.queued_sends = this.backend.read(cx).queued_sends();
         window.focus(&this.pane_focus(cx), cx);
         profile::start(this.backend.read(cx).is_demo(), window, cx);
+        this.check_ai_paused(cx);
         this
     }
 
@@ -638,6 +645,7 @@ impl PigeonApp {
             SavedNav::Category(category) => Nav::Category(*category),
             SavedNav::Snoozed => Nav::Snoozed,
             SavedNav::Scheduled => Nav::Scheduled,
+            SavedNav::NeedsReply => Nav::Folder(Folder::Inbox),
         })
     }
 
@@ -2011,8 +2019,17 @@ impl PigeonApp {
             cx,
         );
         // ME-062: the commands used last head the list, under "Recent".
+        let calendars: Vec<(String, String)> = self
+            .calendar
+            .read(cx)
+            .writable_calendars()
+            .map(|c| (c.id.clone(), c.name.clone()))
+            .collect();
         if let Some((palette, _)) = &self.palette {
-            palette.update(cx, |p, cx| p.set_recent(recent, cx));
+            palette.update(cx, |p, cx| {
+                p.set_calendars(calendars);
+                p.set_recent(recent, cx);
+            });
         }
     }
 
@@ -2796,6 +2813,9 @@ impl PigeonApp {
             .map(|this| self.on_attachment_actions(this, cx))
             .map(|this| self.on_contact_actions(this, cx))
             .map(|this| self.on_later_actions(this, cx))
+            .map(|this| self.on_ai_actions(this, cx))
+            .map(|this| self.on_ai_reader_actions(this, cx))
+            .map(|this| self.on_ai_palette_actions(this, cx))
             .on_drag_move(cx.listener(Self::resize_pane))
             .relative()
             .size_full()
