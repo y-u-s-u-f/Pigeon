@@ -693,7 +693,7 @@ pub const SETTINGS: &[SettingMeta] = settings! {
         ["newsletter", "reader", "reading view", "clean", "original", "simplify"];
     Ai: AiNeedsReply, "Needs Reply", "Marks Inbox conversations that wait for your answer, with quick replies to start from.",
         ["reply", "answer", "follow up", "marker", "quick reply", "todo"];
-    Ai: AiNotifyFor, "Notify for", "Important Only leaves out new mail Jev finds unimportant. The Dock still counts all unread mail.",
+    Ai: AiNotifyFor, "Notify for", "Important Only leaves out newsletters and new mail Jev finds unimportant. The Dock still counts all unread mail.",
         ["notifications", "important", "filter", "alerts", "quiet"];
     Ai: AiActivity, "Activity", "The last 100 AI calls since Pigeon opened. Never the text sent.",
         ["log", "history", "calls", "audit", "requests", "tokens"];

@@ -49,14 +49,51 @@ fn write(dir: &Path, name: &str, text: &str) {
 
 /// Both Jev requests the pass makes about a message, as it makes them:
 /// request A from what a notification shows, request B from the body.
-fn nouls(
-    transport: &dyn Transport,
-    endpoint: &config::Endpoint,
-    m: &text::Message,
-) -> BTreeMap<String, jev::Answer> {
+/// Both ask `newsletter`, so they're kept apart.
+struct Nouls {
+    a: BTreeMap<String, jev::Answer>,
+    b: BTreeMap<String, jev::Answer>,
+}
+
+impl Nouls {
+    fn yes(&self, request: char, id: &str) -> Option<f64> {
+        let answers = if request == 'a' { &self.a } else { &self.b };
+        answers.get(id).and_then(|a| a.yes())
+    }
+
+    /// Request A or B's answer, as the report shows it.
+    fn cell(&self, request: char, id: &str) -> String {
+        fmt(self.yes(request, id))
+    }
+
+    /// AI-4: the Needs Reply marker, from request B's answers alone.
+    fn marker(&self) -> &'static str {
+        let shows = self
+            .yes('b', "needs_reply")
+            .is_some_and(|p| p >= pass::NEEDS_REPLY)
+            && self
+                .yes('b', "newsletter")
+                .is_none_or(|p| p < pass::NEEDS_REPLY_NEWSLETTER);
+        if shows { "**yes**" } else { "" }
+    }
+
+    /// AI-5: whether Important Only keeps the notification silent.
+    fn silent(&self) -> &'static str {
+        let answer = notice::Answer {
+            important: self.yes('a', "important"),
+            newsletter: self.yes('a', "newsletter"),
+        };
+        if notice::silent(answer) {
+            "**yes**"
+        } else {
+            ""
+        }
+    }
+}
+
+fn nouls(transport: &dyn Transport, endpoint: &config::Endpoint, m: &text::Message) -> Nouls {
     let snippet: String = m.body.chars().take(200).collect();
-    let a = jev::Request::new(pass::important_state(&m.from, &m.subject, &snippet))
-        .ask("important", jev::Question::noul(pass::Q_IMPORTANT));
+    let a = pass::important_request(&m.from, &m.subject, &snippet);
     let email = m
         .from
         .rsplit_once('<')
@@ -66,13 +103,15 @@ fn nouls(
         crate::contacts::is_automated(email),
         &events::for_message(m),
     );
-    let mut answers = BTreeMap::new();
-    for request in [a, b] {
-        if let Ok(r) = jev::run(transport, endpoint, &request) {
-            answers.extend(r.answers);
-        }
+    let ask = |request| {
+        jev::run(transport, endpoint, &request)
+            .map(|r| r.answers)
+            .unwrap_or_default()
+    };
+    Nouls {
+        a: ask(a),
+        b: ask(b),
     }
-    answers
 }
 
 /// AI-7's line for these messages, or why there's none.
@@ -94,11 +133,38 @@ fn line(
     .map_err(|e| e.to_string())
 }
 
-fn fmt_yes(answers: &BTreeMap<String, jev::Answer>, id: &str) -> String {
-    answers
-        .get(id)
-        .and_then(|a| a.yes())
-        .map_or("–".into(), |p| format!("{p:.2}"))
+fn fmt(yes: Option<f64>) -> String {
+    yes.map_or("–".into(), |p| format!("{p:.2}"))
+}
+
+/// The columns both Jev reports share, after the first ones.
+const NOUL_HEADER: &str =
+    "important (A) | newsletter (A) | silent | needs_reply (B) | newsletter (B) | marker |";
+
+fn noul_cells(n: &Nouls) -> String {
+    format!(
+        "{} | {} | {} | {} | {} | {} |",
+        n.cell('a', "important"),
+        n.cell('a', "newsletter"),
+        n.silent(),
+        n.cell('b', "needs_reply"),
+        n.cell('b', "newsletter"),
+        n.marker(),
+    )
+}
+
+/// How the reports explain the marker and silent columns.
+fn noul_legend() -> String {
+    format!(
+        "A is request A (sender, subject, snippet), B request B (body). \
+         **silent**: Important Only leaves the notification out (newsletter (A) ≥ {} or important < {}; \
+         a missing answer keeps it). **marker**: Needs Reply shows (needs_reply ≥ {} and newsletter (B) < {}, \
+         missing newsletter counts as not one).\n\n",
+        notice::NEWSLETTER,
+        notice::UNIMPORTANT,
+        pass::NEEDS_REPLY,
+        pass::NEEDS_REPLY_NEWSLETTER
+    )
 }
 
 #[test]
@@ -184,7 +250,8 @@ fn ai_check() {
         let row = match e.feature.as_str() {
             "important" | "needs_reply" | "newsletter" => {
                 let answers = nouls(&transport, jev_endpoint, &message(e));
-                let got = answers.get(&e.feature).and_then(|a| a.yes());
+                let request = if e.feature == "important" { 'a' } else { 'b' };
+                let got = answers.yes(request, &e.feature);
                 let ok = match (e.expect.as_bool(), got) {
                     (Some(want), Some(p)) => {
                         if (p >= 0.5) == want {
@@ -273,8 +340,10 @@ fn ai_check() {
     let heads = store.load_inbox_heads(&account.email, &[]).unwrap();
     let ids: Vec<String> = heads.iter().map(|t| t.id.clone()).collect();
     let threads = store.load_threads(&account.email, &ids).unwrap();
-    let mut md = String::from(
-        "# Demo data: Jev nouls on each Inbox conversation's latest message\n\n| Subject | From | important | needs_reply | newsletter |\n| --- | --- | --- | --- | --- |\n",
+    let mut md = format!(
+        "# Demo data: Jev nouls on each Inbox conversation's latest message\n\n{}| Subject | From | {NOUL_HEADER}\n|{}\n",
+        noul_legend(),
+        " --- |".repeat(8)
     );
     for t in &threads {
         let Some(m) = text::Message::from_thread(t, t.messages.len().saturating_sub(1)) else {
@@ -283,12 +352,10 @@ fn ai_check() {
         let answers = nouls(&transport, jev_endpoint, &m);
         let _ = writeln!(
             md,
-            "| {} | {} | {} | {} | {} |",
+            "| {} | {} | {}",
             m.subject.replace('|', "/"),
             m.from.replace('|', "/"),
-            fmt_yes(&answers, "important"),
-            fmt_yes(&answers, "needs_reply"),
-            fmt_yes(&answers, "newsletter"),
+            noul_cells(&answers),
         );
     }
     write(dir, "demo-jev", &md);
@@ -545,12 +612,10 @@ fn real_inbox(dir: &Path, transport: &UreqTransport, endpoint: &config::Endpoint
                         .map(|m| {
                             let answers = nouls(transport, endpoint, m);
                             format!(
-                                "| {} | {} | {} | {} | {} |",
+                                "| {} | {} | {}",
                                 m.date.format("%Y-%m-%d"),
                                 m.subject.replace('|', "/"),
-                                fmt_yes(&answers, "important"),
-                                fmt_yes(&answers, "needs_reply"),
-                                fmt_yes(&answers, "newsletter"),
+                                noul_cells(&answers),
                             )
                         })
                         .collect::<Vec<_>>()
@@ -559,8 +624,10 @@ fn real_inbox(dir: &Path, transport: &UreqTransport, endpoint: &config::Endpoint
             .collect();
         chunks.into_iter().flat_map(|h| h.join().unwrap()).collect()
     });
-    let mut md = String::from(
-        "# Real Inbox: Jev nouls, latest 200 cached messages\n\n| Date | Subject | important | needs_reply | newsletter |\n| --- | --- | --- | --- | --- |\n",
+    let mut md = format!(
+        "# Real Inbox: Jev nouls, latest 200 cached messages\n\n{}| Date | Subject | {NOUL_HEADER}\n|{}\n",
+        noul_legend(),
+        " --- |".repeat(8)
     );
     for row in rows {
         md.push_str(&row);

@@ -26,8 +26,11 @@ use crate::{
 pub const DAYS: i64 = 30;
 /// Jobs one run of the pass queues, at most.
 pub const MAX_JOBS: usize = 100;
-/// AI-4: `needs_reply` yes at least this shows the marker. Phase 4 tunes it.
-pub const NEEDS_REPLY: f64 = 0.7;
+/// AI-4: `needs_reply` yes at least this shows the marker…
+pub const NEEDS_REPLY: f64 = 0.8;
+/// …unless the same message's `newsletter` yes is at least this (no
+/// answer: not a newsletter).
+pub const NEEDS_REPLY_NEWSLETTER: f64 = 0.5;
 /// AI-7: the longest line shown.
 pub const LINE_MAX: usize = 120;
 /// The line reads this many of the conversation's latest messages.
@@ -37,7 +40,7 @@ const OPEN_MESSAGES: usize = 3;
 
 // The question and prompt versions: a change here changes every hash, so
 // old results are asked again.
-pub const IMPORTANT_V: &str = "important-v1";
+pub const IMPORTANT_V: &str = "important-v2";
 pub const SIGNALS_V: &str = "signals-v1";
 pub const LINE_V: &str = "line-v2";
 
@@ -325,10 +328,17 @@ pub fn important_state(from: &str, subject: &str, snippet: &str) -> String {
     )
 }
 
+/// Request A: `important` and `newsletter`, from what a notification
+/// shows.
+pub fn important_request(from: &str, subject: &str, snippet: &str) -> jev::Request {
+    jev::Request::new(important_state(from, subject, snippet))
+        .ask("important", jev::Question::noul(Q_IMPORTANT))
+        .ask("newsletter", jev::Question::noul(Q_NEWSLETTER))
+}
+
 /// Request A for a message that just arrived.
 pub fn important_job(mail: &NewMail, priority: Priority) -> Job {
-    let request = jev::Request::new(important_state(&mail.from, &mail.subject, &mail.snippet))
-        .ask("important", jev::Question::noul(Q_IMPORTANT));
+    let request = important_request(&mail.from, &mail.subject, &mail.snippet);
     Job {
         thread_id: mail.thread_id.clone(),
         input_hash: important_hash(&mail.message_id),
@@ -381,8 +391,9 @@ pub fn clean_line(answer: &str) -> Option<String> {
 }
 
 /// AI-4: in the Inbox, its latest message (not a draft) is received, Jev
-/// says it asks for an answer (yes ≥ `threshold`), no reply waits in the
-/// outbox, and it wasn't dismissed.
+/// says it asks for an answer (yes ≥ `threshold`) and isn't a newsletter
+/// (yes < `NEEDS_REPLY_NEWSLETTER`), no reply waits in the outbox, and it
+/// wasn't dismissed.
 pub fn needs_reply(
     thread: &Thread,
     me: &Account,
@@ -395,16 +406,12 @@ pub fn needs_reply(
     let Some((_, m)) = latest(thread) else {
         return false;
     };
+    let hash = signals_hash(&m.id);
+    let signal = |id| yes(&thread.ai, Feature::Signals, &m.id, &hash, id);
     !from_me(m, me)
         && thread.ai.get(Feature::NeedsReplyDismissed, &m.id).is_none()
-        && yes(
-            &thread.ai,
-            Feature::Signals,
-            &m.id,
-            &signals_hash(&m.id),
-            "needs_reply",
-        )
-        .is_some_and(|p| p >= threshold)
+        && signal("needs_reply").is_some_and(|p| p >= threshold)
+        && signal("newsletter").is_none_or(|p| p < NEEDS_REPLY_NEWSLETTER)
 }
 
 /// The message Dismiss Needs Reply marks: the latest received one.
@@ -674,6 +681,24 @@ mod tests {
         assert!(needs_reply(&t, &me(), &queued, NEEDS_REPLY));
         // Below the threshold, or asked about another input: no.
         assert!(!needs_reply(&t, &me(), &queued, 0.95));
+        // A newsletter that asks something: no.
+        let signals = |needs: f64, newsletter: f64| {
+            answer_row(
+                "m1",
+                Feature::Signals,
+                signals_hash("m1"),
+                &format!(
+                    r#"{{"needs_reply":{{"type":"noul","noul":{needs}}},"newsletter":{{"type":"noul","noul":{newsletter}}}}}"#
+                ),
+            )
+        };
+        let mut news = thread("t1", vec![message("m1", "dana@x.com", NOW)]);
+        news.ai.rows = vec![signals(0.92, 0.5)];
+        assert!(!needs_reply(&news, &me(), &queued, NEEDS_REPLY));
+        news.ai.rows = vec![signals(0.92, 0.49)];
+        assert!(needs_reply(&news, &me(), &queued, NEEDS_REPLY));
+        news.ai.rows = vec![signals(0.79, 0.0)];
+        assert!(!needs_reply(&news, &me(), &queued, NEEDS_REPLY));
         // A reply waiting to send hides it; undoing the send brings it back.
         let waiting: HashSet<String> = ["t1".to_string()].into();
         assert!(!needs_reply(&t, &me(), &waiting, NEEDS_REPLY));
@@ -693,7 +718,7 @@ mod tests {
             "m2",
             Feature::Signals,
             signals_hash("m2"),
-            &needs(0.8),
+            &needs(0.85),
         ));
         assert!(needs_reply(&t, &me(), &queued, NEEDS_REPLY));
         // Out of the Inbox: no.
@@ -775,7 +800,12 @@ mod tests {
             panic!("a Jev job")
         };
         assert_eq!(request.state.matches("</mail>").count(), 1);
-        assert_eq!(request.questions[0].0, "important");
+        let ids: Vec<&str> = request
+            .questions
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(ids, ["important", "newsletter"]);
     }
 
     /// The overlay's round trip: a stored row reaches `Thread::ai` the way

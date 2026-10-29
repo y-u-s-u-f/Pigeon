@@ -1,14 +1,14 @@
 # AI sprint: AI in Pigeon
 
-The plan as agreed with the user on 2026-10-28, after two review rounds (the working copy with progress is the OpenChamber plan of the same name). Phase 4 adds the final thresholds and residual risks.
+The plan as agreed with the user on 2026-10-28, after two review rounds, with the sprint's result in section 8 (the working copy with progress is the OpenChamber plan of the same name).
 
 ## Steps
 
 - [x] Before the sprint: keys in `.env`; check both models answer; measure the writing model's speed; record real responses as test fixtures
-- [ ] Phase 1 — W1a AI core (clients, queue, cache, backend hooks) and W1b app shell (Settings › AI, actions, stubs), in parallel (AI-1, AI-2, AI-3 client)
-- [ ] Phase 2 — W2 Background pass and list (AI-3 pass, AI-4, AI-5, AI-7) and W5 Calendar (CAL-39 tags, AI-16 date finder), in parallel
-- [ ] Phase 3 — W3 Reader (AI-6, AI-8, AI-9, AI-10, AI-11, AI-16 bar) and W4 ⌘K and search (AI-12, AI-13, AI-14, AI-15), in parallel
-- [ ] Phase 4: real-Inbox check and thresholds, copy and shortcut audit, roadmap gate, `docs/AI_SPRINT.md`, final build, test and commit
+- [x] Phase 1 — W1a AI core (clients, queue, cache, backend hooks) and W1b app shell (Settings › AI, actions, stubs), in parallel (AI-1, AI-2, AI-3 client)
+- [x] Phase 2 — W2 Background pass and list (AI-3 pass, AI-4, AI-5, AI-7) and W5 Calendar (CAL-39 tags, AI-16 date finder), in parallel
+- [x] Phase 3 — W3 Reader (AI-6, AI-8, AI-9, AI-10, AI-11, AI-16 bar) and W4 ⌘K and search (AI-12, AI-13, AI-14, AI-15), in parallel
+- [x] Phase 4: real-Inbox check and thresholds, copy and shortcut audit, roadmap gate, `docs/AI_SPRINT.md`, final build, test and commit
 
 ---
 
@@ -317,3 +317,26 @@ Run the check script, including the real-Inbox mode; set the thresholds from it 
 - **Prompt injection.** Reduced, not removed (section 4).
 - **Text already sent can't be recalled** after turning AI off or signing out.
 - **Google's Limited Use rules (ACC-8).** Mail goes to your endpoint and to OpenRouter/TypeSafe; TypeSafe keeps zero retention for enterprise only. Fine for your own build; a published app would need more than the note.
+
+## 8. Result (Phase 4, 2026-10-28)
+
+**Thresholds**, set with the user from the real-Inbox check (58 cached Inbox messages):
+
+| Feature | Rule | On the real Inbox |
+| --- | --- | --- |
+| Needs Reply (AI-4) | `needs_reply` ≥ 0.8 and the same message's `newsletter` < 0.5 (no newsletter answer counts as not one) | 7 of 58 marked: messages from people asking something; verification codes, surveys, digests and social notices no longer marked (they were at 0.7) |
+| Important Only (AI-5) | silent when `newsletter` ≥ 0.9 or `important` < 0.2; no answer keeps it. Request A asks both from sender, subject and snippet | 8 of 58 silent, all promos, digests or social notices; no mail from a person |
+| Clean View (AI-10) | `newsletter` ≥ 0.8 | promos, hackathon notices, some daily digests |
+| Label suggestion (AI-6) | confidence ≥ 0.6, not "none" | eval set only |
+| Email to event (AI-16) | `event_n` ≥ 0.7 | eval set only |
+| ⌘K plain words (AI-12) | confidence ≥ 0.6, not "none" | eval set only |
+| Best Matches (AI-13) | score ≥ 3 of 0–4 | eval set only |
+
+**Changes during the sprint** (beyond the plan): W1b ran after W1a, not in parallel (W1b calls W1a's API); writing-model effort is a model-name suffix set per feature; one-line summaries ask for at most 12 words with a 120-character hard cap (the model overshoots character limits); Clean View renders inside `html::NO_AUTOLINK` so dropped links can't become clickable again; Ask Pigeon numbers mail sources first.
+
+**Residual risks:**
+- A crafted mail can still steer its own summary, markers, label suggestion or Clean View text (a forged "system" note scored 0.72 on Needs Reply in the eval set, below the final 0.8 marker threshold). Nothing it can do runs an action: Do It for Me works only from your typed text and shows the exact list first.
+- Text already sent to the writing model or OpenRouter (TypeSafe) can't be recalled after turning AI off or signing out. TypeSafe keeps zero retention for enterprise only.
+- Google's Limited Use rules (ACC-8): fine for the user's own build; a published app needs more than the note.
+- Do It for Me's confirm checks the account and availability, not the exact AI generation.
+- Everything with UI is 🟡 until the user checks it; no GUI testing was done this sprint.

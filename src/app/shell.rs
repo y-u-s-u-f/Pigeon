@@ -793,27 +793,33 @@ fn release_notices(cx: &mut App) {
         let b = backend_of(cx).read(cx);
         let ids: Vec<String> = waiting.iter().map(|(t, _)| t.clone()).collect();
         let rows = b.ai_rows(&ids);
-        let answers: Vec<(String, Option<f64>)> = waiting
+        let answers: Vec<(String, ai::notice::Answer)> = waiting
             .into_iter()
             .filter_map(|(thread, message)| {
-                let yes = rows
+                let hash = ai::pass::important_hash(&message);
+                let answer = rows
                     .get(&thread)
-                    .and_then(|ai| ai.get(Feature::Important, &message))
+                    .and_then(|ai| ai.fresh(Feature::Important, &message, &hash))
                     .map(|row| {
-                        ai::jev::answers_from(&row.value)
-                            .get("important")
-                            .and_then(|a| a.yes())
+                        let answers = ai::jev::answers_from(&row.value);
+                        let yes = |id| answers.get(id).and_then(|a| a.yes());
+                        ai::notice::Answer {
+                            important: yes("important"),
+                            newsletter: yes("newsletter"),
+                        }
                     });
                 let failed = matches!(
                     b.ai_done(Feature::Important, &message),
                     Some(ai::Done::Failed(_))
                 );
-                yes.or(failed.then_some(None)).map(|yes| (message, yes))
+                answer
+                    .or(failed.then(ai::notice::Answer::default))
+                    .map(|answer| (message, answer))
             })
             .collect();
         let notices = &mut cx.global_mut::<Shell>().notices;
-        for (message, yes) in answers {
-            notices.answer(&message, yes);
+        for (message, answer) in answers {
+            notices.answer(&message, answer);
         }
         notices.take_ready(std::time::Instant::now())
     } else {

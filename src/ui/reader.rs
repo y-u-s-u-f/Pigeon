@@ -2220,7 +2220,7 @@ fn render_clean_label(
         )),
         CleanView::Original => Some(chip(
             "Original",
-            "Show the clean view",
+            "Show the Clean view",
             true,
             theme.text_muted,
         )),

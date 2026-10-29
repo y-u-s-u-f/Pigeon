@@ -1,7 +1,8 @@
 //! AI-5, Important Only notifications: each batch of new mail waits for
-//! Jev's `important` on every message, `DEADLINE` at most, then goes out
-//! without the ones Jev finds unimportant. No answer keeps a message: the
-//! filter fails open. Pure: the clock comes in as `now`.
+//! Jev's request A on every message, `DEADLINE` at most, then goes out
+//! without the ones Jev finds unimportant or a newsletter (`silent`). No
+//! answer keeps a message: the filter fails open. Pure: the clock comes in
+//! as `now`.
 
 use std::time::{Duration, Instant};
 
@@ -9,13 +10,29 @@ use crate::backend::new_mail::NewMail;
 
 /// How long a batch waits for its answers.
 pub const DEADLINE: Duration = Duration::from_secs(3);
-/// `important` yes below this leaves a message out. Phase 4 tunes it.
+/// `important` yes below this leaves a message out.
 pub const UNIMPORTANT: f64 = 0.2;
+/// `newsletter` yes at least this leaves a message out.
+pub const NEWSLETTER: f64 = 0.9;
+
+/// Request A's answers for one message; a missing one is `None`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Answer {
+    pub important: Option<f64>,
+    pub newsletter: Option<f64>,
+}
+
+/// Whether a message stays silent: a newsletter, or unimportant. A missing
+/// answer never silences it.
+pub fn silent(answer: Answer) -> bool {
+    answer.newsletter.is_some_and(|p| p >= NEWSLETTER)
+        || answer.important.is_some_and(|p| p < UNIMPORTANT)
+}
 
 struct Batch {
     mail: Vec<NewMail>,
-    /// By position in `mail`: answered (`Some`), with its yes if any.
-    answers: Vec<Option<Option<f64>>>,
+    /// By position in `mail`: answered (`Some`), with what Jev gave.
+    answers: Vec<Option<Answer>>,
     deadline: Instant,
 }
 
@@ -28,7 +45,7 @@ impl Batch {
         self.mail
             .into_iter()
             .zip(self.answers)
-            .filter(|(_, answer)| !matches!(answer, Some(Some(p)) if *p < UNIMPORTANT))
+            .filter(|(_, answer)| !answer.is_some_and(silent))
             .map(|(m, _)| m)
             .collect()
     }
@@ -65,13 +82,13 @@ impl Pending {
             .collect()
     }
 
-    /// Jev answered for `message_id` (`None`: it failed or gave nothing).
-    /// One for a batch already sent does nothing.
-    pub fn answer(&mut self, message_id: &str, yes: Option<f64>) {
+    /// Jev answered for `message_id` (`Answer::default()`: it failed or
+    /// gave nothing). One for a batch already sent does nothing.
+    pub fn answer(&mut self, message_id: &str, answer: Answer) {
         for batch in &mut self.batches {
             for (m, a) in batch.mail.iter().zip(&mut batch.answers) {
                 if m.message_id == message_id && a.is_none() {
-                    *a = Some(yes);
+                    *a = Some(answer);
                 }
             }
         }
@@ -120,6 +137,13 @@ mod tests {
         }
     }
 
+    fn imp(p: f64) -> Answer {
+        Answer {
+            important: Some(p),
+            newsletter: None,
+        }
+    }
+
     fn ids(batches: &[Vec<NewMail>]) -> Vec<Vec<&str>> {
         batches
             .iter()
@@ -133,11 +157,11 @@ mod tests {
         let mut p = Pending::default();
         p.hold(vec![mail(1), mail(2), mail(3)], start);
         assert_eq!(p.waiting().len(), 3);
-        p.answer("m1", Some(0.9));
-        p.answer("m2", Some(0.05));
+        p.answer("m1", imp(0.9));
+        p.answer("m2", imp(0.05));
         assert!(p.take_ready(start).is_empty());
         // No answer (a failure) keeps it.
-        p.answer("m3", None);
+        p.answer("m3", Answer::default());
         let out = p.take_ready(start);
         assert_eq!(ids(&out), [["m1", "m3"]]);
         assert!(p.is_empty());
@@ -148,12 +172,12 @@ mod tests {
         let start = Instant::now();
         let mut p = Pending::default();
         p.hold(vec![mail(1), mail(2)], start);
-        p.answer("m2", Some(0.1));
+        p.answer("m2", imp(0.1));
         assert!(p.take_ready(start + Duration::from_secs(2)).is_empty());
         let out = p.take_ready(start + DEADLINE);
         assert_eq!(ids(&out), [["m1"]]);
         // A late answer does nothing.
-        p.answer("m1", Some(0.0));
+        p.answer("m1", imp(0.0));
         assert!(p.take_ready(start + DEADLINE * 2).is_empty());
     }
 
@@ -162,7 +186,7 @@ mod tests {
         let start = Instant::now();
         let mut p = Pending::default();
         p.hold(vec![mail(1)], start);
-        p.answer("m1", Some(0.01));
+        p.answer("m1", imp(0.01));
         assert!(p.take_ready(start).is_empty());
         assert!(p.is_empty());
     }
@@ -172,7 +196,7 @@ mod tests {
         let start = Instant::now();
         let mut p = Pending::default();
         p.hold(vec![mail(1), mail(2)], start);
-        p.answer("m1", Some(0.01));
+        p.answer("m1", imp(0.01));
         assert_eq!(ids(&p.take_all()), [["m1", "m2"]]);
         assert!(p.is_empty());
         p.hold(vec![mail(3)], start);
@@ -186,7 +210,7 @@ mod tests {
         let mut p = Pending::default();
         p.hold((0..20).map(mail).collect(), start);
         for n in 0..20 {
-            p.answer(&format!("m{n}"), Some(0.5));
+            p.answer(&format!("m{n}"), imp(0.5));
         }
         let out = p.take_ready(start);
         assert_eq!(out.len(), 1);
@@ -199,8 +223,33 @@ mod tests {
         let mut p = Pending::default();
         p.hold(vec![mail(1)], start);
         p.hold(vec![mail(2)], start + Duration::from_secs(1));
-        p.answer("m2", Some(0.9));
+        p.answer("m2", imp(0.9));
         assert_eq!(ids(&p.take_ready(start)), [["m2"]]);
         assert_eq!(ids(&p.take_ready(start + DEADLINE)), [["m1"]]);
+    }
+
+    #[test]
+    fn newsletters_stay_silent_and_missing_answers_keep_mail() {
+        let both = |important, newsletter| Answer {
+            important,
+            newsletter,
+        };
+        assert!(silent(both(Some(0.9), Some(0.9))));
+        assert!(!silent(both(Some(0.9), Some(0.89))));
+        assert!(silent(both(Some(0.19), Some(0.0))));
+        assert!(!silent(both(Some(0.2), Some(0.0))));
+        // Missing answers fail open.
+        assert!(!silent(both(None, None)));
+        assert!(!silent(both(Some(0.5), None)));
+        assert!(!silent(both(None, Some(0.5))));
+        assert!(silent(both(None, Some(0.95))));
+
+        let start = Instant::now();
+        let mut p = Pending::default();
+        p.hold(vec![mail(1), mail(2), mail(3)], start);
+        p.answer("m1", both(Some(0.95), Some(0.97)));
+        p.answer("m2", both(None, Some(0.3)));
+        p.answer("m3", both(Some(0.6), None));
+        assert_eq!(ids(&p.take_ready(start)), [["m2", "m3"]]);
     }
 }

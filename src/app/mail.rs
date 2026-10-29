@@ -1431,6 +1431,15 @@ impl PigeonApp {
                 .as_ref()
                 .is_some_and(|(c, _)| c.read(cx).signature_html().is_some()),
             Toggle::Snoozed => all(|t| t.later.snoozed_until.is_some()),
+            Toggle::NeedsReplyDismissed => self.selected.is_some_and(|ix| {
+                let thread = &self.data.threads[ix];
+                crate::ai::pass::dismiss_key(thread, &self.data.account).is_some_and(|key| {
+                    thread
+                        .ai
+                        .get(crate::ai::Feature::NeedsReplyDismissed, &key)
+                        .is_some()
+                })
+            }),
         }
     }
 

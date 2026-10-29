@@ -62,7 +62,7 @@ To update: change the status cell in the area's table, then the counts below.
 
 Principles are in [`AGENTS.md`](../AGENTS.md): blazing fast and light (no webviews, no heavy dependencies), keyboard-centric (every action has a shortcut and is in ⌘K), minimal and flat on translucent glass, YAGNI.
 
-**Current phase: linked to Google; demo mode on placeholder data.** Backend sprint 1 ([`BACKEND_SPRINT_1.md`](BACKEND_SPRINT_1.md)) linked sign-in, Gmail read and write, compose and drafts, Calendar read and write, contacts, search and paging, remote images, offline queueing and status. Backend sprint 2, "Pigeon as a daily driver" ([`BACKEND_SPRINT_2.md`](BACKEND_SPRINT_2.md)), is complete: the app stays open with a menu bar panel, notifications and a Dock badge; attachments; Gmail categories; labels; aliases and signatures; repeat rules, reminders and Meet in the calendar. Everything a tester can drive passed real-account test rounds. `PIGEON_DEMO=1` runs on the placeholder data. The AI sprint ([`AI_SPRINT.md`](AI_SPRINT.md)) is in progress: AI inside Pigeon on two models, tracked in [section 10](#10-ai-ai).
+**Current phase: linked to Google; demo mode on placeholder data.** Backend sprint 1 ([`BACKEND_SPRINT_1.md`](BACKEND_SPRINT_1.md)) linked sign-in, Gmail read and write, compose and drafts, Calendar read and write, contacts, search and paging, remote images, offline queueing and status. Backend sprint 2, "Pigeon as a daily driver" ([`BACKEND_SPRINT_2.md`](BACKEND_SPRINT_2.md)), is complete: the app stays open with a menu bar panel, notifications and a Dock badge; attachments; Gmail categories; labels; aliases and signatures; repeat rules, reminders and Meet in the calendar. Everything a tester can drive passed real-account test rounds. `PIGEON_DEMO=1` runs on the placeholder data. The AI sprint ([`AI_SPRINT.md`](AI_SPRINT.md)) is built: AI inside Pigeon on two models, tracked in [section 10](#10-ai-ai); its items wait on a user check.
 
 **What's left:** items still 🟡 wait on checks only the user can do (allowing notifications, the menu bar status item and global shortcuts, making Pigeon the default mail app, open at login, the sign-in flow, attaching a file), an account with a second verified address (MST-1, ACC-2), or a part not built yet. The user signs in again around Nov 2, unless the Google app is published first. **Candidate next work:** multiple accounts (ACC-4) and the items still ⚪.
 
@@ -1772,25 +1772,25 @@ AI inside Pigeon, on two models: a **writing model** on the user's own OpenAI-co
 #### AI-3 Jev client and background pass
 
 - **Today:** Client part (`src/ai/queue.rs`: Interactive and Background, slots writing 2 / Jev 6, cancel groups, a generation bumped on AI off and every account switch, 3-attempt failures, per-provider stop and backoff, a cap of 200; batched `AiChanged`; streaming with a non-streaming fallback on 400) plus the pass. `src/ai/pass.rs` works out what's missing or stale from the heads and `ai_results` (Inbox, last 30 days, newest first, skipping queued and failed keys, up to 100 jobs per run). Request A (`important`) goes on new mail; request B (`needs_reply`, not asked of automated senders, plus `newsletter` and one `event_n` per date found) once the body is stored. A background body queue in `sync.rs` fetches one conversation at a time and sends `BodiesReady` every 10 conversations and when empty. The pass runs when AI is turned on, at startup, after a switch, on new mail, on `BodiesReady` and every 5 minutes. Opening a conversation asks request B for it at Interactive (`ReaderAi::on_open`); the pass also queues Clean View for newsletters. The check script (`cargo test ai_check -- --ignored --nocapture`, `src/ai/check.rs`) runs the eval set and demo data.
-- **Needs:** User check. Thresholds come from the real-Inbox check in Phase 4.
+- **Needs:** User check. Thresholds set from the real-Inbox check (docs/AI_SPRINT.md, section 8).
 - **Notes:** The 30-day backfill covers only Inbox conversations already cached (the latest 100); older Inbox mail isn't paged in. No Low Power Mode pause; background AI pauses only on provider errors. A failed job is retried up to 3 times per launch, then left until restart, **Retry** or Test Connection.
 
 #### AI-4 Needs Reply marker and view
 
-- **Today:** The marker beside the Important mark comes from the pure `pass::needs_reply` (threshold 0.7: latest message received, no reply from me after it, no queued reply, not dismissed) and is in the spoken label. The Needs Reply view is a local filter with a sidebar row (only while available, with a count), a list title, an empty state and `g r`. ⇧H dismisses and restores through a `needs_reply_dismissed` row. A saved Needs Reply view opens the Inbox when the feature is off.
-- **Needs:** User check. The command title doesn't flip between Dismiss and Restore yet.
+- **Today:** Jev's `needs_reply` (request B, not asked of automated senders) shows the marker at yes ≥ 0.8 when the same message's `newsletter` yes < 0.5 (no newsletter answer counts as not one; thresholds set from the real-Inbox check); hidden by my later reply, a queued send, or **Dismiss Needs Reply** (⇧H; ⌘K shows **Restore Needs Reply** on a dismissed conversation). The marker sits beside the Important mark and is in the spoken label. The Needs Reply view (`g r`, a local filter with a sidebar row and count, list title and empty state) and quick replies follow the same rule. A saved Needs Reply view opens the Inbox when the feature is off.
+- **Needs:** User check.
 - **Notes:** Dismiss has no ⌘Z; running it again restores the marker. A reply queued while offline hides the marker even if newer mail arrives before it's sent.
 
 #### AI-5 Important-only notifications
 
-- **Today:** With Notify for set to Important Only and Jev set, each new-mail batch waits up to 3 s for request A at Interactive (`src/ai/notice.rs`); messages with `important` below 0.2 are dropped, no answer keeps them, the existing checks run again and the batch goes out as one notification call. AI off or All New Mail during the wait sends everything held; a sign-in or sign-out discards it. The badge is unchanged.
-- **Needs:** User check on real mail; the threshold is set in Phase 4.
+- **Today:** With Notify for set to Important Only and Jev set, each new-mail batch waits up to 3 s for request A (sender, subject and snippet; `important` and `newsletter` in one Jev call, `src/ai/notice.rs`). A message stays silent when `newsletter` yes ≥ 0.9 or `important` yes < 0.2 (set from the real-Inbox check); a missing answer keeps it. The existing checks run again and the batch goes out as one notification call. AI off or All New Mail during the wait sends everything held; a sign-in or sign-out discards it. The Dock badge is unchanged.
+- **Needs:** User check on real mail.
 - **Notes:** Fails open: no answer means the message is notified. The Dock badge stays the unread Inbox count.
 
 #### AI-6 Label suggestions
 
 - **Today:** One Jev choice when a conversation opens, over up to 12 labels used in the last 90 days ("none" first, each with recent subjects); a sure pick (confidence ≥ 0.6) shows as a ghost chip in the reader's label row and first in `l` ("Suggested"); click or ⌥L applies it with Undo; never applied on its own; cached per conversation (`src/ai/reading.rs`, `src/app/ai_reader.rs`).
-- **Needs:** User check; threshold from the real-Inbox check (Phase 4).
+- **Needs:** User check; thresholds in docs/AI_SPRINT.md, section 8.
 
 #### AI-7 One-line summaries in the list
 
@@ -1816,7 +1816,7 @@ Formerly PLN-2.
 - **Today:** Newsletters (Jev `newsletter` ≥ 0.8) get a Markdown Clean View (`-medium` effort) from the background pass and on open, never when over budget. Only links and images that are in the original stay; everything else is plain, non-clickable text (rendered inside `html::NO_AUTOLINK`). "Clean view" label and ⇧V per message; "Clean view ready" bar (**Show**); "Clean view failed" with **Retry** (⌥⌘R); **Report Bad Clean View** (⌥⇧⌘B) writes `clean_rejected`, which the pass and opening skip.
 - **Idea:** The writing model turns a message into a clean, consistent reading format: messy HTML, newsletters and forwarded chains become tidy text with the useful structure kept, then go through the existing renderer.
 - **Decisions:** Automatic for newsletters (Jev picks them), made ahead of time in the background pass and on open. Not ready yet: the original, with a "Clean view ready" bar (**Show**). A "Clean view" label on every message shown this way; **Toggle Clean View** (⇧V) switches to the original and back, remembered per message. Failed: the original, with "Clean view failed" and **Retry** (⌥⌘R). **Report Bad Clean View** (⌥⇧⌘B) shows the original and stops Clean View for that message. Behind the Clean View for Newsletters switch.
-- **Needs:** User check; newsletter threshold from the real-Inbox check (Phase 4).
+- **Needs:** User check; newsletter thresholds in docs/AI_SPRINT.md, section 8.
 - **Notes:** A message over the input budget gets no Clean View (never trimmed). A crafted mail can still change its own Clean View.
 
 #### AI-11 Quick replies
@@ -1827,12 +1827,12 @@ Formerly PLN-2.
 #### AI-12 ⌘K understands plain words
 
 - **Today:** In the main ⌘K, text of 3+ words that isn't Quick Add asks Jev after 250 ms which available command fits (state is the typed text only, "none" first); a sure answer (≥ 0.6) shows as a top "Suggested" row; a suggested Do It for Me opens its prompt with the text.
-- **Needs:** User check; threshold from the real-Inbox check (Phase 4).
+- **Needs:** User check; thresholds in docs/AI_SPRINT.md, section 8.
 
 #### AI-13 Best Matches in search
 
 - **Today:** Mail searches of 3+ plain words rerank up to 50 local candidates (any non-stop word, simple suffix strip, topped up with recent mail) with Jev in batches of 10; score ≥ 3 shows up to 5 under "Best Matches" above "Results"; dropped if the selection moved.
-- **Needs:** User check; threshold from the real-Inbox check (Phase 4). Finds only conversations cached on this Mac.
+- **Needs:** User check; thresholds in docs/AI_SPRINT.md, section 8. Finds only conversations cached on this Mac.
 - **Notes:** Finds conversations that share a word with the query or are recent, not synonym-only matches.
 
 #### AI-14 Ask Pigeon
@@ -1849,7 +1849,7 @@ Formerly PLN-2.
 #### AI-16 Email to event
 
 - **Today:** NSDataDetector (`native::detect_dates`) finds dates and addresses; each date is read again by Quick Add's strict `parse_when` against the sent date (no invented times, else all day; zone from the text or the Mac; daylight-saving gaps and folds dropped); at most 3 per message (`ai::events::for_message`), each checked by a Jev `event_n` question in the background pass. An "Add to Calendar" bar above the message body shows the best candidate (yes ≥ 0.7, still to come, not at the start of an existing event); **Add to Calendar** (⇧T) switches to Calendar and opens it as a new event to confirm (`add_from_candidate`, asking about an unsaved event first).
-- **Needs:** User check; event threshold from the real-Inbox check (Phase 4). The bar sits in the message that holds the date, so it isn't visible while that message is collapsed.
+- **Needs:** User check; event thresholds in docs/AI_SPRINT.md, section 8. The bar sits in the message that holds the date, so it isn't visible while that message is collapsed.
 - **Notes:** Meeting invites (`text/calendar`) aren't recognized as such; a candidate matching an existing event's start is hidden, which hides most accepted invites.
 
 ---

@@ -936,6 +936,8 @@ pub enum Toggle {
     Signature,
     /// The selected conversation is snoozed.
     Snoozed,
+    /// AI-4: the selected conversation's Needs Reply marker was dismissed.
+    NeedsReplyDismissed,
 }
 
 impl Toggle {
@@ -961,6 +963,7 @@ impl Toggle {
             Toggle::LabelFolded => ("Unfold Sublabels", "Fold Sublabels"),
             Toggle::Signature => ("Remove Signature", "Add Signature"),
             Toggle::Snoozed => ("Change Snooze…", "Snooze…"),
+            Toggle::NeedsReplyDismissed => ("Restore Needs Reply", "Dismiss Needs Reply"),
         };
         if on { on_title } else { off_title }
     }
@@ -1255,7 +1258,7 @@ pub const COMMANDS: &[Command] = commands! {
     // AI sprint (AI-1).
     App: "AI Settings", Settings, OpenSettingsSection(Section::Ai);
     GoTo: "Go to Needs Reply", Reply, GoToNeedsReply if Ai(NeedsReply);
-    Conversation: "Dismiss / Restore Needs Reply", Check, DismissNeedsReply if Ai(NeedsReplyThread);
+    Conversation: "Dismiss / Restore Needs Reply", Check, DismissNeedsReply if Ai(NeedsReplyThread) => NeedsReplyDismissed;
     Conversation: "Apply Suggested Label", Tag, ApplySuggestedLabel if Ai(Label);
     Conversation: "Summarize Conversation", TextQuote, SummarizeConversation if Ai(Summary);
     Conversation: "Toggle Clean View", FileText, ToggleCleanView if Ai(CleanView);
