@@ -1976,8 +1976,10 @@ fn edge_line(opacity: f32, reach: f32, color: gpui::Hsla) -> impl IntoElement {
             );
             path.line_to(gpui::point(end, bottom));
             let Ok(path) = path.build() else { return };
-            // Solid round the corners, then fading along the tails.
-            let solid = f32::from(r + FOCUS_LINE) / f32::from(r + tail + FOCUS_LINE);
+            // Solid round the corners, then fading along the tails. The
+            // path's bounds start `half` left of the line (its stroke) and
+            // end at the tails' butt ends.
+            let solid = f32::from(half + r) / f32::from(half + r + tail);
             let color = color.opacity(opacity);
             window.paint_path(
                 path,
@@ -2005,7 +2007,7 @@ fn check_box(state: gpui::Toggled, theme: &Theme) -> gpui::Div {
         .flex()
         .items_center()
         .justify_center()
-        .rounded(RADIUS_SM / 1.5)
+        .rounded(RADIUS_XS)
         .map(|d| match state {
             gpui::Toggled::True => {
                 d.bg(theme.accent)

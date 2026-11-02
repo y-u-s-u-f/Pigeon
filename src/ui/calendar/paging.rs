@@ -95,8 +95,10 @@ pub(crate) struct Swipe {
 pub(crate) enum Turn {
     /// Following the fingers.
     Drag { offset: f32 },
-    /// Settling at 0 after a release, in px, the other period beside.
-    Settle { glide: Glide },
+    /// Settling at 0 after a release, in px, the other period beside. The
+    /// grid's scroll stays at `keep_y`, so the momentum after a sideways
+    /// swipe doesn't scroll it.
+    Settle { glide: Glide, keep_y: Pixels },
     /// The new period sliding in from `dir` (1 from the right) and fading
     /// in, as progress.
     Jump { dir: f32, glide: Glide },
@@ -167,7 +169,7 @@ impl CalendarView {
     }
 
     /// The period's width as it slides: the day columns, or the month.
-    fn page_width(&self) -> f32 {
+    pub(crate) fn page_width(&self) -> f32 {
         let width = match self.view {
             ViewKind::Month => self.grid_area_width(),
             _ => f32::from(self.grid_bounds.get().size.width),
@@ -218,6 +220,11 @@ impl CalendarView {
             TouchPhase::Moved => {
                 let modal = self.modal();
                 let Some(swipe) = &mut self.swipe else {
+                    // Momentum after the swipe: the grid keeps still.
+                    if let Some(Turn::Settle { keep_y, .. }) = self.turn {
+                        let x = self.grid_scroll.offset().x;
+                        self.grid_scroll.set_offset(point(x, keep_y));
+                    }
                     return;
                 };
                 let (dx, dy) = (f32::from(delta.x), f32::from(delta.y));
@@ -273,6 +280,7 @@ impl CalendarView {
                 };
                 self.turn = Some(Turn::Settle {
                     glide: Glide::new(from, 0.).with_velocity(velocity),
+                    keep_y: swipe.keep_y,
                 });
                 cx.notify();
             }
@@ -322,6 +330,15 @@ impl CalendarView {
                 (this.stepped_anchor(forward), if forward { 1. } else { -1. })
             })
         };
+        // A drag whose gesture went without an end springs back.
+        if let Some(Turn::Drag { offset }) = self.turn
+            && self.swipe.is_none()
+        {
+            self.turn = Some(Turn::Settle {
+                glide: Glide::new(follow(offset, width), 0.),
+                keep_y: self.grid_scroll.offset().y,
+            });
+        }
         let frame = match &mut self.turn {
             None => return PageFrame::STILL,
             Some(Turn::Drag { offset }) => {
@@ -332,7 +349,7 @@ impl CalendarView {
                     other: beside(self, offset),
                 }
             }
-            Some(Turn::Settle { glide }) => {
+            Some(Turn::Settle { glide, .. }) => {
                 let (offset, done) = glide.step();
                 if done {
                     self.turn = None;

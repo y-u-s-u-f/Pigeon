@@ -567,14 +567,28 @@ impl CalendarView {
         let now_label_height = NOW_LABEL.to_pixels(window.rem_size());
         let now_minutes = time::minutes_into(now.date(), now);
         let now_top = now_minutes as f32 / 60. * HOUR_HEIGHT;
-        let today_visible = page.today_visible;
         let lane_count = page.lane_count;
         let (folds, expanded) = (page.folds, page.expanded);
         let first = page.first;
-        // The taller lane while both show, so neither is cut.
+        // How much of the period beside shows: the lane's height and the
+        // current time's label go between the two with it.
+        let share = if other.is_some() {
+            (frame.offset.abs() / self.page_width()).clamp(0., 1.)
+        } else {
+            0.
+        };
+        let between = |a: f32, b: f32| a + (b - a) * share;
         let all_day_height = other.as_ref().map_or(page.all_day_height, |o| {
-            o.all_day_height.max(page.all_day_height)
+            between(page.all_day_height, o.all_day_height)
         });
+        let now_opacity = between(
+            if page.today_visible { 1. } else { 0. },
+            match &other {
+                Some(o) if o.today_visible => 1.,
+                _ => 0.,
+            },
+        );
+        let today_visible = now_opacity > 0.;
         let any_lanes = lane_count > 0 || other.as_ref().is_some_and(|o| o.lane_count > 0);
         let (other_header, other_all_day, other_columns) = match other {
             Some(o) => (o.header, Some(o.all_day), Some(o.columns)),
@@ -654,12 +668,14 @@ impl CalendarView {
         let hour_labels = (1..24).filter_map(|hour| {
             // Make room for the current time's label.
             let minutes = hour * 60;
-            if today_visible && ((minutes - now_minutes).abs() as f32) < 14. * scale {
+            let near_now = ((minutes - now_minutes).abs() as f32) < 14. * scale;
+            if near_now && now_opacity >= 1. {
                 return None;
             }
             Some(
                 div()
                     .absolute()
+                    .when(near_now, |d| d.opacity(1. - now_opacity))
                     .top(px(hour as f32 * HOUR_HEIGHT - 7. * scale))
                     .right(SPACE_SM)
                     .text_size(TEXT_XS)
@@ -688,6 +704,7 @@ impl CalendarView {
         let now_label = today_visible.then(|| {
             div()
                 .absolute()
+                .opacity(now_opacity)
                 .right(SPACE_XS)
                 .top(px(now_top) - now_label_height / 2.)
                 .h(NOW_LABEL)

@@ -96,6 +96,8 @@ pub const SPACE_LG: Pixels = px(16.);
 pub const SPACE_XL: Pixels = px(24.);
 pub const SPACE_2XL: Pixels = px(32.);
 
+/// Checkboxes and other small squares.
+pub const RADIUS_XS: Pixels = px(4.);
 /// Chips, keycaps, small bars.
 pub const RADIUS_SM: Pixels = px(6.);
 /// Buttons, rows, fields.

@@ -504,6 +504,8 @@ impl PigeonApp {
             if k.key != "escape"
                 || k.modifiers.modified()
                 || window.window_handle().window_id() != window_id
+                // An open context menu has the keys.
+                || crate::ui::context_menu::is_open(window, cx)
             {
                 return;
             }

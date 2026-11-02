@@ -13,14 +13,15 @@
 //!
 //! It shows in any window whose root draws `context_menu::layer`; elsewhere
 //! `show` falls back to the native menu. While open it takes the keyboard
-//! (↑ ↓ → ← ↩ Space ⎋, Home, End and type-to-select) and every click;
-//! a chosen item's action goes to whatever had focus when it opened.
+//! (↑ ↓ → ← ↩ Space ⎋, Home, End and type-to-select) and every click,
+//! without taking focus (only VoiceOver's, so it reads the menu); a chosen
+//! item's action goes to whatever had focus when it opened.
 
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     rc::Rc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use gpui::{
@@ -55,6 +56,10 @@ const AIM_GRACE: Duration = Duration::from_millis(280);
 const TRAVEL: Pixels = SPACE_XS;
 /// Over every other deferred popover.
 const PRIORITY: usize = 10;
+/// Releasing the button that opened the menu chooses the row under it once
+/// the pointer went this far, or after `HOLD`: press, drag and release.
+const DRAG_CHOOSE: f32 = 4.;
+const HOLD: Duration = Duration::from_millis(250);
 
 /// What a row shows before its label.
 #[derive(Clone, Copy)]
@@ -231,9 +236,16 @@ impl ContextMenu {
             menus.serial += 1;
             menus.serial
         };
+        // Focus stays where it is, as with a native menu: the keys come
+        // through the interceptor. VoiceOver follows the highlight only
+        // inside focus, so for it the menu takes focus until it closes.
+        let take_focus = window.is_a11y_active();
+        let restore = restore.filter(|_| take_focus);
         let menu = cx.new(|cx| OpenMenu::new(self, position, restore, serial, window, cx));
-        let focus = menu.read(cx).focus.clone();
-        window.focus(&focus, cx);
+        if take_focus {
+            let focus = menu.read(cx).focus.clone();
+            window.focus(&focus, cx);
+        }
         cx.global_mut::<Menus>().open.insert(id, menu);
         window.refresh();
     }
@@ -285,10 +297,18 @@ impl ContextMenu {
 
 fn native(items: Vec<Entry>) -> NativeMenu {
     let mut menu = NativeMenu::new();
-    for entry in items {
+    let mut items = items.into_iter().peekable();
+    while let Some(entry) = items.next() {
         menu = match entry {
             Entry::Separator => menu.separator(),
-            Entry::Header(text) => menu.menu_with_disabled(text, true, Box::new(gpui::NoAction)),
+            // A dimmed item, set off from the items under it.
+            Entry::Header(text) => {
+                let menu = menu.menu_with_disabled(text, true, Box::new(gpui::NoAction));
+                match items.peek() {
+                    Some(Entry::Item(_)) => menu.separator(),
+                    _ => menu,
+                }
+            }
             Entry::Item(item) => match (item.action, item.submenu) {
                 (_, Some(sub)) => menu.submenu(item.label, native(sub)),
                 (Some(action), None) if item.disabled => {
@@ -326,6 +346,8 @@ struct Menus {
     hosts: HashSet<WindowId>,
     open: HashMap<WindowId, Entity<OpenMenu>>,
     serial: usize,
+    /// Forgets windows as they close.
+    _closed: Option<Subscription>,
 }
 
 impl Global for Menus {}
@@ -334,7 +356,17 @@ impl Global for Menus {}
 /// draws it last; drawing it is also what lets `show` use it here.
 pub fn layer(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let id = window.window_handle().window_id();
-    let menus = cx.default_global::<Menus>();
+    if cx.default_global::<Menus>()._closed.is_none() {
+        let closed = cx.on_window_closed(|cx, id| {
+            if cx.has_global::<Menus>() {
+                let menus = cx.global_mut::<Menus>();
+                menus.hosts.remove(&id);
+                menus.open.remove(&id);
+            }
+        });
+        cx.global_mut::<Menus>()._closed = Some(closed);
+    }
+    let menus = cx.global_mut::<Menus>();
     menus.hosts.insert(id);
     let menu = menus.open.get(&id)?.clone();
     Some(
@@ -342,6 +374,14 @@ pub fn layer(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
             .with_priority(PRIORITY)
             .into_any_element(),
     )
+}
+
+/// Whether a menu is open in this window, so other keystroke interceptors
+/// can leave its keys alone.
+pub fn is_open(window: &Window, cx: &App) -> bool {
+    let id = window.window_handle().window_id();
+    cx.try_global::<Menus>()
+        .is_some_and(|menus| menus.open.contains_key(&id))
 }
 
 /// Closes this window's open menu without choosing anything.
@@ -402,6 +442,9 @@ struct OpenMenu {
     pointer: Option<Point<Pixels>>,
     /// A press began on the menu, so its release can choose.
     pressed: bool,
+    /// The button that opened it may still be down: where the pointer and
+    /// the time were then.
+    held: Option<(Point<Pixels>, Instant)>,
     timer: Option<Task<()>>,
     closed: bool,
     _keys: Subscription,
@@ -448,6 +491,7 @@ impl OpenMenu {
             opened: 0,
             pointer: None,
             pressed: false,
+            held: Some((window.mouse_position(), Instant::now())),
             timer: None,
             closed: false,
             _keys: keys,
@@ -550,6 +594,7 @@ impl OpenMenu {
         {
             menus.open.remove(&self.window);
         }
+        // Only set when the menu took focus.
         if let Some(focus) = self.restore.take() {
             window.focus(&focus, cx);
         }
@@ -713,6 +758,7 @@ impl OpenMenu {
 
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
+        self.held = None;
         if self.hit(event.position).is_some() {
             self.pressed = true;
         } else {
@@ -723,7 +769,12 @@ impl OpenMenu {
 
     fn mouse_up(&mut self, event: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
-        if !std::mem::take(&mut self.pressed) {
+        // The opening button let go over a row after a drag or a hold
+        // chooses it, as on macOS; a plain click leaves the menu open.
+        let dragged = self.held.take().is_some_and(|(at, since)| {
+            release_chooses((event.position - at).magnitude() as f32, since.elapsed())
+        });
+        if !std::mem::take(&mut self.pressed) && !dragged {
             return;
         }
         if let Some((level, Some(row))) = self.hit(event.position) {
@@ -801,6 +852,10 @@ impl OpenMenu {
             .iter()
             .any(|e| e.item().is_some_and(|i| i.leading.is_some()));
         let open_row = self.levels.get(level + 1).map(|l| l.parent_row);
+        let positions =
+            set_positions(&items.iter().map(|e| e.item().is_some()).collect::<Vec<_>>());
+        let set_size = positions.last().copied().unwrap_or(0);
+        let this = cx.weak_entity();
         let label = if level == 0 {
             self.label.clone()
         } else {
@@ -848,6 +903,7 @@ impl OpenMenu {
                     .into_any_element(),
                 Entry::Item(item) => {
                     let on = lv.highlighted == Some(ix);
+                    let this = this.clone();
                     let color = if item.disabled {
                         theme.text_disabled
                     } else if item.destructive {
@@ -869,8 +925,15 @@ impl OpenMenu {
                         })
                         .aria_label(item.label.clone())
                         .aria_selected(on)
-                        .aria_position_in_set(ix + 1)
-                        .aria_size_of_set(items.len())
+                        .when(on, |el| el.aria_active_descendant())
+                        .aria_position_in_set(positions[ix])
+                        .aria_size_of_set(set_size)
+                        // VoiceOver's press; the mouse goes through the
+                        // backdrop, so this never fires with it.
+                        .on_a11y_action(gpui::AccessibleAction::Click, move |_, window, cx| {
+                            this.update(cx, |menu, cx| menu.activate(level, ix, window, cx))
+                                .ok();
+                        })
                         .when_some(item.checked, |el, checked| {
                             el.aria_toggled(if checked {
                                 Toggled::True
@@ -995,6 +1058,24 @@ impl Render for OpenMenu {
             }))
             .children(panels)
     }
+}
+
+/// Each row's place among the items (`is_item`), from 1; a separator or
+/// header has the place of the item before it. The last is the count.
+fn set_positions(is_item: &[bool]) -> Vec<usize> {
+    is_item
+        .iter()
+        .scan(0, |n, &item| {
+            *n += usize::from(item);
+            Some(*n)
+        })
+        .collect()
+}
+
+/// Whether releasing the button that opened the menu, `moved` px from where
+/// it was pressed `held` ago, chooses the row under it.
+fn release_chooses(moved: f32, held: Duration) -> bool {
+    moved > DRAG_CHOOSE || held > HOLD
 }
 
 /// The next row `selectable` from `from` (or from the end, with `None`)
@@ -1127,6 +1208,26 @@ mod tests {
         assert_eq!(step(&[], Some(0), true), None);
         // Alone, it stays.
         assert_eq!(step(&[false, true], Some(1), true), Some(1));
+    }
+
+    #[test]
+    fn set_positions_count_only_items() {
+        // Header, item, separator, item, item.
+        let rows = set_positions(&[false, true, false, true, true]);
+        assert_eq!(rows, vec![0, 1, 1, 2, 3]);
+        assert_eq!(rows.last(), Some(&3));
+        assert!(set_positions(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_opening_release_chooses_after_a_drag_or_a_hold() {
+        // A click in place, quick: the menu stays.
+        assert!(!release_chooses(0., Duration::from_millis(80)));
+        assert!(!release_chooses(3., Duration::from_millis(200)));
+        // Dragged onto a row.
+        assert!(release_chooses(12., Duration::from_millis(80)));
+        // Held, then let go.
+        assert!(release_chooses(0., Duration::from_millis(400)));
     }
 
     #[test]

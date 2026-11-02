@@ -56,8 +56,6 @@ pub struct Theme {
     pub selected_bg: Hsla,
     /// The list's selection while the list has keyboard focus.
     pub selected_focused_bg: Hsla,
-    /// The quiet bar on the focused list's selected row.
-    pub focus_bar: Hsla,
     /// Rows picked for a bulk action (`x`, shift- and ⌘-click).
     pub checked_bg: Hsla,
     /// The outline on the row a context menu is open on.
@@ -189,7 +187,6 @@ impl Theme {
             hover_bg: hex(0xffffff0a),
             selected_bg: hex(0xffffff1c),
             selected_focused_bg: hex(0x7aa5ff38),
-            focus_bar: hex(0x7aa5ff8c),
             checked_bg: hex(0x7aa5ff1f),
             context_ring: hex(0x7aa5ff99),
             nav_active_bg: hex(0xffffff17),
@@ -264,7 +261,6 @@ impl Theme {
             hover_bg: hex(0x0000000a),
             selected_bg: hex(0x00000012),
             selected_focused_bg: hex(0x1d5bd11c),
-            focus_bar: hex(0x1d5bd166),
             checked_bg: hex(0x1d5bd10f),
             context_ring: hex(0x1d5bd180),
             nav_active_bg: hex(0x00000012),
@@ -353,7 +349,6 @@ impl Theme {
         self.match_text = self.link;
         let alpha = |dark_a: f32, light_a: f32| accent.alpha(if dark { dark_a } else { light_a });
         self.selected_focused_bg = alpha(0.22, 0.11);
-        self.focus_bar = alpha(0.55, 0.4);
         self.checked_bg = alpha(0.12, 0.06);
         self.context_ring = alpha(0.6, 0.5);
         self.cal_today_bg = alpha(0.04, 0.03);
@@ -388,7 +383,6 @@ impl Theme {
         self.selected_focused_bg = self
             .accent
             .alpha((self.selected_focused_bg.a * 1.6).min(1.));
-        self.focus_bar = self.accent;
         self.context_ring = self.accent;
         if self.is_dark {
             self.text_muted = hex(0xd2d2daff);
