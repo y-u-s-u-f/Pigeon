@@ -45,8 +45,10 @@ const ROW_INSET: gpui::Pixels = SPACE_XL;
 const LABEL_DOTS: usize = 3;
 const LABEL_DOT: gpui::Pixels = px(7.);
 const UNREAD_DOT: gpui::Pixels = px(6.);
-/// The bar on the selected row's leading edge while the list has focus.
-const FOCUS_BAR: gpui::Pixels = px(3.);
+/// The line round the selected row's leading edge while the list has
+/// focus, and how far it runs on past the corners before it fades out.
+const FOCUS_LINE: gpui::Pixels = px(1.5);
+const FOCUS_LINE_TAIL: gpui::Pixels = SPACE_XL;
 /// The row's hover group: the date gives way to the quick actions, and the
 /// checkbox shows, without the app keeping a hover state (ME-004).
 const ROW_GROUP: &str = "thread-row";
@@ -479,6 +481,7 @@ impl PigeonApp {
             gpui::Toggled::False
         };
         focusable_control(div().id("select-all"), theme)
+            .group(CHECK_GROUP)
             .role(gpui::Role::CheckBox)
             .aria_label(format!("Select all, {checked} of {total} selected"))
             .aria_toggled(state)
@@ -1234,7 +1237,7 @@ impl PigeonApp {
         thread_ix: usize,
         row_cx: &RowContext,
         theme: &Theme,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let thread = &self.data.threads[thread_ix];
@@ -1251,6 +1254,16 @@ impl PigeonApp {
             && window.is_window_active();
         let has_draft = thread.folder != Folder::Drafts && self.draft_replies.contains(&thread.id);
         let queued = row_cx.queued.contains(&thread.id);
+        // Draws in from the corners as the row takes the keyboard; only
+        // fades under Reduce Motion.
+        let focus_line = motion::presence(
+            ElementId::Name(format!("row-line-{}", thread.id).into()),
+            selected && list_focused,
+            window,
+            cx,
+        )
+        .clamp(0., 1.);
+        let focus_reach = if cx.reduce_motion() { 1. } else { focus_line };
 
         // Sent and drafts are about who they went to; everything else about
         // who wrote (ME-011).
@@ -1661,18 +1674,9 @@ impl PigeonApp {
                         )
                 }
             })
-            // The keyboard's place: a short pill on the leading edge.
-            .when(selected && list_focused, |this| {
-                this.child(
-                    div()
-                        .absolute()
-                        .left(SPACE_2XS)
-                        .top(relative(0.25))
-                        .bottom(relative(0.25))
-                        .w(FOCUS_BAR)
-                        .rounded_full()
-                        .bg(theme.focus_bar),
-                )
+            // The keyboard's place: a line hugging the leading edge.
+            .when(focus_line > 0., |this| {
+                this.child(edge_line(focus_line, focus_reach, theme.accent))
             })
             .when(self.is_context_target(thread_ix), |this| {
                 this.child(
@@ -1969,14 +1973,71 @@ fn subject_and_snippet(
     StyledText::new(text).with_highlights(highlights)
 }
 
-/// The box of a checkbox: empty, checked, or mixed.
+/// The focused row's line: down its leading edge, round both corners on
+/// the row's radius and on along the top and bottom, fading out. `reach`
+/// draws it out from the corners; `opacity` fades it.
+fn edge_line(opacity: f32, reach: f32, color: gpui::Hsla) -> impl IntoElement {
+    gpui::canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            // On the row's outline, the stroke's outer edge on its edge.
+            let half = FOCUS_LINE / 2.;
+            let r = RADIUS_MD - half;
+            let left = bounds.left() + half;
+            let top = bounds.top() + half;
+            let bottom = bounds.bottom() - half;
+            let tail = FOCUS_LINE_TAIL * reach;
+            let end = left + r + tail;
+            let mut path = gpui::PathBuilder::stroke(FOCUS_LINE);
+            path.move_to(gpui::point(end, top));
+            path.line_to(gpui::point(left + r, top));
+            path.arc_to(
+                gpui::point(r, r),
+                px(0.),
+                false,
+                false,
+                gpui::point(left, top + r),
+            );
+            path.line_to(gpui::point(left, bottom - r));
+            path.arc_to(
+                gpui::point(r, r),
+                px(0.),
+                false,
+                false,
+                gpui::point(left + r, bottom),
+            );
+            path.line_to(gpui::point(end, bottom));
+            let Ok(path) = path.build() else { return };
+            // Solid round the corners, then fading along the tails.
+            let solid = f32::from(r + FOCUS_LINE) / f32::from(r + tail + FOCUS_LINE);
+            let color = color.opacity(opacity);
+            window.paint_path(
+                path,
+                gpui::linear_gradient(
+                    90.,
+                    gpui::linear_color_stop(color, solid.min(1.)),
+                    gpui::linear_color_stop(color.alpha(0.), 1.),
+                ),
+            );
+        },
+    )
+    .absolute()
+    .inset_0()
+}
+
+/// The group of a row checkbox's hit target, so the box answers its hover.
+const CHECK_GROUP: &str = "row-check";
+
+/// The box of a checkbox: empty, checked, or mixed. A hairline square
+/// that fills with the accent once checked.
 fn check_box(state: gpui::Toggled, theme: &Theme) -> gpui::Div {
     div()
+        .flex_none()
         .size(ICON_MD)
         .flex()
         .items_center()
         .justify_center()
-        .rounded(RADIUS_SM)
+        .rounded(RADIUS_SM / 1.5)
         .map(|d| match state {
             gpui::Toggled::True => {
                 d.bg(theme.accent)
@@ -1986,7 +2047,11 @@ fn check_box(state: gpui::Toggled, theme: &Theme) -> gpui::Div {
                 d.bg(theme.accent)
                     .child(icon(Icon::Minus, ICON_SM, theme.accent_text))
             }
-            _ => d.border_1().border_color(theme.text_faint),
+            _ => d
+                .bg(theme.control_track)
+                .border_1()
+                .border_color(theme.text_faint)
+                .group_hover(CHECK_GROUP, |s| s.border_color(theme.text_muted)),
         })
 }
 
@@ -2004,6 +2069,7 @@ fn checkbox(
     };
     div()
         .id(("row-check", thread_ix))
+        .group(CHECK_GROUP)
         .role(gpui::Role::CheckBox)
         .aria_label(format!("Select {subject}"))
         .aria_toggled(state)
