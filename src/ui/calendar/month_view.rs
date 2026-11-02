@@ -72,6 +72,7 @@ impl CalendarView {
         let month = self.anchor.month();
         let scale = f32::from(window.rem_size()) / BASE_REM;
         let height = window.viewport_size().height
+            - crate::ui::top_bar_height(window)
             - crate::ui::header_height(window)
             - px(WEEKDAY_ROW * scale);
         let row_height = f32::from(height) / weeks as f32;

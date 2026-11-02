@@ -12,7 +12,6 @@ pub mod later_picker;
 pub mod menu_bar;
 pub mod motion;
 pub mod onboarding;
-pub mod rail;
 pub mod reader;
 pub mod rich_editor;
 pub mod selectable;
@@ -22,6 +21,7 @@ pub mod sidebar;
 pub mod status;
 pub mod style;
 pub mod thread_list;
+pub mod top_bar;
 
 use gpui::{
     AbsoluteLength, Action, AnyElement, App, AppContext as _, AsKeystroke as _, Context, Div,
@@ -43,8 +43,17 @@ use crate::{
 /// A label's or calendar's color dot.
 pub const DOT: Pixels = px(8.);
 
-/// Height of the top bar of every pane; the traffic lights sit in it.
+/// Height of the top bar of every pane, under the window's top bar.
 pub const HEADER_HEIGHT: Pixels = px(52.);
+/// The window's top bar (`top_bar`), where the traffic lights sit; it
+/// grows past `TOP_BAR_MIN` as text grows.
+pub const TOP_BAR_HEIGHT: Pixels = px(44.);
+pub const TOP_BAR_MIN: Rems = type_size(40.);
+
+/// The window's top bar's height at the window's text scale.
+pub fn top_bar_height(window: &Window) -> Pixels {
+    TOP_BAR_HEIGHT.max(TOP_BAR_MIN.to_pixels(window.rem_size()))
+}
 /// What the bar's controls need: past it, as text grows, the bar grows
 /// (MA-021). Bars take `.h(HEADER_MIN).min_h(HEADER_HEIGHT)`.
 pub const HEADER_MIN: Rems = type_size(44.);

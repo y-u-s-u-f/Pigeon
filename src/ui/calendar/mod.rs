@@ -514,7 +514,7 @@ pub struct CalendarView {
     parts: Option<Parts>,
     /// What the grid reads from outside the calendar, as last drawn.
     grid_key: Option<GridKey>,
-    /// The grid's width as last laid out: beside the rail, less a docked
+    /// The grid's width as last laid out: the window's, less a docked
     /// panel while one shows.
     grid_width: f32,
     /// The Day view shows its month and list (MD-003, with hysteresis).
@@ -3377,9 +3377,9 @@ impl CalendarView {
         .into_any_element()
     }
 
-    /// The width beside the rail.
+    /// The calendar's width: the window's.
     fn content_width(window: &Window) -> f32 {
-        f32::from(window.viewport_size().width - crate::app::RAIL_WIDTH)
+        f32::from(window.viewport_size().width)
     }
 
     /// Whether the open event panel sits beside the grid (true) or over it.

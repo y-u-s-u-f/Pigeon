@@ -613,9 +613,7 @@ impl PigeonApp {
             .map(|view| render_summary(&view, theme));
         let last = thread.messages.len() - 1;
         let layout = self.pane_layout(window.viewport_size().width);
-        let narrow =
-            window.viewport_size().width - crate::app::RAIL_WIDTH - layout.sidebar - layout.list
-                < NARROW;
+        let narrow = window.viewport_size().width - layout.sidebar - layout.list < NARROW;
         let active = window.is_window_active();
         let fold_open = cx
             .default_global::<ReaderUi>()

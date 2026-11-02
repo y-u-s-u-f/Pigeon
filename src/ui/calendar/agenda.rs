@@ -41,7 +41,7 @@ pub(crate) const SIDE_MIN: f32 = 280.;
 const SIDE_MAX: f32 = 400.;
 
 impl CalendarView {
-    /// The width the grid has: beside the rail, and beside a docked panel
+    /// The width the grid has: the window's, less a docked panel
     /// (`lay_out_grid`).
     pub(crate) fn grid_area_width(&self) -> f32 {
         self.grid_width

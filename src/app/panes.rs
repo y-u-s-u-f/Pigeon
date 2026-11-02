@@ -1,4 +1,4 @@
-//! The mail panes as views of their own (MC-036). Each draws from
+//! The top bar and the mail panes as views of their own (MC-036). Each draws from
 //! `PigeonApp`'s state, but as its own entity: a hover, a spring or a caret
 //! inside one redraws that pane alone, and the others are reused through
 //! `cached` instead of being laid out and painted again.
@@ -35,6 +35,7 @@ impl Render for Pane {
 /// The cached panes, and the layer above them (toast, tip, overlays),
 /// which isn't cached: it's a view so its springs redraw it, not the app.
 pub(crate) struct Panes {
+    pub top_bar: Entity<Pane>,
     pub sidebar: Entity<Pane>,
     pub list: Entity<Pane>,
     pub reader: Entity<Pane>,
@@ -43,6 +44,7 @@ pub(crate) struct Panes {
 
 impl Panes {
     pub fn new(
+        top_bar: Draw,
         sidebar: Draw,
         list: Draw,
         reader: Draw,
@@ -55,6 +57,7 @@ impl Panes {
             cx.new(|_| Pane { app, draw })
         };
         Self {
+            top_bar: pane(top_bar),
             sidebar: pane(sidebar),
             list: pane(list),
             reader: pane(reader),
@@ -64,7 +67,7 @@ impl Panes {
 
     /// The app's state changed: every cached pane draws again.
     pub fn notify(&self, cx: &mut App) {
-        for pane in [&self.sidebar, &self.list, &self.reader] {
+        for pane in [&self.top_bar, &self.sidebar, &self.list, &self.reader] {
             pane.update(cx, |_, cx| cx.notify());
         }
     }

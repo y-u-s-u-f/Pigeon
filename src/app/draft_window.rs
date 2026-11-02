@@ -11,7 +11,7 @@ use gpui::{
     component::input, div, px, size,
 };
 
-use super::{PigeonApp, RAIL_WIDTH, shell};
+use super::{PigeonApp, shell};
 use crate::{
     actions::*,
     assets::Icon,
@@ -173,7 +173,7 @@ impl Render for DraftHost {
                     .flex()
                     .items_center()
                     .gap(SPACE_2XS)
-                    .pl(RAIL_WIDTH)
+                    .pl(shell::DRAFT_TRAFFIC_LIGHTS_INSET)
                     .pr(SPACE_MD)
                     .child(
                         ui::label("draft-window-title", title)
@@ -452,7 +452,7 @@ fn window_options(main: &Window, cx: &gpui::App) -> WindowOptions {
         titlebar: Some(TitlebarOptions {
             title: Some("New Message".into()),
             appears_transparent: true,
-            traffic_light_position: Some(shell::traffic_lights()),
+            traffic_light_position: Some(shell::draft_traffic_lights()),
         }),
         app_owns_titlebar_drag: true,
         window_background: shell::window_background(cx),

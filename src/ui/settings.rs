@@ -1,4 +1,4 @@
-//! The settings page (⌘,). It replaces the panes beside the rail: the
+//! The settings page (⌘,). It replaces the panes under the top bar: the
 //! sections, with a search over every setting, on the left, and the
 //! section's rows on the right. A row's value is read from where the app
 //! keeps it, so the shortcuts and menus that change the same things stay in

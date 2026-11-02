@@ -28,7 +28,7 @@ use crate::{
     actions::{
         ApplyLabel, Archive, CloseSearch, Compose, Delete, DismissNeedsReply,
         LoadOlderConversations, MarkRead, MarkUnread, SEARCH, SendLater, Snooze, SyncNow,
-        ToggleArchivedSection, ToggleSearch, ToggleSidebar, ToggleStar,
+        ToggleArchivedSection, ToggleSearch, ToggleStar,
     },
     app::{Density, Nav, PigeonApp, Row, SearchSuggestion},
     assets::Icon,
@@ -168,8 +168,6 @@ impl PigeonApp {
     pub(crate) fn render_thread_list(
         &self,
         width: gpui::Pixels,
-        // How far the sidebar is shown, 0 to 1, as it slides (MD-012).
-        sidebar: f32,
         counts: &crate::ui::sidebar::NavCounts,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -206,34 +204,11 @@ impl PigeonApp {
             .items_center()
             .gap(SPACE_SM)
             .pr(SPACE_MD)
-            .map(|this| {
-                let inset = if selecting && !self.search_open {
-                    ROW_MARGIN
-                } else {
-                    ROW_MARGIN + ROW_INSET
-                };
-                if sidebar >= 1. {
-                    return this.pl(inset);
-                }
-                // The way back, in the sidebar's button's place. It fades as
-                // the sidebar slides in, and its slot narrows with it, so the
-                // title glides rather than jumps (MD-012).
-                let p = sidebar.clamp(0., 1.);
-                this.pl(SPACE_SM + (inset - SPACE_SM) * p).child(
-                    div()
-                        .flex_none()
-                        .w(HIT_TARGET * (1. - p))
-                        .mr(-SPACE_SM * p)
-                        .overflow_hidden()
-                        .opacity(1. - p)
-                        .child(icon_button(
-                            "show-sidebar",
-                            Icon::PanelLeft,
-                            "Show sidebar",
-                            Box::new(ToggleSidebar),
-                            &theme,
-                        )),
-                )
+            // The sidebar's toggle and Compose are in the top bar.
+            .pl(if selecting && !self.search_open {
+                ROW_MARGIN
+            } else {
+                ROW_MARGIN + ROW_INSET
             })
             .map(|this| {
                 if self.search_open {
@@ -254,13 +229,6 @@ impl PigeonApp {
                     )
                 })
                 .child(div().flex_1())
-                .child(icon_button(
-                    "compose",
-                    Icon::SquarePen,
-                    "New message",
-                    Box::new(Compose),
-                    &theme,
-                ))
                 .child(icon_button(
                     "search",
                     Icon::Search,

@@ -6,10 +6,10 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, AppContext as _, Bounds, ClickEvent, Context, Div, ElementId, FontWeight, Hsla,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString,
-    Stateful, StatefulInteractiveElement as _, Styled, Toggled, Window, anchored, base::spring,
-    canvas, deferred, div, prelude::FluentBuilder as _, px, relative,
+    Action, AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, Div, ElementId,
+    FontWeight, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render,
+    SharedString, Stateful, StatefulInteractiveElement as _, Styled, Toggled, Window, anchored,
+    base::spring, canvas, deferred, div, prelude::FluentBuilder as _, px, relative,
 };
 
 use super::motion::{SPRING_CONTROL, SPRING_POP, fade};
@@ -195,31 +195,105 @@ pub fn segmented(
     cx: &mut App,
     on_select: impl Fn(usize, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
+    let segments = options.iter().map(|&name| Segment::new(name)).collect();
+    segmented_with(
+        id,
+        label,
+        segments,
+        Some(selected),
+        theme,
+        window,
+        cx,
+        on_select,
+    )
+}
+
+/// One option of `segmented_with`.
+pub struct Segment {
+    name: &'static str,
+    /// What VoiceOver reads, when it's more than the name.
+    label: Option<SharedString>,
+    icon: Option<Icon>,
+    /// Drawn over the icon's top-right corner, such as an unread dot.
+    badge: Option<AnyElement>,
+    tooltip: Option<(&'static str, Box<dyn Action>)>,
+}
+
+impl Segment {
+    pub fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            label: None,
+            icon: None,
+            badge: None,
+            tooltip: None,
+        }
+    }
+
+    pub fn icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    pub fn label(mut self, label: impl Into<SharedString>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn badge(mut self, badge: Option<AnyElement>) -> Self {
+        self.badge = badge;
+        self
+    }
+
+    /// A tooltip with the shortcut of `action`.
+    pub fn tooltip(mut self, text: &'static str, action: Box<dyn Action>) -> Self {
+        self.tooltip = Some((text, action));
+        self
+    }
+}
+
+/// `segmented` with icons, badges and tooltips on the options, and maybe
+/// none chosen (no thumb).
+#[allow(clippy::too_many_arguments)]
+pub fn segmented_with(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    segments: Vec<Segment>,
+    selected: Option<usize>,
+    theme: &Theme,
+    window: &mut Window,
+    cx: &mut App,
+    on_select: impl Fn(usize, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
     let id: ElementId = id.into();
-    let count = options.len().max(1) as f32;
+    let len = segments.len();
+    let count = len.max(1) as f32;
+    // Sampled with nothing chosen too, so the thumb picks up where it was.
     let at = spring(
         (id.clone(), "thumb"),
-        selected as f32,
+        selected.unwrap_or(0) as f32,
         SPRING_POP,
         window,
         cx,
     );
     let on_select = Rc::new(on_select);
-    let segments = options.iter().enumerate().map(|(option, name)| {
-        let chosen = option == selected;
+    let segments = segments.into_iter().enumerate().map(|(option, segment)| {
+        let chosen = selected == Some(option);
         let on_select = on_select.clone();
+        let color = if chosen { theme.text } else { theme.text_muted };
         div()
             .id(("segment", option))
             .role(gpui::Role::RadioButton)
-            .aria_label(*name)
+            .aria_label(segment.label.unwrap_or(segment.name.into()))
             .aria_toggled(toggled(chosen))
             .aria_position_in_set(option + 1)
-            .aria_size_of_set(options.len())
+            .aria_size_of_set(len)
             .h(CONTROL_SM)
             .px(SPACE_MD)
             .flex()
             .items_center()
             .justify_center()
+            .gap(SPACE_XS)
             .rounded(RADIUS_SM)
             .text_size(TEXT_SM)
             .font_weight(FontWeight::MEDIUM)
@@ -233,7 +307,23 @@ pub fn segmented(
                         .active(|s| s.bg(theme.hover_bg))
                 }
             })
-            .child(*name)
+            .when_some(segment.icon, |el, glyph| {
+                el.child(
+                    div()
+                        .relative()
+                        .flex_none()
+                        .child(icon(glyph, ICON_MD, color))
+                        .children(segment.badge),
+                )
+            })
+            .child(segment.name)
+            .when_some(segment.tooltip, |el, (text, action)| {
+                el.tooltip(move |window, cx| {
+                    super::tooltip(text)
+                        .action(action.as_ref(), None)
+                        .build(window, cx)
+                })
+            })
             .on_click(move |_: &ClickEvent, window, cx| {
                 cx.stop_propagation();
                 on_select(option, window, cx)
@@ -249,22 +339,24 @@ pub fn segmented(
         .child(
             div()
                 .relative()
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left(relative(at / count))
-                        .w(relative(1. / count))
-                        .rounded(RADIUS_SM)
-                        .bg(theme.segment_bg)
-                        .shadow(segment_shadow(theme)),
-                )
+                .when(selected.is_some(), |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(relative(at / count))
+                            .w(relative(1. / count))
+                            .rounded(RADIUS_SM)
+                            .bg(theme.segment_bg)
+                            .shadow(segment_shadow(theme)),
+                    )
+                })
                 // Columns as wide as the widest option.
                 .child(
                     div()
                         .grid()
-                        .grid_cols_min_content(options.len() as u16)
+                        .grid_cols_min_content(len as u16)
                         .children(segments),
                 ),
         );

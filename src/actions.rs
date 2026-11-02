@@ -1006,8 +1006,6 @@ pub enum When {
     EventOpen,
     /// The selected event is an invitation the user can answer (ME-034).
     CalendarInvite,
-    /// Signed in with Google.
-    SignedIn,
     /// Neither signed in nor on the demo data.
     SignedOut,
     /// Signed out, or on demo data picked on the sign-in screen (ME-050).
@@ -1185,7 +1183,7 @@ pub const COMMANDS: &[Command] = commands! {
     App: "Command Palette", Command, ToggleCommandPalette, help_only;
     App: "Keyboard Shortcuts", Keyboard, ToggleShortcutsHelp;
     App: "Settings…", Settings, OpenSettings;
-    App: "Sync Now", RefreshCw, SyncNow if SignedIn;
+    App: "Sync Now", RefreshCw, SyncNow;
     App: "Sign In with Google…", LogIn, SignIn if CanSignIn;
     App: "Sign Out", LogOut, SignOut if CanSignOut;
     App: "Use Demo Data", Layers, UseDemoData if SignedOut;

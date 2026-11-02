@@ -1417,7 +1417,6 @@ impl PigeonApp {
                             crate::calendar::policy::my_answer(&calendar.data, e).is_some()
                         })
             }
-            When::SignedIn => self.backend.read(cx).source() == Source::Google,
             When::SignedOut => self.backend.read(cx).source() == Source::SignedOut,
             When::CanSignIn => {
                 let b = self.backend.read(cx);

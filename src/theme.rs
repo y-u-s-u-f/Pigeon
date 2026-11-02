@@ -32,7 +32,7 @@ pub struct Theme {
     // through; the reader is the most solid. GPUI adds the alphas of stacked
     // layers (and clamps), so a light layer over a light pane turns gray
     // rather than whiter: keep light-mode cards and fields faint.
-    pub rail_bg: Hsla,
+    pub bar_bg: Hsla,
     pub sidebar_bg: Hsla,
     pub list_bg: Hsla,
     pub reader_bg: Hsla,
@@ -171,7 +171,7 @@ impl Theme {
             high_contrast: false,
             opaque: false,
             material: hex(0x1e1e21ff),
-            rail_bg: hex(0x0c0c10cc),
+            bar_bg: hex(0x0c0c10cc),
             sidebar_bg: hex(0x111115cc),
             list_bg: hex(0x141418d1),
             reader_bg: hex(0x18181ce0),
@@ -246,7 +246,7 @@ impl Theme {
             high_contrast: false,
             opaque: false,
             material: hex(0xececeeff),
-            rail_bg: hex(0xf2f2f6cc),
+            bar_bg: hex(0xf2f2f6cc),
             sidebar_bg: hex(0xf7f7facc),
             list_bg: hex(0xfafafcbf),
             reader_bg: hex(0xffffffd1),
@@ -415,7 +415,7 @@ impl Theme {
         self.opaque = glass >= 100;
         let material = self.material;
         for pane in [
-            &mut self.rail_bg,
+            &mut self.bar_bg,
             &mut self.sidebar_bg,
             &mut self.list_bg,
             &mut self.reader_bg,
@@ -754,7 +754,7 @@ mod tests {
         let half = Theme::build(WindowAppearance::Dark, &display, 50);
         assert!(half.sidebar_bg.a > tinted.sidebar_bg.a && half.sidebar_bg.a < 1.);
         let solid = Theme::build(WindowAppearance::Light, &display, 100);
-        assert!(solid.opaque && solid.rail_bg.a == 1. && solid.menu_bar_bg.a == 1.);
+        assert!(solid.opaque && solid.bar_bg.a == 1. && solid.menu_bar_bg.a == 1.);
         let reduce = Display {
             reduce_transparency: true,
             ..display

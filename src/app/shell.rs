@@ -16,7 +16,7 @@ use gpui::{
     WindowOptions, point, px, size,
 };
 
-use super::{Mode, PigeonApp, RAIL_WIDTH};
+use super::{Mode, PigeonApp};
 use crate::{
     actions::*,
     ai::{self, Feature},
@@ -541,11 +541,40 @@ fn window_options(cx: &mut App) -> WindowOptions {
     }
 }
 
-/// Where the traffic lights sit: centered in the rail (they're 60pt wide
-/// on macOS 26), level with the middle of the pane headers. Draft windows
-/// put them in the same place (MB-047).
+/// The traffic lights' size on macOS 26.
+const TRAFFIC_LIGHTS: Size<Pixels> = size(px(60.), px(14.));
+/// From the window's left edge to the traffic lights.
+const TRAFFIC_LIGHTS_LEFT: Pixels = px(16.);
+/// What a draft window keeps clear for its traffic lights (MB-047): they
+/// sit centered in it, level with the middle of its toolbar.
+pub const DRAFT_TRAFFIC_LIGHTS_INSET: Pixels = px(80.);
+
+/// Where the main window's traffic lights sit: at the start of the top
+/// bar, centered in its height.
 pub fn traffic_lights() -> gpui::Point<Pixels> {
-    point((RAIL_WIDTH - px(60.)) / 2., px(19.))
+    point(
+        TRAFFIC_LIGHTS_LEFT,
+        (crate::ui::TOP_BAR_HEIGHT - TRAFFIC_LIGHTS.height) / 2.,
+    )
+}
+
+/// A draft window's traffic lights: centered in its inset, level with the
+/// middle of its toolbar.
+pub fn draft_traffic_lights() -> gpui::Point<Pixels> {
+    point(
+        (DRAFT_TRAFFIC_LIGHTS_INSET - TRAFFIC_LIGHTS.width) / 2.,
+        (crate::ui::HEADER_HEIGHT - TRAFFIC_LIGHTS.height) / 2.,
+    )
+}
+
+/// How much of the top bar's start the traffic lights take, with the gap
+/// after them; none in full screen, where macOS hides them.
+pub fn traffic_lights_inset(full_screen: bool) -> Pixels {
+    if full_screen {
+        px(0.)
+    } else {
+        TRAFFIC_LIGHTS_LEFT + TRAFFIC_LIGHTS.width + crate::ui::style::SPACE_SM
+    }
 }
 
 /// Glass, or opaque under Reduce Transparency, Increase Contrast or a
@@ -1006,6 +1035,26 @@ pub fn target_show(target: NoticeTarget) -> Show {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn traffic_lights_sit_in_the_top_bar() {
+        let at = traffic_lights();
+        // Centered in the bar's height, clear of what comes after them.
+        assert_eq!(at.y * 2. + TRAFFIC_LIGHTS.height, crate::ui::TOP_BAR_HEIGHT);
+        assert!(traffic_lights_inset(false) > at.x + TRAFFIC_LIGHTS.width);
+        // Hidden in full screen, so nothing is kept clear.
+        assert_eq!(traffic_lights_inset(true), px(0.));
+        // A draft window's stay centered in its own inset.
+        let draft = draft_traffic_lights();
+        assert_eq!(
+            draft.x * 2. + TRAFFIC_LIGHTS.width,
+            DRAFT_TRAFFIC_LIGHTS_INSET
+        );
+        assert_eq!(
+            draft.y * 2. + TRAFFIC_LIGHTS.height,
+            crate::ui::HEADER_HEIGHT
+        );
+    }
 
     #[test]
     fn mailto_takes_its_addresses() {
