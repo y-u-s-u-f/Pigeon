@@ -19,7 +19,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Planned features](#3-planned-features-pln) | 2 | 0 | 0 | 2 |
 | [Accounts and sign-in](#4-accounts-and-sign-in-acc) | 2 | 4 | 3 | 9 |
 | [Folders and labels](#51-folders-and-labels-fol) | 1 | 2 | 11 | 14 |
-| [Thread list](#52-thread-list-lst) | 0 | 1 | 9 | 10 |
+| [Thread list](#52-thread-list-lst) | 0 | 2 | 9 | 11 |
 | [Reading pane](#53-reading-pane-rdr) | 0 | 2 | 8 | 10 |
 | [Message actions](#54-message-and-thread-actions-act) | 1 | 3 | 7 | 11 |
 | [Compose and sending](#55-compose-and-sending-cmp) | 0 | 4 | 13 | 17 |
@@ -40,7 +40,7 @@ To update: change the status cell in the area's table, then the counts below.
 | [Accessibility](#85-accessibility-a11y) | 0 | 9 | 1 | 10 |
 | [System integration](#86-system-integration-sys) | 3 | 1 | 0 | 4 |
 | [AI](#10-ai-ai) | 0 | 16 | 0 | 16 |
-| **Overall** | **39** | **59** | **134** | **232** |
+| **Overall** | **39** | **60** | **134** | **233** |
 
 ## Contents
 
@@ -292,6 +292,7 @@ PLN-2 moved to [AI-10](#ai-10-clean-view-ai-reading-view).
 | LST-8 | Live refresh and new mail in the list | 🟢 Fully linked | `history.list` (SYN-2) |
 | LST-9 | Empty-result text | 🟢 Fully linked | None |
 | LST-10 | Drag conversations onto the sidebar | 🟡 Partially done | The moves of ACT-1a, ACT-3, FOL-5, FOL-14 |
+| LST-11 | Drawn context menu (row menu first) | 🟡 Partially done | As the actions it offers |
 
 #### LST-1 Thread rows
 
@@ -347,6 +348,11 @@ PLN-2 moved to [AI-10](#ai-10-clean-view-ai-reading-view).
 
 - **Today (polish W2, MA-087):** A row drags (with every picked row when it's one of them) onto a folder (move, with Undo), Starred (star), a label (add it) or an Inbox category (FOL-14). The ghost shows the subject, or the count. Only rows the drop would change light up (`accepts_drop()`, `drop_threads()` in `src/app/mail.rs`; `DraggedThreads` in `src/ui/thread_list.rs`; the sidebar's drop targets in `src/ui/sidebar.rs`).
 - **Needs:** A user check. Nothing new from Gmail.
+
+#### LST-11 Drawn context menu (row menu first)
+
+- **Today:** A right-click menu drawn by the app (`ContextMenu`, `src/ui/context_menu.rs`) replaces the native one on thread rows. It's a popover like the app's others: icons, each action's shortcut as keycaps (looked up where the action will land), a "N Conversations" header for several (MB-018), checks and label color dots in the Move to Category and Label submenus, Delete in red, hairline separators, a scroll past the window's height. It opens at the pointer with a fade and a 4 pt drift from the cursor's side (GPUI can't scale a div; under Reduce Motion only the fade), flips to the pointer's other side where it doesn't fit and stays 8 pt inside the window; submenus open beside their row, or on the left at the edge. Keys while open: ↑/↓ (skipping headers, separators and dimmed items, wrapping), Home/End, → and ← into and out of submenus, Enter or Space to choose, Esc closes one level at a time, a letter jumps to the next item starting with it. Submenus open after a 120 ms rest and stay while the pointer heads for them (a safe triangle). A click outside closes it without reaching what's under it; the window losing focus closes it. The chosen action goes to what had focus when it opened, which gets focus back; `on_close` runs after it (the row's outline, `context_target`, clears there). Roles: `Menu`, `MenuItem` / `MenuItemCheckBox` with toggled, expanded, shortcut and position. Mounted by `layer()` in `layer_pane()` (`src/app.rs`); a window that doesn't draw the layer (a draft window) gets the native menu from the same builder (`into_native()`), which is how the reader's "…" keeps the native menu while sharing the row menu's items (`thread_menu()`, `src/app/mail.rs`).
+- **Needs:** A user check, then rolling it out to the call sites still on `NativeMenu`: the reader (message, sender, link, attachment menus and its "…"), the sidebar, labels, attachments, the composer, the HTML view and the calendar (event menu, panel "…"). Draft windows need `context_menu::layer()` in their root before their menus can move over. Nothing from Gmail.
 
 ### 5.3 Reading pane (RDR)
 
@@ -420,7 +426,7 @@ PLN-2 moved to [AI-10](#ai-10-clean-view-ai-reading-view).
 
 ### 5.4 Message and thread actions (ACT)
 
-Each action applies to the checked threads if any (ACT-6), otherwise the selected one (`targets()` in `src/app/mail.rs`). Hovering a row shows Archive, Delete, Mark read/unread and Star; right-click opens a native menu with those plus Reply, Forward, Move to, Label. Right-click doesn't select, open or mark read: the menu acts on the right-clicked row (outlined while the menu is open; `context_target` in `src/app.rs`, preferred by `targets()`), or on all picked threads when the row is one of them. Reply, Reply All and Forward open that conversation first. Toolbar, shortcut and palette all dispatch the same action (`src/actions.rs`).
+Each action applies to the checked threads if any (ACT-6), otherwise the selected one (`targets()` in `src/app/mail.rs`). Hovering a row shows Archive, Delete, Mark read/unread and Star; right-click opens the app's own menu (LST-11) with those plus Reply, Forward, Move to, Label. Right-click doesn't select, open or mark read: the menu acts on the right-clicked row (outlined while the menu is open; `context_target` in `src/app.rs`, preferred by `targets()`), or on all picked threads when the row is one of them. Reply, Reply All and Forward open that conversation first. Toolbar, shortcut and palette all dispatch the same action (`src/actions.rs`).
 
 | ID | Feature | Status | Google API |
 | --- | --- | --- | --- |

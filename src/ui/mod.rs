@@ -5,6 +5,7 @@ pub mod calendar;
 pub mod command_palette;
 pub mod composer;
 pub mod contact_card;
+pub mod context_menu;
 pub mod controls;
 pub mod html_view;
 pub mod later_picker;

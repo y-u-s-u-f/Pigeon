@@ -4,7 +4,7 @@
 
 use gpui::{
     Action, App, Context, Div, Focusable as _, KeyBinding, ListOffset, Modifiers, Pixels, Point,
-    Stateful, Window, component::native_menu::NativeMenu, prelude::*,
+    Stateful, Window, prelude::*,
 };
 
 use std::time::Duration;
@@ -19,6 +19,7 @@ use crate::{
     search::{GmailQuery, NextSuggestion, PrevSuggestion, ServerState},
     ui::{
         command_palette::{Leading, PaletteCommand, PaletteItem},
+        context_menu::{ContextMenu, Item},
         thread_list::DraggedThreads,
     },
 };
@@ -1176,8 +1177,8 @@ impl PigeonApp {
         );
     }
 
-    /// The thread actions in a native menu at `position`: the toolbar's "…"
-    /// (`with_replies` false) or a row's context menu.
+    /// The thread actions in a native menu at `position`: the reader's
+    /// "…" (`with_replies` false).
     pub(crate) fn show_thread_menu(
         &mut self,
         position: Point<Pixels>,
@@ -1185,65 +1186,87 @@ impl PigeonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(menu) = self.thread_menu(with_replies) {
+            menu.into_native().show(position, window, cx);
+        }
+    }
+
+    /// The thread actions for the targets: the reader's "…" (`with_replies`
+    /// false) or a row's context menu.
+    fn thread_menu(&self, with_replies: bool) -> Option<ContextMenu> {
         let targets = self.targets();
-        let Some(&first) = targets.first() else {
-            return;
-        };
+        let &first = targets.first()?;
         let thread = &self.data.threads[first];
         let several = targets.len() > 1;
         let unread = targets.iter().all(|&ix| self.data.threads[ix].unread);
         let starred = targets.iter().all(|&ix| self.data.threads[ix].starred);
         let draft = thread.folder == Folder::Drafts;
 
-        let mut menu = NativeMenu::new();
+        let mut menu = ContextMenu::new();
         // MB-018: a menu for several says so first.
         if several {
-            menu = menu
-                .menu_with_disabled(
-                    format!("{} Conversations", targets.len()),
-                    true,
-                    Box::new(ClearSelection),
-                )
-                .separator();
+            menu = menu.header(format!("{} Conversations", targets.len()));
         }
         if with_replies && !several && !draft {
             menu = menu
-                .menu("Reply", Box::new(Reply))
-                .menu("Reply All", Box::new(ReplyAll))
-                .menu("Forward", Box::new(Forward))
+                .item(Item::new("Reply", Box::new(Reply)).icon(Icon::Reply))
+                .item(Item::new("Reply All", Box::new(ReplyAll)).icon(Icon::ReplyAll))
+                .item(Item::new("Forward", Box::new(Forward)).icon(Icon::Forward))
                 .separator();
         }
         if with_replies {
             if let Some(title) = thread.folder.archive_title() {
-                menu = menu.menu(title, Box::new(Archive));
+                let glyph = match thread.folder {
+                    Folder::Spam | Folder::Archive => Icon::Inbox,
+                    _ => Icon::Archive,
+                };
+                menu = menu.item(Item::new(title, Box::new(Archive)).icon(glyph));
             }
             if thread.folder != Folder::Trash {
-                menu = menu.menu(
-                    if draft { "Discard Draft" } else { "Delete" },
-                    Box::new(Delete),
+                menu = menu.item(
+                    Item::new(
+                        if draft { "Discard Draft" } else { "Delete" },
+                        Box::new(Delete),
+                    )
+                    .icon(Icon::Trash)
+                    .destructive(),
                 );
             }
             menu = menu
-                .menu(
-                    if starred { "Unstar" } else { "Star" },
-                    Box::new(ToggleStar),
+                .item(
+                    Item::new(
+                        if starred { "Unstar" } else { "Star" },
+                        Box::new(ToggleStar),
+                    )
+                    .icon(if starred {
+                        Icon::StarFilled
+                    } else {
+                        Icon::Star
+                    }),
                 )
                 .separator();
             // The toolbar's "…" leaves out what sits beside it (MB-020).
             menu = if unread {
-                menu.menu("Mark as Read", Box::new(MarkRead))
+                menu.item(Item::new("Mark as Read", Box::new(MarkRead)).icon(Icon::MailOpen))
             } else {
-                menu.menu("Mark as Unread", Box::new(MarkUnread))
+                menu.item(Item::new("Mark as Unread", Box::new(MarkUnread)).icon(Icon::MailUnread))
             };
             // W4b (FOL-12).
             let important = targets.iter().all(|&ix| self.data.threads[ix].important);
-            menu = menu.menu(
-                if important {
-                    "Mark as Not Important"
+            menu = menu.item(
+                Item::new(
+                    if important {
+                        "Mark as Not Important"
+                    } else {
+                        "Mark as Important"
+                    },
+                    Box::new(ToggleImportant),
+                )
+                .icon(if important {
+                    Icon::ImportantOutline
                 } else {
-                    "Mark as Important"
-                },
-                Box::new(ToggleImportant),
+                    Icon::Important
+                }),
             );
         }
         if !draft {
@@ -1251,28 +1274,35 @@ impl PigeonApp {
             let snoozed = targets
                 .iter()
                 .any(|&ix| self.data.threads[ix].later.snoozed_until.is_some());
-            menu = menu.menu(
-                if snoozed {
-                    "Change Snooze…"
-                } else {
-                    "Snooze…"
-                },
-                Box::new(Snooze),
+            menu = menu.item(
+                Item::new(
+                    if snoozed {
+                        "Change Snooze…"
+                    } else {
+                        "Snooze…"
+                    },
+                    Box::new(Snooze),
+                )
+                .icon(Icon::AlarmClock),
             );
             if snoozed {
-                menu = menu.menu("Unsnooze", Box::new(Unsnooze));
+                menu = menu.item(Item::new("Unsnooze", Box::new(Unsnooze)).icon(Icon::Clock));
             }
+            menu = menu.separator();
             // MB-018: not the folder they're all in already.
-            let mut folders = NativeMenu::new();
+            let mut folders = ContextMenu::new();
             for folder in Folder::ALL {
                 let here = targets
                     .iter()
                     .all(|&ix| self.data.threads[ix].folder == folder);
                 if folder != Folder::Drafts && folder != Folder::Sent && !here {
-                    folders = folders.menu(folder.title(), Box::new(MoveToFolder(folder)));
+                    folders = folders.item(
+                        Item::new(folder.title(), Box::new(MoveToFolder(folder)))
+                            .icon(folder_icon(folder)),
+                    );
                 }
             }
-            menu = menu.submenu("Move to", folders);
+            menu = menu.item(Item::submenu("Move to", folders).icon(Icon::FolderInput));
             // MB-062: Gmail's categories, for Inbox conversations.
             let inbox: Vec<&Thread> = targets
                 .iter()
@@ -1280,33 +1310,41 @@ impl PigeonApp {
                 .filter(|t| t.folder == Folder::Inbox)
                 .collect();
             if !inbox.is_empty() {
-                let mut categories = NativeMenu::new();
+                let mut categories = ContextMenu::new();
                 for (category, action) in CATEGORY_ACTIONS {
                     let here = inbox.iter().all(|t| !leaves_for(t, category));
-                    categories = categories.menu_with_check(category.name(), here, action());
+                    categories = categories.item(
+                        Item::new(category.name(), action())
+                            .icon(category_icon(category))
+                            .checked(here),
+                    );
                 }
-                menu = menu.submenu("Move to Category", categories);
+                menu = menu.item(Item::submenu("Move to Category", categories).icon(Icon::Layers));
             }
         }
         if self.data.labels.is_empty() {
-            menu = menu.menu("New Label…", Box::new(NewLabel));
+            menu = menu.item(Item::new("New Label…", Box::new(NewLabel)).icon(Icon::Tag));
         } else {
-            let mut labels = NativeMenu::new();
+            let mut labels = ContextMenu::new();
             for (ix, label) in self.data.labels.iter().enumerate() {
                 let on = targets
                     .iter()
                     .all(|&t| self.data.threads[t].labels.contains(&label.id));
-                labels = labels.menu_with_check(label.name.clone(), on, Box::new(ToggleLabel(ix)));
+                labels = labels.item(
+                    Item::new(label.name.clone(), Box::new(ToggleLabel(ix)))
+                        .dot(label.color)
+                        .checked(on),
+                );
             }
-            menu = menu.submenu("Label", labels);
+            menu = menu.item(Item::submenu("Label", labels).icon(Icon::Tag));
         }
         // MB-061.
         if !several && !draft {
             menu = menu
                 .separator()
-                .menu("Open in Gmail", Box::new(OpenInGmail));
+                .item(Item::new("Open in Gmail", Box::new(OpenInGmail)).icon(Icon::Mail));
         }
-        menu.show(position, window, cx);
+        Some(menu)
     }
 
     /// Right-click on a row: act on it (or on the picked threads it's one
@@ -1322,18 +1360,21 @@ impl PigeonApp {
         if !self.is_checked(ix) {
             self.context_target = Some(self.data.threads[ix].id.clone());
         }
-        self.show_thread_menu(position, true, window, cx);
-        // The menu runs its own loop and dispatches the chosen action when it
-        // closes, ahead of this task: it clears the target whether the menu
-        // chose something or was dismissed.
-        cx.spawn(async move |this, cx| {
-            this.update(cx, |this, cx| {
-                this.context_target = None;
-                cx.notify();
+        let Some(menu) = self.thread_menu(true) else {
+            self.context_target = None;
+            return;
+        };
+        // Called after the chosen action, which still acts on the target.
+        let this = cx.weak_entity();
+        menu.label("Conversation actions")
+            .on_close(move |_, cx| {
+                this.update(cx, |this, cx| {
+                    this.context_target = None;
+                    cx.notify();
+                })
+                .ok();
             })
-            .ok();
-        })
-        .detach();
+            .show(position, window, cx);
         cx.notify();
     }
 

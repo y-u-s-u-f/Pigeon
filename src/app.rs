@@ -3055,19 +3055,22 @@ impl PigeonApp {
             .into_any_element()
     }
 
-    /// Toast, first-run tip and overlays, over everything. Not cached: it
+    /// Toast, first-run tip, overlays and the context menu, over
+    /// everything. Not cached: it
     /// draws whenever the app does, and its springs redraw it alone.
     fn layer_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let panes = !self.settings_page.open && self.backend.read(cx).source() != Source::SignedOut;
         let toast = self.render_toast(window, cx);
         let tip = if panes { self.render_tip(cx) } else { None };
         let overlay = self.render_overlay(window, cx);
+        let menu = ui::context_menu::layer(window, cx);
         div()
             .absolute()
             .inset_0()
             .children(toast)
             .children(tip)
             .children(overlay)
+            .children(menu)
             .into_any_element()
     }
 }
