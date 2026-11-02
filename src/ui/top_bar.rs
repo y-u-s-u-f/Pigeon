@@ -13,7 +13,7 @@ use gpui::{
 
 use super::context_menu::{ContextMenu, Item};
 use super::controls::{ButtonKind, Segment, push_button_frame, segmented_with};
-use super::motion::{SPRING_CONTROL, SPRING_EXIT, fade, spinner};
+use super::motion::{SPRING_CONTROL, SPRING_EXIT, fade, spinner_while};
 use super::style::*;
 use super::{
     account_avatar, icon, icon_button, keycap, shortcut_text, status, tooltip, window_drag_area,
@@ -138,14 +138,26 @@ impl PigeonApp {
             .when(!signed_out, |this| {
                 let spinning = self.refresh_spin.is_some()
                     || matches!(status, SyncStatus::Syncing { .. } | SyncStatus::Waiting);
-                this.child(refresh_button(
+                this.children(sync_progress(&status).map(|progress| {
+                    div()
+                        .flex_none()
+                        .pl(SPACE_XS)
+                        .text_size(TEXT_XS)
+                        .text_color(theme.text_muted)
+                        .font_features(tabular_figures())
+                        .whitespace_nowrap()
+                        .child(progress)
+                }))
+                .child(refresh_button(
                     spinning,
                     status.clone(),
                     self.demo_synced_at,
                     &theme,
+                    window,
+                    cx,
                 ))
             })
-            .children(primary.map(|button| div().pl(SPACE_XS).pr(SPACE_XS).child(button)))
+            .children(primary.map(|button| div().px(SPACE_XS).child(button)))
             .child(settings_button(settings_open, &theme))
             .child(account_button(
                 &account,
@@ -171,8 +183,10 @@ impl PigeonApp {
     }
 }
 
-/// Mail and Calendar, with the unread dot on Mail (MD-029) so new mail
-/// shows from Calendar and Settings too. ←/→ switch while it has focus.
+/// Mail and Calendar as icons, with the unread dot on Mail (MD-029) so new
+/// mail shows from Calendar and Settings too; their names are in the
+/// tooltips and for VoiceOver. ←/→ switch while it has focus, and it keeps
+/// it, as in a radio group.
 fn app_switch(
     mode: Option<Mode>,
     unread: usize,
@@ -187,12 +201,14 @@ fn app_switch(
     let segments = vec![
         Segment::new("Mail")
             .icon(Icon::Mail)
+            .icon_only()
             .label(mail_label)
             .badge(unread_dot(unread > 0, theme, window, cx))
-            .tooltip("Show mail", Box::new(GoToMail)),
+            .tooltip("Mail", Box::new(GoToMail)),
         Segment::new("Calendar")
             .icon(Icon::Calendar)
-            .tooltip("Show calendar", Box::new(GoToCalendar)),
+            .icon_only()
+            .tooltip("Calendar", Box::new(GoToCalendar)),
     ];
     let selected = mode.map(|mode| match mode {
         Mode::Mail => 0,
@@ -222,7 +238,13 @@ fn app_switch(
             _ => return,
         };
         cx.stop_propagation();
+        // Switching moves focus into the app's panes; bring it back
+        // after, once the action has run.
+        let switch = window.focused(cx);
         window.dispatch_action(go(ix), cx);
+        if let Some(switch) = switch {
+            window.defer(cx, move |window, cx| window.focus(&switch, cx));
+        }
     })
 }
 
@@ -302,25 +324,49 @@ fn command_field(theme: &Theme) -> impl IntoElement {
         })
 }
 
-/// "Refresh · Synced 4 min ago", worked out as the tooltip shows.
-fn refresh_tip(status: &SyncStatus, demo_synced_at: Option<i64>, now_ms: i64) -> String {
-    let state = match (status, demo_synced_at) {
+/// "340 of 1,000" while a sync counts what it fetches, shown by Refresh
+/// (STA-1).
+fn sync_progress(status: &SyncStatus) -> Option<String> {
+    match *status {
+        SyncStatus::Syncing { done, total } if total > 0 => Some(format!(
+            "{} of {}",
+            status::thousands(done),
+            status::thousands(total)
+        )),
+        _ => None,
+    }
+}
+
+/// "Synced 4 min ago": Refresh's tooltip after "Refresh · ", and its
+/// accessible description.
+fn refresh_state(status: &SyncStatus, demo_synced_at: Option<i64>, now_ms: i64) -> String {
+    match (status, demo_synced_at) {
         (SyncStatus::Demo, Some(at)) => format!("Demo data · Synced {}", status::ago(at, now_ms)),
         _ => status::label(status, now_ms),
-    };
-    format!("Refresh · {state}")
+    }
+}
+
+/// "Refresh · Synced 4 min ago", worked out as the tooltip shows.
+fn refresh_tip(status: &SyncStatus, demo_synced_at: Option<i64>, now_ms: i64) -> String {
+    format!(
+        "Refresh · {}",
+        refresh_state(status, demo_synced_at, now_ms)
+    )
 }
 
 /// Refresh (`SyncNow`): turns while a sync runs, and for a moment after a
-/// click even when there was nothing to fetch.
+/// click even when there was nothing to fetch; then finishes its turn.
 fn refresh_button(
     spinning: bool,
     status: SyncStatus,
     demo_synced_at: Option<i64>,
     theme: &Theme,
+    window: &mut Window,
+    cx: &mut App,
 ) -> impl IntoElement {
     let glyph = icon(Icon::RefreshCw, ICON_TOOLBAR, theme.icon);
-    let state: SharedString = status::label(&status, status::now_ms()).into();
+    let glyph = spinner_while("refresh-spinner", spinning, glyph, window, cx);
+    let state: SharedString = refresh_state(&status, demo_synced_at, status::now_ms()).into();
     focusable_control(div().id("top-bar-refresh"), theme)
         .role(gpui::Role::Button)
         .aria_label("Refresh")
@@ -336,13 +382,7 @@ fn refresh_button(
         .rounded(RADIUS_MD)
         .hover(|s| s.bg(theme.hover_bg))
         .active(|s| s.bg(theme.selected_bg))
-        .map(|this| {
-            if spinning {
-                this.child(spinner("refresh-spinner", glyph))
-            } else {
-                this.child(glyph)
-            }
-        })
+        .child(glyph)
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(|_, window, cx| window.dispatch_action(Box::new(SyncNow), cx))
         .tooltip(move |window, cx| {
@@ -393,7 +433,7 @@ fn status_glyph(status: &SyncStatus, theme: &Theme) -> Option<AnyElement> {
 fn demo_chip(theme: &Theme) -> impl IntoElement {
     focusable_control(div().id("demo-sign-in"), theme)
         .role(gpui::Role::Button)
-        .aria_label("Demo data. Sign in…")
+        .aria_label("Demo data. Sign in with Google")
         .flex_none()
         .h(CONTROL_SM)
         .px(SPACE_SM)
@@ -405,11 +445,11 @@ fn demo_chip(theme: &Theme) -> impl IntoElement {
         .bg(theme.chip_bg)
         .hover(|s| s.bg(theme.hover_bg).text_color(theme.text_muted))
         .active(|s| s.bg(theme.selected_bg))
-        .child("Demo Data")
+        .child("Demo Data · Sign In")
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(|_, window, cx| window.dispatch_action(Box::new(SignIn), cx))
         .tooltip(|window, cx| {
-            tooltip("Sign in with Google")
+            tooltip("Showing demo data; sign in with Google to use your mail")
                 .action(&SignIn, None)
                 .build(window, cx)
         })

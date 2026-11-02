@@ -483,10 +483,17 @@ impl PigeonApp {
         &self,
         width: gpui::Pixels,
         counts: &NavCounts,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
+        let notifications = super::status::notifications_card(self.backend.read(cx), &theme, cx);
+        // The first mailbox sits level with the list's title beside it.
+        let top = if notifications.is_some() {
+            SPACE_SM
+        } else {
+            (super::header_height(window) - ROW_SM.to_pixels(window.rem_size())) / 2.
+        };
         let categories =
             shown_categories(counts, self.backend.read(cx).category_counts(), self.nav);
         let mut folders = Vec::new();
@@ -588,10 +595,7 @@ impl PigeonApp {
             .border_color(theme.border)
             // The toggle, the account and the sync status are in the top
             // bar; the sidebar starts with the mailboxes.
-            .children(
-                super::status::notifications_card(self.backend.read(cx), &theme, cx)
-                    .map(|card| div().mx(SPACE_MD).mt(SPACE_MD).child(card)),
-            )
+            .children(notifications.map(|card| div().mx(SPACE_MD).mt(SPACE_MD).child(card)))
             .child(
                 div()
                     .id("sidebar-nav")
@@ -600,7 +604,7 @@ impl PigeonApp {
                     .flex_1()
                     .min_h_0()
                     .px(SPACE_MD)
-                    .pt(SPACE_SM)
+                    .pt(top)
                     .pb(SPACE_MD)
                     .flex()
                     .flex_col()

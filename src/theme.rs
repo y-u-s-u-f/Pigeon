@@ -32,6 +32,8 @@ pub struct Theme {
     // through; the reader is the most solid. GPUI adds the alphas of stacked
     // layers (and clamps), so a light layer over a light pane turns gray
     // rather than whiter: keep light-mode cards and fields faint.
+    /// The window's top bar: little more than the bare glass, so it reads as
+    /// part of the window rather than a toolbar.
     pub bar_bg: Hsla,
     pub sidebar_bg: Hsla,
     pub list_bg: Hsla,
@@ -169,7 +171,7 @@ impl Theme {
             high_contrast: false,
             opaque: false,
             material: hex(0x1e1e21ff),
-            bar_bg: hex(0x0c0c10cc),
+            bar_bg: hex(0x16161a1f),
             sidebar_bg: hex(0x111115cc),
             list_bg: hex(0x141418d1),
             reader_bg: hex(0x18181ce0),
@@ -243,7 +245,7 @@ impl Theme {
             high_contrast: false,
             opaque: false,
             material: hex(0xececeeff),
-            bar_bg: hex(0xf2f2f6cc),
+            bar_bg: hex(0xfafafc33),
             sidebar_bg: hex(0xf7f7facc),
             list_bg: hex(0xfafafcbf),
             reader_bg: hex(0xffffffd1),

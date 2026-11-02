@@ -532,7 +532,9 @@ fn window_options(cx: &mut App) -> WindowOptions {
         titlebar: Some(TitlebarOptions {
             title: Some("Pigeon".into()),
             appears_transparent: true,
-            traffic_light_position: Some(traffic_lights()),
+            traffic_light_position: Some(traffic_lights(crate::ui::top_bar_height_at(px(
+                crate::ui::style::BASE_REM * settings::get(cx).text_scale,
+            )))),
         }),
         // Panes move the window themselves (see `ui::window_drag_area`).
         app_owns_titlebar_drag: true,
@@ -550,11 +552,11 @@ const TRAFFIC_LIGHTS_LEFT: Pixels = px(16.);
 pub const DRAFT_TRAFFIC_LIGHTS_INSET: Pixels = px(80.);
 
 /// Where the main window's traffic lights sit: at the start of the top
-/// bar, centered in its height.
-pub fn traffic_lights() -> gpui::Point<Pixels> {
+/// bar, centered in its height, which grows with the text.
+pub fn traffic_lights(bar_height: Pixels) -> gpui::Point<Pixels> {
     point(
         TRAFFIC_LIGHTS_LEFT,
-        (crate::ui::TOP_BAR_HEIGHT - TRAFFIC_LIGHTS.height) / 2.,
+        (bar_height - TRAFFIC_LIGHTS.height) / 2.,
     )
 }
 
@@ -563,7 +565,7 @@ pub fn traffic_lights() -> gpui::Point<Pixels> {
 pub fn draft_traffic_lights() -> gpui::Point<Pixels> {
     point(
         (DRAFT_TRAFFIC_LIGHTS_INSET - TRAFFIC_LIGHTS.width) / 2.,
-        (crate::ui::HEADER_HEIGHT - TRAFFIC_LIGHTS.height) / 2.,
+        (crate::ui::TOP_BAR_HEIGHT - TRAFFIC_LIGHTS.height) / 2.,
     )
 }
 
@@ -1038,9 +1040,13 @@ mod tests {
 
     #[test]
     fn traffic_lights_sit_in_the_top_bar() {
-        let at = traffic_lights();
+        let at = traffic_lights(crate::ui::TOP_BAR_HEIGHT);
         // Centered in the bar's height, clear of what comes after them.
         assert_eq!(at.y * 2. + TRAFFIC_LIGHTS.height, crate::ui::TOP_BAR_HEIGHT);
+        // The bar grows with the text, and they stay centered in it.
+        let tall = crate::ui::top_bar_height_at(px(crate::ui::style::BASE_REM * 2.));
+        assert!(tall > crate::ui::TOP_BAR_HEIGHT);
+        assert_eq!(traffic_lights(tall).y * 2. + TRAFFIC_LIGHTS.height, tall);
         assert!(traffic_lights_inset(false) > at.x + TRAFFIC_LIGHTS.width);
         // Hidden in full screen, so nothing is kept clear.
         assert_eq!(traffic_lights_inset(true), px(0.));
@@ -1052,7 +1058,7 @@ mod tests {
         );
         assert_eq!(
             draft.y * 2. + TRAFFIC_LIGHTS.height,
-            crate::ui::HEADER_HEIGHT
+            crate::ui::TOP_BAR_HEIGHT
         );
     }
 

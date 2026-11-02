@@ -1417,14 +1417,9 @@ impl PigeonApp {
                             crate::calendar::policy::my_answer(&calendar.data, e).is_some()
                         })
             }
-            When::SignedOut => self.backend.read(cx).source() == Source::SignedOut,
-            When::CanSignIn => {
+            When::SignedOut | When::CanSignIn | When::CanSignOut | When::HasAccount => {
                 let b = self.backend.read(cx);
-                b.source() == Source::SignedOut || b.demo_by_choice()
-            }
-            When::CanSignOut => {
-                let b = self.backend.read(cx);
-                b.source() == Source::Google || b.demo_by_choice()
+                account_allows(when, b.source(), b.demo_by_choice())
             }
             When::Snoozed => {
                 mail && self
@@ -1885,9 +1880,40 @@ fn several(n: usize) -> Option<usize> {
     (n > 1).then_some(n)
 }
 
+/// The account gates of `command_available`: `demo_by_choice` is demo data
+/// picked on the sign-in screen (ME-050), as against `PIGEON_DEMO`.
+fn account_allows(when: When, source: Source, demo_by_choice: bool) -> bool {
+    match when {
+        When::SignedOut => source == Source::SignedOut,
+        When::CanSignIn => source == Source::SignedOut || demo_by_choice,
+        When::CanSignOut => source == Source::Google || demo_by_choice,
+        When::HasAccount => source != Source::SignedOut,
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::action_targets;
+    use super::{Source, When, account_allows, action_targets};
+
+    #[test]
+    fn sync_now_needs_an_account() {
+        assert!(account_allows(When::HasAccount, Source::Google, false));
+        assert!(account_allows(When::HasAccount, Source::Demo, false));
+        assert!(account_allows(When::HasAccount, Source::Demo, true));
+        assert!(!account_allows(When::HasAccount, Source::SignedOut, false));
+        let sync = crate::actions::COMMANDS
+            .iter()
+            .find(|c| c.name == "Sync Now")
+            .unwrap();
+        assert_eq!(sync.when, When::HasAccount);
+        // The others keep their meaning.
+        assert!(account_allows(When::SignedOut, Source::SignedOut, false));
+        assert!(!account_allows(When::CanSignIn, Source::Demo, false));
+        assert!(account_allows(When::CanSignIn, Source::Demo, true));
+        assert!(!account_allows(When::CanSignOut, Source::Demo, false));
+        assert!(account_allows(When::CanSignOut, Source::Google, false));
+    }
 
     #[test]
     fn selection_when_nothing_is_picked() {

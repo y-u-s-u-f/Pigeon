@@ -1016,6 +1016,9 @@ pub enum When {
     Scheduled,
     /// Signed in, or on demo data picked on the sign-in screen (ME-050).
     CanSignOut,
+    /// Signed in with Google or on the demo data, however it was opened:
+    /// there's mail to sync.
+    HasAccount,
     /// AI-1: an AI feature may run, with what else it needs.
     Ai(AiNeed),
 }
@@ -1183,7 +1186,7 @@ pub const COMMANDS: &[Command] = commands! {
     App: "Command Palette", Command, ToggleCommandPalette, help_only;
     App: "Keyboard Shortcuts", Keyboard, ToggleShortcutsHelp;
     App: "Settings…", Settings, OpenSettings;
-    App: "Sync Now", RefreshCw, SyncNow;
+    App: "Sync Now", RefreshCw, SyncNow if HasAccount;
     App: "Sign In with Google…", LogIn, SignIn if CanSignIn;
     App: "Sign Out", LogOut, SignOut if CanSignOut;
     App: "Use Demo Data", Layers, UseDemoData if SignedOut;

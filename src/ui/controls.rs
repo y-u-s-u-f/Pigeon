@@ -217,6 +217,8 @@ pub struct Segment {
     /// Drawn over the icon's top-right corner, such as an unread dot.
     badge: Option<AnyElement>,
     tooltip: Option<(&'static str, Box<dyn Action>)>,
+    /// Shows the icon alone; the name stays for VoiceOver.
+    icon_only: bool,
 }
 
 impl Segment {
@@ -227,11 +229,18 @@ impl Segment {
             icon: None,
             badge: None,
             tooltip: None,
+            icon_only: false,
         }
     }
 
     pub fn icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// With `icon`: the icon without the name, compact.
+    pub fn icon_only(mut self) -> Self {
+        self.icon_only = true;
         self
     }
 
@@ -268,19 +277,29 @@ pub fn segmented_with(
     let id: ElementId = id.into();
     let len = segments.len();
     let count = len.max(1) as f32;
-    // Sampled with nothing chosen too, so the thumb picks up where it was.
-    let at = spring(
-        (id.clone(), "thumb"),
-        selected.unwrap_or(0) as f32,
-        SPRING_POP,
-        window,
+    // With nothing chosen the hidden thumb stays on the last choice, so it
+    // comes back there rather than sliding in from another option.
+    let last = window.use_keyed_state(
+        ElementId::NamedChild(id.clone().into(), "last-selected".into()),
         cx,
+        |_, _| selected.unwrap_or(0),
     );
+    let target = match selected {
+        Some(ix) => {
+            if *last.read(cx) != ix {
+                last.update(cx, |last, _| *last = ix);
+            }
+            ix
+        }
+        None => *last.read(cx),
+    };
+    let at = spring((id.clone(), "thumb"), target as f32, SPRING_POP, window, cx);
     let on_select = Rc::new(on_select);
     let segments = segments.into_iter().enumerate().map(|(option, segment)| {
         let chosen = selected == Some(option);
         let on_select = on_select.clone();
         let color = if chosen { theme.text } else { theme.text_muted };
+        let icon_only = segment.icon_only && segment.icon.is_some();
         div()
             .id(("segment", option))
             .role(gpui::Role::RadioButton)
@@ -289,7 +308,7 @@ pub fn segmented_with(
             .aria_position_in_set(option + 1)
             .aria_size_of_set(len)
             .h(CONTROL_SM)
-            .px(SPACE_MD)
+            .px(if icon_only { SPACE_SM } else { SPACE_MD })
             .flex()
             .items_center()
             .justify_center()
@@ -316,7 +335,7 @@ pub fn segmented_with(
                         .children(segment.badge),
                 )
             })
-            .child(segment.name)
+            .when(!icon_only, |el| el.child(segment.name))
             .when_some(segment.tooltip, |el, (text, action)| {
                 el.tooltip(move |window, cx| {
                     super::tooltip(text)

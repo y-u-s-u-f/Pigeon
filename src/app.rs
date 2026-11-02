@@ -265,6 +265,8 @@ pub struct PigeonApp {
     pub(crate) refresh_spin: Option<gpui::Task<()>>,
     /// When Refresh last ran on demo data, which has no sync of its own.
     pub(crate) demo_synced_at: Option<i64>,
+    /// The top bar's height the traffic lights were last centered in.
+    traffic_lights_bar: Pixels,
     /// An overlay on its way out (MD-007).
     leaving_overlay: Option<LeavingOverlay>,
     /// ⌘= / ⌘-: scales all text through the window's rem size.
@@ -574,6 +576,7 @@ impl PigeonApp {
             panes,
             refresh_spin: None,
             demo_synced_at: None,
+            traffic_lights_bar: px(0.),
             leaving_overlay: None,
             text_scale: 1.,
             search_open: false,
@@ -2741,6 +2744,12 @@ impl PigeonApp {
             window.focus(&self.pane_focus(cx), cx);
         }
         window.set_rem_size(px(ui::style::BASE_REM * self.text_scale));
+        // The top bar grows with the text; the traffic lights stay centered.
+        let bar = ui::top_bar_height(window);
+        if bar != self.traffic_lights_bar {
+            self.traffic_lights_bar = bar;
+            window.set_traffic_light_position(shell::traffic_lights(bar));
+        }
         self.load_selected_bodies(cx);
         self.sync_window_title(window, cx);
         self.schedule_reveal(window, cx);

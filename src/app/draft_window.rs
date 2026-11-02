@@ -18,7 +18,7 @@ use crate::{
     settings,
     theme::Theme,
     ui::{
-        self, HEADER_HEIGHT,
+        self, TOP_BAR_HEIGHT,
         composer::{Composer, ComposerEvent, Quoted},
         controls::{ButtonKind, push_button},
         style::*,
@@ -167,8 +167,8 @@ impl Render for DraftHost {
                 // Like the reading pane's draft toolbar, past the traffic
                 // lights.
                 ui::window_drag_area(div().id("draft-window-toolbar"))
-                    .h(crate::ui::HEADER_MIN)
-                    .min_h(HEADER_HEIGHT)
+                    .h(crate::ui::TOP_BAR_MIN)
+                    .min_h(TOP_BAR_HEIGHT)
                     .flex_none()
                     .flex()
                     .items_center()

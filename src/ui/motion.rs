@@ -170,6 +170,89 @@ pub fn spinner(id: impl Into<ElementId>, glyph: Svg) -> AnimationElement<Svg> {
     )
 }
 
+/// One turn of `spinner`.
+const SPIN_TURN: Duration = Duration::from_millis(1000);
+
+#[derive(Clone, Copy)]
+struct Spin {
+    started: Instant,
+    /// When the work ended, and when the turn under way then ends.
+    finish: Option<(Instant, Instant)>,
+}
+
+/// `glyph`, turning as `spinner` while `busy`; when the work ends it
+/// finishes the turn under way instead of snapping upright.
+pub fn spinner_while(
+    id: &'static str,
+    busy: bool,
+    glyph: Svg,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let now = cx.background_executor().now();
+    let state = window.use_keyed_state(
+        ElementId::NamedChild(ElementId::from(id).into(), "spin".into()),
+        cx,
+        |_, _| None::<Spin>,
+    );
+    let spin = *state.read(cx);
+    let Some(spin) = spin else {
+        if !busy {
+            return glyph.into_any_element();
+        }
+        state.update(cx, |s, _| {
+            *s = Some(Spin {
+                started: now,
+                finish: None,
+            })
+        });
+        return spinner(id, glyph).into_any_element();
+    };
+    if busy {
+        if spin.finish.is_some() {
+            // Busy again before the turn ended: the spinner starts over.
+            state.update(cx, |s, _| {
+                *s = Some(Spin {
+                    started: now,
+                    finish: None,
+                })
+            });
+        }
+        return spinner(id, glyph).into_any_element();
+    }
+    let (ended, ends) = spin.finish.unwrap_or_else(|| {
+        let turns =
+            now.saturating_duration_since(spin.started).as_secs_f32() / SPIN_TURN.as_secs_f32();
+        (now, spin.started + SPIN_TURN.mul_f32(turns.ceil()))
+    });
+    if now >= ends {
+        state.update(cx, |s, _| *s = None);
+        return glyph.into_any_element();
+    }
+    if spin.finish.is_none() {
+        state.update(cx, |s, _| {
+            *s = Some(Spin {
+                finish: Some((ended, ends)),
+                ..spin
+            })
+        });
+    }
+    let left = ends.saturating_duration_since(ended);
+    let from = 1. - left.as_secs_f32() / SPIN_TURN.as_secs_f32();
+    glyph
+        .with_animation(
+            ElementId::NamedChild(ElementId::from(id).into(), "finish".into()),
+            Animation::new(left).with_max_fps(30.),
+            move |glyph, t| {
+                let turn = from + t * (1. - from);
+                glyph.with_transformation(Transformation::rotate(radians(
+                    turn * std::f32::consts::TAU,
+                )))
+            },
+        )
+        .into_any_element()
+}
+
 /// `rise`, or none under Reduce Motion, which keeps only the fade.
 pub fn moving(rise: Rise, cx: &App) -> Rise {
     if cx.reduce_motion() { Rise::None } else { rise }
