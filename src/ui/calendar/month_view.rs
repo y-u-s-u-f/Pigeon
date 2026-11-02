@@ -9,7 +9,11 @@ use gpui::{
     prelude::FluentBuilder as _, px, relative,
 };
 
-use super::{CalendarView, Menu, occurrence_key, week_view::Look};
+use super::{
+    CalendarView, Menu, occurrence_key,
+    paging::{PageFrame, page_strip},
+    week_view::Look,
+};
 use crate::ui::style::*;
 use crate::{
     assets::Icon,
@@ -55,7 +59,8 @@ struct Item {
 }
 
 impl CalendarView {
-    pub(crate) fn render_month(
+    /// The month's weeks, for `render_month`.
+    pub(crate) fn month_page(
         &self,
         occurrences: &[Occurrence],
         now: NaiveDateTime,
@@ -72,6 +77,30 @@ impl CalendarView {
         let row_height = f32::from(height) / weeks as f32;
         let slots =
             (((row_height - (DAY_NUMBER + 4.) * scale) / (SLOT * scale)).floor() as usize).max(1);
+        let rows = (0..weeks).map(|w| {
+            let start = grid_start + Duration::days(7 * w as i64);
+            self.render_week_row(start, month, occurrences, slots, now, &theme, cx)
+        });
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .children(rows)
+            .into_any_element()
+    }
+
+    /// The Month view: the weekday names, fixed, over `page`'s weeks, which
+    /// slide with `other` beside them as `frame` says (MD-044).
+    pub(crate) fn render_month(
+        &self,
+        page: AnyElement,
+        other: Option<AnyElement>,
+        frame: &PageFrame,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        let (grid_start, _) = month_grid(self.anchor);
 
         let weekday_row = div()
             .h(scaled(WEEKDAY_ROW))
@@ -99,18 +128,18 @@ impl CalendarView {
                     .child(date.format("%a").to_string().to_uppercase())
             }));
 
-        let rows = (0..weeks).map(|w| {
-            let start = grid_start + Duration::days(7 * w as i64);
-            self.render_week_row(start, month, occurrences, slots, now, &theme, cx)
-        });
-
         let day_list_open = matches!(self.menu, Some(Menu::DayList(_)));
         div()
             .size_full()
             .flex()
             .flex_col()
             .child(weekday_row)
-            .child(div().flex_1().min_h_0().flex().flex_col().children(rows))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(page_strip("month-weeks", frame, page, other)),
+            )
             .when(day_list_open, |d| d.child(self.menu_backdrop(window, cx)))
             .into_any_element()
     }

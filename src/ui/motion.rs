@@ -249,6 +249,13 @@ impl Glide {
         self.target
     }
 
+    /// Starting at `velocity` units a second: a release that carries the
+    /// fingers' speed on.
+    pub fn with_velocity(mut self, velocity: f32) -> Self {
+        self.state.velocity = velocity;
+        self
+    }
+
     pub fn retarget(&mut self, target: f32) {
         self.target = target;
     }

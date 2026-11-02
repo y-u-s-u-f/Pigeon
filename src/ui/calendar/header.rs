@@ -306,21 +306,32 @@ impl CalendarView {
                     .rounded(RADIUS_MD)
                     .when(open, |d| d.bg(theme.selected_bg))
                     .hover(|s| s.bg(theme.hover_bg))
-                    .child(
+                    // A new period's title fades in as its grid moves in
+                    // (MD-044).
+                    .child(motion::enter(
+                        ("calendar-title-text", self.period_key()),
+                        Rise::None,
                         div()
-                            .text_size(TEXT_TITLE1)
-                            .font_weight(FontWeight::BOLD)
-                            .child(title),
-                    )
-                    .when(!rest.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .text_size(TEXT_TITLE1)
-                                .font_weight(FontWeight::NORMAL)
-                                .text_color(theme.text_faint)
-                                .child(rest),
-                        )
-                    })
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap(SPACE_SM)
+                            .child(
+                                div()
+                                    .text_size(TEXT_TITLE1)
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(title),
+                            )
+                            .when(!rest.is_empty(), |d| {
+                                d.child(
+                                    div()
+                                        .text_size(TEXT_TITLE1)
+                                        .font_weight(FontWeight::NORMAL)
+                                        .text_color(theme.text_faint)
+                                        .child(rest),
+                                )
+                            }),
+                    ))
                     .child(icon(Icon::ChevronDown, ICON_MD, theme.text_faint))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(
