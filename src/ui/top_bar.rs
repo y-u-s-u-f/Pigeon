@@ -1,40 +1,41 @@
 //! The window's top bar, across Mail, Calendar and Settings: the traffic
-//! lights, the sidebar's toggle and the Mail / Calendar switch on the left,
-//! the command field in the middle, and Refresh, the app's main action,
-//! Settings and the account on the right. Empty space moves the window.
-//! It's a pane of its own (`app/panes.rs`), so its hovers and its spinner
-//! redraw it alone.
+//! lights and the sidebar's toggle on the left, the search field in the
+//! middle, and Refresh, the app's main action and the account on the right.
+//! The rail under it (`rail`) has Mail, Calendar and Settings; the two are
+//! one L-shaped frame. Empty space moves the window. It's a pane of its own
+//! (`app/panes.rs`), so its hovers and its spinner redraw it alone.
 
 use gpui::{
-    Action, AnyElement, App, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Pixels, SharedString, StatefulInteractiveElement as _, Styled, Toggled, Window,
-    base::spring, div, point, prelude::FluentBuilder as _, px,
+    Action, AnyElement, App, ClickEvent, Context, Focusable as _, InteractiveElement, IntoElement,
+    MouseButton, ParentElement, Pixels, SharedString, StatefulInteractiveElement as _, Styled,
+    Window, component::input::Input, div, point, prelude::FluentBuilder as _, px,
 };
 
 use super::context_menu::{ContextMenu, Item};
-use super::controls::{ButtonKind, Segment, push_button_frame, segmented_with};
-use super::motion::{SPRING_CONTROL, SPRING_EXIT, fade, spinner_while};
+use super::controls::{ButtonKind, push_button_frame};
+use super::motion::spinner_while;
 use super::style::*;
 use super::{
-    account_avatar, icon, icon_button, keycap, shortcut_text, status, tooltip, window_drag_area,
+    account_avatar, icon, icon_button, icon_button_small, keycap, shortcut_text, status, tooltip,
+    window_drag_area,
 };
 use crate::{
     actions::{
-        Compose, GoToCalendar, GoToMail, NewEvent, OpenSettings, OpenSettingsSection, SignIn,
-        SignOut, SyncNow, ToggleCommandPalette, ToggleSidebar,
+        CloseSearch, Compose, MAILBOX, NewEvent, OpenSettings, OpenSettingsSection, SEARCH, SignIn,
+        SignOut, SyncNow, ToggleCommandPalette, ToggleSearch, ToggleSidebar,
     },
-    app::{Mode, Nav, PigeonApp, shell},
+    app::{Mode, PigeonApp, RAIL_WIDTH, shell},
     assets::Icon,
     backend::{Source, SyncStatus},
-    data::{Contact, Folder},
+    data::Contact,
     settings::Section,
     theme::Theme,
 };
 
-/// The command field, at most; it narrows with the window.
-const SEARCH_WIDTH: gpui::Rems = type_size(360.);
-/// The unread dot on Mail.
-const DOT: Pixels = px(7.);
+/// The search field, at most; it narrows with the window.
+const SEARCH_WIDTH: gpui::Rems = type_size(460.);
+/// The bar's bottom line, which meets the rail's.
+const HAIRLINE: Pixels = px(1.);
 
 impl PigeonApp {
     pub(crate) fn render_top_bar(
@@ -56,7 +57,6 @@ impl PigeonApp {
         let signed_out = source == Source::SignedOut;
         // Neither app is chosen while Settings shows.
         let mode = (!settings_open && !signed_out).then_some(self.mode);
-        let unread = self.counts.unread(Nav::Folder(Folder::Inbox));
         let sidebar_shown = self.pane_layout(window.viewport_size().width).sidebar > px(0.);
         let lights = shell::traffic_lights_inset(window.is_fullscreen());
 
@@ -66,30 +66,21 @@ impl PigeonApp {
             .items_center()
             .gap(SPACE_SM)
             .pl(lights.max(SPACE_MD))
-            .map(|this| {
-                // Kept in place in Calendar and Settings, so the switch
-                // doesn't move.
-                if mode == Some(Mode::Mail) {
-                    this.child(
-                        icon_button(
-                            "toggle-sidebar",
-                            Icon::PanelLeft,
-                            if sidebar_shown {
-                                "Hide sidebar"
-                            } else {
-                                "Show sidebar"
-                            },
-                            Box::new(ToggleSidebar),
-                            &theme,
-                        )
-                        .aria_expanded(sidebar_shown),
+            .when(mode == Some(Mode::Mail), |this| {
+                this.child(
+                    icon_button(
+                        "toggle-sidebar",
+                        Icon::PanelLeft,
+                        if sidebar_shown {
+                            "Hide sidebar"
+                        } else {
+                            "Show sidebar"
+                        },
+                        Box::new(ToggleSidebar),
+                        &theme,
                     )
-                } else {
-                    this.child(div().flex_none().size(HIT_TARGET))
-                }
-            })
-            .when(!signed_out, |this| {
-                this.child(app_switch(mode, unread, &theme, window, cx))
+                    .aria_expanded(sidebar_shown),
+                )
             });
 
         let center = div()
@@ -99,8 +90,10 @@ impl PigeonApp {
             .w(SEARCH_WIDTH)
             .flex()
             .justify_center()
-            .when(!signed_out && !settings_open, |this| {
-                this.child(command_field(&theme))
+            .map(|this| match mode {
+                Some(Mode::Mail) => this.child(self.render_mail_search(&theme, window, cx)),
+                Some(Mode::Calendar) => this.child(calendar_search(&theme)),
+                None => this,
             });
 
         let primary = mode.map(|mode| match mode {
@@ -158,7 +151,6 @@ impl PigeonApp {
                 ))
             })
             .children(primary.map(|button| div().px(SPACE_XS).child(button)))
-            .child(settings_button(settings_open, &theme))
             .child(account_button(
                 &account,
                 photo,
@@ -170,126 +162,172 @@ impl PigeonApp {
         window_drag_area(div().id("top-bar"))
             .role(gpui::Role::Toolbar)
             .aria_label("Top bar")
+            .relative()
             .size_full()
             .flex()
             .items_center()
             .bg(theme.bar_bg)
-            .border_b_1()
-            .border_color(theme.border)
             .child(leading)
             .child(center)
             .child(trailing)
+            // Over the panes only: the rail goes on under the bar, and its
+            // own line meets this one at the corner.
+            .child(
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left(RAIL_WIDTH - HAIRLINE)
+                    .right_0()
+                    .h(HAIRLINE)
+                    .bg(theme.border),
+            )
             .into_any_element()
+    }
+
+    /// Mail's search (SRC-1): the field, with where it looks, Clear, and
+    /// ⌘K for the command palette at its end. Suggestions drop down under
+    /// it; the results fill the list.
+    fn render_mail_search(
+        &self,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let focused = self.search_input.focus_handle(cx).is_focused(window);
+        let has_text = !self.search_input.read(cx).value().is_empty();
+        let open = self.search_open;
+
+        // Where the search looks; a click widens it to all mail. An `in:`
+        // in the query decides instead, and the chip names it (ME-016).
+        let fixed = self.search_query.scope.is_some();
+        let scope_label = self.search_scope_name();
+        let scope = div()
+            .id("search-scope")
+            .flex_none()
+            .h(CONTROL_XS)
+            .pl(SPACE_SM)
+            .pr(if fixed { SPACE_SM } else { SPACE_XS })
+            .flex()
+            .items_center()
+            .gap(SPACE_2XS)
+            .rounded(RADIUS_SM)
+            .bg(theme.chip_bg)
+            .text_size(TEXT_SM)
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(theme.text_muted)
+            .whitespace_nowrap()
+            .child(scope_label.clone())
+            .map(|this| {
+                if fixed {
+                    this.role(gpui::Role::Label)
+                        .aria_label(format!(
+                            "Searching {scope_label}, set by in: in your search"
+                        ))
+                        .tooltip(|window, cx| {
+                            tooltip("Set by in: in your search").build(window, cx)
+                        })
+                } else {
+                    this.role(gpui::Role::Button)
+                        .aria_label(format!("Search in {scope_label}"))
+                        .child(icon(Icon::ChevronDown, ICON_SM, theme.text_faint))
+                        .hover(|s| s.bg(theme.selected_bg).text_color(theme.text))
+                        .active(|s| s.bg(theme.selected_bg).opacity(0.8))
+                        .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_search_scope(cx)))
+                        .tooltip(|window, cx| {
+                            tooltip("Switch between this folder and All Mail").build(window, cx)
+                        })
+                }
+            });
+
+        // MA-082: X clears the text first and closes only an empty search.
+        let clear = icon_button_small(
+            "close-search",
+            Icon::X,
+            if has_text {
+                "Clear search"
+            } else {
+                "Close search"
+            },
+            theme,
+        )
+        .on_mouse_down(MouseButton::Left, |_, window, cx| {
+            window.prevent_default();
+            cx.stop_propagation();
+        })
+        .on_click(cx.listener(move |this, _, window, cx| {
+            if has_text {
+                this.clear_search_text(window, cx);
+            } else {
+                window.dispatch_action(Box::new(CloseSearch), cx);
+            }
+        }));
+
+        let input = self.search_input.clone();
+        let field = super::search_field(Some(focused), theme)
+            .id("top-bar-search")
+            .key_context(SEARCH)
+            .relative()
+            .w_full()
+            .min_w_0()
+            .h(CONTROL_MD)
+            .pl(SPACE_SM)
+            .pr(SPACE_XS)
+            .text_size(TEXT_SM)
+            .when(!focused, |this| this.hover(|s| s.bg(theme.hover_bg)))
+            .child(icon(
+                Icon::Search,
+                ICON_MD,
+                if focused {
+                    theme.text_muted
+                } else {
+                    theme.text_faint
+                },
+            ))
+            .when(open, |this| this.child(scope))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .child(Input::new(&self.search_input).appearance(false).px(px(0.))),
+            )
+            .when(open || has_text, |this| this.child(clear))
+            .child(palette_key(theme))
+            // A click anywhere on it types into it, and doesn't move the
+            // window.
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                cx.stop_propagation();
+                if !input.focus_handle(cx).is_focused(window) {
+                    input.update(cx, |input, cx| input.focus(window, cx));
+                }
+            });
+        let suggestions = self.search_suggestions(window, cx);
+        // Mail's shortcuts still work while typing, as they did in the list.
+        div()
+            .key_context(MAILBOX)
+            .relative()
+            .w_full()
+            .min_w_0()
+            .child(field)
+            .when(!suggestions.is_empty(), |this| {
+                this.child(self.render_search_suggestions(suggestions, theme, window, cx))
+            })
     }
 }
 
-/// Mail and Calendar as icons, with the unread dot on Mail (MD-029) so new
-/// mail shows from Calendar and Settings too; their names are in the
-/// tooltips and for VoiceOver. ←/→ switch while it has focus, and it keeps
-/// it, as in a radio group.
-fn app_switch(
-    mode: Option<Mode>,
-    unread: usize,
-    theme: &Theme,
-    window: &mut Window,
-    cx: &mut App,
-) -> impl IntoElement {
-    let mail_label: SharedString = match unread {
-        0 => "Mail".into(),
-        n => format!("Mail, {} unread", status::thousands(n)).into(),
-    };
-    let segments = vec![
-        Segment::new("Mail")
-            .icon(Icon::Mail)
-            .icon_only()
-            .label(mail_label)
-            .badge(unread_dot(unread > 0, theme, window, cx))
-            .tooltip("Mail", Box::new(GoToMail)),
-        Segment::new("Calendar")
-            .icon(Icon::Calendar)
-            .icon_only()
-            .tooltip("Calendar", Box::new(GoToCalendar)),
-    ];
-    let selected = mode.map(|mode| match mode {
-        Mode::Mail => 0,
-        Mode::Calendar => 1,
-    });
-    let go = |ix: usize| -> Box<dyn Action> {
-        if ix == 0 {
-            Box::new(GoToMail)
-        } else {
-            Box::new(GoToCalendar)
-        }
-    };
-    segmented_with(
-        "app-switch",
-        "App",
-        segments,
-        selected,
-        theme,
-        window,
-        cx,
-        move |ix, window, cx| window.dispatch_action(go(ix), cx),
-    )
-    .on_key_down(move |event, window, cx| {
-        let ix = match event.keystroke.key.as_str() {
-            "left" => 0,
-            "right" => 1,
-            _ => return,
-        };
-        cx.stop_propagation();
-        // Switching moves focus into the app's panes; bring it back
-        // after, once the action has run.
-        let switch = window.focused(cx);
-        window.dispatch_action(go(ix), cx);
-        if let Some(switch) = switch {
-            window.defer(cx, move |window, cx| window.focus(&switch, cx));
-        }
-    })
-}
-
-/// The unread dot: it pops in when the Inbox gets unread mail and fades out
-/// when it has none. Not at launch: the spring starts where it's going.
-fn unread_dot(shown: bool, theme: &Theme, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    let (size, opacity) = if cx.reduce_motion() {
-        let target = if shown { 1. } else { 0. };
-        (DOT, fade("unread-dot", target, target, window, cx))
-    } else {
-        let (target, policy) = if shown {
-            (DOT, SPRING_CONTROL)
-        } else {
-            (px(0.), SPRING_EXIT)
-        };
-        let value = spring("unread-dot", target, policy, window, cx);
-        if shown {
-            (value, 1.)
-        } else {
-            (DOT, value / DOT)
-        }
-    };
-    (size > px(0.) && opacity > 0.).then(|| {
-        // Grows from its center, over the envelope's top-right corner.
-        let inset = (DOT - size) / 2.;
-        div()
-            .absolute()
-            .top(-SPACE_XS + inset)
-            .right(-SPACE_XS + inset)
-            .size(size)
-            .rounded_full()
-            .bg(theme.accent)
-            .opacity(opacity.clamp(0., 1.))
-            .into_any_element()
-    })
-}
-
-/// Looks like a search field; opens ⌘K, which finds commands, views and
-/// conversations. Mail's own search stays in the list's header (⌘F).
-fn command_field(theme: &Theme) -> impl IntoElement {
-    let keys = shortcut_text(&ToggleCommandPalette);
-    focusable_control(div().id("top-bar-command"), theme)
+/// Calendar's field: Find there searches the events, in the palette
+/// (MA-081).
+fn calendar_search(theme: &Theme) -> impl IntoElement {
+    focusable_control(div().id("top-bar-search-events"), theme)
         .role(gpui::Role::Button)
-        .aria_label("Search or jump to")
-        .when_some(keys.clone(), |this, keys| this.aria_keyshortcuts(keys))
+        .aria_label("Search events")
+        .when_some(shortcut_text(&ToggleSearch), |this, keys| {
+            this.aria_keyshortcuts(keys)
+        })
         .w_full()
         .min_w_0()
         .h(CONTROL_MD)
@@ -307,15 +345,43 @@ fn command_field(theme: &Theme) -> impl IntoElement {
         .hover(|s| s.bg(theme.hover_bg).text_color(theme.text_muted))
         .active(|s| s.bg(theme.selected_bg))
         .child(icon(Icon::Search, ICON_MD, theme.text_faint))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .child("Search or jump to…"),
-        )
-        .children(keys.map(|keys| keycap(keys, theme)))
+        .child(div().flex_1().min_w_0().truncate().child("Search events…"))
+        .child(palette_key(theme))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleSearch), cx))
+        .tooltip(|window, cx| {
+            tooltip("Search events")
+                .action(&ToggleSearch, None)
+                .build(window, cx)
+        })
+}
+
+/// ⌘K at the field's end: the command palette, which finds commands,
+/// views and conversations.
+fn palette_key(theme: &Theme) -> impl IntoElement {
+    let keys = shortcut_text(&ToggleCommandPalette);
+    focusable_control(div().id("top-bar-command"), theme)
+        .role(gpui::Role::Button)
+        .aria_label("Command palette")
+        .when_some(keys.clone(), |this, keys| this.aria_keyshortcuts(keys))
+        .flex_none()
+        .flex()
+        .items_center()
+        .rounded(RADIUS_SM)
+        .hover(|s| s.bg(theme.hover_bg))
+        .active(|s| s.bg(theme.selected_bg))
+        .map(|this| match keys {
+            Some(keys) => this.child(keycap(keys, theme)),
+            None => this.size(CONTROL_XS).justify_center().child(icon(
+                Icon::Command,
+                ICON_SM,
+                theme.text_faint,
+            )),
+        })
+        .on_mouse_down(MouseButton::Left, |_, window, cx| {
+            window.prevent_default();
+            cx.stop_propagation();
+        })
         .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleCommandPalette), cx))
         .tooltip(|window, cx| {
             tooltip("Search and run commands")
@@ -479,19 +545,6 @@ fn primary_button(
                 .action(tip_action.as_ref(), None)
                 .build(window, cx)
         })
-}
-
-/// Settings, highlighted while it shows; again, back to the app.
-fn settings_button(open: bool, theme: &Theme) -> impl IntoElement {
-    icon_button(
-        "top-bar-settings",
-        Icon::Settings,
-        "Settings",
-        Box::new(OpenSettings),
-        theme,
-    )
-    .aria_toggled(if open { Toggled::True } else { Toggled::False })
-    .when(open, |this| this.bg(theme.nav_active_bg))
 }
 
 /// The account: who this mail is for. Opens a menu with Account Settings

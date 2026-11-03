@@ -12,6 +12,7 @@ pub mod later_picker;
 pub mod menu_bar;
 pub mod motion;
 pub mod onboarding;
+pub mod rail;
 pub mod reader;
 pub mod rich_editor;
 pub mod selectable;

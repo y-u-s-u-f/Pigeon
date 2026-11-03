@@ -64,7 +64,7 @@ pub const ROW_SM: Rems = type_size(30.);
 pub const ROW_PALETTE: Rems = type_size(38.);
 
 /// Icon sizes. Inline icons use the rem sizes so they track the text next
-/// to them; toolbar glyphs stay in pixels.
+/// to them; toolbar and rail glyphs stay in pixels.
 /// 12: inside chips, compact buttons, metadata.
 pub const ICON_SM: Rems = type_size(12.);
 /// 14: next to body text, menu rows, fields.
@@ -77,6 +77,8 @@ pub const ICON_XL: Rems = type_size(18.);
 pub const ICON_HERO: Rems = type_size(28.);
 /// Toolbar buttons' glyph.
 pub const ICON_TOOLBAR: Pixels = px(16.);
+/// The rail's glyph.
+pub const ICON_RAIL: Pixels = px(18.);
 
 /// Avatar sizes, in rems so initials grow with the text.
 /// 20: chips and compact rows (one initial).

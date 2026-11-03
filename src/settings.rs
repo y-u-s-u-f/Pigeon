@@ -390,11 +390,15 @@ impl Saved {
     /// installs: an untouched old default becomes the new one.
     fn migrate_pane_defaults(&mut self) {
         const OLD_SIDEBAR: f32 = 236.;
-        const OLD_LIST_SHARE: f32 = 0.38;
+        // Before the top bar, and with it before the rail came back.
+        const OLD_LIST_SHARES: [f32; 2] = [0.38, 0.35];
         if self.sidebar_width == OLD_SIDEBAR {
             self.sidebar_width = f32::from(crate::app::SIDEBAR_DEFAULT);
         }
-        if (self.list_share - OLD_LIST_SHARE).abs() < 1e-6 {
+        if OLD_LIST_SHARES
+            .iter()
+            .any(|old| (self.list_share - old).abs() < 1e-6)
+        {
             self.list_share = crate::app::LIST_SHARE_DEFAULT;
         }
     }
@@ -1014,6 +1018,7 @@ mod tests {
                 crate::app::LIST_SHARE_DEFAULT
             )
         );
+        assert_eq!(load(212., 0.35).1, crate::app::LIST_SHARE_DEFAULT);
         // Widths the user dragged to stay.
         assert_eq!(load(250., 0.42), (250., 0.42));
     }

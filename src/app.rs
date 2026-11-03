@@ -55,6 +55,10 @@ use crate::{
     },
 };
 
+/// The activity rail on the far left, under the top bar: a rail button
+/// (`HIT_TARGET` and `SPACE_SM`) with `SPACE_SM` either side. It holds
+/// only icons, so it keeps its width as text grows.
+pub const RAIL_WIDTH: Pixels = px(52.);
 /// The sidebar's limits: it holds only the mailboxes, the account and the
 /// traffic lights being in the top bar.
 const SIDEBAR_WIDTH: (Pixels, Pixels) = (px(164.), px(340.));
@@ -65,8 +69,8 @@ const RECENT_SHOWN: usize = 5;
 const SIDEBAR_COLLAPSE: Pixels = px(60.);
 const LIST_MIN: Pixels = px(300.);
 /// The list's share of the width it splits with the reader: 400 of the
-/// 1148 left in the default window beside the default sidebar.
-pub(crate) const LIST_SHARE_DEFAULT: f32 = 0.35;
+/// 1096 left in the default window beside the rail and the default sidebar.
+pub(crate) const LIST_SHARE_DEFAULT: f32 = 0.365;
 /// The shares a saved setting may hold.
 const LIST_SHARE: (f32, f32) = (0.15, 0.85);
 /// How narrow the list gets when the user keeps the sidebar open in a narrow
@@ -473,6 +477,7 @@ impl PigeonApp {
         // MC-036: the panes draw from this state, so any change redraws them.
         let panes = panes::Panes::new(
             Self::top_bar_pane,
+            Self::rail_pane,
             Self::sidebar_pane,
             Self::list_pane,
             Self::reader_pane,
@@ -1644,7 +1649,7 @@ impl PigeonApp {
         window.zoom_window();
     }
 
-    /// Opens the search bar, or returns to it, and focuses it.
+    /// Focuses the top bar's search field.
     fn toggle_search(&mut self, _: &ToggleSearch, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings_page.open {
             return self.focus_settings_search(window, cx);
@@ -1703,6 +1708,18 @@ impl PigeonApp {
             InputEvent::PressEnter { .. } if !self.accept_search_suggestion(window, cx) => {
                 self.remember_search(cx);
                 self.focus_results(&FocusResults, window, cx);
+            }
+            // The field is always in the top bar: typing into it is
+            // searching, and leaving it empty is done with it.
+            InputEvent::Focus if !self.search_open => {
+                self.search_open = true;
+                cx.notify();
+            }
+            InputEvent::Blur if self.search_open && input.read(cx).value().is_empty() => {
+                self.search_open = false;
+                self.search_all = self.settings.search_all_mail;
+                self.search_highlight = None;
+                cx.notify();
             }
             _ => {}
         }
@@ -2616,8 +2633,8 @@ impl PigeonApp {
         self.resizing = Some(kind);
         self.gliding = None;
         let width = window.viewport_size().width;
-        // The panes start at the window's left edge.
-        let x = event.event.position.x;
+        // The panes start after the rail.
+        let x = event.event.position.x - RAIL_WIDTH;
         let (min, max) = self.pane_range(kind, width);
         let before = match kind {
             PaneResize::Sidebar => self.sidebar_width,
@@ -2633,7 +2650,7 @@ impl PigeonApp {
             PaneResize::Sidebar => self.sidebar_width = x.min(max).max(min),
             PaneResize::List => {
                 let sidebar = self.pane_layout(width).sidebar;
-                let split = width - sidebar;
+                let split = width - RAIL_WIDTH - sidebar;
                 self.list_share = (x - sidebar).min(max).max(min) / split;
             }
         }
@@ -2641,7 +2658,7 @@ impl PigeonApp {
             PaneResize::Sidebar => (self.sidebar_width, SIDEBAR_DEFAULT),
             PaneResize::List => {
                 let layout = self.pane_layout(width);
-                let split = width - layout.sidebar;
+                let split = width - RAIL_WIDTH - layout.sidebar;
                 (layout.list, list_width(LIST_SHARE_DEFAULT, split))
             }
         };
@@ -2658,7 +2675,7 @@ impl PigeonApp {
     /// How narrow and wide a divider can make its pane: the reader keeps its
     /// minimum, and the list its own beside a sidebar.
     fn pane_range(&self, kind: PaneResize, width: Pixels) -> (Pixels, Pixels) {
-        let room = width - READER_MIN;
+        let room = width - RAIL_WIDTH - READER_MIN;
         match kind {
             PaneResize::Sidebar => (SIDEBAR_WIDTH.0, (room - LIST_MIN).min(SIDEBAR_WIDTH.1)),
             PaneResize::List => (LIST_MIN, room - self.pane_layout(width).sidebar),
@@ -2916,35 +2933,50 @@ impl PigeonApp {
                             cache,
                             window,
                         ))
-                        .child(div().flex_1().min_h_0().w_full().flex().map(|this| {
-                            if settings_open {
-                                this.child(self.render_settings(window, cx))
-                                    .into_any_element()
-                            } else if self.mode == Mode::Calendar {
-                                if calendar_granted {
-                                    this.child(self.calendar.clone()).into_any_element()
-                                } else {
-                                    this.child(ui::status::missing_scope(
-                                        "Calendar",
-                                        Icon::Calendar,
-                                        &theme,
-                                    ))
-                                    .into_any_element()
-                                }
-                            } else {
-                                this.child(self.render_mail_panes(
-                                    layout,
-                                    sidebar_open,
-                                    sidebar_shown,
-                                    width,
+                        // The rail and the bar are one L-shaped frame
+                        // around the panes.
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_h_0()
+                                .w_full()
+                                .flex()
+                                .child(panes::embed(
+                                    &self.panes.rail,
+                                    div().w(RAIL_WIDTH).h_full().flex_none(),
                                     cache,
-                                    &theme,
                                     window,
-                                    cx,
                                 ))
-                                .into_any_element()
-                            }
-                        })),
+                                .child(div().flex_1().min_w_0().h_full().flex().map(|this| {
+                                    if settings_open {
+                                        this.child(self.render_settings(window, cx))
+                                            .into_any_element()
+                                    } else if self.mode == Mode::Calendar {
+                                        if calendar_granted {
+                                            this.child(self.calendar.clone()).into_any_element()
+                                        } else {
+                                            this.child(ui::status::missing_scope(
+                                                "Calendar",
+                                                Icon::Calendar,
+                                                &theme,
+                                            ))
+                                            .into_any_element()
+                                        }
+                                    } else {
+                                        this.child(self.render_mail_panes(
+                                            layout,
+                                            sidebar_open,
+                                            sidebar_shown,
+                                            width,
+                                            cache,
+                                            &theme,
+                                            window,
+                                            cx,
+                                        ))
+                                        .into_any_element()
+                                    }
+                                })),
+                        ),
                 )
             })
             .child(self.panes.layer.clone())
@@ -3041,6 +3073,10 @@ impl PigeonApp {
         self.render_top_bar(window, cx)
     }
 
+    fn rail_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        self.render_rail(window, cx)
+    }
+
     fn sidebar_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let width = self.sidebar_content_width();
         self.render_sidebar(width, &self.counts, window, cx)
@@ -3055,9 +3091,7 @@ impl PigeonApp {
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
                     this.reader_focused = false;
-                    if !this.search_input.focus_handle(cx).is_focused(window) {
-                        window.focus(&this.focus_handle, cx);
-                    }
+                    window.focus(&this.focus_handle, cx);
                     cx.notify();
                 }),
             )
@@ -3124,21 +3158,22 @@ fn crosses_mark(before: Pixels, after: Pixels, marks: &[Pixels]) -> bool {
 }
 
 /// The sidebar (when `sidebar` holds its width) and the list in a window
-/// `width` wide: the sidebar gives way to the list's squeezed minimum, the
-/// list takes `share` of what's left and the reader the rest.
+/// `width` wide, beside the rail: the sidebar gives way to the list's
+/// squeezed minimum, the list takes `share` of what's left and the reader
+/// the rest.
 fn pane_widths(width: Pixels, sidebar: Option<Pixels>, share: f32) -> PaneLayout {
-    let room = width - READER_MIN;
+    let room = width - RAIL_WIDTH - READER_MIN;
     let sidebar = sidebar.map_or(px(0.), |sidebar| {
         sidebar.min(room - LIST_SQUEEZED).max(SIDEBAR_WIDTH.0)
     });
-    let list = list_width(share, width - sidebar);
+    let list = list_width(share, width - RAIL_WIDTH - sidebar);
     PaneLayout { sidebar, list }
 }
 
 /// Whether a sidebar `sidebar` wide leaves the list and reader their
-/// minimums in a window `width` wide.
+/// minimums in a window `width` wide, beside the rail.
 fn sidebar_fits(width: Pixels, sidebar: Pixels) -> bool {
-    width - READER_MIN - sidebar >= LIST_MIN
+    width - RAIL_WIDTH - READER_MIN - sidebar >= LIST_MIN
 }
 
 /// The list's width at `share` of the `split` it shares with the reader:
@@ -3169,25 +3204,36 @@ mod tests {
     }
 
     #[test]
-    fn panes_fill_the_window_without_a_rail() {
+    fn panes_fill_the_window_beside_the_rail() {
+        assert_eq!(RAIL_WIDTH, ui::style::HIT_TARGET + ui::style::SPACE_SM * 3.);
         // The default window and sidebar: the list gets its 400.
         let layout = pane_widths(px(1360.), Some(SIDEBAR_DEFAULT), LIST_SHARE_DEFAULT);
         assert_eq!(layout.sidebar, SIDEBAR_DEFAULT);
         assert!((layout.list - px(400.)).abs() < px(5.));
-        assert!(px(1360.) - layout.sidebar - layout.list >= READER_MIN);
-        // Hidden, the list and reader share the whole width.
+        assert!(px(1360.) - RAIL_WIDTH - layout.sidebar - layout.list >= READER_MIN);
+        // Hidden, the list and reader share what the rail leaves.
         let hidden = pane_widths(px(1360.), None, LIST_SHARE_DEFAULT);
         assert_eq!(hidden.sidebar, px(0.));
-        assert_eq!(hidden.list, list_width(LIST_SHARE_DEFAULT, px(1360.)));
+        assert_eq!(
+            hidden.list,
+            list_width(LIST_SHARE_DEFAULT, px(1360.) - RAIL_WIDTH)
+        );
         // Kept open in a narrow window, it gives way, never under its minimum.
         let narrow = pane_widths(px(900.), Some(px(400.)), LIST_SHARE_DEFAULT);
-        assert_eq!(narrow.sidebar, px(900.) - READER_MIN - LIST_SQUEEZED);
+        assert_eq!(
+            narrow.sidebar,
+            px(900.) - RAIL_WIDTH - READER_MIN - LIST_SQUEEZED
+        );
         let tiny = pane_widths(px(600.), Some(px(300.)), LIST_SHARE_DEFAULT);
         assert_eq!(tiny.sidebar, SIDEBAR_WIDTH.0);
         // It fits while the list and reader keep their minimums.
-        assert!(sidebar_fits(px(900.), SIDEBAR_DEFAULT));
-        assert!(!sidebar_fits(px(800.), SIDEBAR_DEFAULT));
+        assert!(sidebar_fits(px(950.), SIDEBAR_DEFAULT));
+        assert!(!sidebar_fits(px(900.), SIDEBAR_DEFAULT));
         assert!(sidebar_fits(
+            RAIL_WIDTH + READER_MIN + LIST_MIN + SIDEBAR_WIDTH.0,
+            SIDEBAR_WIDTH.0
+        ));
+        assert!(!sidebar_fits(
             READER_MIN + LIST_MIN + SIDEBAR_WIDTH.0,
             SIDEBAR_WIDTH.0
         ));
@@ -3195,8 +3241,8 @@ mod tests {
 
     #[test]
     fn list_keeps_its_share_within_limits() {
-        // The default window beside the default sidebar.
-        let split = px(1148.);
+        // The default window beside the rail and the default sidebar.
+        let split = px(1096.);
         assert!((list_width(LIST_SHARE_DEFAULT, split) - px(400.)).abs() < px(5.));
         // Twice as wide, twice the list: no fixed cap.
         assert_eq!(list_width(0.5, px(2000.)), px(1000.));

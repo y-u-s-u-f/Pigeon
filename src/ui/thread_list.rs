@@ -3,22 +3,17 @@
 use std::{collections::HashSet, rc::Rc};
 
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, AppContext as _, Context, ElementId, Focusable as _,
-    FontStyle, FontWeight, HighlightStyle, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
-    StyledText, Window,
-    base::motion::MotionReveal,
-    base::spring,
-    component::{input::Input, scroll::ScrollableElement as _},
-    deferred, div, list,
-    prelude::FluentBuilder as _,
-    px, relative, rems,
+    Animation, AnimationExt as _, AnyElement, AppContext as _, Context, ElementId, FontStyle,
+    FontWeight, HighlightStyle, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, StyledText, Window,
+    base::motion::MotionReveal, base::spring, component::scroll::ScrollableElement as _, deferred,
+    div, list, prelude::FluentBuilder as _, px, relative, rems,
 };
 
 use super::{
     HEADER_HEIGHT, avatar, binding_caps,
     controls::{ButtonKind, popover_surface, push_button},
-    icon, icon_button, icon_button_small, is_secondary, label,
+    icon, is_secondary, label,
     motion::{self, SPRING_PANE, fade},
     status::{plural, thousands},
     tooltip, window_drag_area,
@@ -26,9 +21,8 @@ use super::{
 use crate::ui::style::*;
 use crate::{
     actions::{
-        ApplyLabel, Archive, CloseSearch, Compose, Delete, DismissNeedsReply,
-        LoadOlderConversations, MarkRead, MarkUnread, SEARCH, SendLater, Snooze, SyncNow,
-        ToggleArchivedSection, ToggleSearch, ToggleStar,
+        ApplyLabel, Archive, Compose, Delete, DismissNeedsReply, LoadOlderConversations, MarkRead,
+        MarkUnread, SendLater, Snooze, SyncNow, ToggleArchivedSection, ToggleStar,
     },
     app::{Density, Nav, PigeonApp, Row, SearchSuggestion},
     assets::Icon,
@@ -186,16 +180,9 @@ impl PigeonApp {
             .filter(|r| matches!(r, Row::Thread(ix) if self.is_checked(*ix)))
             .count();
         let selecting = !self.checked.is_empty();
-        // MD-016: the field opens on a spring, sampled open or not so it
-        // never plays again on its own; it closes at once, with the list.
-        let target = if self.search_open { 1. } else { 0. };
-        let search = if cx.reduce_motion() {
-            fade("search-open", target, target, window, cx)
-        } else {
-            let policy = SPRING_PANE.with_travel(self.search_open);
-            spring("search-open", target, policy, window, cx)
-        };
 
+        // The sidebar's toggle, Compose and the search field are in the
+        // top bar.
         let header = window_drag_area(div().id("list-header"))
             .h(super::HEADER_MIN)
             .min_h(HEADER_HEIGHT)
@@ -204,38 +191,24 @@ impl PigeonApp {
             .items_center()
             .gap(SPACE_SM)
             .pr(SPACE_MD)
-            // The sidebar's toggle and Compose are in the top bar.
-            .pl(if selecting && !self.search_open {
+            .pl(if selecting {
                 ROW_MARGIN
             } else {
                 ROW_MARGIN + ROW_INSET
             })
-            .map(|this| {
-                if self.search_open {
-                    return this.child(self.render_search_bar(search, &theme, window, cx));
-                }
-                this.when(selecting, |this| {
-                    this.child(self.render_select_all(checked_rows, thread_rows, &theme, cx))
-                })
-                .child(self.render_nav_title(&theme))
-                .when(unread > 0, |this| {
-                    this.child(
-                        div()
-                            .flex_none()
-                            .text_size(TEXT_SM)
-                            .text_color(theme.text_muted)
-                            .font_features(tabular_figures())
-                            .child(format!("{} unread", thousands(unread))),
-                    )
-                })
-                .child(div().flex_1())
-                .child(icon_button(
-                    "search",
-                    Icon::Search,
-                    "Search",
-                    Box::new(ToggleSearch),
-                    &theme,
-                ))
+            .when(selecting, |this| {
+                this.child(self.render_select_all(checked_rows, thread_rows, &theme, cx))
+            })
+            .child(self.render_nav_title(&theme))
+            .when(unread > 0, |this| {
+                this.child(
+                    div()
+                        .flex_none()
+                        .text_size(TEXT_SM)
+                        .text_color(theme.text_muted)
+                        .font_features(tabular_figures())
+                        .child(format!("{} unread", thousands(unread))),
+                )
             });
 
         let searching = self.is_searching();
@@ -380,7 +353,6 @@ impl PigeonApp {
         } else {
             summary
         };
-        let suggestions = self.search_suggestions(window, cx);
         div()
             .relative()
             .w(width)
@@ -415,9 +387,6 @@ impl PigeonApp {
                     )
                 },
             )
-            .when(!suggestions.is_empty(), |this| {
-                this.child(self.render_search_suggestions(suggestions, &theme, window, cx))
-            })
     }
 
     /// The row data that isn't per thread: queued sends, the system's
@@ -622,7 +591,7 @@ impl PigeonApp {
 
     /// Where a search looks, as the scope chip names it: an `in:` in the
     /// query, else this view or All Mail.
-    fn search_scope_name(&self) -> SharedString {
+    pub(crate) fn search_scope_name(&self) -> SharedString {
         use crate::search::Scope;
         match self.search_query.scope {
             None if self.search_all => "All Mail".into(),
@@ -728,112 +697,11 @@ impl PigeonApp {
             })
     }
 
-    /// The search button, expanded into a field that fills the header. It
-    /// grows out of the button's place on the right.
-    fn render_search_bar(
-        &self,
-        open: f32,
-        theme: &Theme,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        // Where the search looks; a click widens it to all mail. An `in:`
-        // in the query decides instead, and the chip names it (ME-016).
-        let fixed = self.search_query.scope.is_some();
-        let scope_label = self.search_scope_name();
-        let scope = div()
-            .id("search-scope")
-            .flex_none()
-            .h(CONTROL_SM)
-            .pl(SPACE_SM)
-            .pr(if fixed { SPACE_SM } else { SPACE_XS })
-            .flex()
-            .items_center()
-            .gap(SPACE_2XS)
-            .rounded(RADIUS_SM)
-            .bg(theme.chip_bg)
-            .text_size(TEXT_SM)
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(theme.text_muted)
-            .child(scope_label.clone())
-            .map(|this| {
-                if fixed {
-                    this.role(gpui::Role::Label)
-                        .aria_label(format!(
-                            "Searching {scope_label}, set by in: in your search"
-                        ))
-                        .tooltip(|window, cx| {
-                            tooltip("Set by in: in your search").build(window, cx)
-                        })
-                } else {
-                    this.role(gpui::Role::Button)
-                        .aria_label(format!("Search in {scope_label}"))
-                        .child(icon(Icon::ChevronDown, ICON_SM, theme.text_faint))
-                        .hover(|s| s.bg(theme.selected_bg).text_color(theme.text))
-                        .active(|s| s.bg(theme.selected_bg).opacity(0.8))
-                        .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_search_scope(cx)))
-                        .tooltip(|window, cx| {
-                            tooltip("Switch between this folder and All Mail").build(window, cx)
-                        })
-                }
-            });
-
-        // MA-082: the field shows it has the keyboard; X clears the text
-        // first and closes only an empty search.
-        let focused = self.search_input.focus_handle(cx).is_focused(window);
-        let has_text = !self.search_input.read(cx).value().is_empty();
-        let clear = icon_button_small(
-            "close-search",
-            Icon::X,
-            if has_text {
-                "Clear search"
-            } else {
-                "Close search"
-            },
-            theme,
-        )
-        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-        .on_click(cx.listener(move |this, _, window, cx| {
-            if has_text {
-                this.clear_search_text(window, cx);
-            } else {
-                window.dispatch_action(Box::new(CloseSearch), cx);
-            }
-        }));
-        let field = super::search_field(Some(focused), theme)
-            .key_context(SEARCH)
-            .h(CONTROL_LG)
-            .pl(SPACE_MD)
-            .pr(SPACE_2XS)
-            .overflow_hidden()
-            .child(icon(Icon::Search, ICON_MD, theme.text_muted))
-            .child(scope)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(Input::new(&self.search_input).appearance(false).px(px(0.))),
-            )
-            .child(clear)
-            // From most of its width, since it opens often (MA-095); Reduce
-            // Motion leaves the fade.
-            .w(relative(if cx.reduce_motion() {
-                1.
-            } else {
-                0.6 + 0.4 * open
-            }))
-            .opacity(open.clamp(0., 1.));
-        div().flex_1().flex().justify_end().child(field)
-    }
-
-    /// The dropdown under the search field: recent searches and operators
-    /// while it's empty, contacts after `from:` or `to:`. It scrolls past
-    /// `SUGGESTIONS_MAX`, keeping the highlighted row in view (ME-015).
-    fn render_search_suggestions(
+    /// The dropdown under the top bar's search field: recent searches and
+    /// operators while it's empty, contacts after `from:` or `to:`. It
+    /// scrolls past `SUGGESTIONS_MAX`, keeping the highlighted row in view
+    /// (ME-015).
+    pub(crate) fn render_search_suggestions(
         &self,
         suggestions: Vec<SearchSuggestion>,
         theme: &Theme,
@@ -992,9 +860,10 @@ impl PigeonApp {
                 .aria_label("Search suggestions")
                 .occlude()
                 .absolute()
-                .top(super::header_height(window) - SPACE_XS)
-                .left(ROW_MARGIN)
-                .right(ROW_MARGIN)
+                .top(relative(1.))
+                .mt(SPACE_XS)
+                .left_0()
+                .right_0()
                 .max_h(SUGGESTIONS_MAX)
                 .p(SPACE_XS)
                 .flex()
