@@ -561,11 +561,11 @@ pub fn traffic_lights(bar_height: Pixels) -> gpui::Point<Pixels> {
 }
 
 /// A draft window's traffic lights: centered in its inset, level with the
-/// middle of its toolbar.
-pub fn draft_traffic_lights() -> gpui::Point<Pixels> {
+/// middle of its toolbar, which grows with the text as the top bar does.
+pub fn draft_traffic_lights(bar_height: Pixels) -> gpui::Point<Pixels> {
     point(
         (DRAFT_TRAFFIC_LIGHTS_INSET - TRAFFIC_LIGHTS.width) / 2.,
-        (crate::ui::TOP_BAR_HEIGHT - TRAFFIC_LIGHTS.height) / 2.,
+        (bar_height - TRAFFIC_LIGHTS.height) / 2.,
     )
 }
 
@@ -1051,7 +1051,7 @@ mod tests {
         // Hidden in full screen, so nothing is kept clear.
         assert_eq!(traffic_lights_inset(true), px(0.));
         // A draft window's stay centered in its own inset.
-        let draft = draft_traffic_lights();
+        let draft = draft_traffic_lights(crate::ui::TOP_BAR_HEIGHT);
         assert_eq!(
             draft.x * 2. + TRAFFIC_LIGHTS.width,
             DRAFT_TRAFFIC_LIGHTS_INSET
@@ -1059,6 +1059,10 @@ mod tests {
         assert_eq!(
             draft.y * 2. + TRAFFIC_LIGHTS.height,
             crate::ui::TOP_BAR_HEIGHT
+        );
+        assert_eq!(
+            draft_traffic_lights(tall).y * 2. + TRAFFIC_LIGHTS.height,
+            tall
         );
     }
 

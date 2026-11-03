@@ -61,6 +61,37 @@ pub const LOADING_DELAY: Duration = Duration::from_millis(300);
 /// How long a loading placeholder takes to fade in after the wait.
 const LOADING_FADE: Duration = Duration::from_millis(180);
 
+/// How far a context menu travels as it appears, from the cursor's side.
+pub const MENU_TRAVEL: Pixels = px(4.);
+/// Pointer rest on a submenu's row before it opens.
+pub const MENU_SUBMENU_DELAY: Duration = Duration::from_millis(120);
+/// How long the pointer can be heading for an open submenu across other
+/// rows before they take the highlight.
+pub const MENU_AIM_GRACE: Duration = Duration::from_millis(280);
+/// Releasing the button that opened a menu chooses the row under it once
+/// the pointer went this far (px), or after `MENU_HOLD`: press, drag and
+/// release.
+pub const MENU_DRAG_CHOOSE: f32 = 4.;
+pub const MENU_HOLD: Duration = Duration::from_millis(250);
+
+/// Paging by swipe (MD-044). How far the fingers go before the gesture
+/// picks an axis, px.
+pub const SWIPE_AXIS_LOCK: f32 = 6.;
+/// Released past this share of the width, a swipe pages however slow.
+pub const SWIPE_PAGE_SHARE: f32 = 0.4;
+/// A flick this fast (px/s) pages from a short distance...
+pub const SWIPE_FLICK_VELOCITY: f32 = 350.;
+/// ...once the page moved at least this far (px) its way.
+pub const SWIPE_FLICK_MIN: f32 = 12.;
+/// Fingers resting this long (s) before lifting don't flick.
+pub const SWIPE_FLICK_STALE: f32 = 0.08;
+/// The fastest a release carries into the settle, px/s.
+pub const SWIPE_MAX_VELOCITY: f32 = 6000.;
+/// Under Reduce Motion, how far (px) the fingers go before a swipe pages.
+pub const SWIPE_REDUCED_PAGE: f32 = 80.;
+/// How far a jumped-to page travels in, px.
+pub const PAGE_JUMP_TRAVEL: f32 = 28.;
+
 /// Which way an arriving card travels: up for things anchored to the
 /// bottom (toasts, prompts), down for things hanging under a control or the
 /// top edge (popovers, menus, the palette), none for inline content.
@@ -348,6 +379,11 @@ impl Glide {
         let now = Instant::now();
         let elapsed = now.saturating_duration_since(self.at).as_secs_f32();
         self.at = now;
+        self.advance(elapsed)
+    }
+
+    /// `step` by `elapsed` seconds.
+    pub fn advance(&mut self, elapsed: f32) -> (f32, bool) {
         self.state = self.config.step(self.state, self.target, elapsed);
         if self
             .config

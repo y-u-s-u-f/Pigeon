@@ -15,7 +15,9 @@
 //! `show` falls back to the native menu. While open it takes the keyboard
 //! (↑ ↓ → ← ↩ Space ⎋, Home, End and type-to-select) and every click,
 //! without taking focus (only VoiceOver's, so it reads the menu); a chosen
-//! item's action goes to whatever had focus when it opened.
+//! item's action goes to whatever had focus when it opened. An item's
+//! shortcut chooses it; any other modified key closes the menu and goes on
+//! to the app.
 
 use std::{
     cell::{Cell, RefCell},
@@ -34,7 +36,9 @@ use gpui::{
 };
 
 use super::controls::{menu_check, popover_surface};
-use super::motion::presence;
+use super::motion::{
+    MENU_AIM_GRACE, MENU_DRAG_CHOOSE, MENU_HOLD, MENU_SUBMENU_DELAY, MENU_TRAVEL, presence,
+};
 use super::style::*;
 use super::{binding_caps, binding_text, dot_marker, icon};
 use crate::{assets::Icon, theme::Theme};
@@ -47,19 +51,8 @@ const MENU_MAX_W: Rems = type_size(340.);
 const MENU_ROW: Rems = CONTROL_MD;
 /// Kept clear between a menu and the window's edge.
 const EDGE: Pixels = SPACE_SM;
-/// Pointer rest on a submenu's row before it opens.
-const SUBMENU_DELAY: Duration = Duration::from_millis(120);
-/// How long the pointer can be heading for an open submenu across other
-/// rows before they take the highlight.
-const AIM_GRACE: Duration = Duration::from_millis(280);
-/// How far a menu travels as it appears, from the cursor's side.
-const TRAVEL: Pixels = SPACE_XS;
 /// Over every other deferred popover.
 const PRIORITY: usize = 10;
-/// Releasing the button that opened the menu chooses the row under it once
-/// the pointer went this far, or after `HOLD`: press, drag and release.
-const DRAG_CHOOSE: f32 = 4.;
-const HOLD: Duration = Duration::from_millis(250);
 
 /// What a row shows before its label.
 #[derive(Clone, Copy)]
@@ -608,14 +601,26 @@ impl OpenMenu {
         window.refresh();
     }
 
-    /// A key while open; false once closed, to let it through.
+    /// A key while open; false to let it through. Plain navigation keys move
+    /// the highlight; an item's shortcut chooses it; any other modified key
+    /// closes the menu and goes on to the app, as with a native menu.
     fn key(&mut self, keystroke: &Keystroke, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.closed {
             return false;
         }
+        let kind = classify_key(&keystroke.key, keystroke.modifiers);
+        if kind != KeyKind::Navigate {
+            if let Some(action) = shortcut_action(&self.items, keystroke) {
+                self.close(Some(action), window, cx);
+                return true;
+            }
+            if kind == KeyKind::Modified {
+                self.close(None, window, cx);
+                return false;
+            }
+        }
         let level = self.key_level();
         let current = self.levels[level].highlighted;
-        let m = keystroke.modifiers;
         match keystroke.key.as_str() {
             "escape" => {
                 if self.levels.len() > 1 {
@@ -651,7 +656,7 @@ impl OpenMenu {
                     self.highlight(level, first);
                 }
             },
-            _ if !(m.platform || m.control || m.function) => {
+            _ => {
                 let typed = keystroke
                     .key_char
                     .clone()
@@ -665,7 +670,6 @@ impl OpenMenu {
                     self.highlight(level, Some(row));
                 }
             }
-            _ => {}
         }
         self.timer = None;
         cx.notify();
@@ -721,7 +725,7 @@ impl OpenMenu {
                 && heading_for(from, at, panel)
             {
                 self.timer = Some(cx.spawn(async move |this, cx| {
-                    cx.background_executor().timer(AIM_GRACE).await;
+                    cx.background_executor().timer(MENU_AIM_GRACE).await;
                     this.update(cx, |this, cx| {
                         if let Some(at) = this.pointer {
                             this.pointer_moved(at, false, cx);
@@ -742,7 +746,7 @@ impl OpenMenu {
             && self.submenu_len(level, row).is_some()
         {
             self.timer = Some(cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(SUBMENU_DELAY).await;
+                cx.background_executor().timer(MENU_SUBMENU_DELAY).await;
                 this.update(cx, |this, cx| {
                     if this.levels.len() == level + 1 && this.levels[level].highlighted == Some(row)
                     {
@@ -838,7 +842,7 @@ impl OpenMenu {
         };
         // From the cursor's side: a submenu from its parent, the root from
         // the corner at the cursor.
-        let travel = TRAVEL * (1. - p);
+        let travel = MENU_TRAVEL * (1. - p);
         let dx = if left { travel } else { -travel };
         let dy = match (level, up) {
             (0, true) => travel,
@@ -852,6 +856,7 @@ impl OpenMenu {
             .iter()
             .any(|e| e.item().is_some_and(|i| i.leading.is_some()));
         let open_row = self.levels.get(level + 1).map(|l| l.parent_row);
+        let key_level = level == self.key_level();
         let positions =
             set_positions(&items.iter().map(|e| e.item().is_some()).collect::<Vec<_>>());
         let set_size = positions.last().copied().unwrap_or(0);
@@ -925,7 +930,8 @@ impl OpenMenu {
                         })
                         .aria_label(item.label.clone())
                         .aria_selected(on)
-                        .when(on, |el| el.aria_active_descendant())
+                        // One claim a frame: the row where keys act.
+                        .when(on && key_level, |el| el.aria_active_descendant())
                         .aria_position_in_set(positions[ix])
                         .aria_size_of_set(set_size)
                         // VoiceOver's press; the mouse goes through the
@@ -1018,7 +1024,6 @@ impl OpenMenu {
                     .id("surface")
                     .role(gpui::Role::Menu)
                     .aria_label(label)
-                    .when(level == 0, |el| el.track_focus(&self.focus))
                     .min_w(MENU_MIN_W)
                     .max_w(MENU_MAX_W)
                     .max_h(viewport.height - EDGE * 2.)
@@ -1047,6 +1052,10 @@ impl Render for OpenMenu {
             .collect();
         div()
             .id("context-menu-backdrop")
+            // Focus sits around every panel, so VoiceOver follows the
+            // highlight into submenus too.
+            .role(gpui::Role::GenericContainer)
+            .track_focus(&self.focus)
             .absolute()
             .inset_0()
             .occlude()
@@ -1075,7 +1084,60 @@ fn set_positions(is_item: &[bool]) -> Vec<usize> {
 /// Whether releasing the button that opened the menu, `moved` px from where
 /// it was pressed `held` ago, chooses the row under it.
 fn release_chooses(moved: f32, held: Duration) -> bool {
-    moved > DRAG_CHOOSE || held > HOLD
+    moved > MENU_DRAG_CHOOSE || held > MENU_HOLD
+}
+
+/// What a key does while a menu is open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyKind {
+    /// Moves the highlight, opens, chooses or closes: plain arrows, ↩,
+    /// Space, Home, End, Page Up/Down, and ⎋ with anything held.
+    Navigate,
+    /// A character, maybe shifted: an item's shortcut, or type-to-select.
+    Typed,
+    /// Held ⌘, ⌃, ⌥ or fn, or ⇧ on a navigation key: an item's shortcut,
+    /// or else for the app.
+    Modified,
+}
+
+fn classify_key(key: &str, m: gpui::Modifiers) -> KeyKind {
+    let navigation = matches!(
+        key,
+        "up" | "down"
+            | "left"
+            | "right"
+            | "home"
+            | "end"
+            | "pageup"
+            | "pagedown"
+            | "enter"
+            | "space"
+    );
+    if key == "escape" {
+        KeyKind::Navigate
+    } else if m.platform || m.control || m.alt || m.function || (navigation && m.shift) {
+        KeyKind::Modified
+    } else if navigation {
+        KeyKind::Navigate
+    } else {
+        KeyKind::Typed
+    }
+}
+
+/// The action of the item, at any depth, whose shortcut is `keystroke`.
+fn shortcut_action(items: &[Entry], keystroke: &Keystroke) -> Option<Box<dyn Action>> {
+    items.iter().filter_map(Entry::item).find_map(|item| {
+        if !item.selectable() {
+            return None;
+        }
+        if let Some(sub) = &item.submenu {
+            return shortcut_action(sub, keystroke);
+        }
+        let binding = item.binding.as_ref()?;
+        (binding.match_keystrokes(std::slice::from_ref(keystroke)) == Some(false))
+            .then(|| item.action.as_ref().map(|a| a.boxed_clone()))
+            .flatten()
+    })
 }
 
 /// The next row `selectable` from `from` (or from the end, with `None`)
@@ -1208,6 +1270,48 @@ mod tests {
         assert_eq!(step(&[], Some(0), true), None);
         // Alone, it stays.
         assert_eq!(step(&[false, true], Some(1), true), Some(1));
+    }
+
+    #[test]
+    fn only_plain_navigation_keys_stay_in_the_menu() {
+        use gpui::Modifiers;
+        let none = Modifiers::default();
+        let shift = Modifiers::shift();
+        let cmd = Modifiers::command();
+        assert_eq!(classify_key("down", none), KeyKind::Navigate);
+        assert_eq!(classify_key("enter", none), KeyKind::Navigate);
+        assert_eq!(classify_key("escape", cmd), KeyKind::Navigate);
+        assert_eq!(classify_key("down", shift), KeyKind::Modified);
+        assert_eq!(classify_key("enter", cmd), KeyKind::Modified);
+        assert_eq!(classify_key("k", cmd), KeyKind::Modified);
+        assert_eq!(
+            classify_key("u", Modifiers::command_shift()),
+            KeyKind::Modified
+        );
+        assert_eq!(classify_key("r", Modifiers::alt()), KeyKind::Modified);
+        assert_eq!(classify_key("r", none), KeyKind::Typed);
+        assert_eq!(classify_key("r", shift), KeyKind::Typed);
+    }
+
+    #[test]
+    fn an_items_shortcut_finds_its_action_at_any_depth() {
+        let bound = |label: &str, keys: &str| {
+            let mut item = Item::new(label.to_string(), Box::new(gpui::NoAction));
+            item.binding = Some(KeyBinding::new(keys, gpui::NoAction, None));
+            item
+        };
+        let menu = ContextMenu::new()
+            .item(bound("Reply", "r"))
+            .item(bound("Dimmed", "cmd-d").disabled(true))
+            .item(Item::submenu(
+                "Mark",
+                ContextMenu::new().item(bound("Unread", "shift-cmd-u")),
+            ));
+        let press = |s: &str| shortcut_action(&menu.items, &Keystroke::parse(s).unwrap());
+        assert!(press("r").is_some());
+        assert!(press("shift-cmd-u").is_some());
+        assert!(press("cmd-d").is_none());
+        assert!(press("cmd-k").is_none());
     }
 
     #[test]

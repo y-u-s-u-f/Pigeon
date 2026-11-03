@@ -100,6 +100,9 @@ struct RowContext {
     /// Read once per render, not per row (MC-043).
     theme: Theme,
     now: chrono::DateTime<chrono::Local>,
+    /// How far into picking the list is, 0 to 1: the senders move over to
+    /// make room for the checkboxes.
+    select_shift: f32,
 }
 
 impl PigeonApp {
@@ -227,7 +230,16 @@ impl PigeonApp {
         let needs_gmail = searching
             && self.search_query.gmail_only()
             && (!self.server_search.available || self.server_search.state == ServerState::Offline);
-        let row_cx = Rc::new(self.row_context(cx));
+        // Under Reduce Motion the spring snaps.
+        let select_shift = spring(
+            "list-select-shift",
+            if selecting { 1. } else { 0. },
+            SPRING_PANE,
+            window,
+            cx,
+        )
+        .clamp(0., 1.);
+        let row_cx = Rc::new(self.row_context(select_shift, cx));
         let view = cx.entity();
         let list_view = |row_cx: Rc<RowContext>| {
             div()
@@ -388,12 +400,13 @@ impl PigeonApp {
 
     /// The row data that isn't per thread: queued sends, the system's
     /// Differentiate Without Color.
-    fn row_context(&self, cx: &gpui::App) -> RowContext {
+    fn row_context(&self, select_shift: f32, cx: &gpui::App) -> RowContext {
         RowContext {
             queued: self.queued_sends.clone(),
             no_color: crate::native::differentiate_without_color(),
             theme: Theme::of(cx).clone(),
             now: chrono::Local::now(),
+            select_shift,
         }
     }
 
@@ -1321,12 +1334,15 @@ impl PigeonApp {
                     })),
             );
 
-        // While the checkbox shows, the letters under it are clipped away,
-        // leaving bare glass round it: the clip moves right past the box and
-        // the text moves back by as much, so it never moves. Offsets don't
-        // change layout, so the sender keeps its width. Ids let the hover
-        // group reach layout.
+        // On hover, the letters under the checkbox are clipped away, leaving
+        // bare glass round it: the clip moves right past the box and the
+        // text moves back by as much, so it never moves. Offsets don't change
+        // layout, so the sender keeps its width. Ids let the hover group
+        // reach layout. While picking, the box has its own room instead: the
+        // sender moves over by its width, so names stay whole.
         let cut = ICON_MD.to_pixels(window.rem_size()) + SPACE_XS;
+        let shift = row_cx.select_shift;
+        let hover_clip = !pinned_checkbox && shift == 0.;
         let sender = div()
             .id(("row-sender", thread_ix))
             .min_w_0()
@@ -1339,24 +1355,17 @@ impl PigeonApp {
                 FontWeight::NORMAL
             })
             .text_color(primary)
-            .map(|this| {
-                if pinned_checkbox {
-                    this.left(cut)
-                } else {
-                    this.group_hover(ROW_GROUP, |s| s.left(cut))
-                }
+            .ml(cut * shift)
+            .when(hover_clip, |this| {
+                this.group_hover(ROW_GROUP, |s| s.left(cut))
             })
             .child(
                 div()
                     .id(("row-sender-text", thread_ix))
                     .relative()
                     .truncate()
-                    .map(|this| {
-                        if pinned_checkbox {
-                            this.left(-cut)
-                        } else {
-                            this.group_hover(ROW_GROUP, |s| s.left(-cut))
-                        }
+                    .when(hover_clip, |this| {
+                        this.group_hover(ROW_GROUP, |s| s.left(-cut))
                     })
                     .child(who.clone()),
             );

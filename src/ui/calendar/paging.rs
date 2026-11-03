@@ -14,24 +14,12 @@ use gpui::{
 };
 
 use super::{CalendarView, ViewKind};
-use crate::ui::motion::Glide;
-
-/// How far the fingers go before the gesture picks an axis.
-const AXIS_LOCK: f32 = 6.;
-/// Released past this share of the width, a swipe pages however slow.
-const PAGE_SHARE: f32 = 0.4;
-/// A flick this fast (px/s) pages from a short distance...
-const FLICK_VELOCITY: f32 = 350.;
-/// ...once the period moved at least this far its way.
-const FLICK_MIN: f32 = 12.;
-/// Fingers resting this long (s) before lifting don't flick.
-const FLICK_STALE: f32 = 0.08;
-/// The fastest a release carries into the settle, px/s.
-const MAX_VELOCITY: f32 = 6000.;
-/// How far a jump's new period travels in.
-const JUMP_TRAVEL: f32 = 28.;
-/// Under Reduce Motion, how far the fingers go before a swipe pages.
-const REDUCED_PAGE: f32 = 80.;
+use crate::ui::motion::{
+    Glide, PAGE_JUMP_TRAVEL as JUMP_TRAVEL, SWIPE_AXIS_LOCK as AXIS_LOCK,
+    SWIPE_FLICK_MIN as FLICK_MIN, SWIPE_FLICK_STALE as FLICK_STALE,
+    SWIPE_FLICK_VELOCITY as FLICK_VELOCITY, SWIPE_MAX_VELOCITY as MAX_VELOCITY,
+    SWIPE_PAGE_SHARE as PAGE_SHARE, SWIPE_REDUCED_PAGE as REDUCED_PAGE,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Axis {
@@ -69,6 +57,29 @@ pub(crate) fn release(offset: f32, velocity: f32, width: f32) -> Option<bool> {
     (far || flick).then_some(offset < 0.)
 }
 
+/// Where the current period starts settling after a release at `offset`
+/// that paged (`Some(forward)`) or not; `None` when it's already in place.
+pub(crate) fn settle_from(offset: f32, width: f32, paged: Option<bool>) -> Option<f32> {
+    // The new period was a width beyond the old one.
+    let from = offset
+        + match paged {
+            Some(true) => width,
+            Some(false) => -width,
+            None => 0.,
+        };
+    (from.abs() >= 0.5).then_some(from)
+}
+
+/// A settle's offset after its spring stepped to `stepped`: never past 0
+/// from `from`'s side, so the period beside stays the one leaving, nor
+/// beyond a width. Done once it reaches 0.
+pub(crate) fn settle_clamp(from: f32, stepped: f32, done: bool, width: f32) -> (f32, bool) {
+    if done || stepped == 0. || stepped.signum() != from.signum() {
+        return (0., true);
+    }
+    (stepped.clamp(-width, width), false)
+}
+
 /// The fingers' velocity after a step of `delta` px over `dt` s, smoothed
 /// with the last.
 pub(crate) fn track_velocity(last: f32, delta: f32, dt: f32) -> f32 {
@@ -95,10 +106,16 @@ pub(crate) struct Swipe {
 pub(crate) enum Turn {
     /// Following the fingers.
     Drag { offset: f32 },
-    /// Settling at 0 after a release, in px, the other period beside. The
+    /// Settling at 0 from `from` after a release, in px, with `other`
+    /// beside: the period leaving, or the one it sprang back from. The
     /// grid's scroll stays at `keep_y`, so the momentum after a sideways
     /// swipe doesn't scroll it.
-    Settle { glide: Glide, keep_y: Pixels },
+    Settle {
+        glide: Glide,
+        from: f32,
+        other: (NaiveDate, f32),
+        keep_y: Pixels,
+    },
     /// The new period sliding in from `dir` (1 from the right) and fading
     /// in, as progress.
     Jump { dir: f32, glide: Glide },
@@ -269,17 +286,20 @@ impl CalendarView {
                 let velocity = if stale { 0. } else { swipe.velocity };
                 let width = self.page_width();
                 let cancelled = event.touch_phase == TouchPhase::Cancelled;
-                let from = match release(offset, velocity, width).filter(|_| !cancelled) {
+                let paged = release(offset, velocity, width).filter(|_| !cancelled);
+                let other = match paged {
                     Some(forward) => {
+                        let leaving = self.anchor;
                         self.step(forward, cx);
                         self.shown = Some(self.shown_key());
-                        // The new period was a width beyond the old one.
-                        offset + if forward { width } else { -width }
+                        (leaving, if forward { -1. } else { 1. })
                     }
-                    None => offset,
+                    None => self.beside(offset),
                 };
-                self.turn = Some(Turn::Settle {
+                self.turn = settle_from(offset, width, paged).map(|from| Turn::Settle {
                     glide: Glide::new(from, 0.).with_velocity(velocity),
+                    from,
+                    other,
                     keep_y: swipe.keep_y,
                 });
                 cx.notify();
@@ -323,19 +343,16 @@ impl CalendarView {
             });
         }
         let width = self.page_width();
-        let beside = |this: &Self, offset: f32| {
-            (offset != 0.).then(|| {
-                // Content moved left shows the next period on the right.
-                let forward = offset < 0.;
-                (this.stepped_anchor(forward), if forward { 1. } else { -1. })
-            })
-        };
         // A drag whose gesture went without an end springs back.
         if let Some(Turn::Drag { offset }) = self.turn
             && self.swipe.is_none()
         {
-            self.turn = Some(Turn::Settle {
-                glide: Glide::new(follow(offset, width), 0.),
+            let offset = follow(offset, width);
+            let other = self.beside(offset);
+            self.turn = settle_from(offset, width, None).map(|from| Turn::Settle {
+                glide: Glide::new(from, 0.),
+                from,
+                other,
                 keep_y: self.grid_scroll.offset().y,
             });
         }
@@ -346,11 +363,14 @@ impl CalendarView {
                 PageFrame {
                     offset,
                     opacity: 1.,
-                    other: beside(self, offset),
+                    other: (offset != 0.).then(|| self.beside(offset)),
                 }
             }
-            Some(Turn::Settle { glide, .. }) => {
-                let (offset, done) = glide.step();
+            Some(Turn::Settle {
+                glide, from, other, ..
+            }) => {
+                let (stepped, done) = glide.step();
+                let (offset, done) = settle_clamp(*from, stepped, done, width);
                 if done {
                     self.turn = None;
                     return PageFrame::STILL;
@@ -358,7 +378,7 @@ impl CalendarView {
                 PageFrame {
                     offset,
                     opacity: 1.,
-                    other: beside(self, offset),
+                    other: Some(*other),
                 }
             }
             Some(Turn::Jump { dir, glide }) => {
@@ -379,6 +399,13 @@ impl CalendarView {
             window.request_animation_frame();
         }
         frame
+    }
+
+    /// The period beside one moved by `offset`, and its side: content moved
+    /// left shows the next period on the right.
+    fn beside(&self, offset: f32) -> (NaiveDate, f32) {
+        let forward = offset < 0.;
+        (self.stepped_anchor(forward), if forward { 1. } else { -1. })
     }
 
     /// Renders `f` as if the period anchored at `anchor` were shown: the
@@ -439,6 +466,54 @@ mod tests {
         // Too short to be a flick.
         assert_eq!(release(-5., -2000., width), None);
         assert_eq!(release(0., -2000., width), None);
+    }
+
+    /// Every frame of a settle from `from` released at `velocity`, at 60 fps.
+    fn settle_frames(from: f32, velocity: f32, width: f32) -> Vec<f32> {
+        let mut glide = Glide::new(from, 0.).with_velocity(velocity);
+        let mut frames = Vec::new();
+        for _ in 0..600 {
+            let (stepped, done) = glide.advance(1. / 60.);
+            let (offset, done) = settle_clamp(from, stepped, done, width);
+            frames.push(offset);
+            if done {
+                return frames;
+            }
+        }
+        panic!("never settled");
+    }
+
+    #[test]
+    fn a_full_width_swipe_lands_at_once() {
+        let width = 1000.;
+        let paged = release(-width, -MAX_VELOCITY, width);
+        assert_eq!(paged, Some(true));
+        assert_eq!(settle_from(-width, width, paged), None);
+        assert_eq!(settle_from(width, width, Some(false)), None);
+    }
+
+    #[test]
+    fn a_fast_near_full_width_swipe_never_settles_past_zero() {
+        let width = 1000.;
+        for (offset, velocity) in [
+            (-980., -MAX_VELOCITY),
+            (980., MAX_VELOCITY),
+            (-900., -3000.),
+        ] {
+            let paged = release(offset, velocity, width);
+            let from = settle_from(offset, width, paged).unwrap();
+            let frames = settle_frames(from, velocity, width);
+            assert_eq!(frames.last(), Some(&0.));
+            assert!(
+                frames
+                    .iter()
+                    .all(|&o| o == 0. || o.signum() == from.signum()),
+                "{offset}: {frames:?}"
+            );
+        }
+        // Springing back, it stays within a width.
+        let frames = settle_frames(-300., -MAX_VELOCITY, width);
+        assert!(frames.iter().all(|o| o.abs() <= width));
     }
 
     #[test]

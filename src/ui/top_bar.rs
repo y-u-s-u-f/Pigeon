@@ -34,6 +34,80 @@ use crate::{
 
 /// The search field, at most; it narrows with the window.
 const SEARCH_WIDTH: gpui::Rems = type_size(460.);
+/// The search field, at least: the trailing end gives way before it does.
+const SEARCH_MIN_WIDTH: gpui::Rems = type_size(200.);
+/// The demo chip's words, and what's left of them when the bar is tight.
+const DEMO_LABEL: &str = "Demo Data · Sign In";
+const DEMO_SHORT: &str = "Demo";
+/// A rough average glyph width, in ems, for sizing the bar's words ahead
+/// of layout; on the wide side, so it gives way early rather than late.
+const GLYPH_EM: f32 = 0.6;
+
+/// How much of the trailing end gives way to keep the search usable, each
+/// step on top of the last.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Compact {
+    Full,
+    /// The sync progress text hides.
+    NoProgress,
+    /// The demo chip says only "Demo".
+    ShortChip,
+    /// Compose and New Event show only their glyph.
+    IconOnly,
+}
+
+/// What the trailing end holds, for working out its width.
+#[derive(Clone, Copy, Debug, Default)]
+struct Trailing<'a> {
+    status: bool,
+    demo: bool,
+    progress: Option<&'a str>,
+    primary: Option<&'a str>,
+}
+
+/// The trailing end's width at `compact`, in px, with `rem` px to a rem.
+fn trailing_width(t: &Trailing, compact: Compact, rem: f32) -> f32 {
+    let r = |size: gpui::Rems| size.0 * rem;
+    let text = |s: &str, size: gpui::Rems| s.chars().count() as f32 * GLYPH_EM * r(size);
+    let hit = f32::from(HIT_TARGET);
+    let gap = f32::from(SPACE_XS);
+    // Refresh and the account.
+    let mut parts = vec![hit, hit.max(r(AVATAR_XS) + 2. * f32::from(SPACE_2XS))];
+    if t.status {
+        parts.push(hit);
+    }
+    if t.demo {
+        let label = if compact >= Compact::ShortChip {
+            DEMO_SHORT
+        } else {
+            DEMO_LABEL
+        };
+        parts.push(text(label, TEXT_XS) + 2. * f32::from(SPACE_SM));
+    }
+    if let Some(progress) = t.progress.filter(|_| compact < Compact::NoProgress) {
+        parts.push(gap + text(progress, TEXT_XS));
+    }
+    if let Some(label) = t.primary {
+        let button = if compact >= Compact::IconOnly {
+            r(CONTROL_MD).max(hit)
+        } else {
+            f32::from(SPACE_SM + SPACE_XS + SPACE_MD) + r(ICON_MD) + text(label, TEXT_SM)
+        };
+        parts.push(2. * gap + button);
+    }
+    let gaps = gap * parts.len().saturating_sub(1) as f32;
+    f32::from(SPACE_MD) + gaps + parts.iter().sum::<f32>()
+}
+
+/// The least the trailing end gives way so the search keeps its minimum
+/// in `room` px (the bar less its leading end).
+fn compact_for(room: f32, t: &Trailing, rem: f32) -> Compact {
+    let search = SEARCH_MIN_WIDTH.0 * rem;
+    [Compact::Full, Compact::NoProgress, Compact::ShortChip]
+        .into_iter()
+        .find(|&c| room - trailing_width(t, c, rem) >= search)
+        .unwrap_or(Compact::IconOnly)
+}
 /// The bar's bottom line, which meets the rail's.
 const HAIRLINE: Pixels = px(1.);
 
@@ -59,6 +133,26 @@ impl PigeonApp {
         let mode = (!settings_open && !signed_out).then_some(self.mode);
         let sidebar_shown = self.pane_layout(window.viewport_size().width).sidebar > px(0.);
         let lights = shell::traffic_lights_inset(window.is_fullscreen());
+        let progress = sync_progress(&status).filter(|_| !signed_out);
+        let compact = {
+            let toggle = if mode == Some(Mode::Mail) {
+                SPACE_SM + HIT_TARGET
+            } else {
+                px(0.)
+            };
+            let room = window.viewport_size().width - lights.max(SPACE_MD) - toggle;
+            let trailing = Trailing {
+                status: matches!(status, SyncStatus::Offline { .. } | SyncStatus::AuthExpired),
+                demo: source == Source::Demo,
+                progress: progress.as_deref(),
+                primary: mode.map(|mode| match mode {
+                    Mode::Mail => "Compose",
+                    Mode::Calendar => "New Event",
+                }),
+            };
+            compact_for(f32::from(room), &trailing, f32::from(window.rem_size()))
+        };
+        let icon_only = compact >= Compact::IconOnly;
 
         let leading = div()
             .flex_1()
@@ -86,7 +180,7 @@ impl PigeonApp {
         let center = div()
             .flex_none()
             .flex_shrink(1.)
-            .min_w_0()
+            .min_w(SEARCH_MIN_WIDTH)
             .w(SEARCH_WIDTH)
             .flex()
             .justify_center()
@@ -103,6 +197,7 @@ impl PigeonApp {
                 "Compose",
                 "New message",
                 Box::new(Compose),
+                icon_only,
                 &theme,
             ),
             Mode::Calendar => primary_button(
@@ -111,6 +206,7 @@ impl PigeonApp {
                 "New Event",
                 "New event",
                 Box::new(NewEvent),
+                icon_only,
                 &theme,
             ),
         });
@@ -127,11 +223,14 @@ impl PigeonApp {
             .gap(SPACE_XS)
             .pr(SPACE_MD)
             .children(status_glyph(&status, &theme))
-            .when(source == Source::Demo, |this| this.child(demo_chip(&theme)))
+            .when(source == Source::Demo, |this| {
+                this.child(demo_chip(compact >= Compact::ShortChip, &theme))
+            })
             .when(!signed_out, |this| {
                 let spinning = self.refresh_spin.is_some()
                     || matches!(status, SyncStatus::Syncing { .. } | SyncStatus::Waiting);
-                this.children(sync_progress(&status).map(|progress| {
+                let progress = progress.filter(|_| compact < Compact::NoProgress);
+                this.children(progress.map(|progress| {
                     div()
                         .flex_none()
                         .pl(SPACE_XS)
@@ -496,7 +595,7 @@ fn status_glyph(status: &SyncStatus, theme: &Theme) -> Option<AnyElement> {
 }
 
 /// On demo data: says so, and signs in.
-fn demo_chip(theme: &Theme) -> impl IntoElement {
+fn demo_chip(short: bool, theme: &Theme) -> impl IntoElement {
     focusable_control(div().id("demo-sign-in"), theme)
         .role(gpui::Role::Button)
         .aria_label("Demo data. Sign in with Google")
@@ -511,7 +610,8 @@ fn demo_chip(theme: &Theme) -> impl IntoElement {
         .bg(theme.chip_bg)
         .hover(|s| s.bg(theme.hover_bg).text_color(theme.text_muted))
         .active(|s| s.bg(theme.selected_bg))
-        .child("Demo Data · Sign In")
+        .whitespace_nowrap()
+        .child(if short { DEMO_SHORT } else { DEMO_LABEL })
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(|_, window, cx| window.dispatch_action(Box::new(SignIn), cx))
         .tooltip(|window, cx| {
@@ -528,6 +628,7 @@ fn primary_button(
     label: &'static str,
     tip: &'static str,
     action: Box<dyn Action>,
+    icon_only: bool,
     theme: &Theme,
 ) -> impl IntoElement {
     let tip_action = action.boxed_clone();
@@ -535,10 +636,16 @@ fn primary_button(
         .when_some(shortcut_text(action.as_ref()), |this, keys| {
             this.aria_keyshortcuts(keys)
         })
-        .pl(SPACE_SM)
         .gap(SPACE_XS)
+        .map(|this| {
+            if icon_only {
+                this.px(px(0.)).w(CONTROL_MD).min_w(HIT_TARGET)
+            } else {
+                this.pl(SPACE_SM)
+            }
+        })
         .child(icon(glyph, ICON_MD, theme.accent_text))
-        .child(label)
+        .when(!icon_only, |this| this.child(label))
         .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
         .tooltip(move |window, cx| {
             tooltip(tip)
@@ -628,6 +735,61 @@ fn account_menu(email: SharedString, source: Source, can_sign_out: bool) -> Cont
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_trailing_end_gives_way_before_the_search() {
+        let busy = Trailing {
+            status: false,
+            demo: true,
+            progress: Some("1,340 of 10,000"),
+            primary: Some("Compose"),
+        };
+        let rem = BASE_REM;
+        // Wide: everything shows.
+        assert_eq!(compact_for(1400., &busy, rem), Compact::Full);
+        // Each step frees room, in order.
+        let widths: Vec<f32> = [
+            Compact::Full,
+            Compact::NoProgress,
+            Compact::ShortChip,
+            Compact::IconOnly,
+        ]
+        .iter()
+        .map(|&c| trailing_width(&busy, c, rem))
+        .collect();
+        assert!(widths.windows(2).all(|w| w[1] < w[0]), "{widths:?}");
+        // The minimum window with 200% text, past the lights and the
+        // sidebar toggle: the progress goes, and the search still fits.
+        let rem = BASE_REM * 2.;
+        let search = SEARCH_MIN_WIDTH.0 * rem;
+        let room = 900. - 80. - 36.;
+        let at_min = compact_for(room, &busy, rem);
+        assert!(at_min > Compact::Full, "{at_min:?}");
+        assert!(room - trailing_width(&busy, at_min, rem) >= search);
+        // Narrower still, it steps on in order, down to icons.
+        let steps: Vec<Compact> = (0..=40)
+            .map(|i| compact_for(room - i as f32 * 10., &busy, rem))
+            .collect();
+        assert!(steps.windows(2).all(|w| w[1] >= w[0]), "{steps:?}");
+        assert_eq!(steps.last(), Some(&Compact::IconOnly));
+        // Whenever some step leaves the search its minimum, it gets it.
+        for i in 0..=40 {
+            let room = room - i as f32 * 10.;
+            if room - trailing_width(&busy, Compact::IconOnly, rem) >= search {
+                let c = compact_for(room, &busy, rem);
+                assert!(room - trailing_width(&busy, c, rem) >= search, "{room}");
+            }
+        }
+        // Without progress, the progress step changes nothing.
+        let calm = Trailing {
+            progress: None,
+            ..busy
+        };
+        assert_eq!(
+            trailing_width(&calm, Compact::Full, rem),
+            trailing_width(&calm, Compact::NoProgress, rem)
+        );
+    }
 
     #[test]
     fn refresh_tip_says_when_it_last_synced() {

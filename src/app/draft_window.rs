@@ -6,7 +6,7 @@
 
 use gpui::{
     AnyWindowHandle, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    IntoElement, ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _,
     Styled as _, Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
     component::input, div, px, size,
 };
@@ -44,6 +44,8 @@ pub(crate) struct DraftHost {
     _events: Subscription,
     /// Light and Dark follow the system while it's open.
     _appearance: Subscription,
+    /// The toolbar height the traffic lights were last centered on.
+    lights_bar: Pixels,
 }
 
 impl DraftHost {
@@ -118,7 +120,15 @@ impl DraftHost {
 }
 
 impl Render for DraftHost {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The text scale, as in the main window; the toolbar grows with it
+        // and the traffic lights stay centered in it.
+        window.set_rem_size(px(BASE_REM * settings::get(cx).text_scale));
+        let bar = ui::top_bar_height(window);
+        if bar != self.lights_bar {
+            self.lights_bar = bar;
+            window.set_traffic_light_position(shell::draft_traffic_lights(bar));
+        }
         let theme = Theme::of(cx).clone();
         let title = self.composer.read(cx).title();
         div()
@@ -261,6 +271,7 @@ impl PigeonApp {
                     title: SharedString::default(),
                     _events: events,
                     _appearance: appearance,
+                    lights_bar: Pixels::default(),
                 };
                 host.sync_title(window, cx);
                 host
@@ -452,7 +463,9 @@ fn window_options(main: &Window, cx: &gpui::App) -> WindowOptions {
         titlebar: Some(TitlebarOptions {
             title: Some("New Message".into()),
             appears_transparent: true,
-            traffic_light_position: Some(shell::draft_traffic_lights()),
+            traffic_light_position: Some(shell::draft_traffic_lights(ui::top_bar_height_at(px(
+                BASE_REM * settings::get(cx).text_scale,
+            )))),
         }),
         app_owns_titlebar_drag: true,
         window_background: shell::window_background(cx),
