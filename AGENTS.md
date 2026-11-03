@@ -9,6 +9,15 @@ A macOS email and calendar client in Rust + GPUI (`gpui-kit` 0.8, imported as `g
 - Minimal and flat (Linear, Superhuman). The whole window is translucent glass. Light and dark follow the system.
 - YAGNI. Prefer boring, known solutions. Match the surrounding code; keep comments sparse.
 
+## Polish bar
+
+Every change is held to this, not just polish sprints.
+
+- **Apple Human Interface Guidelines.** Follow the macOS and general HIG: native behavior for menus, shortcuts, focus, selection, scrolling, window chrome, accessibility (VoiceOver, Reduce Motion, Increase Contrast, text size), and wording. When a custom control would behave differently from the macOS one, match macOS unless there's a clear reason not to.
+- **Don't do too much.** Before writing something, check whether Rust's std, GPUI, gpui-component or an existing helper in this repo already does it. No hand-rolled versions of what exists, no needless abstraction, no slower option when a faster one is just as simple. Simplifying code must not change how the app looks or behaves.
+- **Motion with intent.** Animate what helps people follow a change (things appearing, leaving, moving, resizing, state toggles); don't animate what should feel instant (typing, selection, hover color, keyboard navigation through lists). Use the springs and helpers in `src/ui/motion.rs`, never linear or ad-hoc durations: arrivals springy and quick, exits shorter with no overshoot, everything interruptible and retargetable, and Reduce Motion respected. If no token fits, add one there.
+- **Finish it.** Hover, pressed, focused, disabled, empty, loading and error states all handled; alignment, spacing and text sizes consistent with the surrounding UI. It should feel built with care, not just work.
+
 ## Code conventions
 
 - Colors only from `src/theme.rs`. Text sizes, spacing, radii, hit targets and focus helpers from `src/ui/style.rs`, motion from `src/ui/motion.rs`, shared controls from `src/ui/controls.rs`; no raw px for these.
@@ -22,6 +31,9 @@ A macOS email and calendar client in Rust + GPUI (`gpui-kit` 0.8, imported as `g
 1. One or more `implementer` agents make the changes. If there's a lot, split by non-overlapping files.
 2. A separate tester tests in Codex: the main agent runs `codex exec -m gpt-6.1-terra` in a background shell, with Codex's built-in computer use, its `cua_repl` tool (no subagents, no third-party `cua-driver`; say so explicitly, since Codex can confuse the two).
 3. A fresh `implementer` fixes what the tester reports. Re-test as needed.
+4. The main agent commits and opens the PR (`file-pr` skill).
+5. Review with the `code-review` skill, against the PR's base branch. The spec is the user's original request plus the feature's entry in `docs/ROADMAP.md`; never the sprint docs or `UX_REVIEW.md` unless the user points to them. Fresh `implementer` agents fix the findings (not `general`), split by non-overlapping files. Fixes are not GUI re-tested.
+6. The main agent runs `cargo build` and `cargo test`, commits the fixes and pushes to the PR branch.
 
 Don't have one agent implement, test and fix in a loop. Subagents don't commit; the main agent does.
 
@@ -33,7 +45,3 @@ Don't have one agent implement, test and fix in a loop. Subagents don't commit; 
 
 - Run with `scripts/run.sh` (release build, signed with the local `Pigeon Dev` identity so the Keychain keeps trusting it across rebuilds; plain `cargo run --release` works but the Keychain asks again after every build). `PIGEON_DEMO=1` runs on the placeholder data. Agents running in parallel use their own `CARGO_TARGET_DIR` in `/private/var/folders/sc/26v_9jsx0s9_fkjttv6jzjdh0000gn/T/opencode`; the main agent deletes it when the agent finishes.
 - GUI testing uses Codex's built-in computer use, scoped to Pigeon's pid and window. Launch the test copy with `open -n -a <Pigeon.app> --env PIGEON_DATA_DIR=… --env …` (a `&` child dies with Codex's shell, and computer use would launch Pigeon without the environment), then check it with `ps eww -p <pid>`. Never send input to other apps. Never change system appearance or wallpaper; test dark mode in a scratch copy.
-
-## Questions to the user
-
-Numbered list, with lettered options.
