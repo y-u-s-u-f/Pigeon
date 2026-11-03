@@ -100,16 +100,25 @@ pub fn counts(data: &CalendarData, event: &Event) -> bool {
 }
 
 /// Timed, busy events that count and overlap `[start, end)`, other than
-/// event `id` itself, by start (ME-046).
+/// event `id` itself, by start (ME-046). Events drawn as bars across days
+/// (all-day, or a day or longer) never conflict. With `same_calendar`
+/// (Settings › Calendar), only events on `calendar` do.
 pub fn conflicts(
     data: &CalendarData,
     id: &str,
+    calendar: Option<&str>,
     start: NaiveDateTime,
     end: NaiveDateTime,
 ) -> Vec<Occurrence> {
     occurrences(
         &data.events,
-        |e| e.id != id && !e.all_day && e.busy && counts(data, e),
+        |e| {
+            e.id != id
+                && !e.is_spanning()
+                && e.busy
+                && calendar.is_none_or(|c| e.calendar == c)
+                && counts(data, e)
+        },
         start,
         end,
     )
@@ -288,6 +297,38 @@ mod tests {
             calendars: vec![calendar("work", true), calendar("hidden", false)],
             events,
         }
+    }
+
+    #[test]
+    fn conflicts_skip_all_day_and_multi_day_and_can_keep_to_one_calendar() {
+        let busy = |e: Event| Event { busy: true, ..e };
+        let nine = at(d(5), 9, 0);
+        let mut data = data(vec![
+            busy(meeting("a", nine, 60)),
+            busy(meeting("b", nine + Duration::minutes(30), 60)),
+            busy(Event {
+                all_day: true,
+                end: at(d(6), 0, 0),
+                ..meeting("holiday", at(d(5), 0, 0), 0)
+            }),
+            busy(meeting("hackathon", at(d(4), 9, 0), 60 * 48)),
+            busy(Event {
+                calendar: "team".into(),
+                ..meeting("other", nine, 30)
+            }),
+        ]);
+        data.calendars.push(calendar("team", true));
+        let ids = |found: Vec<Occurrence>| -> Vec<String> {
+            found
+                .iter()
+                .map(|o| data.events[o.event].id.clone())
+                .collect()
+        };
+        let end = nine + Duration::hours(1);
+        let mut all = ids(conflicts(&data, "a", None, nine, end));
+        all.sort();
+        assert_eq!(all, ["b", "other"]);
+        assert_eq!(ids(conflicts(&data, "a", Some("work"), nine, end)), ["b"]);
     }
 
     #[test]

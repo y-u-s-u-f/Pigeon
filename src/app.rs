@@ -2947,35 +2947,44 @@ impl PigeonApp {
                                     cache,
                                     window,
                                 ))
-                                .child(div().flex_1().min_w_0().h_full().flex().map(|this| {
-                                    if settings_open {
-                                        this.child(self.render_settings(window, cx))
-                                            .into_any_element()
-                                    } else if self.mode == Mode::Calendar {
-                                        if calendar_granted {
-                                            this.child(self.calendar.clone()).into_any_element()
-                                        } else {
-                                            this.child(ui::status::missing_scope(
-                                                "Calendar",
-                                                Icon::Calendar,
-                                                &theme,
-                                            ))
-                                            .into_any_element()
-                                        }
-                                    } else {
-                                        this.child(self.render_mail_panes(
-                                            layout,
-                                            sidebar_open,
-                                            sidebar_shown,
-                                            width,
-                                            cache,
-                                            &theme,
-                                            window,
-                                            cx,
-                                        ))
-                                        .into_any_element()
-                                    }
-                                })),
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .h_full()
+                                        .relative()
+                                        .child(div().size_full().flex().map(|this| {
+                                            if settings_open {
+                                                this.child(self.render_settings(window, cx))
+                                                    .into_any_element()
+                                            } else if self.mode == Mode::Calendar {
+                                                if calendar_granted {
+                                                    this.child(self.calendar.clone())
+                                                        .into_any_element()
+                                                } else {
+                                                    this.child(ui::status::missing_scope(
+                                                        "Calendar",
+                                                        Icon::Calendar,
+                                                        &theme,
+                                                    ))
+                                                    .into_any_element()
+                                                }
+                                            } else {
+                                                this.child(self.render_mail_panes(
+                                                    layout,
+                                                    sidebar_open,
+                                                    sidebar_shown,
+                                                    width,
+                                                    cache,
+                                                    &theme,
+                                                    window,
+                                                    cx,
+                                                ))
+                                                .into_any_element()
+                                            }
+                                        }))
+                                        .child(ui::panel_corners(&theme)),
+                                ),
                         ),
                 )
             })

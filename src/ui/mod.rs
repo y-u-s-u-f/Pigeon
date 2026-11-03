@@ -385,6 +385,41 @@ impl Render for PaneResize {
     }
 }
 
+/// Over the panes, under the top bar and beside the rail: rounds their
+/// corners against the rail, so they read as one inset panel, and draws
+/// the line between them and the chrome. A frame of the bar's material,
+/// `RADIUS_PANEL` thick, rounded twice as much and clipped to the panes,
+/// leaves just the corners' fillets showing. Takes no mouse.
+pub fn panel_corners(theme: &Theme) -> impl IntoElement {
+    let r = RADIUS_PANEL;
+    div()
+        .absolute()
+        .inset_0()
+        .overflow_hidden()
+        .child(
+            div()
+                .absolute()
+                .top(-r)
+                .left(-r)
+                .bottom(-r)
+                .right(-r)
+                .rounded_tl(r * 2.)
+                .rounded_bl(r * 2.)
+                .border(r)
+                .border_color(theme.bar_bg),
+        )
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .rounded_tl(r)
+                .rounded_bl(r)
+                .border_t_1()
+                .border_l_1()
+                .border_color(theme.border),
+        )
+}
+
 /// A pane divider's grab band, centered on the border.
 const DIVIDER_BAND: Pixels = px(6.);
 

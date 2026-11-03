@@ -56,6 +56,9 @@ pub struct Theme {
 
     // Interactive surfaces.
     pub hover_bg: Hsla,
+    /// A list row under the mouse: plainer than a button's hover, so the
+    /// row reads at a glance, and still short of `selected_bg`.
+    pub row_hover_bg: Hsla,
     pub selected_bg: Hsla,
     /// The list's selection while the list has keyboard focus.
     pub selected_focused_bg: Hsla,
@@ -188,6 +191,7 @@ impl Theme {
             link: hex(0x8fb3ffff),
 
             hover_bg: hex(0xffffff0a),
+            row_hover_bg: hex(0xffffff12),
             selected_bg: hex(0xffffff1c),
             selected_focused_bg: hex(0x7aa5ff38),
             checked_bg: hex(0x7aa5ff1f),
@@ -262,6 +266,7 @@ impl Theme {
             link: hex(0x1d5bd1ff),
 
             hover_bg: hex(0x0000000a),
+            row_hover_bg: hex(0x0000000d),
             selected_bg: hex(0x00000012),
             selected_focused_bg: hex(0x1d5bd11c),
             checked_bg: hex(0x1d5bd10f),
@@ -376,6 +381,7 @@ impl Theme {
         self.overlay_border = ink(0x40);
         self.kbd_border = ink(0x40);
         self.hover_bg = ink(0x14);
+        self.row_hover_bg = ink(0x1f);
         self.selected_bg = ink(0x2e);
         self.nav_active_bg = ink(0x2e);
         self.chip_bg = ink(0x1f);

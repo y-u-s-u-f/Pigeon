@@ -85,8 +85,6 @@ impl PigeonApp {
             .pt(SPACE_SM)
             .pb(SPACE_MD)
             .bg(theme.bar_bg)
-            .border_r_1()
-            .border_color(theme.border)
             .when(!signed_out, |this| this.child(apps))
             .child(div().flex_1())
             .child(

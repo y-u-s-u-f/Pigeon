@@ -2815,8 +2815,12 @@ impl CalendarView {
                 .child(format!("Set in {z}"))
         });
         // Another busy event at the same time (ME-046).
-        let conflict = (!event.all_day && event.busy)
-            .then(|| crate::calendar::policy::conflicts(&self.data, &event.id, start, end))
+        let same_calendar = crate::settings::get(cx).conflicts_same_calendar;
+        let conflict = (!event.is_spanning() && event.busy)
+            .then(|| {
+                let calendar = same_calendar.then_some(event.calendar.as_str());
+                crate::calendar::policy::conflicts(&self.data, &event.id, calendar, start, end)
+            })
             .and_then(|found| {
                 let first = self.data.events[found.first()?.event].display_title();
                 let text = match found.len() {

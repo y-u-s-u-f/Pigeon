@@ -132,6 +132,8 @@ pub struct Saved {
     /// "day", "week" or "month".
     pub calendar_view: CalendarViewSetting,
     pub week_numbers: bool,
+    /// Two events conflict only on the same calendar (ME-046).
+    pub conflicts_same_calendar: bool,
     pub remote_images: RemoteImages,
     /// Sprint 2 W1: notify about new mail (NTF-1).
     pub notifications: bool,
@@ -323,6 +325,7 @@ impl Default for Saved {
             archived_expanded: false,
             calendar_view: CalendarViewSetting::Week,
             week_numbers: false,
+            conflicts_same_calendar: false,
             remote_images: RemoteImages::Ask,
             notifications: true,
             calendar_date: None,
@@ -530,6 +533,7 @@ pub enum SettingId {
     SearchScope,
     CalendarView,
     WeekNumbers,
+    ConflictsSameCalendar,
     RemoteImages,
     TimeFormat,
     EventLength,
@@ -630,6 +634,8 @@ pub const SETTINGS: &[SettingMeta] = settings! {
         ["day", "week", "month", "default", "layout"];
     Calendar: WeekNumbers, "Week numbers", "Show the week of the year beside each week.",
         ["iso", "week of year"];
+    Calendar: ConflictsSameCalendar, "Only flag conflicts within the same calendar", "Events on different calendars at the same time aren't shown as conflicts. All-day events never are.",
+        ["conflict", "overlap", "double booked", "clash", "busy"];
     Calendar: EventLength, "Default event length", "How long a new event is. Follows Google Calendar until changed here.",
         ["duration", "new event", "minutes", "meeting length"];
     Calendar: DefaultCalendar, "Default calendar", "Where new events go. Automatic uses your primary calendar. A calendar you can't add events to isn't listed.",
@@ -911,6 +917,7 @@ mod tests {
             appearance: Appearance::Dark,
             text_scale: 1.2,
             calendar_view: CalendarViewSetting::Month,
+            conflicts_same_calendar: true,
             remote_images: RemoteImages::Never,
             notifications: false,
             calendar_date: chrono::NaiveDate::from_ymd_opt(2026, 11, 3),
