@@ -945,6 +945,11 @@ impl CalendarView {
         } else {
             hover
         };
+        let ring = match look {
+            _ if selected => None,
+            Look::Normal => overlapped.then_some(theme.cal_ring),
+            _ => Some(accent.alpha(0.7)),
+        };
         let key = occurrence_key(&occurrence, (start == 0) as i64);
         let added = self.just_added.as_deref() == Some(event.id.as_str());
         let block = div()
@@ -992,14 +997,20 @@ impl CalendarView {
                             spread_radius: px(-2.),
                             inset: false,
                         }]),
-                        Look::Normal => d
-                            .hover(move |s| s.bg(hover))
-                            .when(overlapped, |d| d.border_1().border_color(theme.cal_ring)),
-                        _ => d
-                            .hover(move |s| s.bg(hover.alpha(0.5)))
-                            .border_1()
-                            .border_color(accent.alpha(0.7)),
+                        Look::Normal => d.hover(move |s| s.bg(hover)),
+                        _ => d.hover(move |s| s.bg(hover.alpha(0.5))),
                     })
+                    // The ring as a layer under the stripe, not a border:
+                    // a border would inset the clip, and the stripe would
+                    // stop short of a rounded corner.
+                    .children(ring.map(|color| {
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .rounded(RADIUS_SM)
+                            .border_1()
+                            .border_color(color)
+                    }))
                     .when(!selected, |d| d.children(look.stripes(accent)))
                     .when(!selected, |d| {
                         d.child(

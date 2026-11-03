@@ -802,6 +802,9 @@ impl PigeonApp {
                 VIEWS,
             ),
             SettingId::WeekNumbers => Control::Switch(calendar.show_week_numbers),
+            SettingId::ConflictsSameCalendar => {
+                Control::Switch(settings::get(cx).conflicts_same_calendar)
+            }
             SettingId::RemoteImages => Control::Choice(
                 match self.saved.remote_images {
                     RemoteImages::Ask => 0,
@@ -1204,6 +1207,10 @@ impl PigeonApp {
                 c.show_week_numbers = on;
                 cx.notify();
             }),
+            SettingId::ConflictsSameCalendar => {
+                shell::change_app_settings(cx, |s| s.conflicts_same_calendar = on);
+                self.calendar.update(cx, |_, cx| cx.notify());
+            }
             SettingId::RemoteImages => {
                 // Also on `saved` itself, where the reader reads it (ATT-1).
                 let images = [RemoteImages::Ask, RemoteImages::Always, RemoteImages::Never][choice];

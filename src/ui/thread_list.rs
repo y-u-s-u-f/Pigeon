@@ -40,10 +40,6 @@ const ROW_INSET: gpui::Pixels = SPACE_LG;
 const LABEL_DOTS: usize = 3;
 const LABEL_DOT: gpui::Pixels = px(7.);
 const UNREAD_DOT: gpui::Pixels = px(6.);
-/// The line round the selected row's leading edge while the list has
-/// focus, and how far it runs on past the corners before it fades out.
-const FOCUS_LINE: gpui::Pixels = px(1.5);
-const FOCUS_LINE_TAIL: gpui::Pixels = SPACE_XL;
 /// The row's hover group: the date gives way to the quick actions, and the
 /// checkbox shows, without the app keeping a hover state (ME-004).
 const ROW_GROUP: &str = "thread-row";
@@ -1103,16 +1099,6 @@ impl PigeonApp {
             && window.is_window_active();
         let has_draft = thread.folder != Folder::Drafts && self.draft_replies.contains(&thread.id);
         let queued = row_cx.queued.contains(&thread.id);
-        // Draws in from the corners as the row takes the keyboard; only
-        // fades under Reduce Motion.
-        let focus_line = motion::presence(
-            ElementId::Name(format!("row-line-{}", thread.id).into()),
-            selected && list_focused,
-            window,
-            cx,
-        )
-        .clamp(0., 1.);
-        let focus_reach = if cx.reduce_motion() { 1. } else { focus_line };
 
         // Sent and drafts are about who they went to; everything else about
         // who wrote (ME-011).
@@ -1293,9 +1279,9 @@ impl PigeonApp {
             .child(meta)
             .child(self.render_row_actions(thread_ix, theme, cx));
 
-        // The unread dot, centered in the inset, clear of the focus line. It
-        // gives way to the checkbox, which sits over the sender's first
-        // letters while picking or hovered.
+        // The unread dot, centered in the inset. It gives way to the
+        // checkbox, which sits over the sender's first letters while picking
+        // or hovered.
         let pinned_checkbox = checked || selecting;
         let marker = div()
             .absolute()
@@ -1446,7 +1432,7 @@ impl PigeonApp {
                 } else if selected {
                     this.bg(theme.selected_bg)
                 } else {
-                    this.hover(|s| s.bg(theme.hover_bg))
+                    this.hover(|s| s.bg(theme.row_hover_bg))
                 }
             })
             .map(|this| {
@@ -1547,10 +1533,6 @@ impl PigeonApp {
                                 .child(div().flex_1().min_w_0().truncate().child(snippet)),
                         )
                 }
-            })
-            // The keyboard's place: a line hugging the leading edge.
-            .when(focus_line > 0., |this| {
-                this.child(edge_line(focus_line, focus_reach, theme.accent))
             })
             .when(self.is_context_target(thread_ix), |this| {
                 this.child(
@@ -1844,60 +1826,6 @@ fn subject_and_snippet(
         },
     ));
     StyledText::new(text).with_highlights(highlights)
-}
-
-/// The focused row's line: down its leading edge, round both corners on
-/// the row's radius and on along the top and bottom, fading out. `reach`
-/// draws it out from the corners; `opacity` fades it.
-fn edge_line(opacity: f32, reach: f32, color: gpui::Hsla) -> impl IntoElement {
-    gpui::canvas(
-        |_, _, _| {},
-        move |bounds, _, window, _| {
-            // On the row's outline, the stroke's outer edge on its edge.
-            let half = FOCUS_LINE / 2.;
-            let r = RADIUS_MD - half;
-            let left = bounds.left() + half;
-            let top = bounds.top() + half;
-            let bottom = bounds.bottom() - half;
-            let tail = FOCUS_LINE_TAIL * reach;
-            let end = left + r + tail;
-            let mut path = gpui::PathBuilder::stroke(FOCUS_LINE);
-            path.move_to(gpui::point(end, top));
-            path.line_to(gpui::point(left + r, top));
-            path.arc_to(
-                gpui::point(r, r),
-                px(0.),
-                false,
-                false,
-                gpui::point(left, top + r),
-            );
-            path.line_to(gpui::point(left, bottom - r));
-            path.arc_to(
-                gpui::point(r, r),
-                px(0.),
-                false,
-                false,
-                gpui::point(left + r, bottom),
-            );
-            path.line_to(gpui::point(end, bottom));
-            let Ok(path) = path.build() else { return };
-            // Solid round the corners, then fading along the tails. The
-            // path's bounds start `half` left of the line (its stroke) and
-            // end at the tails' butt ends.
-            let solid = f32::from(half + r) / f32::from(half + r + tail);
-            let color = color.opacity(opacity);
-            window.paint_path(
-                path,
-                gpui::linear_gradient(
-                    90.,
-                    gpui::linear_color_stop(color, solid.min(1.)),
-                    gpui::linear_color_stop(color.alpha(0.), 1.),
-                ),
-            );
-        },
-    )
-    .absolute()
-    .inset_0()
 }
 
 /// The group of a row checkbox's hit target, so the box answers its hover.

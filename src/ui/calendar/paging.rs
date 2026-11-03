@@ -1,6 +1,7 @@
 //! Period changes that move (MD-044). Two fingers drag the period along
 //! with them, the next or previous one beside it, and on release it pages
-//! or springs back; the arrows, keys and every other jump slide the new
+//! or springs back (`Glide::page`), carrying their speed; fingers down
+//! catch it mid-settle. The arrows, keys and every other jump slide the new
 //! period in a little as it fades in. Under Reduce Motion a swipe pages
 //! once it's far enough and every change only fades.
 
@@ -15,10 +16,11 @@ use gpui::{
 
 use super::{CalendarView, ViewKind};
 use crate::ui::motion::{
-    Glide, PAGE_JUMP_TRAVEL as JUMP_TRAVEL, SWIPE_AXIS_LOCK as AXIS_LOCK,
+    Glide, PAGE_JUMP_TRAVEL as JUMP_TRAVEL, SWIPE_AXIS_LOCK as AXIS_LOCK, SWIPE_COAST as COAST,
     SWIPE_FLICK_MIN as FLICK_MIN, SWIPE_FLICK_STALE as FLICK_STALE,
     SWIPE_FLICK_VELOCITY as FLICK_VELOCITY, SWIPE_MAX_VELOCITY as MAX_VELOCITY,
     SWIPE_PAGE_SHARE as PAGE_SHARE, SWIPE_REDUCED_PAGE as REDUCED_PAGE,
+    SWIPE_VELOCITY_WINDOW as VELOCITY_WINDOW,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,26 +82,72 @@ pub(crate) fn settle_clamp(from: f32, stepped: f32, done: bool, width: f32) -> (
     (stepped.clamp(-width, width), false)
 }
 
-/// The fingers' velocity after a step of `delta` px over `dt` s, smoothed
-/// with the last.
-pub(crate) fn track_velocity(last: f32, delta: f32, dt: f32) -> f32 {
-    if dt <= 0. {
-        return last;
+/// The fingers' velocity at `now` s, from their sideways travel samples
+/// (time in s, travel in px): the travel over the last `VELOCITY_WINDOW`,
+/// or none once they rested `FLICK_STALE` before lifting.
+pub(crate) fn swipe_velocity(samples: &[(f32, f32)], now: f32) -> f32 {
+    let Some(&(t1, x1)) = samples.last() else {
+        return 0.;
+    };
+    if now - t1 > FLICK_STALE {
+        return 0.;
     }
-    let now = (delta / dt).clamp(-MAX_VELOCITY, MAX_VELOCITY);
-    0.6 * now + 0.4 * last
+    // The newest sample at or before the window's start, so a flick of two
+    // events still has a span.
+    let &(t0, x0) = samples
+        .iter()
+        .rev()
+        .find(|&&(t, _)| t1 - t >= VELOCITY_WINDOW)
+        .unwrap_or(&samples[0]);
+    let dt = t1 - t0;
+    if dt < 0.004 {
+        return 0.;
+    }
+    ((x1 - x0) / dt).clamp(-MAX_VELOCITY, MAX_VELOCITY)
+}
+
+/// The velocity a settle from `from` to 0 starts with: the release's, but
+/// never so fast toward 0 that a critically damped spring of `frequency`
+/// would cross it, so it lands without the clamp cutting it short.
+pub(crate) fn landing_velocity(from: f32, velocity: f32, frequency: f32) -> f32 {
+    if velocity * from < 0. {
+        velocity.signum() * velocity.abs().min(frequency * from.abs())
+    } else {
+        velocity
+    }
 }
 
 /// A two-finger gesture over the grid, from its start.
 pub(crate) struct Swipe {
     total: (f32, f32),
     axis: Option<Axis>,
-    velocity: f32,
-    at: Instant,
+    /// Where the period was when the fingers caught it settling.
+    base: f32,
+    started: Instant,
+    /// Sideways travel by time since `started`, for the release velocity.
+    samples: Vec<(f32, f32)>,
     /// The grid's scroll when it locked sideways, kept while it goes.
     keep_y: Pixels,
     /// Under Reduce Motion: it paged already.
     paged: bool,
+}
+
+impl Swipe {
+    /// Records travel `x` now, dropping samples the window no longer needs.
+    fn sample(&mut self, x: f32) {
+        let t = self.started.elapsed().as_secs_f32();
+        let keep_from = self
+            .samples
+            .iter()
+            .rposition(|&(at, _)| t - at >= VELOCITY_WINDOW)
+            .unwrap_or(0);
+        self.samples.drain(..keep_from);
+        self.samples.push((t, x));
+    }
+
+    fn velocity(&self) -> f32 {
+        swipe_velocity(&self.samples, self.started.elapsed().as_secs_f32())
+    }
 }
 
 /// The period moving, if it is.
@@ -107,14 +155,12 @@ pub(crate) enum Turn {
     /// Following the fingers.
     Drag { offset: f32 },
     /// Settling at 0 from `from` after a release, in px, with `other`
-    /// beside: the period leaving, or the one it sprang back from. The
-    /// grid's scroll stays at `keep_y`, so the momentum after a sideways
-    /// swipe doesn't scroll it.
+    /// beside: the period leaving, or the one it sprang back from. Fingers
+    /// down catch it where it is.
     Settle {
         glide: Glide,
         from: f32,
         other: (NaiveDate, f32),
-        keep_y: Pixels,
     },
     /// The new period sliding in from `dir` (1 from the right) and fading
     /// in, as progress.
@@ -220,27 +266,50 @@ impl CalendarView {
         let reduced = cx.reduce_motion();
         match event.touch_phase {
             TouchPhase::Started => {
-                // Fingers down catch a page still settling: it lands.
-                if self.turn.is_some() {
+                self.coast = None;
+                let width = self.page_width();
+                // Fingers down catch a period still settling where it is,
+                // and carry it on from there. (A touch reports Started
+                // twice: as the fingers land and as they move.)
+                let caught = match &self.turn {
+                    Some(Turn::Settle { glide, from, .. }) => {
+                        Some(settle_clamp(*from, glide.value(), false, width).0)
+                    }
+                    Some(Turn::Drag { offset }) if self.swipe.is_some() => Some(*offset),
+                    _ => None,
+                }
+                .filter(|&offset| offset != 0.);
+                let keep_y = match &self.swipe {
+                    Some(swipe) if caught.is_some() => swipe.keep_y,
+                    _ => self.grid_scroll.offset().y,
+                };
+                if let Some(offset) = caught {
+                    self.turn = Some(Turn::Drag { offset });
+                } else if matches!(self.turn, Some(Turn::Settle { .. })) {
                     self.turn = None;
-                    cx.notify();
                 }
                 self.swipe = Some(Swipe {
                     total: (0., 0.),
-                    axis: None,
-                    velocity: 0.,
-                    at: Instant::now(),
-                    keep_y: self.grid_scroll.offset().y,
+                    axis: caught.map(|_| Axis::Horizontal),
+                    base: caught.unwrap_or(0.),
+                    started: Instant::now(),
+                    samples: Vec::new(),
+                    keep_y,
                     paged: false,
                 });
+                cx.notify();
             }
             TouchPhase::Moved => {
                 let modal = self.modal();
                 let Some(swipe) = &mut self.swipe else {
-                    // Momentum after the swipe: the grid keeps still.
-                    if let Some(Turn::Settle { keep_y, .. }) = self.turn {
-                        let x = self.grid_scroll.offset().x;
-                        self.grid_scroll.set_offset(point(x, keep_y));
+                    // Momentum after a sideways swipe: the grid keeps still.
+                    if let Some((keep_y, at)) = self.coast {
+                        if at.elapsed().as_secs_f32() < COAST {
+                            let x = self.grid_scroll.offset().x;
+                            self.grid_scroll.set_offset(point(x, keep_y));
+                        } else {
+                            self.coast = None;
+                        }
                     }
                     return;
                 };
@@ -256,14 +325,11 @@ impl CalendarView {
                 if swipe.axis != Some(Axis::Horizontal) || modal {
                     return;
                 }
-                let now = Instant::now();
-                let dt = now.saturating_duration_since(swipe.at).as_secs_f32();
-                swipe.velocity = track_velocity(swipe.velocity, dx, dt);
-                swipe.at = now;
+                let total = swipe.base + swipe.total.0;
+                swipe.sample(total);
                 // Sideways only: undo what the grid scrolled meanwhile.
                 let x = self.grid_scroll.offset().x;
                 self.grid_scroll.set_offset(point(x, swipe.keep_y));
-                let total = swipe.total.0;
                 if reduced {
                     if !swipe.paged && total.abs() > REDUCED_PAGE {
                         swipe.paged = true;
@@ -279,11 +345,13 @@ impl CalendarView {
                 let Some(swipe) = self.swipe.take() else {
                     return;
                 };
+                if swipe.axis == Some(Axis::Horizontal) {
+                    self.coast = Some((swipe.keep_y, Instant::now()));
+                }
                 let Some(Turn::Drag { offset }) = self.turn else {
                     return;
                 };
-                let stale = swipe.at.elapsed().as_secs_f32() > FLICK_STALE;
-                let velocity = if stale { 0. } else { swipe.velocity };
+                let velocity = swipe.velocity();
                 let width = self.page_width();
                 let cancelled = event.touch_phase == TouchPhase::Cancelled;
                 let paged = release(offset, velocity, width).filter(|_| !cancelled);
@@ -296,11 +364,14 @@ impl CalendarView {
                     }
                     None => self.beside(offset),
                 };
-                self.turn = settle_from(offset, width, paged).map(|from| Turn::Settle {
-                    glide: Glide::new(from, 0.).with_velocity(velocity),
-                    from,
-                    other,
-                    keep_y: swipe.keep_y,
+                self.turn = settle_from(offset, width, paged).map(|from| {
+                    let glide = Glide::page(from, 0.);
+                    let velocity = landing_velocity(from, velocity, glide.frequency());
+                    Turn::Settle {
+                        glide: glide.with_velocity(velocity),
+                        from,
+                        other,
+                    }
                 });
                 cx.notify();
             }
@@ -350,10 +421,9 @@ impl CalendarView {
             let offset = follow(offset, width);
             let other = self.beside(offset);
             self.turn = settle_from(offset, width, None).map(|from| Turn::Settle {
-                glide: Glide::new(from, 0.),
+                glide: Glide::page(from, 0.),
                 from,
                 other,
-                keep_y: self.grid_scroll.offset().y,
             });
         }
         let frame = match &mut self.turn {
@@ -470,7 +540,9 @@ mod tests {
 
     /// Every frame of a settle from `from` released at `velocity`, at 60 fps.
     fn settle_frames(from: f32, velocity: f32, width: f32) -> Vec<f32> {
-        let mut glide = Glide::new(from, 0.).with_velocity(velocity);
+        let glide = Glide::page(from, 0.);
+        let velocity = landing_velocity(from, velocity, glide.frequency());
+        let mut glide = glide.with_velocity(velocity);
         let mut frames = Vec::new();
         for _ in 0..600 {
             let (stepped, done) = glide.advance(1. / 60.);
@@ -510,6 +582,12 @@ mod tests {
                     .all(|&o| o == 0. || o.signum() == from.signum()),
                 "{offset}: {frames:?}"
             );
+            // It eases in rather than being cut short at 0.
+            assert!(
+                frames.windows(2).all(|w| w[1].abs() <= w[0].abs()),
+                "{offset}: {frames:?}"
+            );
+            assert!(frames.len() > 5, "{offset}: {frames:?}");
         }
         // Springing back, it stays within a width.
         let frames = settle_frames(-300., -MAX_VELOCITY, width);
@@ -517,12 +595,31 @@ mod tests {
     }
 
     #[test]
-    fn swipe_velocity_is_smoothed_and_bounded() {
-        assert_eq!(track_velocity(100., 10., 0.), 100.);
-        let v = track_velocity(0., 10., 0.01);
-        assert!((v - 600.).abs() < 1e-3, "{v}");
-        let fast = track_velocity(0., 1000., 0.001);
-        assert!(fast <= MAX_VELOCITY);
+    fn swipe_velocity_is_the_recent_travel_and_bounded() {
+        assert_eq!(swipe_velocity(&[], 0.), 0.);
+        assert_eq!(swipe_velocity(&[(0., 10.)], 0.), 0.);
+        // Steady at 1000 px/s, one event every 8 ms.
+        let steady: Vec<(f32, f32)> = (0..20).map(|i| (i as f32 * 0.008, i as f32 * 8.)).collect();
+        let v = swipe_velocity(&steady, 0.152);
+        assert!((v - 1000.).abs() < 1., "{v}");
+        // Slowing down at the end counts, not the fast start.
+        let mut slowing = steady.clone();
+        slowing.extend((1..10).map(|i| (0.152 + i as f32 * 0.008, 152. + i as f32 * 0.8)));
+        let v = swipe_velocity(&slowing, 0.224);
+        assert!(v < 150., "{v}");
+        // Fingers rested before lifting: no flick.
+        assert_eq!(swipe_velocity(&steady, 0.152 + FLICK_STALE + 0.01), 0.);
+        let fast = swipe_velocity(&[(0., 0.), (0.005, 1000.)], 0.005);
+        assert_eq!(fast, MAX_VELOCITY);
+    }
+
+    #[test]
+    fn a_landing_never_starts_fast_enough_to_cross_zero() {
+        assert_eq!(landing_velocity(100., -500., 20.), -500.);
+        assert_eq!(landing_velocity(100., -5000., 20.), -2000.);
+        assert_eq!(landing_velocity(-100., 5000., 20.), 2000.);
+        // Away from 0: as released.
+        assert_eq!(landing_velocity(100., 5000., 20.), 5000.);
     }
 
     #[test]

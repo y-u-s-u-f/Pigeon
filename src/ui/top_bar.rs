@@ -24,7 +24,7 @@ use crate::{
         CloseSearch, Compose, MAILBOX, NewEvent, OpenSettings, OpenSettingsSection, SEARCH, SignIn,
         SignOut, SyncNow, ToggleCommandPalette, ToggleSearch, ToggleSidebar,
     },
-    app::{Mode, PigeonApp, RAIL_WIDTH, shell},
+    app::{Mode, PigeonApp, shell},
     assets::Icon,
     backend::{Source, SyncStatus},
     data::Contact,
@@ -108,8 +108,6 @@ fn compact_for(room: f32, t: &Trailing, rem: f32) -> Compact {
         .find(|&c| room - trailing_width(t, c, rem) >= search)
         .unwrap_or(Compact::IconOnly)
 }
-/// The bar's bottom line, which meets the rail's.
-const HAIRLINE: Pixels = px(1.);
 
 impl PigeonApp {
     pub(crate) fn render_top_bar(
@@ -269,17 +267,6 @@ impl PigeonApp {
             .child(leading)
             .child(center)
             .child(trailing)
-            // Over the panes only: the rail goes on under the bar, and its
-            // own line meets this one at the corner.
-            .child(
-                div()
-                    .absolute()
-                    .bottom_0()
-                    .left(RAIL_WIDTH - HAIRLINE)
-                    .right_0()
-                    .h(HAIRLINE)
-                    .bg(theme.border),
-            )
             .into_any_element()
     }
 

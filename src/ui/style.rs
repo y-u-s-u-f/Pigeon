@@ -106,6 +106,8 @@ pub const RADIUS_SM: Pixels = px(6.);
 pub const RADIUS_MD: Pixels = px(8.);
 /// Cards and overlays.
 pub const RADIUS_LG: Pixels = px(12.);
+/// The panes' inner corners where they meet the rail (`ui::panel_corners`).
+pub const RADIUS_PANEL: Pixels = RADIUS_LG;
 
 /// The smallest mouse target for an icon button (Apple's 28pt).
 pub const HIT_TARGET: Pixels = px(28.);

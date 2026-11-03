@@ -538,6 +538,9 @@ pub struct CalendarView {
     scroll_glide: Option<ScrollGlide>,
     /// A two-finger gesture over the grid (MA-080).
     swipe: Option<paging::Swipe>,
+    /// The momentum after a sideways swipe: the grid's scroll it keeps, and
+    /// when the fingers lifted.
+    coast: Option<(gpui::Pixels, std::time::Instant)>,
     /// The period moving: with the fingers, settling, or a jump (MD-044).
     turn: Option<paging::Turn>,
     /// The view and the period's first day, as last drawn.
@@ -691,6 +694,7 @@ impl CalendarView {
             lift: 0.,
             scroll_glide: None,
             swipe: None,
+            coast: None,
             turn: None,
             shown: None,
             just_added: None,

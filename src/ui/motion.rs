@@ -85,6 +85,11 @@ pub const SWIPE_FLICK_VELOCITY: f32 = 350.;
 pub const SWIPE_FLICK_MIN: f32 = 12.;
 /// Fingers resting this long (s) before lifting don't flick.
 pub const SWIPE_FLICK_STALE: f32 = 0.08;
+/// The fingers' speed is their travel over this last stretch (s).
+pub const SWIPE_VELOCITY_WINDOW: f32 = 0.06;
+/// After a sideways swipe, the trackpad's momentum is kept from scrolling
+/// the grid for this long (s), until the next gesture.
+pub const SWIPE_COAST: f32 = 1.5;
 /// The fastest a release carries into the settle, px/s.
 pub const SWIPE_MAX_VELOCITY: f32 = 6000.;
 /// Under Reduce Motion, how far (px) the fingers go before a swipe pages.
@@ -323,12 +328,27 @@ pub struct Glide {
 
 const SCROLL: SpringConfig = spring_config(0.2, 1.);
 const SCROLL_EPSILON: f32 = 0.5;
+/// A swiped calendar period landing or springing back (`Glide::page`):
+/// slower than `SCROLL`, as it travels up to a whole width. No overshoot.
+const PAGE: SpringConfig = spring_config(0.3, 1.);
 const EXIT: SpringConfig = spring_config(0.16, 1.);
 
 impl Glide {
     /// Pixels, on `SPRING_SCROLL`.
     pub fn new(from: f32, target: f32) -> Self {
         Self::with(SCROLL, SCROLL_EPSILON, from, target)
+    }
+
+    /// Pixels, on `PAGE`: a swiped period settling.
+    pub fn page(from: f32, target: f32) -> Self {
+        Self::with(PAGE, SCROLL_EPSILON, from, target)
+    }
+
+    /// The spring's angular frequency, rad/s: a critically damped glide
+    /// starting toward its target faster than this times the distance
+    /// overshoots it.
+    pub fn frequency(&self) -> f32 {
+        self.config.stiffness.sqrt()
     }
 
     /// Progress from 0 to 1 on `SPRING_EXIT`: something leaving.
