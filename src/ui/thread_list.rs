@@ -1303,19 +1303,6 @@ impl PigeonApp {
                         .group_hover(ROW_GROUP, |s| s.invisible()),
                 )
             });
-        // Over the text, on an opaque copy of the row's fill so the letters
-        // under it don't show through; the text never moves.
-        let pane = theme.solid(theme.list_bg);
-        let backing = if checked {
-            pane.blend(theme.checked_bg)
-        } else if selected && list_focused {
-            pane.blend(theme.selected_focused_bg)
-        } else if selected {
-            pane.blend(theme.selected_bg)
-        } else {
-            pane
-        };
-        let hover_backing = (!checked && !selected).then(|| pane.blend(theme.hover_bg));
         let check = div()
             .absolute()
             .left(-SPACE_SM)
@@ -1324,7 +1311,7 @@ impl PigeonApp {
             .flex()
             .items_center()
             .child(
-                checkbox(thread_ix, checked, &subject, backing, hover_backing, theme)
+                checkbox(thread_ix, checked, &subject, theme)
                     .when(!pinned_checkbox, |this| {
                         this.invisible().group_hover(ROW_GROUP, |s| s.visible())
                     })
@@ -1334,9 +1321,17 @@ impl PigeonApp {
                     })),
             );
 
+        // While the checkbox shows, the letters under it are clipped away,
+        // leaving bare glass round it: the clip moves right past the box and
+        // the text moves back by as much, so it never moves. Offsets don't
+        // change layout, so the sender keeps its width. Ids let the hover
+        // group reach layout.
+        let cut = ICON_MD.to_pixels(window.rem_size()) + SPACE_XS;
         let sender = div()
+            .id(("row-sender", thread_ix))
             .min_w_0()
-            .truncate()
+            .overflow_hidden()
+            .relative()
             .text_size(TEXT_BASE)
             .font_weight(if unread {
                 FontWeight::SEMIBOLD
@@ -1344,7 +1339,27 @@ impl PigeonApp {
                 FontWeight::NORMAL
             })
             .text_color(primary)
-            .child(who.clone());
+            .map(|this| {
+                if pinned_checkbox {
+                    this.left(cut)
+                } else {
+                    this.group_hover(ROW_GROUP, |s| s.left(cut))
+                }
+            })
+            .child(
+                div()
+                    .id(("row-sender-text", thread_ix))
+                    .relative()
+                    .truncate()
+                    .map(|this| {
+                        if pinned_checkbox {
+                            this.left(-cut)
+                        } else {
+                            this.group_hover(ROW_GROUP, |s| s.left(-cut))
+                        }
+                    })
+                    .child(who.clone()),
+            );
         let draft_mark = has_draft.then(|| {
             div()
                 .flex_none()
@@ -1908,14 +1923,11 @@ fn check_box(state: gpui::Toggled, theme: &Theme) -> gpui::Div {
 
 /// A row's checkbox for picking it with others. Placed `SPACE_SM` before
 /// the text, so the box itself starts where the text does; the hit target
-/// reaches out round it. `backing` hides the letters under it, on hover
-/// `hover_backing`.
+/// reaches out round it. The sender's letters under it are clipped away.
 fn checkbox(
     thread_ix: usize,
     checked: bool,
     subject: &str,
-    backing: gpui::Hsla,
-    hover_backing: Option<gpui::Hsla>,
     theme: &Theme,
 ) -> gpui::Stateful<gpui::Div> {
     let state = if checked {
@@ -1939,18 +1951,7 @@ fn checkbox(
         .flex()
         .items_center()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(
-            div()
-                .h(line)
-                .pr(SPACE_XS)
-                .flex()
-                .items_center()
-                .bg(backing)
-                .when_some(hover_backing, |this, bg| {
-                    this.group_hover(ROW_GROUP, |s| s.bg(bg))
-                })
-                .child(check_box(state, theme)),
-        )
+        .child(check_box(state, theme))
 }
 
 /// Placeholder rows while a view's first page loads (STA-1).
