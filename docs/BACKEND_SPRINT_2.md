@@ -1,5 +1,7 @@
 # Backend sprint 2: Pigeon as a daily driver
 
+> This records sprint 2 as it ran. New sprints start from the `sprint` skill (`.opencode/skills/sprint/SKILL.md`); GUI testing now runs in Codex, driven by the main agent, with no tester subagent.
+
 The plan as agreed with the user on 2026-10-27 (the working copy with progress is the OpenChamber plan of the same name), plus the contracts every workstream follows (section 8).
 
 ## 1. Goal
@@ -124,12 +126,12 @@ Same constraints as sprint 1: one account, local-first, no server, light crates 
 
 ## 4. How it runs
 
-- Same workflow as sprint 1: Opus 5.5 implementers in worktrees (`bs2/<name>`, own `CARGO_TARGET_DIR`), the main agent merges, one GUI tester at a time on the detached snapshot, fresh implementers fix, re-test.
+- Same workflow as sprint 1: Opus 5.5 implementers in worktrees (`bs2/<name>`, own `CARGO_TARGET_DIR`), the main agent merges, the main agent runs the GUI checks in Codex on the detached snapshot (no tester subagent), fresh implementers fix, re-test.
 - **Contracts before dispatch** (as sprint 1 did): the main agent writes, in `docs/BACKEND_SPRINT_2.md`, each stream's owned files, its reserved store migration number, which shared files it may touch and how, and the shared interfaces with their signatures: W1 `ensure_main_window`, `notify` and response routing; W4a `category_of`, `in_category`, counts; W5 `reminders_for`, `next_joinable`. A stream that depends on another rebases onto it before merging.
 - **Merge order:** Phase 1: W1 first, then W4a, W2, W5. Phase 1.5: W7b on top of W1, W4a and W5. Phase 2: W4b before W3 (both touch the composer and sidebar edges), W6 any time.
 - **Hot spots:** `src/main.rs`, `src/app.rs`, `src/actions.rs`, `src/ui/settings.rs`, `src/backend/sync.rs`, `src/backend/mime.rs`, `docs/ROADMAP.md`. W7b lives mostly in a new `src/ui/menu_bar.rs`.
 - **Real-account safety (unchanged):** send only to `alex.rivera@example.com` with `[Pigeon test]` subjects; act only on `[Pigeon test]` threads; calendars only "Pigeon Test" and "Pigeon Test 2"; never sign out or permanently delete; auto-advance off during mail actions. New: label management only on labels the tester creates, named `Pigeon Test …`, deleted at the end; no Gmail settings writes.
-- **Testers** run in test-instance mode with their own `PIGEON_DATA_DIR`. They can't see or click macOS notifications, system prompts or global shortcuts: they check that notifications were *submitted* through `<data dir>/pigeon.log`, the Dock badge with `lsappinfo`, and the panel and quick join through the dev ⌘K commands. Delivery, clicks and the native panel behaviour are user checks. Test arrivals are created by the main agent with `messages.insert` (INBOX, UNREAD), as `pigeon_inbound.py` does, including one self-addressed.
+- **GUI checks** run against a test instance with its own `PIGEON_DATA_DIR`. The main agent drives them in Codex; it can't see or click macOS notifications, system prompts or global shortcuts, so it checks that notifications were *submitted* through `<data dir>/pigeon.log`, the Dock badge with `lsappinfo`, and the panel and quick join through the dev ⌘K commands. Delivery, clicks and the native panel behaviour are user checks. Test arrivals are created by the main agent with `messages.insert` (INBOX, UNREAD), as `pigeon_inbound.py` does, including one self-addressed.
 
 ## 5. Before and during the sprint (user)
 

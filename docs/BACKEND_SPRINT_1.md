@@ -1,5 +1,7 @@
 # Backend sprint 1: link Pigeon to Google
 
+> This records sprint 1 as it ran, with a separate tester agent and Cua Driver. New sprints start from the `sprint` skill (`.opencode/skills/sprint/SKILL.md`); GUI testing now runs in Codex, driven by the main agent, with no tester subagent.
+
 Plan for turning every 🟡 item in [`ROADMAP.md`](ROADMAP.md) into 🟢: working against the user's real Google account (Gmail, Calendar, People), local-first, with no server. Item IDs are the roadmap's. Google facts were checked against developers.google.com on 2026-10-26; where they change a decision, the change is listed under [Open questions](#open-questions).
 
 ## Contents

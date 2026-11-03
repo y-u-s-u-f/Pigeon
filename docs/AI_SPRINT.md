@@ -1,5 +1,7 @@
 # AI sprint: AI in Pigeon
 
+> This records the AI sprint as it ran. New sprints start from the `sprint` skill (`.opencode/skills/sprint/SKILL.md`).
+
 The plan as agreed with the user on 2026-10-28, after two review rounds, with the sprint's result in section 8 (the working copy with progress is the OpenChamber plan of the same name).
 
 ## Steps

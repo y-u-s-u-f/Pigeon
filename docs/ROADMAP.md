@@ -10,7 +10,20 @@ One place for where the app stands and what comes next: every feature, its statu
 | 🟡 Partially done | Built, but part of it isn't linked to the real backend yet or still waits on a check (a user check, or an account with a second address); its "Needs" line says what. |
 | 🟢 Fully linked | Works end to end with the real backend. |
 
-To update: change the status cell in the area's table, then the counts below.
+**Verified** is the date an item was last checked and how it was checked: `2026-11-03 · unit` (a test in `cargo test`), `2026-11-03 · GUI` (driven in the app) or `2026-11-03 · user` (the user confirmed it). `—` means nothing is recorded, so 🟢 alone is not proof that it works.
+
+To update: change the status cell in the area's table, set its Verified cell (date and how) once it is checked, then the counts below.
+
+### Entry format
+
+A new or touched entry gets, in this order:
+
+- `- **What:**` what it does, one or two sentences, no file names.
+- `- **Done when:**` the observable end state a check can prove.
+- `- **Needs:**` what is still missing (an API, a check, or a user action).
+- `- **Files:**` the paths, so `rg` finds the entry from the code.
+
+Existing entries are not rewritten. They keep their shape and gain these fields only when someone touches them.
 
 ## Progress
 
@@ -85,10 +98,10 @@ Principles are in [`AGENTS.md`](../AGENTS.md): blazing fast and light (no webvie
 
 The user's own plans, not driven by Google's APIs.
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| PLN-1a | Vim mode: composing and editing | ⚪ Not done | None |
-| PLN-1b | Vim mode: navigating the app | ⚪ Not done | None |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| PLN-1a | Vim mode: composing and editing | ⚪ Not done | None | — |
+| PLN-1b | Vim mode: navigating the app | ⚪ Not done | None | — |
 
 PLN-2 moved to [AI-10](#ai-10-clean-view-ai-reading-view).
 
@@ -108,17 +121,17 @@ PLN-2 moved to [AI-10](#ai-10-clean-view-ai-reading-view).
 
 ## 4. Accounts and sign-in (ACC)
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| ACC-1 | Account card | 🟢 Fully linked | Gmail `getProfile`; People `people.get` (`people/me`) |
-| ACC-2 | Identity of "me" | 🟡 Partially done | Gmail `settings.sendAs.list` |
-| ACC-3 | Add, sign in to and remove accounts | 🟡 Partially done | OAuth 2.0 for desktop apps (loopback + PKCE) |
-| ACC-4 | Account switcher and multiple accounts | ⚪ Not done | One OAuth grant per account |
-| ACC-5 | Per-account sync status | 🟢 Fully linked | Sync state from SYN |
-| ACC-6 | Scopes and consent | 🟢 Fully linked | OAuth scopes, incremental and granular consent |
-| ACC-7 | Token refresh, revoke and sign out | 🟡 Partially done | OAuth token and revoke endpoints |
-| ACC-8 | Google Cloud project and app verification | ⚪ Not done | OAuth consent screen, scope verification |
-| ACC-9 | Profile photo | 🟡 Partially done | People `people.get` (`people/me`, `personFields=photos`) |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| ACC-1 | Account card | 🟢 Fully linked | Gmail `getProfile`; People `people.get` (`people/me`) | — |
+| ACC-2 | Identity of "me" | 🟡 Partially done | Gmail `settings.sendAs.list` | — |
+| ACC-3 | Add, sign in to and remove accounts | 🟡 Partially done | OAuth 2.0 for desktop apps (loopback + PKCE) | — |
+| ACC-4 | Account switcher and multiple accounts | ⚪ Not done | One OAuth grant per account | — |
+| ACC-5 | Per-account sync status | 🟢 Fully linked | Sync state from SYN | — |
+| ACC-6 | Scopes and consent | 🟢 Fully linked | OAuth scopes, incremental and granular consent | — |
+| ACC-7 | Token refresh, revoke and sign out | 🟡 Partially done | OAuth token and revoke endpoints | — |
+| ACC-8 | Google Cloud project and app verification | ⚪ Not done | OAuth consent screen, scope verification | — |
+| ACC-9 | Profile photo | 🟡 Partially done | People `people.get` (`people/me`, `personFields=photos`) | — |
 
 #### ACC-1 Account card
 
@@ -178,22 +191,22 @@ PLN-2 moved to [AI-10](#ai-10-clean-view-ai-reading-view).
 
 ### 5.1 Folders and labels (FOL)
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| FOL-1 | System folders and go-to shortcuts | 🟢 Fully linked | System labels `INBOX`, `SENT`, `DRAFT`, `SPAM`, `TRASH`, `STARRED`, `UNREAD` |
-| FOL-2 | Sidebar counts | 🟢 Fully linked | `labels.get` (`threadsUnread`, `messagesUnread`) |
-| FOL-3 | Label list with colours | 🟢 Fully linked | `labels.list`, label `color` |
-| FOL-4 | Label views | 🟢 Fully linked | `threads.list` with `labelIds` |
-| FOL-5 | Apply and remove labels on a thread | 🟢 Fully linked | `threads.modify` |
-| FOL-6 | Create, rename, recolour and delete labels | 🟢 Fully linked | `labels.create`, `labels.patch`, `labels.update`, `labels.delete` |
-| FOL-7 | Report spam and not spam | 🟢 Fully linked | `threads.modify` (add or remove `SPAM`) |
-| FOL-8 | Empty Trash and permanent delete | ⚪ Not done | `threads.delete`, `messages.delete`, `messages.batchDelete` |
-| FOL-9 | Nested labels | 🟢 Fully linked | Label names with `/` |
-| FOL-10 | Label visibility | 🟢 Fully linked | Label `labelListVisibility`, `messageListVisibility` |
-| FOL-11 | Inbox categories | 🟢 Fully linked | Category labels (`CATEGORY_*`): the Inbox shows Primary; Social, Promotions, Updates, Forums under it |
-| FOL-12 | Important marker | 🟢 Fully linked | `IMPORTANT` label |
-| FOL-13 | Rearrange labels | 🟡 Partially done | None: Gmail has no label order |
-| FOL-14 | Move to Category | 🟡 Partially done | `threads.modify` (`CATEGORY_*`) |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| FOL-1 | System folders and go-to shortcuts | 🟢 Fully linked | System labels `INBOX`, `SENT`, `DRAFT`, `SPAM`, `TRASH`, `STARRED`, `UNREAD` | — |
+| FOL-2 | Sidebar counts | 🟢 Fully linked | `labels.get` (`threadsUnread`, `messagesUnread`) | — |
+| FOL-3 | Label list with colours | 🟢 Fully linked | `labels.list`, label `color` | — |
+| FOL-4 | Label views | 🟢 Fully linked | `threads.list` with `labelIds` | — |
+| FOL-5 | Apply and remove labels on a thread | 🟢 Fully linked | `threads.modify` | — |
+| FOL-6 | Create, rename, recolour and delete labels | 🟢 Fully linked | `labels.create`, `labels.patch`, `labels.update`, `labels.delete` | — |
+| FOL-7 | Report spam and not spam | 🟢 Fully linked | `threads.modify` (add or remove `SPAM`) | — |
+| FOL-8 | Empty Trash and permanent delete | ⚪ Not done | `threads.delete`, `messages.delete`, `messages.batchDelete` | — |
+| FOL-9 | Nested labels | 🟢 Fully linked | Label names with `/` | — |
+| FOL-10 | Label visibility | 🟢 Fully linked | Label `labelListVisibility`, `messageListVisibility` | — |
+| FOL-11 | Inbox categories | 🟢 Fully linked | Category labels (`CATEGORY_*`): the Inbox shows Primary; Social, Promotions, Updates, Forums under it | — |
+| FOL-12 | Important marker | 🟢 Fully linked | `IMPORTANT` label | — |
+| FOL-13 | Rearrange labels | 🟡 Partially done | None: Gmail has no label order | — |
+| FOL-14 | Move to Category | 🟡 Partially done | `threads.modify` (`CATEGORY_*`) | — |
 
 #### FOL-1 System folders and go-to shortcuts
 
@@ -281,19 +294,19 @@ PLN-2 moved to [AI-10](#ai-10-clean-view-ai-reading-view).
 
 ### 5.2 Thread list (LST)
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| LST-1 | Thread rows | 🟢 Fully linked | `threads.list` + `threads.get` (`format=metadata`) |
-| LST-2 | Unread styling | 🟢 Fully linked | `UNREAD` label |
-| LST-3 | Sort order | 🟢 Fully linked | `threads.list` order |
-| LST-4 | Archived section in the Inbox | 🟢 Fully linked | `threads.list` (`q=-in:inbox`) |
-| LST-5 | Keyboard list navigation | 🟢 Fully linked | `threads.get` on demand |
-| LST-6 | Unread count in the list header | 🟢 Fully linked | `labels.get` |
-| LST-7 | Pagination and lazy loading | 🟢 Fully linked | `pageToken`, `maxResults` |
-| LST-8 | Live refresh and new mail in the list | 🟢 Fully linked | `history.list` (SYN-2) |
-| LST-9 | Empty-result text | 🟢 Fully linked | None |
-| LST-10 | Drag conversations onto the sidebar | 🟡 Partially done | The moves of ACT-1a, ACT-3, FOL-5, FOL-14 |
-| LST-11 | Drawn context menu (row menu first) | 🟡 Partially done | As the actions it offers |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| LST-1 | Thread rows | 🟢 Fully linked | `threads.list` + `threads.get` (`format=metadata`) | — |
+| LST-2 | Unread styling | 🟢 Fully linked | `UNREAD` label | — |
+| LST-3 | Sort order | 🟢 Fully linked | `threads.list` order | — |
+| LST-4 | Archived section in the Inbox | 🟢 Fully linked | `threads.list` (`q=-in:inbox`) | — |
+| LST-5 | Keyboard list navigation | 🟢 Fully linked | `threads.get` on demand | — |
+| LST-6 | Unread count in the list header | 🟢 Fully linked | `labels.get` | — |
+| LST-7 | Pagination and lazy loading | 🟢 Fully linked | `pageToken`, `maxResults` | — |
+| LST-8 | Live refresh and new mail in the list | 🟢 Fully linked | `history.list` (SYN-2) | — |
+| LST-9 | Empty-result text | 🟢 Fully linked | None | — |
+| LST-10 | Drag conversations onto the sidebar | 🟡 Partially done | The moves of ACT-1a, ACT-3, FOL-5, FOL-14 | — |
+| LST-11 | Drawn context menu (row menu first) | 🟡 Partially done | As the actions it offers | — |
 
 #### LST-1 Thread rows
 
@@ -357,18 +370,18 @@ PLN-2 moved to [AI-10](#ai-10-clean-view-ai-reading-view).
 
 ### 5.3 Reading pane (RDR)
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| RDR-1 | Opening a thread marks it read | 🟢 Fully linked | `threads.modify` (remove `UNREAD`) |
-| RDR-2 | Conversation view | 🟢 Fully linked | `threads.get` (`format=full`) |
-| RDR-3 | Expand and collapse older messages | 🟢 Fully linked | Per-message `snippet` |
-| RDR-4 | Message header | 🟢 Fully linked | `messages.get` headers |
-| RDR-5 | Message body rendering | 🟢 Fully linked | `messages.get` `payload` parts |
-| RDR-6 | Fetch a message body on demand | 🟢 Fully linked | `messages.get` (`format=full`) |
-| RDR-7 | Message navigation and reader focus | 🟢 Fully linked | None |
-| RDR-8 | Show original (raw message) | 🟢 Fully linked | `messages.get` (`format=raw`) |
-| RDR-9 | Fold quoted history and long threads | 🟡 Partially done | None |
-| RDR-10 | Context menus in the reader | 🟡 Partially done | None |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| RDR-1 | Opening a thread marks it read | 🟢 Fully linked | `threads.modify` (remove `UNREAD`) | — |
+| RDR-2 | Conversation view | 🟢 Fully linked | `threads.get` (`format=full`) | — |
+| RDR-3 | Expand and collapse older messages | 🟢 Fully linked | Per-message `snippet` | — |
+| RDR-4 | Message header | 🟢 Fully linked | `messages.get` headers | — |
+| RDR-5 | Message body rendering | 🟢 Fully linked | `messages.get` `payload` parts | — |
+| RDR-6 | Fetch a message body on demand | 🟢 Fully linked | `messages.get` (`format=full`) | — |
+| RDR-7 | Message navigation and reader focus | 🟢 Fully linked | None | — |
+| RDR-8 | Show original (raw message) | 🟢 Fully linked | `messages.get` (`format=raw`) | — |
+| RDR-9 | Fold quoted history and long threads | 🟡 Partially done | None | — |
+| RDR-10 | Context menus in the reader | 🟡 Partially done | None | — |
 
 #### RDR-1 Opening a thread marks it read
 
@@ -429,19 +442,19 @@ PLN-2 moved to [AI-10](#ai-10-clean-view-ai-reading-view).
 
 Each action applies to the checked threads if any (ACT-6), otherwise the selected one (`targets()` in `src/app/mail.rs`). Hovering a row shows Archive, Delete, Mark read/unread and Star; right-click opens the app's own menu (LST-11) with those plus Reply, Forward, Move to, Label. Right-click doesn't select, open or mark read: the menu acts on the right-clicked row (outlined while the menu is open; `context_target` in `src/app.rs`, preferred by `targets()`), or on all picked threads when the row is one of them. Reply, Reply All and Forward open that conversation first. Toolbar, shortcut and palette all dispatch the same action (`src/actions.rs`).
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| ACT-1 | Archive and move to Inbox | 🟢 Fully linked | `threads.modify` (`INBOX`); `threads.untrash` |
-| ACT-1a | Move to a folder | 🟢 Fully linked | `threads.modify`, `threads.trash` |
-| ACT-2 | Delete | 🟢 Fully linked | `threads.trash` |
-| ACT-3 | Star and unstar | 🟢 Fully linked | `threads.modify` (`STARRED`) |
-| ACT-4 | Mark as unread | 🟢 Fully linked | `threads.modify` / `messages.modify` (`UNREAD`) |
-| ACT-5 | Mark as read | 🟢 Fully linked | `threads.modify` (`UNREAD`) |
-| ACT-6 | Bulk select and bulk actions | 🟢 Fully linked | `messages.batchModify`, HTTP batch |
-| ACT-7 | Open in Gmail | 🟡 Partially done | None: a web link with `authuser` |
-| ACT-8 | Share… | ⚪ Not done | None (`NSSharingServicePicker`) |
-| ACT-9 | Mark all as read in a view | 🟡 Partially done | `threads.list` (`labelIds` + `UNREAD`), `threads.batchModify` |
-| ACT-11 | Snooze conversations | 🟡 Partially done | `threads.modify` (a hidden `Pigeon/Snoozed` label, `INBOX`, `UNREAD`); `labels.create` |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| ACT-1 | Archive and move to Inbox | 🟢 Fully linked | `threads.modify` (`INBOX`); `threads.untrash` | — |
+| ACT-1a | Move to a folder | 🟢 Fully linked | `threads.modify`, `threads.trash` | — |
+| ACT-2 | Delete | 🟢 Fully linked | `threads.trash` | — |
+| ACT-3 | Star and unstar | 🟢 Fully linked | `threads.modify` (`STARRED`) | — |
+| ACT-4 | Mark as unread | 🟢 Fully linked | `threads.modify` / `messages.modify` (`UNREAD`) | — |
+| ACT-5 | Mark as read | 🟢 Fully linked | `threads.modify` (`UNREAD`) | — |
+| ACT-6 | Bulk select and bulk actions | 🟢 Fully linked | `messages.batchModify`, HTTP batch | — |
+| ACT-7 | Open in Gmail | 🟡 Partially done | None: a web link with `authuser` | — |
+| ACT-8 | Share… | ⚪ Not done | None (`NSSharingServicePicker`) | — |
+| ACT-9 | Mark all as read in a view | 🟡 Partially done | `threads.list` (`labelIds` + `UNREAD`), `threads.batchModify` | — |
+| ACT-11 | Snooze conversations | 🟡 Partially done | `threads.modify` (a hidden `Pigeon/Snoozed` label, `INBOX`, `UNREAD`); `labels.create` | — |
 
 #### ACT-1 Archive and move to Inbox
 
@@ -505,25 +518,25 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 ### 5.5 Compose and sending (CMP)
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| CMP-1 | New message | 🟢 Fully linked | `drafts.create` |
-| CMP-2 | Reply | 🟢 Fully linked | `messages.send` with `threadId` |
-| CMP-3 | Reply all | 🟢 Fully linked | As CMP-2 |
-| CMP-4 | Forward | 🟢 Fully linked | `messages.send` (no `threadId`) |
-| CMP-5 | Recipient fields | 🟢 Fully linked | Server validation on send |
-| CMP-6 | Show Cc and Bcc | 🟢 Fully linked | `raw` MIME; Gmail delivers Bcc |
-| CMP-7 | Subject and formatted body | 🟢 Fully linked | `raw` MIME (`multipart/alternative`) |
-| CMP-8 | Send | 🟢 Fully linked | `messages.send`, `drafts.send` |
-| CMP-9 | Send validation | 🟢 Fully linked | Send errors |
-| CMP-10 | Forward quote block | 🟢 Fully linked | `raw` MIME |
-| CMP-11 | Reply appends to the thread | 🟢 Fully linked | `threadId`, `In-Reply-To`, `References` |
-| CMP-12 | Send failure feedback | 🟢 Fully linked | Send errors |
-| CMP-13 | Sent copy on the server | 🟢 Fully linked | `SENT` label (automatic) |
-| CMP-14 | Replies quote the answered message | 🟡 Partially done | `raw` MIME (HTML part) |
-| CMP-15 | Reply to any message in a conversation | 🟡 Partially done | `In-Reply-To`, `References` |
-| CMP-16 | Open a draft in its own window | 🟡 Partially done | None |
-| CMP-17 | Send later (scheduled send) | 🟡 Partially done | `drafts.update`, `drafts.send` at the chosen time (app-side) |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| CMP-1 | New message | 🟢 Fully linked | `drafts.create` | — |
+| CMP-2 | Reply | 🟢 Fully linked | `messages.send` with `threadId` | — |
+| CMP-3 | Reply all | 🟢 Fully linked | As CMP-2 | — |
+| CMP-4 | Forward | 🟢 Fully linked | `messages.send` (no `threadId`) | — |
+| CMP-5 | Recipient fields | 🟢 Fully linked | Server validation on send | — |
+| CMP-6 | Show Cc and Bcc | 🟢 Fully linked | `raw` MIME; Gmail delivers Bcc | — |
+| CMP-7 | Subject and formatted body | 🟢 Fully linked | `raw` MIME (`multipart/alternative`) | — |
+| CMP-8 | Send | 🟢 Fully linked | `messages.send`, `drafts.send` | — |
+| CMP-9 | Send validation | 🟢 Fully linked | Send errors | — |
+| CMP-10 | Forward quote block | 🟢 Fully linked | `raw` MIME | — |
+| CMP-11 | Reply appends to the thread | 🟢 Fully linked | `threadId`, `In-Reply-To`, `References` | — |
+| CMP-12 | Send failure feedback | 🟢 Fully linked | Send errors | — |
+| CMP-13 | Sent copy on the server | 🟢 Fully linked | `SENT` label (automatic) | — |
+| CMP-14 | Replies quote the answered message | 🟡 Partially done | `raw` MIME (HTML part) | — |
+| CMP-15 | Reply to any message in a conversation | 🟡 Partially done | `In-Reply-To`, `References` | — |
+| CMP-16 | Open a draft in its own window | 🟡 Partially done | None | — |
+| CMP-17 | Send later (scheduled send) | 🟡 Partially done | `drafts.update`, `drafts.send` at the chosen time (app-side) | — |
 
 #### CMP-1 New message
 
@@ -634,14 +647,14 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 ### 5.6 Drafts (DRF)
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| DRF-1 | Save on close or navigation | 🟢 Fully linked | `drafts.create`, `drafts.update` |
-| DRF-2 | Drafts list | 🟢 Fully linked | `drafts.list` |
-| DRF-3 | Open and edit a draft | 🟢 Fully linked | `drafts.get` |
-| DRF-4 | Discard a draft | 🟢 Fully linked | `drafts.delete` |
-| DRF-5 | Save while typing | 🟢 Fully linked | `drafts.update` (debounced) |
-| DRF-6 | Sync drafts with the server | 🟢 Fully linked | `drafts.list`, `history.list` |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| DRF-1 | Save on close or navigation | 🟢 Fully linked | `drafts.create`, `drafts.update` | — |
+| DRF-2 | Drafts list | 🟢 Fully linked | `drafts.list` | — |
+| DRF-3 | Open and edit a draft | 🟢 Fully linked | `drafts.get` | — |
+| DRF-4 | Discard a draft | 🟢 Fully linked | `drafts.delete` | — |
+| DRF-5 | Save while typing | 🟢 Fully linked | `drafts.update` (debounced) | — |
+| DRF-6 | Sync drafts with the server | 🟢 Fully linked | `drafts.list`, `history.list` | — |
 
 #### DRF-1 Save on close or navigation
 
@@ -680,12 +693,12 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 ### 5.7 Undo (UND)
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| UND-1 | Undo send | 🟢 Fully linked | Hold `messages.send` for the window |
-| UND-2 | Undo discard | 🟢 Fully linked | Delay `drafts.delete` |
-| UND-3 | Undo for other actions | 🟢 Fully linked | Delay or invert `threads.modify` |
-| UND-4 | Undo history, redo and the Edit menu | 🟡 Partially done | Inverse ops (existing) |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| UND-1 | Undo send | 🟢 Fully linked | Hold `messages.send` for the window | — |
+| UND-2 | Undo discard | 🟢 Fully linked | Delay `drafts.delete` | — |
+| UND-3 | Undo for other actions | 🟢 Fully linked | Delay or invert `threads.modify` | — |
+| UND-4 | Undo history, redo and the Edit menu | 🟡 Partially done | Inverse ops (existing) | — |
 
 #### UND-1 Undo send
 
@@ -713,17 +726,17 @@ Each action applies to the checked threads if any (ACT-6), otherwise the selecte
 
 Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` with lowercased subject, sender and recipient names and addresses (to, cc, bcc), snippets, plain-text bodies and attachment names. Matching is `Query::matches` in `src/search.rs`. Signed in, Gmail's search runs alongside it (W9, SRC-7) and its results join the list.
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| SRC-1 | Search bar and keys | 🟢 Fully linked | `threads.list` with `q` |
-| SRC-2 | Default search scope | 🟢 Fully linked | `labelIds`, `q` |
-| SRC-3 | Search operators | 🟢 Fully linked | Gmail `q` operators |
-| SRC-4 | Scope operator `in:` | 🟢 Fully linked | `in:`, `includeSpamTrash` |
-| SRC-5 | Text matching | 🟢 Fully linked | Gmail full-text index |
-| SRC-6 | Result count | 🟢 Fully linked | `resultSizeEstimate` |
-| SRC-7 | Full-mailbox search | 🟢 Fully linked | `threads.list` with `q` |
-| SRC-8 | Live search while typing | 🟢 Fully linked | Debounced `threads.list` |
-| SRC-9 | More Gmail operators | 🟢 Fully linked | Gmail `q` operators |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| SRC-1 | Search bar and keys | 🟢 Fully linked | `threads.list` with `q` | — |
+| SRC-2 | Default search scope | 🟢 Fully linked | `labelIds`, `q` | — |
+| SRC-3 | Search operators | 🟢 Fully linked | Gmail `q` operators | — |
+| SRC-4 | Scope operator `in:` | 🟢 Fully linked | `in:`, `includeSpamTrash` | — |
+| SRC-5 | Text matching | 🟢 Fully linked | Gmail full-text index | — |
+| SRC-6 | Result count | 🟢 Fully linked | `resultSizeEstimate` | — |
+| SRC-7 | Full-mailbox search | 🟢 Fully linked | `threads.list` with `q` | — |
+| SRC-8 | Live search while typing | 🟢 Fully linked | Debounced `threads.list` | — |
+| SRC-9 | More Gmail operators | 🟢 Fully linked | Gmail `q` operators | — |
 
 #### SRC-1 Search bar and keys
 
@@ -778,16 +791,16 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 ### 5.9 Contacts (CON)
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| CON-1 | Recipient suggestions | 🟢 Fully linked | `people.searchContacts`, `otherContacts.search`, `people.searchDirectoryPeople` |
-| CON-2 | Typed name and address resolution | 🟢 Fully linked | As CON-1 |
-| CON-3 | Contact management | ⚪ Not done | `people.createContact`, `updateContact`, `deleteContact`, batch variants |
-| CON-4 | Contact photos | ⚪ Not done | `photos` person field; `updateContactPhoto`, `deleteContactPhoto` |
-| CON-5 | Contact card | 🟢 Fully linked | `people.get`, `people.getBatchGet` |
-| CON-6 | Contact groups | ⚪ Not done | `contactGroups.*`, `contactGroups.members.modify` |
-| CON-7 | Workspace directory | ⚪ Not done | `people.listDirectoryPeople`, `searchDirectoryPeople` |
-| CON-8 | Save a frequent address as a contact | ⚪ Not done | `otherContacts.copyOtherContactToMyContactsGroup` |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| CON-1 | Recipient suggestions | 🟢 Fully linked | `people.searchContacts`, `otherContacts.search`, `people.searchDirectoryPeople` | — |
+| CON-2 | Typed name and address resolution | 🟢 Fully linked | As CON-1 | — |
+| CON-3 | Contact management | ⚪ Not done | `people.createContact`, `updateContact`, `deleteContact`, batch variants | — |
+| CON-4 | Contact photos | ⚪ Not done | `photos` person field; `updateContactPhoto`, `deleteContactPhoto` | — |
+| CON-5 | Contact card | 🟢 Fully linked | `people.get`, `people.getBatchGet` | — |
+| CON-6 | Contact groups | ⚪ Not done | `contactGroups.*`, `contactGroups.members.modify` | — |
+| CON-7 | Workspace directory | ⚪ Not done | `people.listDirectoryPeople`, `searchDirectoryPeople` | — |
+| CON-8 | Save a frequent address as a contact | ⚪ Not done | `otherContacts.copyOtherContactToMyContactsGroup` | — |
 
 #### CON-1 Recipient suggestions
 
@@ -830,16 +843,16 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 ### 5.10 Images and attachments (ATT)
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| ATT-1 | Remote images | 🟢 Fully linked | None (HTTP fetch or proxy) |
-| ATT-2 | Inline (`cid:`) images | 🟢 Fully linked | `payload.parts` `Content-ID`, `messages.attachments.get` |
-| ATT-3 | Attachment list in messages | 🟢 Fully linked | `payload.parts` (`filename`, `body.attachmentId`) |
-| ATT-4 | Open and download an attachment | 🟢 Fully linked | `messages.attachments.get` |
-| ATT-5 | Attachment icon in the list | 🟢 Fully linked | `has:attachment`, `payload.parts` |
-| ATT-6 | Attach files to a new message | 🟡 Partially done | `messages.send` / `drafts.*` upload (`multipart` or `resumable`) |
-| ATT-7 | Forward keeps attachments | 🟢 Fully linked | `messages.attachments.get` + re-attach |
-| ATT-8 | Quick Look, Save All and drag to Finder | 🟡 Partially done | `messages.get` (`format=raw`), as ATT-4 |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| ATT-1 | Remote images | 🟢 Fully linked | None (HTTP fetch or proxy) | — |
+| ATT-2 | Inline (`cid:`) images | 🟢 Fully linked | `payload.parts` `Content-ID`, `messages.attachments.get` | — |
+| ATT-3 | Attachment list in messages | 🟢 Fully linked | `payload.parts` (`filename`, `body.attachmentId`) | — |
+| ATT-4 | Open and download an attachment | 🟢 Fully linked | `messages.attachments.get` | — |
+| ATT-5 | Attachment icon in the list | 🟢 Fully linked | `has:attachment`, `payload.parts` | — |
+| ATT-6 | Attach files to a new message | 🟡 Partially done | `messages.send` / `drafts.*` upload (`multipart` or `resumable`) | — |
+| ATT-7 | Forward keeps attachments | 🟢 Fully linked | `messages.attachments.get` + re-attach | — |
+| ATT-8 | Quick Look, Save All and drag to Finder | 🟡 Partially done | `messages.get` (`format=raw`), as ATT-4 | — |
 
 #### ATT-1 Remote images
 
@@ -890,12 +903,12 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 ### 5.11 Links (LNK)
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| LNK-1 | Open a link in the browser | 🟢 Fully linked | None |
-| LNK-2 | Link safety checks | ⚪ Not done | None (optional Safe Browsing API) |
-| LNK-3 | `mailto:` links | 🟡 Partially done | None |
-| LNK-4 | `pigeon://` links for automation | 🟡 Partially done | None |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| LNK-1 | Open a link in the browser | 🟢 Fully linked | None | — |
+| LNK-2 | Link safety checks | ⚪ Not done | None (optional Safe Browsing API) | — |
+| LNK-3 | `mailto:` links | 🟡 Partially done | None | — |
+| LNK-4 | `pigeon://` links for automation | 🟡 Partially done | None | — |
 
 #### LNK-1 Open a link in the browser
 
@@ -920,18 +933,18 @@ Search is in memory. `Thread::reindex()` (`src/data.rs`) builds a `SearchIndex` 
 
 Gmail's `users.settings` resources. All need `gmail.settings.basic` unless noted.
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| MST-1 | Send-as aliases and From picker | 🟡 Partially done | `settings.sendAs.list`, `get`, `patch`, `update` |
-| MST-2 | Signatures | 🟢 Fully linked | `sendAs.signature` via `settings.sendAs.patch` |
-| MST-3 | Vacation responder | ⚪ Not done | `settings.getVacation`, `updateVacation` |
-| MST-4 | Filters | ⚪ Not done | `settings.filters.list`, `get`, `create`, `delete` |
-| MST-5 | Forwarding and auto-forwarding | ⚪ Not done | `settings.forwardingAddresses.list`, `get`; `settings.getAutoForwarding` |
-| MST-6 | IMAP and POP settings | ⚪ Not done | `settings.getImap`, `updateImap`, `getPop`, `updatePop` |
-| MST-7 | Gmail display language | ⚪ Not done | `settings.getLanguage`, `updateLanguage` |
-| MST-8 | Delegates | ⚪ Not done | `settings.delegates.*` (service accounts only) |
-| MST-9 | S/MIME certificates | ⚪ Not done | `settings.sendAs.smimeInfo.*` |
-| MST-10 | Client-side encryption | ⚪ Not done | `settings.cse.identities.*`, `settings.cse.keypairs.*` |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| MST-1 | Send-as aliases and From picker | 🟡 Partially done | `settings.sendAs.list`, `get`, `patch`, `update` | — |
+| MST-2 | Signatures | 🟢 Fully linked | `sendAs.signature` via `settings.sendAs.patch` | — |
+| MST-3 | Vacation responder | ⚪ Not done | `settings.getVacation`, `updateVacation` | — |
+| MST-4 | Filters | ⚪ Not done | `settings.filters.list`, `get`, `create`, `delete` | — |
+| MST-5 | Forwarding and auto-forwarding | ⚪ Not done | `settings.forwardingAddresses.list`, `get`; `settings.getAutoForwarding` | — |
+| MST-6 | IMAP and POP settings | ⚪ Not done | `settings.getImap`, `updateImap`, `getPop`, `updatePop` | — |
+| MST-7 | Gmail display language | ⚪ Not done | `settings.getLanguage`, `updateLanguage` | — |
+| MST-8 | Delegates | ⚪ Not done | `settings.delegates.*` (service accounts only) | — |
+| MST-9 | S/MIME certificates | ⚪ Not done | `settings.sendAs.smimeInfo.*` | — |
+| MST-10 | Client-side encryption | ⚪ Not done | `settings.cse.identities.*`, `settings.cse.keypairs.*` | — |
 
 #### MST-1 Send-as aliases and From picker
 
@@ -985,63 +998,63 @@ Gmail's `users.settings` resources. All need `gmail.settings.basic` unless noted
 
 The calendar shares the window with mail. State lives in `CalendarView` (`src/ui/calendar/mod.rs`), owned by `PigeonApp`; model and pure logic in `src/calendar/` (`mod.rs`, `time.rs`, `recurrence.rs`, `layout.rs`).
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| **Views and navigation** | | | |
-| CAL-1 | Switch between Mail and Calendar | 🟢 Fully linked | None (calendar scopes at sign-in) |
-| CAL-2 | Calendar list, colours and visibility | 🟢 Fully linked | `calendarList.list`, `calendarList.patch` (`selected`), `colors.get` |
-| CAL-3 | Load events for the visible range | 🟢 Fully linked | `events.list` (`timeMin`, `timeMax`, `syncToken`) |
-| CAL-4 | Day, week and month views and navigation | 🟢 Fully linked | As CAL-3 |
-| CAL-4a | Go to a date | 🟢 Fully linked | None |
-| CAL-18 | Today and the now-line | 🟢 Fully linked | None |
-| CAL-19 | Event search in the palette | 🟢 Fully linked | `events.list` with `q` |
-| CAL-23 | Persisted calendar UI state | 🟢 Fully linked | Local; `calendarList.selected` |
-| **Events** | | | |
-| CAL-7 | Edit an event in the panel | 🟢 Fully linked | `events.patch` / `events.update` with ETag |
-| CAL-8 | Date, time and all-day editing | 🟢 Fully linked | `start`/`end` (`date` or `dateTime` + `timeZone`) |
-| CAL-9 | Create an event | 🟢 Fully linked | `events.insert` |
-| CAL-10 | Delete an event and undo | 🟢 Fully linked | `events.delete` (`sendUpdates`) |
-| CAL-11 | IDs for new events | 🟢 Fully linked | Event `id`, `iCalUID` |
-| CAL-12 | Time zones | 🟡 Partially done | `timeZone` fields; `settings` `timezone` |
-| CAL-15 | Reminders | 🟢 Fully linked | `reminders` (`useDefault`, `overrides`) |
-| CAL-16 | Busy and free | 🟢 Fully linked | `transparency` |
-| CAL-17 | Video links | 🟢 Fully linked | `conferenceData.entryPoints`, `hangoutLink` |
-| CAL-21 | Drag to create, move and resize | 🟢 Fully linked | `events.insert`, `events.patch` |
-| CAL-22 | Organizer and read-only permissions | 🟢 Fully linked | `accessRole`, `guestsCanModify`, `locked`, `organizer.self` |
-| CAL-28 | Event colours and labels | ⚪ Not done | `colorId` + `colors.get`; `eventLabelId` + `calendars` `labelProperties` |
-| CAL-30 | Event attachments | ⚪ Not done | `attachments` (`supportsAttachments=true`) |
-| CAL-31 | Event visibility and guest permissions | ⚪ Not done | `visibility`, `guestsCanModify`, `guestsCanInviteOthers`, `guestsCanSeeOtherGuests` |
-| CAL-33 | Several reminders and default reminders | 🟢 Fully linked | `reminders.overrides` (`popup`, `email`), `calendarList.defaultReminders` |
-| CAL-34 | Create Google Meet links | 🟢 Fully linked | `conferenceData.createRequest` (`conferenceDataVersion=1`) |
-| CAL-39 | Quick add from text | 🟢 Fully linked | `events.quickAdd` |
-| CAL-40 | Move an event to another calendar | 🟢 Fully linked | `events.move` |
-| CAL-42 | Open the location in Maps | 🟢 Fully linked | `location` |
-| CAL-43 | Event context menu | 🟢 Fully linked | As the actions it offers |
-| CAL-44 | Nudge an event with the keyboard | 🟡 Partially done | `events.patch` (as CAL-21) |
-| CAL-45 | Duplicate an event | 🟡 Partially done | `events.insert` (as CAL-9) |
-| CAL-46 | Email guests | 🟡 Partially done | None (sends through Gmail, CMP-8) |
-| **Recurrence** | | | |
-| CAL-5 | Recurring events | 🟢 Fully linked | `recurrence` (RRULE, EXDATE), `events.instances`, `singleEvents` |
-| CAL-6 | This event or all events | 🟢 Fully linked | Instance `events.patch`; series split with `UNTIL` |
-| CAL-29 | Set and edit repeat rules | 🟢 Fully linked | `recurrence` |
-| **Invites and RSVP** | | | |
-| CAL-13 | Guests and invitations | 🟢 Fully linked | `attendees`, `sendUpdates` |
-| CAL-14 | My RSVP | 🟡 Partially done | `attendees[].responseStatus` (`self`) |
-| CAL-20 | Invite emails linked to events | ⚪ Not done | `events.list` with `iCalUID`; iMIP parts in Gmail |
-| CAL-32 | Optional guests, RSVP notes, extra guests and rooms | ⚪ Not done | `attendees[].optional`, `comment`, `additionalGuests`, `resource` |
-| **Event types** | | | |
-| CAL-35 | Focus time | ⚪ Not done | `eventType=focusTime`, `focusTimeProperties` |
-| CAL-36 | Out of office | ⚪ Not done | `eventType=outOfOffice`, `outOfOfficeProperties` |
-| CAL-37 | Working location | ⚪ Not done | `eventType=workingLocation`, `workingLocationProperties` |
-| CAL-38 | Birthdays and special dates | ⚪ Not done | `eventType=birthday`, `birthdayProperties` |
-| **Calendars and sharing** | | | |
-| CAL-24 | Create, rename and delete calendars | ⚪ Not done | `calendars.insert`, `patch`, `update`, `delete` |
-| CAL-25 | Subscribe to other calendars | ⚪ Not done | `calendarList.insert`, `calendarList.delete` |
-| CAL-26 | Calendar sharing | ⚪ Not done | `acl.list`, `insert`, `patch`, `update`, `delete` |
-| **Free/busy** | | | |
-| CAL-27 | Free/busy and finding a time | ⚪ Not done | `freebusy.query` |
-| **Settings** | | | |
-| CAL-41 | Calendar settings from Google | 🟢 Fully linked | `settings.list`, `settings.get` |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| **Views and navigation** | | | | |
+| CAL-1 | Switch between Mail and Calendar | 🟢 Fully linked | None (calendar scopes at sign-in) | — |
+| CAL-2 | Calendar list, colours and visibility | 🟢 Fully linked | `calendarList.list`, `calendarList.patch` (`selected`), `colors.get` | — |
+| CAL-3 | Load events for the visible range | 🟢 Fully linked | `events.list` (`timeMin`, `timeMax`, `syncToken`) | — |
+| CAL-4 | Day, week and month views and navigation | 🟢 Fully linked | As CAL-3 | — |
+| CAL-4a | Go to a date | 🟢 Fully linked | None | — |
+| CAL-18 | Today and the now-line | 🟢 Fully linked | None | — |
+| CAL-19 | Event search in the palette | 🟢 Fully linked | `events.list` with `q` | — |
+| CAL-23 | Persisted calendar UI state | 🟢 Fully linked | Local; `calendarList.selected` | — |
+| **Events** | | | | |
+| CAL-7 | Edit an event in the panel | 🟢 Fully linked | `events.patch` / `events.update` with ETag | — |
+| CAL-8 | Date, time and all-day editing | 🟢 Fully linked | `start`/`end` (`date` or `dateTime` + `timeZone`) | — |
+| CAL-9 | Create an event | 🟢 Fully linked | `events.insert` | — |
+| CAL-10 | Delete an event and undo | 🟢 Fully linked | `events.delete` (`sendUpdates`) | — |
+| CAL-11 | IDs for new events | 🟢 Fully linked | Event `id`, `iCalUID` | — |
+| CAL-12 | Time zones | 🟡 Partially done | `timeZone` fields; `settings` `timezone` | — |
+| CAL-15 | Reminders | 🟢 Fully linked | `reminders` (`useDefault`, `overrides`) | — |
+| CAL-16 | Busy and free | 🟢 Fully linked | `transparency` | — |
+| CAL-17 | Video links | 🟢 Fully linked | `conferenceData.entryPoints`, `hangoutLink` | — |
+| CAL-21 | Drag to create, move and resize | 🟢 Fully linked | `events.insert`, `events.patch` | — |
+| CAL-22 | Organizer and read-only permissions | 🟢 Fully linked | `accessRole`, `guestsCanModify`, `locked`, `organizer.self` | — |
+| CAL-28 | Event colours and labels | ⚪ Not done | `colorId` + `colors.get`; `eventLabelId` + `calendars` `labelProperties` | — |
+| CAL-30 | Event attachments | ⚪ Not done | `attachments` (`supportsAttachments=true`) | — |
+| CAL-31 | Event visibility and guest permissions | ⚪ Not done | `visibility`, `guestsCanModify`, `guestsCanInviteOthers`, `guestsCanSeeOtherGuests` | — |
+| CAL-33 | Several reminders and default reminders | 🟢 Fully linked | `reminders.overrides` (`popup`, `email`), `calendarList.defaultReminders` | — |
+| CAL-34 | Create Google Meet links | 🟢 Fully linked | `conferenceData.createRequest` (`conferenceDataVersion=1`) | — |
+| CAL-39 | Quick add from text | 🟢 Fully linked | `events.quickAdd` | — |
+| CAL-40 | Move an event to another calendar | 🟢 Fully linked | `events.move` | — |
+| CAL-42 | Open the location in Maps | 🟢 Fully linked | `location` | — |
+| CAL-43 | Event context menu | 🟢 Fully linked | As the actions it offers | — |
+| CAL-44 | Nudge an event with the keyboard | 🟡 Partially done | `events.patch` (as CAL-21) | — |
+| CAL-45 | Duplicate an event | 🟡 Partially done | `events.insert` (as CAL-9) | — |
+| CAL-46 | Email guests | 🟡 Partially done | None (sends through Gmail, CMP-8) | — |
+| **Recurrence** | | | | |
+| CAL-5 | Recurring events | 🟢 Fully linked | `recurrence` (RRULE, EXDATE), `events.instances`, `singleEvents` | — |
+| CAL-6 | This event or all events | 🟢 Fully linked | Instance `events.patch`; series split with `UNTIL` | — |
+| CAL-29 | Set and edit repeat rules | 🟢 Fully linked | `recurrence` | — |
+| **Invites and RSVP** | | | | |
+| CAL-13 | Guests and invitations | 🟢 Fully linked | `attendees`, `sendUpdates` | — |
+| CAL-14 | My RSVP | 🟡 Partially done | `attendees[].responseStatus` (`self`) | — |
+| CAL-20 | Invite emails linked to events | ⚪ Not done | `events.list` with `iCalUID`; iMIP parts in Gmail | — |
+| CAL-32 | Optional guests, RSVP notes, extra guests and rooms | ⚪ Not done | `attendees[].optional`, `comment`, `additionalGuests`, `resource` | — |
+| **Event types** | | | | |
+| CAL-35 | Focus time | ⚪ Not done | `eventType=focusTime`, `focusTimeProperties` | — |
+| CAL-36 | Out of office | ⚪ Not done | `eventType=outOfOffice`, `outOfOfficeProperties` | — |
+| CAL-37 | Working location | ⚪ Not done | `eventType=workingLocation`, `workingLocationProperties` | — |
+| CAL-38 | Birthdays and special dates | ⚪ Not done | `eventType=birthday`, `birthdayProperties` | — |
+| **Calendars and sharing** | | | | |
+| CAL-24 | Create, rename and delete calendars | ⚪ Not done | `calendars.insert`, `patch`, `update`, `delete` | — |
+| CAL-25 | Subscribe to other calendars | ⚪ Not done | `calendarList.insert`, `calendarList.delete` | — |
+| CAL-26 | Calendar sharing | ⚪ Not done | `acl.list`, `insert`, `patch`, `update`, `delete` | — |
+| **Free/busy** | | | | |
+| CAL-27 | Free/busy and finding a time | ⚪ Not done | `freebusy.query` | — |
+| **Settings** | | | | |
+| CAL-41 | Calendar settings from Google | 🟢 Fully linked | `settings.list`, `settings.get` | — |
 
 ### Views and navigation
 
@@ -1352,16 +1365,16 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 ### 7.1 Sync and push (SYN)
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| SYN-1 | Gmail full sync | 🟢 Fully linked | `threads.list` / `messages.list` + batched `get`; store `historyId` |
-| SYN-2 | Gmail partial sync | 🟢 Fully linked | `history.list` (`startHistoryId`, `historyTypes`) |
-| SYN-3 | Gmail push | ⚪ Not done | `watch`, `stop`, Cloud Pub/Sub |
-| SYN-4 | Calendar incremental sync | 🟢 Fully linked | `events.list` / `calendarList.list` with `syncToken` |
-| SYN-5 | Calendar push | ⚪ Not done | `events.watch`, `calendarList.watch`, `acl.watch`, `settings.watch`, `channels.stop` |
-| SYN-6 | Contacts sync | 🟢 Fully linked | `people.connections.list`, `otherContacts.list` with `syncToken` |
-| SYN-7 | Batching, quotas and backoff | 🟢 Fully linked | HTTP batch; `429` / `403 rateLimitExceeded` |
-| SYN-8 | Sync now (Refresh) | 🟢 Fully linked | SYN-2 and SYN-4's calls, at once |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| SYN-1 | Gmail full sync | 🟢 Fully linked | `threads.list` / `messages.list` + batched `get`; store `historyId` | — |
+| SYN-2 | Gmail partial sync | 🟢 Fully linked | `history.list` (`startHistoryId`, `historyTypes`) | — |
+| SYN-3 | Gmail push | ⚪ Not done | `watch`, `stop`, Cloud Pub/Sub | — |
+| SYN-4 | Calendar incremental sync | 🟢 Fully linked | `events.list` / `calendarList.list` with `syncToken` | — |
+| SYN-5 | Calendar push | ⚪ Not done | `events.watch`, `calendarList.watch`, `acl.watch`, `settings.watch`, `channels.stop` | — |
+| SYN-6 | Contacts sync | 🟢 Fully linked | `people.connections.list`, `otherContacts.list` with `syncToken` | — |
+| SYN-7 | Batching, quotas and backoff | 🟢 Fully linked | HTTP batch; `429` / `403 rateLimitExceeded` | — |
+| SYN-8 | Sync now (Refresh) | 🟢 Fully linked | SYN-2 and SYN-4's calls, at once | — |
 
 #### SYN-1 Gmail full sync
 
@@ -1405,14 +1418,14 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 ### 7.2 Notifications and background (NTF)
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| NTF-1 | New mail notifications | 🟢 Fully linked | From SYN-2 / SYN-3 |
-| NTF-2 | Unread badge | 🟢 Fully linked | `labels.get` (`INBOX`) |
-| NTF-3 | Background sync when the window is closed | 🟢 Fully linked | SYN loop |
-| NTF-6 | Open at login | 🟡 Partially done | None |
-| NTF-4 | Menu bar panel | 🟡 Partially done | None (reads the cache) |
-| NTF-5 | Quick join | 🟡 Partially done | None |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| NTF-1 | New mail notifications | 🟢 Fully linked | From SYN-2 / SYN-3 | — |
+| NTF-2 | Unread badge | 🟢 Fully linked | `labels.get` (`INBOX`) | — |
+| NTF-3 | Background sync when the window is closed | 🟢 Fully linked | SYN loop | — |
+| NTF-6 | Open at login | 🟡 Partially done | None | — |
+| NTF-4 | Menu bar panel | 🟡 Partially done | None (reads the cache) | — |
+| NTF-5 | Quick join | 🟡 Partially done | None | — |
 
 #### NTF-1 New mail notifications
 
@@ -1447,13 +1460,13 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 ### 7.3 Loading, error and offline states (STA)
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| STA-1 | Initial load and loading states | 🟢 Fully linked | None |
-| STA-2 | Action failure and rollback | 🟢 Fully linked | API error responses |
-| STA-3 | Offline mode and queued changes | 🟢 Fully linked | None |
-| STA-4 | Expired sign-in | 🟢 Fully linked | OAuth `invalid_grant`, 401 |
-| STA-5 | Conflicts with server changes | 🟢 Fully linked | ETags, `historyId`, `syncToken` |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| STA-1 | Initial load and loading states | 🟢 Fully linked | None | — |
+| STA-2 | Action failure and rollback | 🟢 Fully linked | API error responses | — |
+| STA-3 | Offline mode and queued changes | 🟢 Fully linked | None | — |
+| STA-4 | Expired sign-in | 🟢 Fully linked | OAuth `invalid_grant`, 401 | — |
+| STA-5 | Conflicts with server changes | 🟢 Fully linked | ETags, `historyId`, `syncToken` | — |
 
 #### STA-1 Initial load and loading states
 
@@ -1495,13 +1508,13 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 ### 8.1 Storage and persistence (PER)
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| PER-1 | Local mailbox store | 🟢 Fully linked | Holds SYN data |
-| PER-2 | Outbox and drafts that survive quit | 🟢 Fully linked | None |
-| PER-3 | Persisted UI state and settings | 🟢 Fully linked | None |
-| PER-4 | App bundle and install | 🟢 Fully linked | None |
-| PER-5 | Single instance | 🟢 Fully linked | None |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| PER-1 | Local mailbox store | 🟢 Fully linked | Holds SYN data | — |
+| PER-2 | Outbox and drafts that survive quit | 🟢 Fully linked | None | — |
+| PER-3 | Persisted UI state and settings | 🟢 Fully linked | None | — |
+| PER-4 | App bundle and install | 🟢 Fully linked | None | — |
+| PER-5 | Single instance | 🟢 Fully linked | None | — |
 
 #### PER-4 App bundle and install
 
@@ -1533,11 +1546,11 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 ### 8.2 Command palette (PAL)
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| PAL-1 | Command list | 🟢 Fully linked | Each command's own |
-| PAL-2 | Thread search in the palette | 🟢 Fully linked | `threads.list` with `q` |
-| PAL-3 | Label jumps | 🟢 Fully linked | `labels.list` |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| PAL-1 | Command list | 🟢 Fully linked | Each command's own | — |
+| PAL-2 | Thread search in the palette | 🟢 Fully linked | `threads.list` with `q` | — |
+| PAL-3 | Label jumps | 🟢 Fully linked | `labels.list` | — |
 
 #### PAL-1 Command list
 
@@ -1560,15 +1573,15 @@ The calendar shares the window with mail. State lives in `CalendarView` (`src/ui
 
 ### 8.3 Data model (DAT)
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| DAT-1 | JSON as the data source | 🟡 Partially done | Replaced by SYN data |
-| DAT-2 | Thread model: one folder per thread | 🟢 Fully linked | Gmail per-message `labelIds` |
-| DAT-3 | Message model: missing fields | 🟡 Partially done | `Message` resource |
-| DAT-4 | Threading headers | 🟢 Fully linked | `payload.headers` |
-| DAT-5 | Local IDs for drafts and sent messages | 🟢 Fully linked | Draft `id`, message `id`, `threadId` |
-| DAT-6 | Search index rebuild cost | 🟡 Partially done | None |
-| DAT-7 | Import and insert messages | ⚪ Not done | `messages.import`, `messages.insert` |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| DAT-1 | JSON as the data source | 🟡 Partially done | Replaced by SYN data | — |
+| DAT-2 | Thread model: one folder per thread | 🟢 Fully linked | Gmail per-message `labelIds` | — |
+| DAT-3 | Message model: missing fields | 🟡 Partially done | `Message` resource | — |
+| DAT-4 | Threading headers | 🟢 Fully linked | `payload.headers` | — |
+| DAT-5 | Local IDs for drafts and sent messages | 🟢 Fully linked | Draft `id`, message `id`, `threadId` | — |
+| DAT-6 | Search index rebuild cost | 🟡 Partially done | None | — |
+| DAT-7 | Import and insert messages | ⚪ Not done | `messages.import`, `messages.insert` | — |
 
 #### DAT-1 JSON as the data source
 
@@ -1631,18 +1644,18 @@ Real features that don't depend on the backend, listed so the tables aren't read
 
 VoiceOver, keyboard access, contrast and the system display options (Increase Contrast, Reduce Transparency, Reduce Motion). No backend need.
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| A11Y-1 | Shared controls with role, label, state, press and focus | 🟡 Partially done | None |
-| A11Y-2 | Reduce Motion: fades instead of movement | 🟡 Partially done | None |
-| A11Y-3 | Increase Contrast | 🟡 Partially done | None |
-| A11Y-4 | Reduce Transparency and the glass amount | 🟡 Partially done | None |
-| A11Y-5 | System accent and highlight colors | 🟡 Partially done | None |
-| A11Y-6 | Text contrast: labels, status colors, events | 🟡 Partially done | None |
-| A11Y-7 | Text size (⌘= / ⌘-) grows controls, icons and avatars with the text | 🟡 Partially done | None |
-| A11Y-8 | VoiceOver reads plain text and announces status changes | 🟡 Partially done | None |
-| A11Y-9 | Control-click opens context menus | 🟢 Fully linked | None |
-| A11Y-10 | Differentiate Without Color | 🟡 Partially done | None |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| A11Y-1 | Shared controls with role, label, state, press and focus | 🟡 Partially done | None | — |
+| A11Y-2 | Reduce Motion: fades instead of movement | 🟡 Partially done | None | — |
+| A11Y-3 | Increase Contrast | 🟡 Partially done | None | — |
+| A11Y-4 | Reduce Transparency and the glass amount | 🟡 Partially done | None | — |
+| A11Y-5 | System accent and highlight colors | 🟡 Partially done | None | — |
+| A11Y-6 | Text contrast: labels, status colors, events | 🟡 Partially done | None | — |
+| A11Y-7 | Text size (⌘= / ⌘-) grows controls, icons and avatars with the text | 🟡 Partially done | None | — |
+| A11Y-8 | VoiceOver reads plain text and announces status changes | 🟡 Partially done | None | — |
+| A11Y-9 | Control-click opens context menus | 🟢 Fully linked | None | — |
+| A11Y-10 | Differentiate Without Color | 🟡 Partially done | None | — |
 
 #### A11Y-1 Shared controls with role, label, state, press and focus
 
@@ -1703,12 +1716,12 @@ VoiceOver, keyboard access, contrast and the system display options (Increase Co
 
 macOS features beyond links (LNK-4) and sharing (ACT-8, MB-061 step 2), and the MCP server for AI agents (SYS-4).
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| SYS-1 | Spotlight | ⚪ Not done | None (reads the cache) |
-| SYS-2 | Handoff | ⚪ Not done | None (Gmail and Calendar web URLs) |
-| SYS-3 | Widgets | ⚪ Not done | None (reads the cache) |
-| SYS-4 | MCP server for AI agents | 🟡 Partially done | None (Gmail and Calendar through the existing outbox) |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| SYS-1 | Spotlight | ⚪ Not done | None (reads the cache) | — |
+| SYS-2 | Handoff | ⚪ Not done | None (Gmail and Calendar web URLs) | — |
+| SYS-3 | Widgets | ⚪ Not done | None (reads the cache) | — |
+| SYS-4 | MCP server for AI agents | 🟡 Partially done | None (Gmail and Calendar through the existing outbox) | — |
 
 #### SYS-1 Spotlight
 
@@ -1738,9 +1751,9 @@ macOS features beyond links (LNK-4) and sharing (ACT-8, MB-061 step 2), and the 
 
 The window's frame around the panes.
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| APP-1 | Window top bar | 🟡 Partially done | None (Refresh is SYN-8, the account ACC-1) |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| APP-1 | Window top bar | 🟡 Partially done | None (Refresh is SYN-8, the account ACC-1) | — |
 
 #### APP-1 Window top bar
 
@@ -1771,24 +1784,24 @@ Not catalogued in depth; each would be its own item when picked up.
 
 AI inside Pigeon, on two models: a **writing model** on the user's own OpenAI-compatible endpoint (summaries, answers, replies, Clean View) and **Jev** through OpenRouter's System One API (fast, cheap yes/no, pick-one and score decisions). Off by default; nothing is sent until Settings › AI is switched on and its note confirmed. Endpoints and keys come from `.env`, read at startup (repo `.env`, then `<data dir>/.env`, then real environment variables), never shown or editable in Settings; a change takes effect on restart. No new Google API is needed; everything works on mail and events already cached on the Mac (AI-3 only adds a background body fetch). The full plan, contracts and limits are in [`AI_SPRINT.md`](AI_SPRINT.md).
 
-| ID | Feature | Status | Google API |
-| --- | --- | --- | --- |
-| AI-1 | AI settings and .env | 🟡 Partially done | None (both) |
-| AI-2 | Result cache | 🟡 Partially done | None (both) |
-| AI-3 | Jev client and background pass | 🟡 Partially done | None (Jev); Gmail `messages.get` for background body fetch |
-| AI-4 | Needs Reply marker and view | 🟡 Partially done | None (Jev) |
-| AI-5 | Important-only notifications | 🟡 Partially done | None (Jev) |
-| AI-6 | Label suggestions | 🟡 Partially done | None (Jev) |
-| AI-7 | One-line summaries in the list | 🟡 Partially done | None (writing model) |
-| AI-8 | Conversation summary | 🟡 Partially done | None (writing model) |
-| AI-9 | Catch-up on new messages | 🟡 Partially done | None (writing model) |
-| AI-10 | Clean View (AI reading view) | 🟡 Partially done | None (both) |
-| AI-11 | Quick replies | 🟡 Partially done | None (both) |
-| AI-12 | ⌘K understands plain words | 🟡 Partially done | None (Jev) |
-| AI-13 | Best Matches in search | 🟡 Partially done | None (Jev) |
-| AI-14 | Ask Pigeon | 🟡 Partially done | None (both) |
-| AI-15 | Do It for Me | 🟡 Partially done | None (writing model) |
-| AI-16 | Email to event | 🟡 Partially done | None (Jev; Apple's NSDataDetector) |
+| ID | Feature | Status | Google API | Verified |
+| --- | --- | --- | --- | --- |
+| AI-1 | AI settings and .env | 🟡 Partially done | None (both) | — |
+| AI-2 | Result cache | 🟡 Partially done | None (both) | — |
+| AI-3 | Jev client and background pass | 🟡 Partially done | None (Jev); Gmail `messages.get` for background body fetch | — |
+| AI-4 | Needs Reply marker and view | 🟡 Partially done | None (Jev) | — |
+| AI-5 | Important-only notifications | 🟡 Partially done | None (Jev) | — |
+| AI-6 | Label suggestions | 🟡 Partially done | None (Jev) | — |
+| AI-7 | One-line summaries in the list | 🟡 Partially done | None (writing model) | — |
+| AI-8 | Conversation summary | 🟡 Partially done | None (writing model) | — |
+| AI-9 | Catch-up on new messages | 🟡 Partially done | None (writing model) | — |
+| AI-10 | Clean View (AI reading view) | 🟡 Partially done | None (both) | — |
+| AI-11 | Quick replies | 🟡 Partially done | None (both) | — |
+| AI-12 | ⌘K understands plain words | 🟡 Partially done | None (Jev) | — |
+| AI-13 | Best Matches in search | 🟡 Partially done | None (Jev) | — |
+| AI-14 | Ask Pigeon | 🟡 Partially done | None (both) | — |
+| AI-15 | Do It for Me | 🟡 Partially done | None (writing model) | — |
+| AI-16 | Email to event | 🟡 Partially done | None (Jev; Apple's NSDataDetector) | — |
 
 #### AI-1 AI settings and .env
 
