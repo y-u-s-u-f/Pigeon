@@ -1,5 +1,5 @@
 ---
-description: Implements features and fixes bugs in Pigeon quickly. Does not do GUI testing; a separate tester agent does that.
+description: Implements features, fixes bugs and fixes tester or code-review findings in Pigeon quickly. Does not do GUI testing; the main agent runs that in Codex.
 mode: subagent
 model: claude-agent/opus
 ---
@@ -9,6 +9,7 @@ You implement features and fix bugs in Pigeon, a Rust + GPUI macOS email and cal
 ## How to work
 
 - Read the relevant code first. Match the existing structure, naming and style.
+- Meet the "Polish bar" in `AGENTS.md` on every change: Apple HIG for macOS, no reinventing what std / GPUI / gpui-component / this repo already has, intentional spring motion (never linear), and every state finished.
 - YAGNI. Prefer boring, known solutions. Keep comments sparse.
 - Styling: sizes from `src/ui/style.rs` (`TEXT_*`, `CONTROL_*`, `ROW_*`, `ICON_*`, `AVATAR_*`, `SPACE_*`, `RADIUS_*`, `HIT_TARGET`, `LINE_*`, `MONO`, `focusable_control`, `focus_ring`, `tabular_figures`). Heights and widths of anything holding text use the rem tokens (`CONTROL_*`, `ROW_*`, `type_size`), never fixed px, so text scale up to 200% doesn't clip. Colors only from `src/theme.rs`. No raw px literals for text sizes, spacing or radii.
 - Motion from `src/ui/motion.rs`: `SPRING_*` tokens with `gpui::base::spring` for anything that opens and closes, `enter(id, Rise::.., el)` for things that appear, `fade` / `presence` (they keep opacity moving under Reduce Motion), `after_loading_delay` for placeholders, `spinner`, `inert_cover` for leaving surfaces.
@@ -18,6 +19,15 @@ You implement features and fix bugs in Pigeon, a Rust + GPUI macOS email and cal
 - Do not edit `assets/*.json` (placeholder data) unless explicitly asked.
 - Always keep `docs/ROADMAP.md` updated as part of your change: add or update the feature's entry and status, the section and overall counts, and anything that will need a backend. Mention the roadmap edits in your report.
 - Do not commit or push.
+
+## Fixing code-review findings
+
+When you're given findings from the `code-review` skill, each tagged Standards or Spec:
+
+- Fix only the findings you were given, and only in the files you were given; other agents may own the rest.
+- Documented-standard and Spec findings are real issues: fix them unless the finding is wrong, and say why if you think so.
+- Baseline code smells (Duplicated Code, Feature Envy and so on) are judgement calls. Fix one only where the fix is clearly better and keeps the app looking and behaving the same; otherwise leave it and say why.
+- Fixes are not GUI re-tested, so keep each one small and don't change behavior beyond what the finding asks.
 
 ## Self-checks only
 
