@@ -38,9 +38,10 @@ use crate::{
 };
 
 /// Where a row's text starts: the row's margin plus its inset, which holds
-/// the unread dot. The header and the result count line up with it.
+/// the unread dot. The header and the result count line up with it, and the
+/// checkboxes sit over its start.
 const ROW_MARGIN: gpui::Pixels = SPACE_SM;
-const ROW_INSET: gpui::Pixels = SPACE_XL;
+const ROW_INSET: gpui::Pixels = SPACE_LG;
 /// Labels shown as dots in a row, at most; the reader shows them all.
 const LABEL_DOTS: usize = 3;
 const LABEL_DOT: gpui::Pixels = px(7.);
@@ -205,11 +206,7 @@ impl PigeonApp {
             .gap(SPACE_SM)
             .pr(SPACE_MD)
             // The sidebar's toggle and Compose are in the top bar.
-            .pl(if selecting && !self.search_open {
-                ROW_MARGIN
-            } else {
-                ROW_MARGIN + ROW_INSET
-            })
+            .pl(ROW_MARGIN + ROW_INSET)
             .map(|this| {
                 if self.search_open {
                     return this.child(self.render_search_bar(search, &theme, window, cx));
@@ -453,11 +450,14 @@ impl PigeonApp {
             .role(gpui::Role::CheckBox)
             .aria_label(format!("Select all, {checked} of {total} selected"))
             .aria_toggled(state)
-            .size(HIT_TARGET)
+            // The box over the rows' boxes, at the text's start.
+            .ml(-SPACE_SM)
+            .px(SPACE_SM)
+            .min_w(HIT_TARGET)
+            .min_h(HIT_TARGET)
             .flex_none()
             .flex()
             .items_center()
-            .justify_center()
             .rounded(RADIUS_SM)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(check_box(state, theme))
@@ -1165,7 +1165,6 @@ impl PigeonApp {
                     .child(
                         div()
                             .flex_none()
-                            .w(ROW_INSET - SPACE_XS)
                             .flex()
                             .justify_center()
                             // MD-021: one glyph, turned.
@@ -1412,13 +1411,14 @@ impl PigeonApp {
             .child(meta)
             .child(self.render_row_actions(thread_ix, theme, cx));
 
-        // In the inset, clear of the focus bar: the unread dot on the sender
-        // line, or a checkbox centered in the row while picking or hovered.
+        // The unread dot, centered in the inset, clear of the focus line. It
+        // gives way to the checkbox, which sits over the sender's first
+        // letters while picking or hovered.
         let pinned_checkbox = checked || selecting;
         let marker = div()
             .absolute()
-            .left(-ROW_INSET + SPACE_XS)
-            .w(ROW_INSET - SPACE_XS)
+            .left(-ROW_INSET)
+            .w(ROW_INSET)
             .top_0()
             .bottom_0()
             .flex()
@@ -1434,17 +1434,28 @@ impl PigeonApp {
                         .group_hover(ROW_GROUP, |s| s.invisible()),
                 )
             });
+        // Over the text, on an opaque copy of the row's fill so the letters
+        // under it don't show through; the text never moves.
+        let pane = theme.solid(theme.list_bg);
+        let backing = if checked {
+            pane.blend(theme.checked_bg)
+        } else if selected && list_focused {
+            pane.blend(theme.selected_focused_bg)
+        } else if selected {
+            pane.blend(theme.selected_bg)
+        } else {
+            pane
+        };
+        let hover_backing = (!checked && !selected).then(|| pane.blend(theme.hover_bg));
         let check = div()
             .absolute()
-            .left(SPACE_XS)
-            .w(ROW_INSET - SPACE_XS)
+            .left(-SPACE_SM)
             .top_0()
             .bottom_0()
             .flex()
             .items_center()
-            .justify_center()
             .child(
-                checkbox(thread_ix, checked, &subject, theme)
+                checkbox(thread_ix, checked, &subject, backing, hover_backing, theme)
                     .when(!pinned_checkbox, |this| {
                         this.invisible().group_hover(ROW_GROUP, |s| s.visible())
                     })
@@ -1585,7 +1596,8 @@ impl PigeonApp {
                             )
                             .children(line_mark)
                             .children(label_dots)
-                            .child(trailing),
+                            .child(trailing)
+                            .child(check),
                     )
                 } else {
                     this.py(SPACE_MD)
@@ -1604,7 +1616,8 @@ impl PigeonApp {
                                 .children(draft_mark)
                                 .children(message_count)
                                 .child(div().flex_1())
-                                .child(trailing),
+                                .child(trailing)
+                                .child(check),
                         )
                         // Subject and labels.
                         .child(
@@ -1659,7 +1672,6 @@ impl PigeonApp {
                         .border_color(theme.context_ring),
                 )
             })
-            .child(check)
             // MA-087: onto a folder, label or category in the sidebar.
             .on_drag(
                 self.dragged_threads(thread_ix, checked),
@@ -2025,11 +2037,16 @@ fn check_box(state: gpui::Toggled, theme: &Theme) -> gpui::Div {
         })
 }
 
-/// A row's checkbox for picking it with others.
+/// A row's checkbox for picking it with others. Placed `SPACE_SM` before
+/// the text, so the box itself starts where the text does; the hit target
+/// reaches out round it. `backing` hides the letters under it, on hover
+/// `hover_backing`.
 fn checkbox(
     thread_ix: usize,
     checked: bool,
     subject: &str,
+    backing: gpui::Hsla,
+    hover_backing: Option<gpui::Hsla>,
     theme: &Theme,
 ) -> gpui::Stateful<gpui::Div> {
     let state = if checked {
@@ -2037,19 +2054,34 @@ fn checkbox(
     } else {
         gpui::Toggled::False
     };
+    // The sender's line.
+    let line = TEXT_BASE * 1.4;
     div()
         .id(("row-check", thread_ix))
         .group(CHECK_GROUP)
         .role(gpui::Role::CheckBox)
         .aria_label(format!("Select {subject}"))
         .aria_toggled(state)
-        .size(HIT_TARGET)
+        .h(line)
+        .min_h(HIT_TARGET)
+        .min_w(HIT_TARGET)
+        .pl(SPACE_SM)
         .flex_none()
         .flex()
         .items_center()
-        .justify_center()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(check_box(state, theme))
+        .child(
+            div()
+                .h(line)
+                .pr(SPACE_XS)
+                .flex()
+                .items_center()
+                .bg(backing)
+                .when_some(hover_backing, |this, bg| {
+                    this.group_hover(ROW_GROUP, |s| s.bg(bg))
+                })
+                .child(check_box(state, theme)),
+        )
 }
 
 /// Placeholder rows while a view's first page loads (STA-1).
