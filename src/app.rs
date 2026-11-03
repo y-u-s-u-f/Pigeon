@@ -55,24 +55,30 @@ use crate::{
     },
 };
 
-/// Wide enough to hold the traffic lights above its icons.
-pub const RAIL_WIDTH: Pixels = px(80.);
-const SIDEBAR_WIDTH: (Pixels, Pixels) = (px(180.), px(360.));
-pub(crate) const SIDEBAR_DEFAULT: Pixels = px(236.);
+/// The activity rail on the far left, under the top bar: a rail button
+/// (`HIT_TARGET` and `SPACE_SM`) with `SPACE_SM` either side. It holds
+/// only icons, so it keeps its width as text grows.
+pub const RAIL_WIDTH: Pixels = px(52.);
+/// The sidebar's limits: it holds only the mailboxes, the account and the
+/// traffic lights being in the top bar.
+const SIDEBAR_WIDTH: (Pixels, Pixels) = (px(164.), px(340.));
+pub(crate) const SIDEBAR_DEFAULT: Pixels = px(212.);
 /// How many recent commands head the palette (ME-062).
 const RECENT_SHOWN: usize = 5;
 /// How far past its minimum the sidebar's divider is dragged to hide it.
 const SIDEBAR_COLLAPSE: Pixels = px(60.);
 const LIST_MIN: Pixels = px(300.);
 /// The list's share of the width it splits with the reader: 400 of the
-/// 1044 left in the default window beside the default sidebar.
-pub(crate) const LIST_SHARE_DEFAULT: f32 = 0.38;
+/// 1096 left in the default window beside the rail and the default sidebar.
+pub(crate) const LIST_SHARE_DEFAULT: f32 = 0.365;
 /// The shares a saved setting may hold.
 const LIST_SHARE: (f32, f32) = (0.15, 0.85);
 /// How narrow the list gets when the user keeps the sidebar open in a narrow
 /// window.
 const LIST_SQUEEZED: Pixels = px(220.);
 pub const READER_MIN: Pixels = px(360.);
+/// How long Refresh turns at least.
+const REFRESH_SPIN: std::time::Duration = std::time::Duration::from_millis(900);
 /// ↑ and ↓ in the reader.
 const SCROLL_STEP: Pixels = px(64.);
 /// Where the palette and the contact card sit below the window's top.
@@ -89,7 +95,7 @@ pub struct PaneLayout {
     pub list: Pixels,
 }
 
-/// Which app fills the window, beside the rail.
+/// Which app fills the window, under the top bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Mail,
@@ -253,11 +259,18 @@ pub struct PigeonApp {
     /// The user showed or hid the sidebar and it's still on its way; a
     /// window resize alone moves it at once (MD-014).
     sidebar_sliding: bool,
-    /// Every view's count, worked out once per frame for the rail, the
+    /// Every view's count, worked out once per frame for the top bar, the
     /// sidebar and the list (MC-037).
     pub(crate) counts: ui::sidebar::NavCounts,
     /// The panes as views of their own (MC-036).
     panes: panes::Panes,
+    /// Set by Refresh (`SyncNow`) for a moment, so the top bar's button
+    /// turns even when there's nothing to fetch.
+    pub(crate) refresh_spin: Option<gpui::Task<()>>,
+    /// When Refresh last ran on demo data, which has no sync of its own.
+    pub(crate) demo_synced_at: Option<i64>,
+    /// The top bar's height the traffic lights were last centered in.
+    traffic_lights_bar: Pixels,
     /// An overlay on its way out (MD-007).
     leaving_overlay: Option<LeavingOverlay>,
     /// ⌘= / ⌘-: scales all text through the window's rem size.
@@ -463,6 +476,8 @@ impl PigeonApp {
         let settings_changed = cx.observe_self(|this, cx| this.save_settings(cx));
         // MC-036: the panes draw from this state, so any change redraws them.
         let panes = panes::Panes::new(
+            Self::top_bar_pane,
+            Self::rail_pane,
             Self::sidebar_pane,
             Self::list_pane,
             Self::reader_pane,
@@ -496,6 +511,8 @@ impl PigeonApp {
             if k.key != "escape"
                 || k.modifiers.modified()
                 || window.window_handle().window_id() != window_id
+                // An open context menu has the keys.
+                || crate::ui::context_menu::is_open(window, cx)
             {
                 return;
             }
@@ -562,6 +579,9 @@ impl PigeonApp {
             sidebar_sliding: false,
             counts: Default::default(),
             panes,
+            refresh_spin: None,
+            demo_synced_at: None,
+            traffic_lights_bar: px(0.),
             leaving_overlay: None,
             text_scale: 1.,
             search_open: false,
@@ -1295,20 +1315,12 @@ impl PigeonApp {
     /// anyway; then the list squeezes further. The list takes its share of
     /// what's left and the reader the rest, never less than `READER_MIN`.
     pub fn pane_layout(&self, width: Pixels) -> PaneLayout {
-        let room = width - RAIL_WIDTH - READER_MIN;
-        let sidebar = if self.sidebar_open && (self.sidebar_fits(width) || self.sidebar_forced) {
-            self.sidebar_width
-                .min(room - LIST_SQUEEZED)
-                .max(SIDEBAR_WIDTH.0)
-        } else {
-            px(0.)
-        };
-        let list = list_width(self.list_share, width - RAIL_WIDTH - sidebar);
-        PaneLayout { sidebar, list }
+        let shown = self.sidebar_open && (self.sidebar_fits(width) || self.sidebar_forced);
+        pane_widths(width, shown.then_some(self.sidebar_width), self.list_share)
     }
 
     fn sidebar_fits(&self, width: Pixels) -> bool {
-        width - RAIL_WIDTH - READER_MIN - self.sidebar_width >= LIST_MIN
+        sidebar_fits(width, self.sidebar_width)
     }
 
     pub(crate) fn toggle_sidebar(
@@ -1488,12 +1500,24 @@ impl PigeonApp {
     // The account and the backend. Demo data has no server, so these only
     // say so there.
 
+    /// Refresh: mail, calendar and the rest, now. The top bar's button turns
+    /// for at least `REFRESH_SPIN`, and on demo data, which has nothing to
+    /// fetch, that and "Synced just now" are all it does.
     fn sync_now(&mut self, _: &SyncNow, _: &mut Window, cx: &mut Context<Self>) {
-        let demo = self.backend.read(cx).is_demo();
-        self.backend.update(cx, |b, cx| b.sync_now(cx));
-        if demo {
-            self.show_toast(ToastKind::Info, "Demo data is always up to date", None, cx);
+        match self.backend.read(cx).source() {
+            Source::SignedOut => return,
+            Source::Demo => self.demo_synced_at = Some(ui::status::now_ms()),
+            Source::Google => self.backend.update(cx, |b, cx| b.sync_now(cx)),
         }
+        self.refresh_spin = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(REFRESH_SPIN).await;
+            this.update(cx, |this, cx| {
+                this.refresh_spin = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
     }
 
     fn sign_in(&mut self, _: &SignIn, _: &mut Window, cx: &mut Context<Self>) {
@@ -1625,7 +1649,7 @@ impl PigeonApp {
         window.zoom_window();
     }
 
-    /// Opens the search bar, or returns to it, and focuses it.
+    /// Focuses the top bar's search field.
     fn toggle_search(&mut self, _: &ToggleSearch, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings_page.open {
             return self.focus_settings_search(window, cx);
@@ -1684,6 +1708,18 @@ impl PigeonApp {
             InputEvent::PressEnter { .. } if !self.accept_search_suggestion(window, cx) => {
                 self.remember_search(cx);
                 self.focus_results(&FocusResults, window, cx);
+            }
+            // The field is always in the top bar: typing into it is
+            // searching, and leaving it empty is done with it.
+            InputEvent::Focus if !self.search_open => {
+                self.search_open = true;
+                cx.notify();
+            }
+            InputEvent::Blur if self.search_open && input.read(cx).value().is_empty() => {
+                self.search_open = false;
+                self.search_all = self.settings.search_all_mail;
+                self.search_highlight = None;
+                cx.notify();
             }
             _ => {}
         }
@@ -2597,6 +2633,7 @@ impl PigeonApp {
         self.resizing = Some(kind);
         self.gliding = None;
         let width = window.viewport_size().width;
+        // The panes start after the rail.
         let x = event.event.position.x - RAIL_WIDTH;
         let (min, max) = self.pane_range(kind, width);
         let before = match kind {
@@ -2724,6 +2761,12 @@ impl PigeonApp {
             window.focus(&self.pane_focus(cx), cx);
         }
         window.set_rem_size(px(ui::style::BASE_REM * self.text_scale));
+        // The top bar grows with the text; the traffic lights stay centered.
+        let bar = ui::top_bar_height(window);
+        if bar != self.traffic_lights_bar {
+            self.traffic_lights_bar = bar;
+            window.set_traffic_light_position(shell::traffic_lights(bar));
+        }
         self.load_selected_bodies(cx);
         self.sync_window_title(window, cx);
         self.schedule_reveal(window, cx);
@@ -2757,30 +2800,20 @@ impl PigeonApp {
         let sidebar_open = self.sidebar_progress.clamp(0., 1.);
         let sidebar_shown = self.sidebar_content_width() * sidebar_open;
         let settings_open = self.settings_page.open;
-        let (signed_out, calendar_granted, sign_in, status) = {
+        let (signed_out, calendar_granted, sign_in) = {
             let b = self.backend.read(cx);
             (
                 b.source() == Source::SignedOut,
                 b.has_scope(CALENDAR_SCOPE),
                 b.sign_in_state().clone(),
-                b.status().clone(),
             )
         };
         // One pass over the threads for every count (MC-037).
         self.counts = self.nav_counts();
-        let inbox_unread = self.counts.unread(Nav::Folder(Folder::Inbox));
-        let panes = !settings_open && !signed_out;
         // MD-042: from the sign-in screen, the app fades in.
         let signed_in = ui::motion::presence("signed-in", !signed_out, window, cx).clamp(0., 1.);
         // A reused pane keeps the opacity it was painted with.
         let cache = signed_in == 1.;
-        let entity = cx.entity();
-        let reset = move |kind| {
-            let entity = entity.clone();
-            move |_: &mut Window, cx: &mut gpui::App| {
-                entity.update(cx, |this, cx| this.reset_pane(kind, cx))
-            }
-        };
 
         // Handlers sit on the root, so actions reach them from the overlays too.
         div()
@@ -2882,116 +2915,146 @@ impl PigeonApp {
             .overflow_hidden()
             .line_height(LINE_UI)
             .text_color(theme.text)
-            .when(settings_open, |this| {
-                this.child(
-                    div()
-                        .size_full()
-                        .flex()
-                        .flex_row()
-                        .child(ui::rail::render(None, inbox_unread, &theme, window, cx))
-                        .child(self.render_settings(window, cx)),
-                )
-            })
-            .when(!settings_open && signed_out, |this| {
+            .when(signed_out && !settings_open, |this| {
                 this.child(self.render_onboarding(&sign_in, &self.focus_handle, cx))
             })
-            .when(panes && self.mode == Mode::Calendar, |this| {
+            // The top bar over Settings or the app showing (Mail or
+            // Calendar), which fills the rest.
+            .when(!signed_out || settings_open, |this| {
                 this.child(
                     div()
                         .size_full()
                         .flex()
-                        .flex_row()
-                        .opacity(signed_in)
-                        .child(ui::rail::render_with_status(
-                            Some(self.mode),
-                            inbox_unread,
-                            Some(&status),
-                            &theme,
+                        .flex_col()
+                        .opacity(if settings_open { 1. } else { signed_in })
+                        .child(panes::embed(
+                            &self.panes.top_bar,
+                            div().w_full().h(ui::top_bar_height(window)).flex_none(),
+                            cache,
                             window,
-                            cx,
                         ))
-                        .map(|this| {
-                            if calendar_granted {
-                                this.child(self.calendar.clone())
-                            } else {
-                                this.child(ui::status::missing_scope(
-                                    "Calendar",
-                                    Icon::Calendar,
-                                    &theme,
+                        // The rail and the bar are one L-shaped frame
+                        // around the panes.
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_h_0()
+                                .w_full()
+                                .flex()
+                                .child(panes::embed(
+                                    &self.panes.rail,
+                                    div().w(RAIL_WIDTH).h_full().flex_none(),
+                                    cache,
+                                    window,
                                 ))
-                            }
-                        }),
-                )
-            })
-            .when(panes && self.mode == Mode::Mail, |this| {
-                this.child(
-                    div()
-                        .key_context(self.mailbox_key_context())
-                        .track_focus(&self.focus_handle)
-                        .relative()
-                        .size_full()
-                        .flex()
-                        .flex_row()
-                        .opacity(signed_in)
-                        // The sidebar has the status line; hidden, the rail
-                        // shows it (MA-068).
-                        .child(ui::rail::render_with_status(
-                            Some(self.mode),
-                            inbox_unread,
-                            (layout.sidebar == px(0.)).then_some(&status),
-                            &theme,
-                            window,
-                            cx,
-                        ))
-                        .when(sidebar_open > 0., |this| {
-                            this.child(
-                                div()
-                                    .w(sidebar_shown)
-                                    .h_full()
-                                    .flex_none()
-                                    .overflow_hidden()
-                                    .child(panes::embed(
-                                        &self.panes.sidebar,
-                                        div().w(self.sidebar_content_width()).h_full().flex_none(),
-                                        cache,
-                                        window,
-                                    )),
-                            )
-                        })
-                        .child(panes::embed(
-                            &self.panes.list,
-                            div().w(self.shown.list).h_full().flex_none(),
-                            cache,
-                            window,
-                        ))
-                        .child(panes::embed(
-                            &self.panes.reader,
-                            div().flex_1().min_w_0().h_full(),
-                            cache,
-                            window,
-                        ))
-                        .when(layout.sidebar > px(0.), |this| {
-                            this.child(ui::pane_divider(
-                                PaneResize::Sidebar,
-                                RAIL_WIDTH + sidebar_shown,
-                                self.resizing == Some(PaneResize::Sidebar),
-                                self.divider_cursor(PaneResize::Sidebar, width),
-                                &theme,
-                                reset(PaneResize::Sidebar),
-                            ))
-                        })
-                        .child(ui::pane_divider(
-                            PaneResize::List,
-                            RAIL_WIDTH + sidebar_shown + self.shown.list,
-                            self.resizing == Some(PaneResize::List),
-                            self.divider_cursor(PaneResize::List, width),
-                            &theme,
-                            reset(PaneResize::List),
-                        )),
+                                .child(div().flex_1().min_w_0().h_full().flex().map(|this| {
+                                    if settings_open {
+                                        this.child(self.render_settings(window, cx))
+                                            .into_any_element()
+                                    } else if self.mode == Mode::Calendar {
+                                        if calendar_granted {
+                                            this.child(self.calendar.clone()).into_any_element()
+                                        } else {
+                                            this.child(ui::status::missing_scope(
+                                                "Calendar",
+                                                Icon::Calendar,
+                                                &theme,
+                                            ))
+                                            .into_any_element()
+                                        }
+                                    } else {
+                                        this.child(self.render_mail_panes(
+                                            layout,
+                                            sidebar_open,
+                                            sidebar_shown,
+                                            width,
+                                            cache,
+                                            &theme,
+                                            window,
+                                            cx,
+                                        ))
+                                        .into_any_element()
+                                    }
+                                })),
+                        ),
                 )
             })
             .child(self.panes.layer.clone())
             .when(profile::active(), |this| this.child(profile::marker()))
+    }
+
+    /// Mail's sidebar, list and reader, with the dividers between them.
+    #[allow(clippy::too_many_arguments)]
+    fn render_mail_panes(
+        &self,
+        layout: PaneLayout,
+        sidebar_open: f32,
+        sidebar_shown: Pixels,
+        width: Pixels,
+        cache: bool,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let entity = cx.entity();
+        let reset = move |kind| {
+            let entity = entity.clone();
+            move |_: &mut Window, cx: &mut gpui::App| {
+                entity.update(cx, |this, cx| this.reset_pane(kind, cx))
+            }
+        };
+        div()
+            .key_context(self.mailbox_key_context())
+            .track_focus(&self.focus_handle)
+            .relative()
+            .size_full()
+            .flex()
+            .flex_row()
+            .when(sidebar_open > 0., |this| {
+                this.child(
+                    div()
+                        .w(sidebar_shown)
+                        .h_full()
+                        .flex_none()
+                        .overflow_hidden()
+                        .child(panes::embed(
+                            &self.panes.sidebar,
+                            div().w(self.sidebar_content_width()).h_full().flex_none(),
+                            cache,
+                            window,
+                        )),
+                )
+            })
+            .child(panes::embed(
+                &self.panes.list,
+                div().w(self.shown.list).h_full().flex_none(),
+                cache,
+                window,
+            ))
+            .child(panes::embed(
+                &self.panes.reader,
+                div().flex_1().min_w_0().h_full(),
+                cache,
+                window,
+            ))
+            .when(layout.sidebar > px(0.), |this| {
+                this.child(ui::pane_divider(
+                    PaneResize::Sidebar,
+                    sidebar_shown,
+                    self.resizing == Some(PaneResize::Sidebar),
+                    self.divider_cursor(PaneResize::Sidebar, width),
+                    theme,
+                    reset(PaneResize::Sidebar),
+                ))
+            })
+            .child(ui::pane_divider(
+                PaneResize::List,
+                sidebar_shown + self.shown.list,
+                self.resizing == Some(PaneResize::List),
+                self.divider_cursor(PaneResize::List, width),
+                theme,
+                reset(PaneResize::List),
+            ))
     }
 
     /// The sidebar's content width: as shown, or as it will show while it
@@ -3005,6 +3068,14 @@ impl PigeonApp {
     }
 
     // The panes (`app/panes.rs`), each drawn as a view of its own.
+
+    fn top_bar_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        self.render_top_bar(window, cx)
+    }
+
+    fn rail_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        self.render_rail(window, cx)
+    }
 
     fn sidebar_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let width = self.sidebar_content_width();
@@ -3020,19 +3091,11 @@ impl PigeonApp {
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
                     this.reader_focused = false;
-                    if !this.search_input.focus_handle(cx).is_focused(window) {
-                        window.focus(&this.focus_handle, cx);
-                    }
+                    window.focus(&this.focus_handle, cx);
                     cx.notify();
                 }),
             )
-            .child(self.render_thread_list(
-                self.shown.list,
-                self.sidebar_progress,
-                &self.counts,
-                window,
-                cx,
-            ))
+            .child(self.render_thread_list(self.shown.list, &self.counts, window, cx))
             .into_any_element()
     }
 
@@ -3055,19 +3118,22 @@ impl PigeonApp {
             .into_any_element()
     }
 
-    /// Toast, first-run tip and overlays, over everything. Not cached: it
+    /// Toast, first-run tip, overlays and the context menu, over
+    /// everything. Not cached: it
     /// draws whenever the app does, and its springs redraw it alone.
     fn layer_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let panes = !self.settings_page.open && self.backend.read(cx).source() != Source::SignedOut;
         let toast = self.render_toast(window, cx);
         let tip = if panes { self.render_tip(cx) } else { None };
         let overlay = self.render_overlay(window, cx);
+        let menu = ui::context_menu::layer(window, cx);
         div()
             .absolute()
             .inset_0()
             .children(toast)
             .children(tip)
             .children(overlay)
+            .children(menu)
             .into_any_element()
     }
 }
@@ -3089,6 +3155,25 @@ fn crosses_mark(before: Pixels, after: Pixels, marks: &[Pixels]) -> bool {
     marks
         .iter()
         .any(|&m| (before < m && after >= m) || (before > m && after <= m))
+}
+
+/// The sidebar (when `sidebar` holds its width) and the list in a window
+/// `width` wide, beside the rail: the sidebar gives way to the list's
+/// squeezed minimum, the list takes `share` of what's left and the reader
+/// the rest.
+fn pane_widths(width: Pixels, sidebar: Option<Pixels>, share: f32) -> PaneLayout {
+    let room = width - RAIL_WIDTH - READER_MIN;
+    let sidebar = sidebar.map_or(px(0.), |sidebar| {
+        sidebar.min(room - LIST_SQUEEZED).max(SIDEBAR_WIDTH.0)
+    });
+    let list = list_width(share, width - RAIL_WIDTH - sidebar);
+    PaneLayout { sidebar, list }
+}
+
+/// Whether a sidebar `sidebar` wide leaves the list and reader their
+/// minimums in a window `width` wide, beside the rail.
+fn sidebar_fits(width: Pixels, sidebar: Pixels) -> bool {
+    width - RAIL_WIDTH - READER_MIN - sidebar >= LIST_MIN
 }
 
 /// The list's width at `share` of the `split` it shares with the reader:
@@ -3119,9 +3204,45 @@ mod tests {
     }
 
     #[test]
+    fn panes_fill_the_window_beside_the_rail() {
+        assert_eq!(RAIL_WIDTH, ui::style::HIT_TARGET + ui::style::SPACE_SM * 3.);
+        // The default window and sidebar: the list gets its 400.
+        let layout = pane_widths(px(1360.), Some(SIDEBAR_DEFAULT), LIST_SHARE_DEFAULT);
+        assert_eq!(layout.sidebar, SIDEBAR_DEFAULT);
+        assert!((layout.list - px(400.)).abs() < px(5.));
+        assert!(px(1360.) - RAIL_WIDTH - layout.sidebar - layout.list >= READER_MIN);
+        // Hidden, the list and reader share what the rail leaves.
+        let hidden = pane_widths(px(1360.), None, LIST_SHARE_DEFAULT);
+        assert_eq!(hidden.sidebar, px(0.));
+        assert_eq!(
+            hidden.list,
+            list_width(LIST_SHARE_DEFAULT, px(1360.) - RAIL_WIDTH)
+        );
+        // Kept open in a narrow window, it gives way, never under its minimum.
+        let narrow = pane_widths(px(900.), Some(px(400.)), LIST_SHARE_DEFAULT);
+        assert_eq!(
+            narrow.sidebar,
+            px(900.) - RAIL_WIDTH - READER_MIN - LIST_SQUEEZED
+        );
+        let tiny = pane_widths(px(600.), Some(px(300.)), LIST_SHARE_DEFAULT);
+        assert_eq!(tiny.sidebar, SIDEBAR_WIDTH.0);
+        // It fits while the list and reader keep their minimums.
+        assert!(sidebar_fits(px(950.), SIDEBAR_DEFAULT));
+        assert!(!sidebar_fits(px(900.), SIDEBAR_DEFAULT));
+        assert!(sidebar_fits(
+            RAIL_WIDTH + READER_MIN + LIST_MIN + SIDEBAR_WIDTH.0,
+            SIDEBAR_WIDTH.0
+        ));
+        assert!(!sidebar_fits(
+            READER_MIN + LIST_MIN + SIDEBAR_WIDTH.0,
+            SIDEBAR_WIDTH.0
+        ));
+    }
+
+    #[test]
     fn list_keeps_its_share_within_limits() {
-        // The default window beside the default sidebar.
-        let split = px(1044.);
+        // The default window beside the rail and the default sidebar.
+        let split = px(1096.);
         assert!((list_width(LIST_SHARE_DEFAULT, split) - px(400.)).abs() < px(5.));
         // Twice as wide, twice the list: no fixed cap.
         assert_eq!(list_width(0.5, px(2000.)), px(1000.));

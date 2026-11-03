@@ -380,7 +380,27 @@ impl Saved {
                 }
             }
         }
-        serde_json::from_value(saved).unwrap_or_default()
+        let mut saved: Saved = serde_json::from_value(saved).unwrap_or_default();
+        saved.migrate_pane_defaults();
+        saved
+    }
+
+    /// The panes' widths were always saved, defaults included, so the
+    /// narrower defaults that came with the top bar would only reach new
+    /// installs: an untouched old default becomes the new one.
+    fn migrate_pane_defaults(&mut self) {
+        const OLD_SIDEBAR: f32 = 236.;
+        // Before the top bar, and with it before the rail came back.
+        const OLD_LIST_SHARES: [f32; 2] = [0.38, 0.35];
+        if self.sidebar_width == OLD_SIDEBAR {
+            self.sidebar_width = f32::from(crate::app::SIDEBAR_DEFAULT);
+        }
+        if OLD_LIST_SHARES
+            .iter()
+            .any(|old| (self.list_share - old).abs() < 1e-6)
+        {
+            self.list_share = crate::app::LIST_SHARE_DEFAULT;
+        }
     }
 
     pub fn to_map(&self) -> serde_json::Map<String, serde_json::Value> {
@@ -980,6 +1000,27 @@ mod tests {
         let mut map = Saved::default().to_map();
         map.remove("notifications");
         assert!(Saved::from_map(map).notifications);
+    }
+
+    #[test]
+    fn old_default_pane_widths_take_the_new_defaults() {
+        let load = |sidebar: f32, share: f32| {
+            let mut map = Saved::default().to_map();
+            map.insert("sidebar_width".into(), sidebar.into());
+            map.insert("list_share".into(), share.into());
+            let saved = Saved::from_map(map);
+            (saved.sidebar_width, saved.list_share)
+        };
+        assert_eq!(
+            load(236., 0.38),
+            (
+                f32::from(crate::app::SIDEBAR_DEFAULT),
+                crate::app::LIST_SHARE_DEFAULT
+            )
+        );
+        assert_eq!(load(212., 0.35).1, crate::app::LIST_SHARE_DEFAULT);
+        // Widths the user dragged to stay.
+        assert_eq!(load(250., 0.42), (250., 0.42));
     }
 
     #[test]

@@ -5,6 +5,7 @@ pub mod calendar;
 pub mod command_palette;
 pub mod composer;
 pub mod contact_card;
+pub mod context_menu;
 pub mod controls;
 pub mod html_view;
 pub mod later_picker;
@@ -21,6 +22,7 @@ pub mod sidebar;
 pub mod status;
 pub mod style;
 pub mod thread_list;
+pub mod top_bar;
 
 use gpui::{
     AbsoluteLength, Action, AnyElement, App, AppContext as _, AsKeystroke as _, Context, Div,
@@ -42,11 +44,26 @@ use crate::{
 /// A label's or calendar's color dot.
 pub const DOT: Pixels = px(8.);
 
-/// Height of the top bar of every pane; the traffic lights sit in it.
-pub const HEADER_HEIGHT: Pixels = px(52.);
+/// Height of the header of every pane, under the window's top bar: a
+/// slim row, so the two read as one light band.
+pub const HEADER_HEIGHT: Pixels = px(40.);
+/// The window's top bar (`top_bar`), where the traffic lights sit, and a
+/// draft window's toolbar; it grows past `TOP_BAR_MIN` as text grows, and
+/// the traffic lights follow (`shell::traffic_lights`).
+pub const TOP_BAR_HEIGHT: Pixels = px(44.);
+pub const TOP_BAR_MIN: Rems = type_size(40.);
+
+/// The window's top bar's height at the window's text scale.
+pub fn top_bar_height(window: &Window) -> Pixels {
+    top_bar_height_at(window.rem_size())
+}
+
+pub fn top_bar_height_at(rem: Pixels) -> Pixels {
+    TOP_BAR_HEIGHT.max(TOP_BAR_MIN.to_pixels(rem))
+}
 /// What the bar's controls need: past it, as text grows, the bar grows
 /// (MA-021). Bars take `.h(HEADER_MIN).min_h(HEADER_HEIGHT)`.
-pub const HEADER_MIN: Rems = type_size(44.);
+pub const HEADER_MIN: Rems = type_size(36.);
 
 /// The top bar's height at the window's text scale, for what sits under it.
 pub fn header_height(window: &Window) -> Pixels {

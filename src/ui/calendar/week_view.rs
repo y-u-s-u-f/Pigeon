@@ -11,7 +11,12 @@ use gpui::{
     relative,
 };
 
-use super::{CalendarView, HOUR_HEIGHT, ViewKind, agenda::DAY_COLUMN_MAX, drag, occurrence_key};
+use super::{
+    CalendarView, HOUR_HEIGHT, ViewKind,
+    agenda::DAY_COLUMN_MAX,
+    drag, occurrence_key,
+    paging::{PageFrame, page_strip},
+};
 use crate::ui::style::*;
 use crate::{
     assets::Icon,
@@ -147,15 +152,31 @@ struct BlockBox {
     day: f32,
 }
 
+/// One period of the time grid, in the parts that slide past the fixed
+/// hour gutter (MD-044): the day headers, the all-day lane and the day
+/// columns, and what the gutter shows beside them.
+pub(crate) struct GridPage {
+    header: Option<AnyElement>,
+    first: NaiveDate,
+    all_day: AnyElement,
+    all_day_height: f32,
+    lane_count: usize,
+    folds: bool,
+    expanded: bool,
+    columns: AnyElement,
+    today_visible: bool,
+}
+
 impl CalendarView {
-    pub(crate) fn render_time_grid(
+    /// The period's parts for `render_time_grid`.
+    pub(crate) fn time_grid_page(
         &self,
         days: Vec<NaiveDate>,
         occurrences: &[Occurrence],
         now: NaiveDateTime,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> GridPage {
         let theme = Theme::of(cx).clone();
         let today = now.date();
         let metrics = TextMetrics::of(window);
@@ -163,7 +184,6 @@ impl CalendarView {
         let scale = f32::from(window.rem_size()) / BASE_REM;
         let lane_height = LANE_HEIGHT * scale;
         let gutter_px = GUTTER * scale;
-        let now_label_height = NOW_LABEL.to_pixels(window.rem_size());
         let n = days.len();
         // How wide a day is, to lay events out and fit their text.
         let day_width = if self.day_side_shown() {
@@ -265,7 +285,6 @@ impl CalendarView {
             })
             .collect::<Vec<_>>();
 
-        let gutter = || div().w(px(gutter_px)).flex_none();
         let single = n == 1;
 
         let day_headers = days.iter().map(|&date| {
@@ -336,27 +355,13 @@ impl CalendarView {
                 )
         });
 
-        let week_number = self.show_week_numbers.then(|| {
-            div()
-                .text_size(TEXT_XS)
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_faint)
-                .child(crate::calendar::time::week_label(first))
-        });
         // The Day view's title already names the day.
         let header = (!single).then(|| {
             div()
-                .h(DAY_HEADER_HEIGHT)
-                .flex_none()
+                .size_full()
                 .flex()
-                .child(
-                    gutter()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .children(week_number),
-                )
                 .children(day_headers)
+                .into_any_element()
         });
 
         // Under the bars, one slot per day: a double click there makes an
@@ -373,95 +378,23 @@ impl CalendarView {
                     }),
                 )
         });
-        let fold_toggle = folds.then(|| {
-            let (glyph, label) = if expanded {
-                (Icon::ChevronUp, "Show fewer all-day events")
+        let all_day_height = rows as f32 * lane_height
+            + if rows > 0 {
+                f32::from(SPACE_SM)
             } else {
-                (Icon::ChevronDown, "Show all all-day events")
+                f32::from(SPACE_XS)
             };
-            icon_button_small("all-day-fold", glyph, label, &theme)
-                .aria_expanded(expanded)
-                .mr(-SPACE_XS)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.all_day_expanded = !this.all_day_expanded;
-                    cx.notify();
-                }))
-        });
         let all_day = div()
-            .flex_none()
-            .flex()
-            .border_b_1()
-            .border_color(theme.cal_line)
-            .child(
-                gutter()
-                    .pt(SPACE_XS)
-                    .pr(SPACE_SM)
-                    .flex()
-                    .flex_col()
-                    .items_end()
-                    .child(
-                        div()
-                            .pt(SPACE_XS)
-                            .text_size(TEXT_XS)
-                            .text_color(theme.text_faint)
-                            .when(lane_count > 0, |d| d.child("All day")),
-                    )
-                    .children(fold_toggle),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .relative()
-                    .h(px(rows as f32 * lane_height
-                        + if rows > 0 {
-                            f32::from(SPACE_SM)
-                        } else {
-                            f32::from(SPACE_XS)
-                        }))
-                    .child(div().absolute().inset_0().flex().children(lane_days))
-                    .children(bars)
-                    .children(more),
-            );
+            .relative()
+            .size_full()
+            .child(div().absolute().inset_0().flex().children(lane_days))
+            .children(bars)
+            .children(more)
+            .into_any_element();
 
-        // The time grid.
-        let grid_height = px(24. * HOUR_HEIGHT);
         let now_minutes = time::minutes_into(today, now);
         let now_top = now_minutes as f32 / 60. * HOUR_HEIGHT;
         let today_visible = days.contains(&today);
-
-        let hour_labels = (1..24).filter_map(|hour| {
-            // Make room for the current time's label.
-            let minutes = hour * 60;
-            if today_visible && ((minutes - now_minutes).abs() as f32) < 14. * scale {
-                return None;
-            }
-            Some(
-                div()
-                    .absolute()
-                    .top(px(hour as f32 * HOUR_HEIGHT - 7. * scale))
-                    .right(SPACE_SM)
-                    .text_size(TEXT_XS)
-                    .text_color(theme.text_faint)
-                    .font_features(tabular_figures())
-                    .child(compact_time_label(
-                        chrono::NaiveTime::from_hms_opt(hour as u32, 0, 0).unwrap(),
-                    )),
-            )
-        });
-
-        let lines = (1..48).map(|half| {
-            div()
-                .absolute()
-                .left_0()
-                .right_0()
-                .top(px(half as f32 * HOUR_HEIGHT / 2.))
-                .h(px(1.))
-                .bg(if half % 2 == 0 {
-                    theme.cal_line
-                } else {
-                    theme.cal_line_faint
-                })
-        });
 
         // Room on the right of each day to drag-create beside a block.
         let free = (day_width * 0.1).clamp(FREE_STRIP.0, FREE_STRIP.1);
@@ -598,9 +531,180 @@ impl CalendarView {
                 })
         });
 
+        GridPage {
+            header,
+            first,
+            all_day,
+            all_day_height,
+            lane_count,
+            folds,
+            expanded,
+            columns: div()
+                .size_full()
+                .flex()
+                .children(columns)
+                .into_any_element(),
+            today_visible,
+        }
+    }
+
+    /// The time grid: the hour gutter, fixed, beside `page`'s headers,
+    /// all-day lane and columns, which slide with `other` beside them as
+    /// `frame` says (MD-044).
+    pub(crate) fn render_time_grid(
+        &self,
+        page: GridPage,
+        other: Option<GridPage>,
+        frame: &PageFrame,
+        now: NaiveDateTime,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        let scale = f32::from(window.rem_size()) / BASE_REM;
+        let gutter_px = GUTTER * scale;
+        let gutter = || div().w(px(gutter_px)).flex_none();
+        let now_label_height = NOW_LABEL.to_pixels(window.rem_size());
+        let now_minutes = time::minutes_into(now.date(), now);
+        let now_top = now_minutes as f32 / 60. * HOUR_HEIGHT;
+        let lane_count = page.lane_count;
+        let (folds, expanded) = (page.folds, page.expanded);
+        let first = page.first;
+        // How much of the period beside shows: the lane's height and the
+        // current time's label go between the two with it.
+        let share = if other.is_some() {
+            (frame.offset.abs() / self.page_width()).clamp(0., 1.)
+        } else {
+            0.
+        };
+        let between = |a: f32, b: f32| a + (b - a) * share;
+        let all_day_height = other.as_ref().map_or(page.all_day_height, |o| {
+            between(page.all_day_height, o.all_day_height)
+        });
+        let now_opacity = between(
+            if page.today_visible { 1. } else { 0. },
+            match &other {
+                Some(o) if o.today_visible => 1.,
+                _ => 0.,
+            },
+        );
+        let today_visible = now_opacity > 0.;
+        let any_lanes = lane_count > 0 || other.as_ref().is_some_and(|o| o.lane_count > 0);
+        let (other_header, other_all_day, other_columns) = match other {
+            Some(o) => (o.header, Some(o.all_day), Some(o.columns)),
+            None => (None, None, None),
+        };
+
+        let week_number = self.show_week_numbers.then(|| {
+            div()
+                .text_size(TEXT_XS)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text_faint)
+                .child(crate::calendar::time::week_label(first))
+        });
+        let header = page.header.map(|header| {
+            div()
+                .h(DAY_HEADER_HEIGHT)
+                .flex_none()
+                .flex()
+                .child(
+                    gutter()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .children(week_number),
+                )
+                .child(div().flex_1().min_w_0().h_full().child(page_strip(
+                    "day-headers",
+                    frame,
+                    header,
+                    other_header,
+                )))
+        });
+
+        let fold_toggle = folds.then(|| {
+            let (glyph, label) = if expanded {
+                (Icon::ChevronUp, "Show fewer all-day events")
+            } else {
+                (Icon::ChevronDown, "Show all all-day events")
+            };
+            icon_button_small("all-day-fold", glyph, label, &theme)
+                .aria_expanded(expanded)
+                .mr(-SPACE_XS)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.all_day_expanded = !this.all_day_expanded;
+                    cx.notify();
+                }))
+        });
+        let all_day = div()
+            .flex_none()
+            .flex()
+            .border_b_1()
+            .border_color(theme.cal_line)
+            .child(
+                gutter()
+                    .pt(SPACE_XS)
+                    .pr(SPACE_SM)
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .child(
+                        div()
+                            .pt(SPACE_XS)
+                            .text_size(TEXT_XS)
+                            .text_color(theme.text_faint)
+                            .when(any_lanes, |d| d.child("All day")),
+                    )
+                    .children(fold_toggle),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h(px(all_day_height))
+                    .child(page_strip("all-day", frame, page.all_day, other_all_day)),
+            );
+
+        let hour_labels = (1..24).filter_map(|hour| {
+            // Make room for the current time's label.
+            let minutes = hour * 60;
+            let near_now = ((minutes - now_minutes).abs() as f32) < 14. * scale;
+            if near_now && now_opacity >= 1. {
+                return None;
+            }
+            Some(
+                div()
+                    .absolute()
+                    .when(near_now, |d| d.opacity(1. - now_opacity))
+                    .top(px(hour as f32 * HOUR_HEIGHT - 7. * scale))
+                    .right(SPACE_SM)
+                    .text_size(TEXT_XS)
+                    .text_color(theme.text_faint)
+                    .font_features(tabular_figures())
+                    .child(compact_time_label(
+                        chrono::NaiveTime::from_hms_opt(hour as u32, 0, 0).unwrap(),
+                    )),
+            )
+        });
+
+        let lines = (1..48).map(|half| {
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .top(px(half as f32 * HOUR_HEIGHT / 2.))
+                .h(px(1.))
+                .bg(if half % 2 == 0 {
+                    theme.cal_line
+                } else {
+                    theme.cal_line_faint
+                })
+        });
+
         let now_label = today_visible.then(|| {
             div()
                 .absolute()
+                .opacity(now_opacity)
                 .right(SPACE_XS)
                 .top(px(now_top) - now_label_height / 2.)
                 .h(NOW_LABEL)
@@ -628,7 +732,7 @@ impl CalendarView {
                 chrono::Local::now().offset().local_minus_utc(),
             ));
         let grid = div()
-            .h(grid_height)
+            .h(px(24. * HOUR_HEIGHT))
             .flex()
             .child(
                 gutter()
@@ -645,9 +749,13 @@ impl CalendarView {
                     .min_w_0()
                     .h_full()
                     .relative()
-                    .flex()
                     .children(lines)
-                    .children(columns)
+                    .child(page_strip(
+                        "day-columns",
+                        frame,
+                        page.columns,
+                        other_columns,
+                    ))
                     .child(
                         canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {})
                             .absolute()

@@ -23,3 +23,7 @@ copied unchanged and wired in with `[patch.crates-io]` in Pigeon's `Cargo.toml`.
    notification delivered before a relaunch keeps its buttons. Pigeon asks for
    no Time Sensitive entitlement, so it never sends `time-sensitive`.
    `Cargo.toml`: the `UNNotificationSound` feature of objc2-user-notifications.
+4. `src/events.rs` (MD-044): scroll and magnify events with
+   `NSEventPhaseCancelled` map to `TouchPhase::Cancelled`. Upstream let them
+   fall through to `Moved`, so a gesture the system took away (Mission
+   Control and the like) never ended and a calendar swipe stayed half-dragged.

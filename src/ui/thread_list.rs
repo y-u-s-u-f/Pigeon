@@ -3,22 +3,17 @@
 use std::{collections::HashSet, rc::Rc};
 
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, AppContext as _, Context, ElementId, Focusable as _,
-    FontStyle, FontWeight, HighlightStyle, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
-    StyledText, Window,
-    base::motion::MotionReveal,
-    base::spring,
-    component::{input::Input, scroll::ScrollableElement as _},
-    deferred, div, list,
-    prelude::FluentBuilder as _,
-    px, relative, rems,
+    Animation, AnimationExt as _, AnyElement, AppContext as _, Context, ElementId, FontStyle,
+    FontWeight, HighlightStyle, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, StyledText, Window,
+    base::motion::MotionReveal, base::spring, component::scroll::ScrollableElement as _, deferred,
+    div, list, prelude::FluentBuilder as _, px, relative, rems,
 };
 
 use super::{
     HEADER_HEIGHT, avatar, binding_caps,
     controls::{ButtonKind, popover_surface, push_button},
-    icon, icon_button, icon_button_small, is_secondary, label,
+    icon, is_secondary, label,
     motion::{self, SPRING_PANE, fade},
     status::{plural, thousands},
     tooltip, window_drag_area,
@@ -26,9 +21,8 @@ use super::{
 use crate::ui::style::*;
 use crate::{
     actions::{
-        ApplyLabel, Archive, CloseSearch, Compose, Delete, DismissNeedsReply,
-        LoadOlderConversations, MarkRead, MarkUnread, SEARCH, SendLater, Snooze, SyncNow,
-        ToggleArchivedSection, ToggleSearch, ToggleSidebar, ToggleStar,
+        ApplyLabel, Archive, Compose, Delete, DismissNeedsReply, LoadOlderConversations, MarkRead,
+        MarkUnread, SendLater, Snooze, SyncNow, ToggleArchivedSection, ToggleStar,
     },
     app::{Density, Nav, PigeonApp, Row, SearchSuggestion},
     assets::Icon,
@@ -38,15 +32,18 @@ use crate::{
 };
 
 /// Where a row's text starts: the row's margin plus its inset, which holds
-/// the unread dot. The header and the result count line up with it.
+/// the unread dot. The header and the result count line up with it, and the
+/// checkboxes sit over its start.
 const ROW_MARGIN: gpui::Pixels = SPACE_SM;
-const ROW_INSET: gpui::Pixels = SPACE_XL;
+const ROW_INSET: gpui::Pixels = SPACE_LG;
 /// Labels shown as dots in a row, at most; the reader shows them all.
 const LABEL_DOTS: usize = 3;
 const LABEL_DOT: gpui::Pixels = px(7.);
 const UNREAD_DOT: gpui::Pixels = px(6.);
-/// The bar on the selected row's leading edge while the list has focus.
-const FOCUS_BAR: gpui::Pixels = px(3.);
+/// The line round the selected row's leading edge while the list has
+/// focus, and how far it runs on past the corners before it fades out.
+const FOCUS_LINE: gpui::Pixels = px(1.5);
+const FOCUS_LINE_TAIL: gpui::Pixels = SPACE_XL;
 /// The row's hover group: the date gives way to the quick actions, and the
 /// checkbox shows, without the app keeping a hover state (ME-004).
 const ROW_GROUP: &str = "thread-row";
@@ -103,6 +100,9 @@ struct RowContext {
     /// Read once per render, not per row (MC-043).
     theme: Theme,
     now: chrono::DateTime<chrono::Local>,
+    /// How far into picking the list is, 0 to 1: the senders move over to
+    /// make room for the checkboxes.
+    select_shift: f32,
 }
 
 impl PigeonApp {
@@ -166,8 +166,6 @@ impl PigeonApp {
     pub(crate) fn render_thread_list(
         &self,
         width: gpui::Pixels,
-        // How far the sidebar is shown, 0 to 1, as it slides (MD-012).
-        sidebar: f32,
         counts: &crate::ui::sidebar::NavCounts,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -186,16 +184,9 @@ impl PigeonApp {
             .filter(|r| matches!(r, Row::Thread(ix) if self.is_checked(*ix)))
             .count();
         let selecting = !self.checked.is_empty();
-        // MD-016: the field opens on a spring, sampled open or not so it
-        // never plays again on its own; it closes at once, with the list.
-        let target = if self.search_open { 1. } else { 0. };
-        let search = if cx.reduce_motion() {
-            fade("search-open", target, target, window, cx)
-        } else {
-            let policy = SPRING_PANE.with_travel(self.search_open);
-            spring("search-open", target, policy, window, cx)
-        };
 
+        // The sidebar's toggle, Compose and the search field are in the
+        // top bar.
         let header = window_drag_area(div().id("list-header"))
             .h(super::HEADER_MIN)
             .min_h(HEADER_HEIGHT)
@@ -204,68 +195,20 @@ impl PigeonApp {
             .items_center()
             .gap(SPACE_SM)
             .pr(SPACE_MD)
-            .map(|this| {
-                let inset = if selecting && !self.search_open {
-                    ROW_MARGIN
-                } else {
-                    ROW_MARGIN + ROW_INSET
-                };
-                if sidebar >= 1. {
-                    return this.pl(inset);
-                }
-                // The way back, in the sidebar's button's place. It fades as
-                // the sidebar slides in, and its slot narrows with it, so the
-                // title glides rather than jumps (MD-012).
-                let p = sidebar.clamp(0., 1.);
-                this.pl(SPACE_SM + (inset - SPACE_SM) * p).child(
+            .pl(ROW_MARGIN + ROW_INSET)
+            .when(selecting, |this| {
+                this.child(self.render_select_all(checked_rows, thread_rows, &theme, cx))
+            })
+            .child(self.render_nav_title(&theme))
+            .when(unread > 0, |this| {
+                this.child(
                     div()
                         .flex_none()
-                        .w(HIT_TARGET * (1. - p))
-                        .mr(-SPACE_SM * p)
-                        .overflow_hidden()
-                        .opacity(1. - p)
-                        .child(icon_button(
-                            "show-sidebar",
-                            Icon::PanelLeft,
-                            "Show sidebar",
-                            Box::new(ToggleSidebar),
-                            &theme,
-                        )),
+                        .text_size(TEXT_SM)
+                        .text_color(theme.text_muted)
+                        .font_features(tabular_figures())
+                        .child(format!("{} unread", thousands(unread))),
                 )
-            })
-            .map(|this| {
-                if self.search_open {
-                    return this.child(self.render_search_bar(search, &theme, window, cx));
-                }
-                this.when(selecting, |this| {
-                    this.child(self.render_select_all(checked_rows, thread_rows, &theme, cx))
-                })
-                .child(self.render_nav_title(&theme))
-                .when(unread > 0, |this| {
-                    this.child(
-                        div()
-                            .flex_none()
-                            .text_size(TEXT_SM)
-                            .text_color(theme.text_muted)
-                            .font_features(tabular_figures())
-                            .child(format!("{} unread", thousands(unread))),
-                    )
-                })
-                .child(div().flex_1())
-                .child(icon_button(
-                    "compose",
-                    Icon::SquarePen,
-                    "New message",
-                    Box::new(Compose),
-                    &theme,
-                ))
-                .child(icon_button(
-                    "search",
-                    Icon::Search,
-                    "Search",
-                    Box::new(ToggleSearch),
-                    &theme,
-                ))
             });
 
         let searching = self.is_searching();
@@ -287,7 +230,16 @@ impl PigeonApp {
         let needs_gmail = searching
             && self.search_query.gmail_only()
             && (!self.server_search.available || self.server_search.state == ServerState::Offline);
-        let row_cx = Rc::new(self.row_context(cx));
+        // Under Reduce Motion the spring snaps.
+        let select_shift = spring(
+            "list-select-shift",
+            if selecting { 1. } else { 0. },
+            SPRING_PANE,
+            window,
+            cx,
+        )
+        .clamp(0., 1.);
+        let row_cx = Rc::new(self.row_context(select_shift, cx));
         let view = cx.entity();
         let list_view = |row_cx: Rc<RowContext>| {
             div()
@@ -410,7 +362,6 @@ impl PigeonApp {
         } else {
             summary
         };
-        let suggestions = self.search_suggestions(window, cx);
         div()
             .relative()
             .w(width)
@@ -445,19 +396,17 @@ impl PigeonApp {
                     )
                 },
             )
-            .when(!suggestions.is_empty(), |this| {
-                this.child(self.render_search_suggestions(suggestions, &theme, window, cx))
-            })
     }
 
     /// The row data that isn't per thread: queued sends, the system's
     /// Differentiate Without Color.
-    fn row_context(&self, cx: &gpui::App) -> RowContext {
+    fn row_context(&self, select_shift: f32, cx: &gpui::App) -> RowContext {
         RowContext {
             queued: self.queued_sends.clone(),
             no_color: crate::native::differentiate_without_color(),
             theme: Theme::of(cx).clone(),
             now: chrono::Local::now(),
+            select_shift,
         }
     }
 
@@ -479,14 +428,18 @@ impl PigeonApp {
             gpui::Toggled::False
         };
         focusable_control(div().id("select-all"), theme)
+            .group(CHECK_GROUP)
             .role(gpui::Role::CheckBox)
             .aria_label(format!("Select all, {checked} of {total} selected"))
             .aria_toggled(state)
-            .size(HIT_TARGET)
+            // The box over the rows' boxes, at the text's start.
+            .ml(-SPACE_SM)
+            .px(SPACE_SM)
+            .min_w(HIT_TARGET)
+            .min_h(HIT_TARGET)
             .flex_none()
             .flex()
             .items_center()
-            .justify_center()
             .rounded(RADIUS_SM)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(check_box(state, theme))
@@ -651,7 +604,7 @@ impl PigeonApp {
 
     /// Where a search looks, as the scope chip names it: an `in:` in the
     /// query, else this view or All Mail.
-    fn search_scope_name(&self) -> SharedString {
+    pub(crate) fn search_scope_name(&self) -> SharedString {
         use crate::search::Scope;
         match self.search_query.scope {
             None if self.search_all => "All Mail".into(),
@@ -757,112 +710,11 @@ impl PigeonApp {
             })
     }
 
-    /// The search button, expanded into a field that fills the header. It
-    /// grows out of the button's place on the right.
-    fn render_search_bar(
-        &self,
-        open: f32,
-        theme: &Theme,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        // Where the search looks; a click widens it to all mail. An `in:`
-        // in the query decides instead, and the chip names it (ME-016).
-        let fixed = self.search_query.scope.is_some();
-        let scope_label = self.search_scope_name();
-        let scope = div()
-            .id("search-scope")
-            .flex_none()
-            .h(CONTROL_SM)
-            .pl(SPACE_SM)
-            .pr(if fixed { SPACE_SM } else { SPACE_XS })
-            .flex()
-            .items_center()
-            .gap(SPACE_2XS)
-            .rounded(RADIUS_SM)
-            .bg(theme.chip_bg)
-            .text_size(TEXT_SM)
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(theme.text_muted)
-            .child(scope_label.clone())
-            .map(|this| {
-                if fixed {
-                    this.role(gpui::Role::Label)
-                        .aria_label(format!(
-                            "Searching {scope_label}, set by in: in your search"
-                        ))
-                        .tooltip(|window, cx| {
-                            tooltip("Set by in: in your search").build(window, cx)
-                        })
-                } else {
-                    this.role(gpui::Role::Button)
-                        .aria_label(format!("Search in {scope_label}"))
-                        .child(icon(Icon::ChevronDown, ICON_SM, theme.text_faint))
-                        .hover(|s| s.bg(theme.selected_bg).text_color(theme.text))
-                        .active(|s| s.bg(theme.selected_bg).opacity(0.8))
-                        .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_search_scope(cx)))
-                        .tooltip(|window, cx| {
-                            tooltip("Switch between this folder and All Mail").build(window, cx)
-                        })
-                }
-            });
-
-        // MA-082: the field shows it has the keyboard; X clears the text
-        // first and closes only an empty search.
-        let focused = self.search_input.focus_handle(cx).is_focused(window);
-        let has_text = !self.search_input.read(cx).value().is_empty();
-        let clear = icon_button_small(
-            "close-search",
-            Icon::X,
-            if has_text {
-                "Clear search"
-            } else {
-                "Close search"
-            },
-            theme,
-        )
-        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-        .on_click(cx.listener(move |this, _, window, cx| {
-            if has_text {
-                this.clear_search_text(window, cx);
-            } else {
-                window.dispatch_action(Box::new(CloseSearch), cx);
-            }
-        }));
-        let field = super::search_field(Some(focused), theme)
-            .key_context(SEARCH)
-            .h(CONTROL_LG)
-            .pl(SPACE_MD)
-            .pr(SPACE_2XS)
-            .overflow_hidden()
-            .child(icon(Icon::Search, ICON_MD, theme.text_muted))
-            .child(scope)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(Input::new(&self.search_input).appearance(false).px(px(0.))),
-            )
-            .child(clear)
-            // From most of its width, since it opens often (MA-095); Reduce
-            // Motion leaves the fade.
-            .w(relative(if cx.reduce_motion() {
-                1.
-            } else {
-                0.6 + 0.4 * open
-            }))
-            .opacity(open.clamp(0., 1.));
-        div().flex_1().flex().justify_end().child(field)
-    }
-
-    /// The dropdown under the search field: recent searches and operators
-    /// while it's empty, contacts after `from:` or `to:`. It scrolls past
-    /// `SUGGESTIONS_MAX`, keeping the highlighted row in view (ME-015).
-    fn render_search_suggestions(
+    /// The dropdown under the top bar's search field: recent searches and
+    /// operators while it's empty, contacts after `from:` or `to:`. It
+    /// scrolls past `SUGGESTIONS_MAX`, keeping the highlighted row in view
+    /// (ME-015).
+    pub(crate) fn render_search_suggestions(
         &self,
         suggestions: Vec<SearchSuggestion>,
         theme: &Theme,
@@ -1021,9 +873,10 @@ impl PigeonApp {
                 .aria_label("Search suggestions")
                 .occlude()
                 .absolute()
-                .top(super::header_height(window) - SPACE_XS)
-                .left(ROW_MARGIN)
-                .right(ROW_MARGIN)
+                .top(relative(1.))
+                .mt(SPACE_XS)
+                .left_0()
+                .right_0()
                 .max_h(SUGGESTIONS_MAX)
                 .p(SPACE_XS)
                 .flex()
@@ -1194,7 +1047,6 @@ impl PigeonApp {
                     .child(
                         div()
                             .flex_none()
-                            .w(ROW_INSET - SPACE_XS)
                             .flex()
                             .justify_center()
                             // MD-021: one glyph, turned.
@@ -1234,7 +1086,7 @@ impl PigeonApp {
         thread_ix: usize,
         row_cx: &RowContext,
         theme: &Theme,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let thread = &self.data.threads[thread_ix];
@@ -1251,6 +1103,16 @@ impl PigeonApp {
             && window.is_window_active();
         let has_draft = thread.folder != Folder::Drafts && self.draft_replies.contains(&thread.id);
         let queued = row_cx.queued.contains(&thread.id);
+        // Draws in from the corners as the row takes the keyboard; only
+        // fades under Reduce Motion.
+        let focus_line = motion::presence(
+            ElementId::Name(format!("row-line-{}", thread.id).into()),
+            selected && list_focused,
+            window,
+            cx,
+        )
+        .clamp(0., 1.);
+        let focus_reach = if cx.reduce_motion() { 1. } else { focus_line };
 
         // Sent and drafts are about who they went to; everything else about
         // who wrote (ME-011).
@@ -1431,13 +1293,14 @@ impl PigeonApp {
             .child(meta)
             .child(self.render_row_actions(thread_ix, theme, cx));
 
-        // In the inset, clear of the focus bar: the unread dot on the sender
-        // line, or a checkbox centered in the row while picking or hovered.
+        // The unread dot, centered in the inset, clear of the focus line. It
+        // gives way to the checkbox, which sits over the sender's first
+        // letters while picking or hovered.
         let pinned_checkbox = checked || selecting;
         let marker = div()
             .absolute()
-            .left(-ROW_INSET + SPACE_XS)
-            .w(ROW_INSET - SPACE_XS)
+            .left(-ROW_INSET)
+            .w(ROW_INSET)
             .top_0()
             .bottom_0()
             .flex()
@@ -1455,13 +1318,11 @@ impl PigeonApp {
             });
         let check = div()
             .absolute()
-            .left(SPACE_XS)
-            .w(ROW_INSET - SPACE_XS)
+            .left(-SPACE_SM)
             .top_0()
             .bottom_0()
             .flex()
             .items_center()
-            .justify_center()
             .child(
                 checkbox(thread_ix, checked, &subject, theme)
                     .when(!pinned_checkbox, |this| {
@@ -1473,9 +1334,20 @@ impl PigeonApp {
                     })),
             );
 
+        // On hover, the letters under the checkbox are clipped away, leaving
+        // bare glass round it: the clip moves right past the box and the
+        // text moves back by as much, so it never moves. Offsets don't change
+        // layout, so the sender keeps its width. Ids let the hover group
+        // reach layout. While picking, the box has its own room instead: the
+        // sender moves over by its width, so names stay whole.
+        let cut = ICON_MD.to_pixels(window.rem_size()) + SPACE_XS;
+        let shift = row_cx.select_shift;
+        let hover_clip = !pinned_checkbox && shift == 0.;
         let sender = div()
+            .id(("row-sender", thread_ix))
             .min_w_0()
-            .truncate()
+            .overflow_hidden()
+            .relative()
             .text_size(TEXT_BASE)
             .font_weight(if unread {
                 FontWeight::SEMIBOLD
@@ -1483,7 +1355,20 @@ impl PigeonApp {
                 FontWeight::NORMAL
             })
             .text_color(primary)
-            .child(who.clone());
+            .ml(cut * shift)
+            .when(hover_clip, |this| {
+                this.group_hover(ROW_GROUP, |s| s.left(cut))
+            })
+            .child(
+                div()
+                    .id(("row-sender-text", thread_ix))
+                    .relative()
+                    .truncate()
+                    .when(hover_clip, |this| {
+                        this.group_hover(ROW_GROUP, |s| s.left(-cut))
+                    })
+                    .child(who.clone()),
+            );
         let draft_mark = has_draft.then(|| {
             div()
                 .flex_none()
@@ -1604,7 +1489,8 @@ impl PigeonApp {
                             )
                             .children(line_mark)
                             .children(label_dots)
-                            .child(trailing),
+                            .child(trailing)
+                            .child(check),
                     )
                 } else {
                     this.py(SPACE_MD)
@@ -1623,7 +1509,8 @@ impl PigeonApp {
                                 .children(draft_mark)
                                 .children(message_count)
                                 .child(div().flex_1())
-                                .child(trailing),
+                                .child(trailing)
+                                .child(check),
                         )
                         // Subject and labels.
                         .child(
@@ -1661,18 +1548,9 @@ impl PigeonApp {
                         )
                 }
             })
-            // The keyboard's place: a short pill on the leading edge.
-            .when(selected && list_focused, |this| {
-                this.child(
-                    div()
-                        .absolute()
-                        .left(SPACE_2XS)
-                        .top(relative(0.25))
-                        .bottom(relative(0.25))
-                        .w(FOCUS_BAR)
-                        .rounded_full()
-                        .bg(theme.focus_bar),
-                )
+            // The keyboard's place: a line hugging the leading edge.
+            .when(focus_line > 0., |this| {
+                this.child(edge_line(focus_line, focus_reach, theme.accent))
             })
             .when(self.is_context_target(thread_ix), |this| {
                 this.child(
@@ -1687,7 +1565,6 @@ impl PigeonApp {
                         .border_color(theme.context_ring),
                 )
             })
-            .child(check)
             // MA-087: onto a folder, label or category in the sidebar.
             .on_drag(
                 self.dragged_threads(thread_ix, checked),
@@ -1969,14 +1846,73 @@ fn subject_and_snippet(
     StyledText::new(text).with_highlights(highlights)
 }
 
-/// The box of a checkbox: empty, checked, or mixed.
+/// The focused row's line: down its leading edge, round both corners on
+/// the row's radius and on along the top and bottom, fading out. `reach`
+/// draws it out from the corners; `opacity` fades it.
+fn edge_line(opacity: f32, reach: f32, color: gpui::Hsla) -> impl IntoElement {
+    gpui::canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            // On the row's outline, the stroke's outer edge on its edge.
+            let half = FOCUS_LINE / 2.;
+            let r = RADIUS_MD - half;
+            let left = bounds.left() + half;
+            let top = bounds.top() + half;
+            let bottom = bounds.bottom() - half;
+            let tail = FOCUS_LINE_TAIL * reach;
+            let end = left + r + tail;
+            let mut path = gpui::PathBuilder::stroke(FOCUS_LINE);
+            path.move_to(gpui::point(end, top));
+            path.line_to(gpui::point(left + r, top));
+            path.arc_to(
+                gpui::point(r, r),
+                px(0.),
+                false,
+                false,
+                gpui::point(left, top + r),
+            );
+            path.line_to(gpui::point(left, bottom - r));
+            path.arc_to(
+                gpui::point(r, r),
+                px(0.),
+                false,
+                false,
+                gpui::point(left + r, bottom),
+            );
+            path.line_to(gpui::point(end, bottom));
+            let Ok(path) = path.build() else { return };
+            // Solid round the corners, then fading along the tails. The
+            // path's bounds start `half` left of the line (its stroke) and
+            // end at the tails' butt ends.
+            let solid = f32::from(half + r) / f32::from(half + r + tail);
+            let color = color.opacity(opacity);
+            window.paint_path(
+                path,
+                gpui::linear_gradient(
+                    90.,
+                    gpui::linear_color_stop(color, solid.min(1.)),
+                    gpui::linear_color_stop(color.alpha(0.), 1.),
+                ),
+            );
+        },
+    )
+    .absolute()
+    .inset_0()
+}
+
+/// The group of a row checkbox's hit target, so the box answers its hover.
+const CHECK_GROUP: &str = "row-check";
+
+/// The box of a checkbox: empty, checked, or mixed. A hairline square
+/// that fills with the accent once checked.
 fn check_box(state: gpui::Toggled, theme: &Theme) -> gpui::Div {
     div()
+        .flex_none()
         .size(ICON_MD)
         .flex()
         .items_center()
         .justify_center()
-        .rounded(RADIUS_SM)
+        .rounded(RADIUS_XS)
         .map(|d| match state {
             gpui::Toggled::True => {
                 d.bg(theme.accent)
@@ -1986,11 +1922,17 @@ fn check_box(state: gpui::Toggled, theme: &Theme) -> gpui::Div {
                 d.bg(theme.accent)
                     .child(icon(Icon::Minus, ICON_SM, theme.accent_text))
             }
-            _ => d.border_1().border_color(theme.text_faint),
+            _ => d
+                .bg(theme.control_track)
+                .border_1()
+                .border_color(theme.text_faint)
+                .group_hover(CHECK_GROUP, |s| s.border_color(theme.text_muted)),
         })
 }
 
-/// A row's checkbox for picking it with others.
+/// A row's checkbox for picking it with others. Placed `SPACE_SM` before
+/// the text, so the box itself starts where the text does; the hit target
+/// reaches out round it. The sender's letters under it are clipped away.
 fn checkbox(
     thread_ix: usize,
     checked: bool,
@@ -2002,16 +1944,21 @@ fn checkbox(
     } else {
         gpui::Toggled::False
     };
+    // The sender's line.
+    let line = TEXT_BASE * 1.4;
     div()
         .id(("row-check", thread_ix))
+        .group(CHECK_GROUP)
         .role(gpui::Role::CheckBox)
         .aria_label(format!("Select {subject}"))
         .aria_toggled(state)
-        .size(HIT_TARGET)
+        .h(line)
+        .min_h(HIT_TARGET)
+        .min_w(HIT_TARGET)
+        .pl(SPACE_SM)
         .flex_none()
         .flex()
         .items_center()
-        .justify_center()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(check_box(state, theme))
 }

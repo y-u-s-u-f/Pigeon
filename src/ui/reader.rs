@@ -67,7 +67,6 @@ fn render_later_bar(thread: &Thread, theme: &Theme) -> Option<AnyElement> {
     Some(
         div()
             .w_full()
-            .max_w(READER_MAX)
             .mt(SPACE_MD)
             .px(SPACE_MD)
             .py(SPACE_XS)
@@ -98,8 +97,6 @@ fn render_later_bar(thread: &Thread, theme: &Theme) -> Option<AnyElement> {
 /// not, so `MESSAGES_START + ix` is always message `ix`.
 pub const MESSAGES_START: usize = 2;
 
-/// The widest the conversation gets, for a readable line (MA-061).
-const READER_MAX: Pixels = px(760.);
 /// A reader narrower than this drops the body's indent.
 const NARROW: Pixels = px(520.);
 /// The longest file name an attachment chip shows.
@@ -331,12 +328,7 @@ impl PigeonApp {
                     .child(super::motion::enter(
                         "compose-in",
                         super::motion::Rise::None,
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .w_full()
-                            .max_w(READER_MAX)
-                            .child(composer),
+                        div().flex_1().min_h_0().w_full().child(composer),
                     )),
                 None if !self.checked.is_empty() => this
                     .child(
@@ -647,7 +639,6 @@ impl PigeonApp {
                     div()
                         .id(id.clone())
                         .w_full()
-                        .max_w(READER_MAX)
                         .relative()
                         .bg(theme.card_bg)
                         .border_x_1()
@@ -734,7 +725,6 @@ impl PigeonApp {
                 div()
                     .relative()
                     .w_full()
-                    .max_w(READER_MAX)
                     .mt(SPACE_LG)
                     .px(SPACE_LG)
                     .pt(SPACE_MD)
@@ -769,7 +759,6 @@ impl PigeonApp {
                         div()
                             .id("subject")
                             .w_full()
-                            .max_w(READER_MAX)
                             .text_size(TEXT_TITLE2)
                             .line_height(LINE_UI)
                             .font_weight(FontWeight::SEMIBOLD)
@@ -798,7 +787,6 @@ impl PigeonApp {
                             .child(
                                 div()
                                     .w_full()
-                                    .max_w(READER_MAX)
                                     .mt(SPACE_MD)
                                     .mb(SPACE_LG)
                                     .flex()
@@ -2176,7 +2164,6 @@ fn render_summary(view: &crate::app::ai_reader::SummaryView, theme: &Theme) -> A
             .role(gpui::Role::Region)
             .aria_label(format!("AI summary: {spoken}"))
             .w_full()
-            .max_w(READER_MAX)
             .mt(SPACE_MD)
             .px(SPACE_MD)
             .py(SPACE_SM)

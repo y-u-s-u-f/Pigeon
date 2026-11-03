@@ -28,6 +28,7 @@ pub mod event_panel;
 pub mod header;
 pub mod mini_month;
 pub mod month_view;
+pub mod paging;
 pub mod repeat;
 pub mod week_view;
 
@@ -37,8 +38,8 @@ use chrono::{Duration, Local, NaiveDate, NaiveDateTime};
 use gpui::{
     AnyElement, AppContext as _, Bounds, Context, Entity, EventEmitter, FocusHandle, FontWeight,
     InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Point, Render,
-    ScrollDelta, ScrollHandle, ScrollWheelEvent, SharedString, StatefulInteractiveElement as _,
-    StyleRefinement, Styled, Subscription, Task, TouchPhase, WeakEntity, Window, actions, anchored,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled,
+    Subscription, Task, WeakEntity, Window, actions, anchored,
     base::spring,
     component::{
         input::{InputEvent, InputState},
@@ -61,7 +62,7 @@ use crate::{
     calendar::{
         CalendarData, Event, GoogleSettings, Occurrence, RsvpStatus, SeriesScope, occurrences,
         policy, quick_add,
-        time::{self, LocalZone, add_months, month_grid, next_half_hour, week_start},
+        time::{self, LocalZone, month_grid, next_half_hour, week_start},
     },
     contacts::SharedContactBook,
     theme::Theme,
@@ -535,9 +536,12 @@ pub struct CalendarView {
     lift: f32,
     /// The grid gliding to Today or to an event (MD-040).
     scroll_glide: Option<ScrollGlide>,
-    /// A two-finger swipe across the grid: how far it went, and whether it
-    /// turned the page yet (MA-080).
-    swipe: Option<(Point<Pixels>, bool)>,
+    /// A two-finger gesture over the grid (MA-080).
+    swipe: Option<paging::Swipe>,
+    /// The period moving: with the fingers, settling, or a jump (MD-044).
+    turn: Option<paging::Turn>,
+    /// The view and the period's first day, as last drawn.
+    shown: Option<(ViewKind, NaiveDate)>,
     /// The event made or brought back last, whose block fades in once
     /// (MD-038); cleared when the period or view changes.
     just_added: Option<String>,
@@ -687,6 +691,8 @@ impl CalendarView {
             lift: 0.,
             scroll_glide: None,
             swipe: None,
+            turn: None,
+            shown: None,
             just_added: None,
             removed_block: None,
             grid_bounds: Rc::default(),
@@ -918,12 +924,7 @@ impl CalendarView {
     fn step(&mut self, forward: bool, cx: &mut Context<Self>) {
         self.drag = None;
         self.just_added = None;
-        let sign = if forward { 1 } else { -1 };
-        self.anchor = match self.view {
-            ViewKind::Day => self.anchor + Duration::days(sign),
-            ViewKind::Week => self.anchor + Duration::days(7 * sign),
-            ViewKind::Month => add_months(self.anchor, sign as i32),
-        };
+        self.anchor = self.stepped_anchor(forward);
         self.mini_month = None;
         cx.notify();
     }
@@ -3024,33 +3025,6 @@ impl CalendarView {
         cx.notify();
     }
 
-    /// Two fingers across the trackpad page like `]` and `[`, once per
-    /// swipe, when it's mostly sideways (MA-080). Mouse wheels, whose steps
-    /// are lines, and the momentum after a swipe don't page.
-    fn on_swipe(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
-        let ScrollDelta::Pixels(delta) = event.delta else {
-            return;
-        };
-        match event.touch_phase {
-            TouchPhase::Started => self.swipe = Some((delta, false)),
-            TouchPhase::Moved => {
-                let Some((total, paged)) = &mut self.swipe else {
-                    return;
-                };
-                *total += delta;
-                let (dx, dy) = (f32::from(total.x), f32::from(total.y));
-                if !*paged && dx.abs() > SWIPE_DISTANCE && dx.abs() > 2. * dy.abs() {
-                    *paged = true;
-                    if !self.modal() {
-                        // Fingers to the left bring the next period in.
-                        self.step(dx < 0., cx);
-                    }
-                }
-            }
-            _ => self.swipe = None,
-        }
-    }
-
     fn next_period(&mut self, _: &NextPeriod, _: &mut Window, cx: &mut Context<Self>) {
         if !self.modal() {
             self.step(true, cx);
@@ -3403,7 +3377,7 @@ impl CalendarView {
         .into_any_element()
     }
 
-    /// The width beside the rail.
+    /// The calendar's width: the window's, beside the rail.
     fn content_width(window: &Window) -> f32 {
         f32::from(window.viewport_size().width - crate::app::RAIL_WIDTH)
     }
@@ -3468,17 +3442,46 @@ impl CalendarView {
             .unwrap_or_default()
     }
 
-    fn render_body(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let occurrences = self.visible_occurrences();
+    /// The period shown, and while it moves the one beside it (MD-044).
+    fn render_body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let frame = self.page_frame(window, cx);
         // One clock for the whole frame (MC-059).
         let now = now();
-        match self.view {
-            ViewKind::Day => self.render_day(&occurrences, now, window, cx),
-            ViewKind::Week => {
-                self.render_time_grid(self.grid_days(), &occurrences, now, window, cx)
+        let occurrences = self.visible_occurrences();
+        let other = frame.other.map(|(anchor, _)| anchor);
+        let body = match self.view {
+            ViewKind::Month => {
+                let other = other.map(|anchor| {
+                    self.as_period(anchor, |this| {
+                        let occurrences = this.visible_occurrences();
+                        this.month_page(&occurrences, now, window, cx)
+                    })
+                });
+                let page = self.month_page(&occurrences, now, window, cx);
+                self.render_month(page, other, &frame, window, cx)
             }
-            ViewKind::Month => self.render_month(&occurrences, now, window, cx),
-        }
+            view => {
+                let other = other.map(|anchor| {
+                    self.as_period(anchor, |this| {
+                        let occurrences = this.visible_occurrences();
+                        this.time_grid_page(this.grid_days(), &occurrences, now, window, cx)
+                    })
+                });
+                let page = self.time_grid_page(self.grid_days(), &occurrences, now, window, cx);
+                let grid = self.render_time_grid(page, other, &frame, now, window, cx);
+                if view == ViewKind::Day {
+                    self.render_day(grid, &occurrences, now, window, cx)
+                } else {
+                    grid
+                }
+            }
+        };
+        div()
+            .relative()
+            .size_full()
+            .child(body)
+            .when(frame.moving(), |d| d.child(paging::moving_cover()))
+            .into_any_element()
     }
 
     /// The buttons answering a prompt about a repeating event.
@@ -3923,9 +3926,6 @@ impl CalendarView {
             .into_any_element()
     }
 }
-
-/// How far two fingers go sideways before the grid pages (MA-080).
-const SWIPE_DISTANCE: f32 = 80.;
 
 /// How far past the Day view's side threshold the width must go to show or
 /// hide it (MD-003).

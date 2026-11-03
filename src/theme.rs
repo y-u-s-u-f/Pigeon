@@ -32,7 +32,10 @@ pub struct Theme {
     // through; the reader is the most solid. GPUI adds the alphas of stacked
     // layers (and clamps), so a light layer over a light pane turns gray
     // rather than whiter: keep light-mode cards and fields faint.
-    pub rail_bg: Hsla,
+    /// The window's chrome: the top bar and the rail under it, one L-shaped
+    /// frame around the panes. At least as solid as the sidebar, a shade
+    /// apart from it, so it reads as chrome.
+    pub bar_bg: Hsla,
     pub sidebar_bg: Hsla,
     pub list_bg: Hsla,
     pub reader_bg: Hsla,
@@ -56,8 +59,6 @@ pub struct Theme {
     pub selected_bg: Hsla,
     /// The list's selection while the list has keyboard focus.
     pub selected_focused_bg: Hsla,
-    /// The quiet bar on the focused list's selected row.
-    pub focus_bar: Hsla,
     /// Rows picked for a bulk action (`x`, shift- and ⌘-click).
     pub checked_bg: Hsla,
     /// The outline on the row a context menu is open on.
@@ -171,7 +172,7 @@ impl Theme {
             high_contrast: false,
             opaque: false,
             material: hex(0x1e1e21ff),
-            rail_bg: hex(0x0c0c10cc),
+            bar_bg: hex(0x0c0c10d9),
             sidebar_bg: hex(0x111115cc),
             list_bg: hex(0x141418d1),
             reader_bg: hex(0x18181ce0),
@@ -189,7 +190,6 @@ impl Theme {
             hover_bg: hex(0xffffff0a),
             selected_bg: hex(0xffffff1c),
             selected_focused_bg: hex(0x7aa5ff38),
-            focus_bar: hex(0x7aa5ff8c),
             checked_bg: hex(0x7aa5ff1f),
             context_ring: hex(0x7aa5ff99),
             nav_active_bg: hex(0xffffff17),
@@ -246,7 +246,7 @@ impl Theme {
             high_contrast: false,
             opaque: false,
             material: hex(0xececeeff),
-            rail_bg: hex(0xf2f2f6cc),
+            bar_bg: hex(0xededf1e0),
             sidebar_bg: hex(0xf7f7facc),
             list_bg: hex(0xfafafcbf),
             reader_bg: hex(0xffffffd1),
@@ -264,7 +264,6 @@ impl Theme {
             hover_bg: hex(0x0000000a),
             selected_bg: hex(0x00000012),
             selected_focused_bg: hex(0x1d5bd11c),
-            focus_bar: hex(0x1d5bd166),
             checked_bg: hex(0x1d5bd10f),
             context_ring: hex(0x1d5bd180),
             nav_active_bg: hex(0x00000012),
@@ -353,7 +352,6 @@ impl Theme {
         self.match_text = self.link;
         let alpha = |dark_a: f32, light_a: f32| accent.alpha(if dark { dark_a } else { light_a });
         self.selected_focused_bg = alpha(0.22, 0.11);
-        self.focus_bar = alpha(0.55, 0.4);
         self.checked_bg = alpha(0.12, 0.06);
         self.context_ring = alpha(0.6, 0.5);
         self.cal_today_bg = alpha(0.04, 0.03);
@@ -388,7 +386,6 @@ impl Theme {
         self.selected_focused_bg = self
             .accent
             .alpha((self.selected_focused_bg.a * 1.6).min(1.));
-        self.focus_bar = self.accent;
         self.context_ring = self.accent;
         if self.is_dark {
             self.text_muted = hex(0xd2d2daff);
@@ -415,7 +412,7 @@ impl Theme {
         self.opaque = glass >= 100;
         let material = self.material;
         for pane in [
-            &mut self.rail_bg,
+            &mut self.bar_bg,
             &mut self.sidebar_bg,
             &mut self.list_bg,
             &mut self.reader_bg,
@@ -736,6 +733,14 @@ mod tests {
     }
 
     #[test]
+    fn chrome_is_as_solid_as_the_sidebar() {
+        for theme in themes() {
+            assert!(theme.bar_bg.a >= theme.sidebar_bg.a);
+            assert_ne!(theme.solid(theme.bar_bg), theme.solid(theme.sidebar_bg));
+        }
+    }
+
+    #[test]
     fn increase_contrast_is_opaque_and_stronger() {
         for theme in themes().into_iter().filter(|t| t.high_contrast) {
             assert!(theme.opaque);
@@ -754,7 +759,7 @@ mod tests {
         let half = Theme::build(WindowAppearance::Dark, &display, 50);
         assert!(half.sidebar_bg.a > tinted.sidebar_bg.a && half.sidebar_bg.a < 1.);
         let solid = Theme::build(WindowAppearance::Light, &display, 100);
-        assert!(solid.opaque && solid.rail_bg.a == 1. && solid.menu_bar_bg.a == 1.);
+        assert!(solid.opaque && solid.bar_bg.a == 1. && solid.menu_bar_bg.a == 1.);
         let reduce = Display {
             reduce_transparency: true,
             ..display

@@ -61,6 +61,37 @@ pub const LOADING_DELAY: Duration = Duration::from_millis(300);
 /// How long a loading placeholder takes to fade in after the wait.
 const LOADING_FADE: Duration = Duration::from_millis(180);
 
+/// How far a context menu travels as it appears, from the cursor's side.
+pub const MENU_TRAVEL: Pixels = px(4.);
+/// Pointer rest on a submenu's row before it opens.
+pub const MENU_SUBMENU_DELAY: Duration = Duration::from_millis(120);
+/// How long the pointer can be heading for an open submenu across other
+/// rows before they take the highlight.
+pub const MENU_AIM_GRACE: Duration = Duration::from_millis(280);
+/// Releasing the button that opened a menu chooses the row under it once
+/// the pointer went this far (px), or after `MENU_HOLD`: press, drag and
+/// release.
+pub const MENU_DRAG_CHOOSE: f32 = 4.;
+pub const MENU_HOLD: Duration = Duration::from_millis(250);
+
+/// Paging by swipe (MD-044). How far the fingers go before the gesture
+/// picks an axis, px.
+pub const SWIPE_AXIS_LOCK: f32 = 6.;
+/// Released past this share of the width, a swipe pages however slow.
+pub const SWIPE_PAGE_SHARE: f32 = 0.4;
+/// A flick this fast (px/s) pages from a short distance...
+pub const SWIPE_FLICK_VELOCITY: f32 = 350.;
+/// ...once the page moved at least this far (px) its way.
+pub const SWIPE_FLICK_MIN: f32 = 12.;
+/// Fingers resting this long (s) before lifting don't flick.
+pub const SWIPE_FLICK_STALE: f32 = 0.08;
+/// The fastest a release carries into the settle, px/s.
+pub const SWIPE_MAX_VELOCITY: f32 = 6000.;
+/// Under Reduce Motion, how far (px) the fingers go before a swipe pages.
+pub const SWIPE_REDUCED_PAGE: f32 = 80.;
+/// How far a jumped-to page travels in, px.
+pub const PAGE_JUMP_TRAVEL: f32 = 28.;
+
 /// Which way an arriving card travels: up for things anchored to the
 /// bottom (toasts, prompts), down for things hanging under a control or the
 /// top edge (popovers, menus, the palette), none for inline content.
@@ -170,6 +201,89 @@ pub fn spinner(id: impl Into<ElementId>, glyph: Svg) -> AnimationElement<Svg> {
     )
 }
 
+/// One turn of `spinner`.
+const SPIN_TURN: Duration = Duration::from_millis(1000);
+
+#[derive(Clone, Copy)]
+struct Spin {
+    started: Instant,
+    /// When the work ended, and when the turn under way then ends.
+    finish: Option<(Instant, Instant)>,
+}
+
+/// `glyph`, turning as `spinner` while `busy`; when the work ends it
+/// finishes the turn under way instead of snapping upright.
+pub fn spinner_while(
+    id: &'static str,
+    busy: bool,
+    glyph: Svg,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let now = cx.background_executor().now();
+    let state = window.use_keyed_state(
+        ElementId::NamedChild(ElementId::from(id).into(), "spin".into()),
+        cx,
+        |_, _| None::<Spin>,
+    );
+    let spin = *state.read(cx);
+    let Some(spin) = spin else {
+        if !busy {
+            return glyph.into_any_element();
+        }
+        state.update(cx, |s, _| {
+            *s = Some(Spin {
+                started: now,
+                finish: None,
+            })
+        });
+        return spinner(id, glyph).into_any_element();
+    };
+    if busy {
+        if spin.finish.is_some() {
+            // Busy again before the turn ended: the spinner starts over.
+            state.update(cx, |s, _| {
+                *s = Some(Spin {
+                    started: now,
+                    finish: None,
+                })
+            });
+        }
+        return spinner(id, glyph).into_any_element();
+    }
+    let (ended, ends) = spin.finish.unwrap_or_else(|| {
+        let turns =
+            now.saturating_duration_since(spin.started).as_secs_f32() / SPIN_TURN.as_secs_f32();
+        (now, spin.started + SPIN_TURN.mul_f32(turns.ceil()))
+    });
+    if now >= ends {
+        state.update(cx, |s, _| *s = None);
+        return glyph.into_any_element();
+    }
+    if spin.finish.is_none() {
+        state.update(cx, |s, _| {
+            *s = Some(Spin {
+                finish: Some((ended, ends)),
+                ..spin
+            })
+        });
+    }
+    let left = ends.saturating_duration_since(ended);
+    let from = 1. - left.as_secs_f32() / SPIN_TURN.as_secs_f32();
+    glyph
+        .with_animation(
+            ElementId::NamedChild(ElementId::from(id).into(), "finish".into()),
+            Animation::new(left).with_max_fps(30.),
+            move |glyph, t| {
+                let turn = from + t * (1. - from);
+                glyph.with_transformation(Transformation::rotate(radians(
+                    turn * std::f32::consts::TAU,
+                )))
+            },
+        )
+        .into_any_element()
+}
+
 /// `rise`, or none under Reduce Motion, which keeps only the fade.
 pub fn moving(rise: Rise, cx: &App) -> Rise {
     if cx.reduce_motion() { Rise::None } else { rise }
@@ -249,6 +363,13 @@ impl Glide {
         self.target
     }
 
+    /// Starting at `velocity` units a second: a release that carries the
+    /// fingers' speed on.
+    pub fn with_velocity(mut self, velocity: f32) -> Self {
+        self.state.velocity = velocity;
+        self
+    }
+
     pub fn retarget(&mut self, target: f32) {
         self.target = target;
     }
@@ -258,6 +379,11 @@ impl Glide {
         let now = Instant::now();
         let elapsed = now.saturating_duration_since(self.at).as_secs_f32();
         self.at = now;
+        self.advance(elapsed)
+    }
+
+    /// `step` by `elapsed` seconds.
+    pub fn advance(&mut self, elapsed: f32) -> (f32, bool) {
         self.state = self.config.step(self.state, self.target, elapsed);
         if self
             .config

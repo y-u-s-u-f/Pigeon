@@ -1,5 +1,5 @@
 //! The calendar's header: the period shown, the calendars menu, the view
-//! switcher, today and the arrows, and the new-event button.
+//! switcher, today and the arrows. New Event is in the top bar.
 
 use chrono::{Datelike, Duration, NaiveDate};
 use gpui::{
@@ -143,15 +143,6 @@ impl CalendarView {
                     .build(window, cx)
             });
 
-        let new_button = push_button("new-event", "New", ButtonKind::Primary, &theme)
-            .aria_label("New event")
-            .on_click(|_, window, cx| window.dispatch_action(Box::new(NewEvent), cx))
-            .tooltip(|window, cx| {
-                tooltip("New event")
-                    .action(&NewEvent, None)
-                    .build(window, cx)
-            });
-
         window_drag_area(div().id("calendar-header"))
             .h(crate::ui::HEADER_MIN)
             .min_h(HEADER_HEIGHT)
@@ -213,8 +204,6 @@ impl CalendarView {
                 )
                 .on_click(self.refocus_grid(cx)),
             )
-            .child(div().w(SPACE_XS))
-            .child(new_button)
             .into_any_element()
     }
 
@@ -306,21 +295,32 @@ impl CalendarView {
                     .rounded(RADIUS_MD)
                     .when(open, |d| d.bg(theme.selected_bg))
                     .hover(|s| s.bg(theme.hover_bg))
-                    .child(
+                    // A new period's title fades in as its grid moves in
+                    // (MD-044).
+                    .child(motion::enter(
+                        ("calendar-title-text", self.period_key()),
+                        Rise::None,
                         div()
-                            .text_size(TEXT_TITLE1)
-                            .font_weight(FontWeight::BOLD)
-                            .child(title),
-                    )
-                    .when(!rest.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .text_size(TEXT_TITLE1)
-                                .font_weight(FontWeight::NORMAL)
-                                .text_color(theme.text_faint)
-                                .child(rest),
-                        )
-                    })
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap(SPACE_SM)
+                            .child(
+                                div()
+                                    .text_size(TEXT_TITLE1)
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(title),
+                            )
+                            .when(!rest.is_empty(), |d| {
+                                d.child(
+                                    div()
+                                        .text_size(TEXT_TITLE1)
+                                        .font_weight(FontWeight::NORMAL)
+                                        .text_color(theme.text_faint)
+                                        .child(rest),
+                                )
+                            }),
+                    ))
                     .child(icon(Icon::ChevronDown, ICON_MD, theme.text_faint))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(

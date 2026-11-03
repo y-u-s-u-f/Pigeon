@@ -1,4 +1,5 @@
-//! Account card, system folders and labels.
+//! System folders and labels. The account and sync status are in the top
+//! bar (`top_bar`).
 
 use std::collections::{HashMap, HashSet};
 
@@ -10,27 +11,22 @@ use gpui::{
     prelude::FluentBuilder as _,
 };
 
-use super::{
-    HEADER_HEIGHT, account_avatar, icon, icon_button, is_secondary, motion, status::thousands,
-    tooltip, window_drag_area,
-};
+use super::{icon, icon_button, is_secondary, motion, status::thousands, tooltip};
 use crate::ui::style::*;
 use crate::{
     actions::{
         GoToArchive, GoToDrafts, GoToForums, GoToInbox, GoToNeedsReply, GoToPromotions,
         GoToScheduled, GoToSent, GoToSnoozed, GoToSocial, GoToSpam, GoToStarred, GoToTrash,
-        GoToUpdates, NewLabel, OpenSettingsSection, SignIn, ToggleHiddenLabels, ToggleSidebar,
+        GoToUpdates, NewLabel, ToggleHiddenLabels,
     },
     app::{Nav, PigeonApp, nav_holds},
     assets::Icon,
     backend::{
-        Source,
         categories::{Category, CategoryCounts, in_category},
         gmail,
         labels::label_tree,
     },
-    data::{Contact, Folder, Label, ListVisibility, Thread},
-    settings::Section,
+    data::{Folder, Label, ListVisibility, Thread},
     theme::Theme,
     ui::thread_list::DraggedThreads,
 };
@@ -59,7 +55,7 @@ const LABELS_SECTION: &str = "\u{1}labels";
 
 /// Every view's count from one pass over the threads (MC-037): unread
 /// threads per view, Drafts' total, and which Inbox categories hold mail.
-/// Built once per frame and read by the sidebar, list header and rail.
+/// Built once per frame and read by the sidebar, list header and top bar.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NavCounts {
     /// Unread threads by `slot`: the cached ones', or Gmail's count moved
@@ -487,15 +483,17 @@ impl PigeonApp {
         &self,
         width: gpui::Pixels,
         counts: &NavCounts,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
-        let account = Contact {
-            name: self.data.account.name.clone(),
-            email: self.data.account.email.clone(),
+        let notifications = super::status::notifications_card(self.backend.read(cx), &theme, cx);
+        // The first mailbox sits level with the list's title beside it.
+        let top = if notifications.is_some() {
+            SPACE_SM
+        } else {
+            (super::header_height(window) - ROW_SM.to_pixels(window.rem_size())) / 2.
         };
-
         let categories =
             shown_categories(counts, self.backend.read(cx).category_counts(), self.nav);
         let mut folders = Vec::new();
@@ -585,9 +583,6 @@ impl PigeonApp {
                 );
             }
         }
-        let account_label = format!("{}, {}", account.name, account.email);
-        let demo = self.backend.read(cx).source() == Source::Demo;
-
         div()
             .relative()
             .w(width)
@@ -598,87 +593,9 @@ impl PigeonApp {
             .bg(theme.sidebar_bg)
             .border_r_1()
             .border_color(theme.border)
-            .child(
-                window_drag_area(div().id("sidebar-header"))
-                    .h(super::HEADER_MIN)
-                    .min_h(HEADER_HEIGHT)
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    // MA-062: at the leading edge, where the list header
-                    // shows it while the sidebar is hidden.
-                    .justify_start()
-                    .px(SPACE_MD)
-                    .child(icon_button(
-                        "toggle-sidebar",
-                        Icon::PanelLeft,
-                        "Hide sidebar",
-                        Box::new(ToggleSidebar),
-                        &theme,
-                    )),
-            )
-            .child(
-                // The account: who this mail is for. Opens Settings ›
-                // Accounts (ME-029); the address is in its tooltip.
-                focusable_control(div().id("account"), &theme)
-                    .role(gpui::Role::Button)
-                    .aria_label(account_label)
-                    .aria_description("Opens Accounts settings")
-                    .mx(SPACE_MD)
-                    .mb(SPACE_SM)
-                    .h(CONTROL_MD)
-                    .px(SPACE_MD)
-                    .flex()
-                    .items_center()
-                    .gap(SPACE_SM)
-                    .rounded(RADIUS_MD)
-                    .hover(|s| s.bg(theme.hover_bg))
-                    .active(|s| s.bg(theme.selected_bg))
-                    .on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(OpenSettingsSection(Section::Accounts)), cx)
-                    })
-                    .child(account_avatar(
-                        self.backend.read(cx).profile_photo(),
-                        account.initials(),
-                        theme.avatar_color(&account.email),
-                        AVATAR_XS,
-                        &theme,
-                    ))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(TEXT_BASE)
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(account.name.clone()),
-                    )
-                    .tooltip({
-                        let email = account.email.clone();
-                        move |window, cx| tooltip(email.clone()).build(window, cx)
-                    }),
-            )
-            .child(
-                div()
-                    .mx(SPACE_MD)
-                    .mb(SPACE_SM)
-                    .flex()
-                    .flex_col()
-                    .gap(SPACE_SM)
-                    .child(if demo {
-                        demo_row(&theme)
-                    } else {
-                        super::status::status_line(
-                            self.backend.read(cx).status(),
-                            super::status::now_ms(),
-                            &theme,
-                        )
-                    })
-                    .children(super::status::notifications_card(
-                        self.backend.read(cx),
-                        &theme,
-                        cx,
-                    )),
-            )
+            // The toggle, the account and the sync status are in the top
+            // bar; the sidebar starts with the mailboxes.
+            .children(notifications.map(|card| div().mx(SPACE_MD).mt(SPACE_MD).child(card)))
             .child(
                 div()
                     .id("sidebar-nav")
@@ -687,6 +604,7 @@ impl PigeonApp {
                     .flex_1()
                     .min_h_0()
                     .px(SPACE_MD)
+                    .pt(top)
                     .pb(SPACE_MD)
                     .flex()
                     .flex_col()
@@ -1038,31 +956,6 @@ fn labels_header(collapsed: bool, theme: &Theme, cx: &mut Context<PigeonApp>) ->
 }
 
 /// ME-050: in demo data, the way out: "Demo data · Sign in…".
-fn demo_row(theme: &Theme) -> AnyElement {
-    focusable_control(div().id("demo-sign-in"), theme)
-        .role(gpui::Role::Button)
-        .aria_label("Demo data. Sign in…")
-        .px(SPACE_MD)
-        .py(SPACE_XS)
-        .flex()
-        .items_center()
-        .gap(SPACE_XS)
-        .rounded(RADIUS_MD)
-        .text_size(TEXT_XS)
-        .text_color(theme.text_faint)
-        .hover(|s| s.bg(theme.hover_bg))
-        .active(|s| s.bg(theme.selected_bg))
-        .child("Demo data ·")
-        .child(div().text_color(theme.link).child("Sign in…"))
-        .tooltip(|window, cx| {
-            tooltip("Sign in with Google")
-                .action(&SignIn, None)
-                .build(window, cx)
-        })
-        .on_click(|_, window, cx| window.dispatch_action(Box::new(SignIn), cx))
-        .into_any_element()
-}
-
 fn category_key(category: Category) -> &'static str {
     match category {
         Category::Primary => "category:primary",
@@ -1081,7 +974,7 @@ mod tests {
     fn thread(id: &str, folder: Folder, labels: &[&str], unread: bool) -> Thread {
         let message = Message {
             label_ids: labels.iter().map(|l| l.to_string()).collect(),
-            ..Message::new(Contact::default())
+            ..Message::new(crate::data::Contact::default())
         };
         let mut t = Thread::local(id.into(), id.into(), folder, vec![message], None);
         t.unread = unread;

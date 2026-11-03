@@ -41,7 +41,7 @@ pub(crate) const SIDE_MIN: f32 = 280.;
 const SIDE_MAX: f32 = 400.;
 
 impl CalendarView {
-    /// The width the grid has: beside the rail, and beside a docked panel
+    /// The width the grid has: beside the rail, less a docked panel
     /// (`lay_out_grid`).
     pub(crate) fn grid_area_width(&self) -> f32 {
         self.grid_width
@@ -52,14 +52,16 @@ impl CalendarView {
         self.view == ViewKind::Day && self.day_side
     }
 
+    /// The Day view around its time `grid`; the side stays put as the day
+    /// changes.
     pub(crate) fn render_day(
         &self,
+        grid: AnyElement,
         occurrences: &[Occurrence],
         now: NaiveDateTime,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let grid = self.render_time_grid(vec![self.anchor], occurrences, now, window, cx);
         if !self.day_side_shown() {
             return grid;
         }
